@@ -25,9 +25,9 @@ def definitions(path, names, namespace):
 
 class RuntimeTests(unittest.TestCase):
     def test_loader_shutdown_drains_only_bounded_pending_work_and_propagates_errors(self):
-        close = definitions(
-            "src/stock_forecasting/baseline_input.py", {"close_neural_loader"}, {}
-        )["close_neural_loader"]
+        close = definitions("src/stock_forecasting/baseline_input.py", {"close_neural_loader"}, {})[
+            "close_neural_loader"
+        ]
 
         class Iterator:
             _send_idx, _rcvd_idx, _shutdown = 7, 3, False
@@ -90,6 +90,7 @@ class RuntimeTests(unittest.TestCase):
         from math import gcd
 
         namespace = {
+            "Path": Path,
             "math": math,
             "gcd": gcd,
             "Iterator": Iterator,
@@ -146,6 +147,7 @@ class RuntimeTests(unittest.TestCase):
     def test_full_size_mixed_admission_and_live_cpu_reallocation(self):
         memory = 52.4 * 1024**3
         namespace = {
+            "Path": Path,
             "detect_visible_cpu_count": lambda: 13,
             "detect_available_memory": lambda: SimpleNamespace(available_bytes=int(memory)),
             "torch": SimpleNamespace(
@@ -155,7 +157,7 @@ class RuntimeTests(unittest.TestCase):
         }
         definitions(
             "src/stock_forecasting/baseline_build.py",
-            {"resource_plan", "live_cpu_allocation"},
+            {"resource_plan", "live_cpu_allocation", "baseline_memory_budget"},
             namespace,
         )
         parameters = json.loads((ROOT / "configs/baseline.json").read_text())
@@ -172,6 +174,35 @@ class RuntimeTests(unittest.TestCase):
         memory = 43 * 1024**3
         with self.assertRaisesRegex(MemoryError, "overlap"):
             namespace["resource_plan"](parameters, 30_224_227, list(range(1, 15)))
+
+    def test_cache_credit_excludes_dirty_mapped_and_anonymous_memory(self):
+        function = definitions(
+            "src/stock_forecasting/baseline_build.py", {"baseline_memory_budget"}, {"Path": Path}
+        )["baseline_memory_budget"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "memory").mkdir()
+            path = root / "memory/memory.stat"
+            path.write_text(
+                "cache 800\nshmem 100\nmapped_file 100\ndirty 50\n"
+                "writeback 50\nunevictable 100\nrss 900\n"
+            )
+            estimate = SimpleNamespace(
+                available_bytes=1000,
+                observations=(("cgroup_v1_headroom", 1000), ("linux_mem_available", 1100)),
+            )
+            actual, credit = function(estimate, 0.5, root)
+            self.assertEqual(credit, {"cgroup_v1_headroom": 200})
+            self.assertEqual(actual, 1100)
+            self.assertEqual(function(estimate, 0, root)[0], 1000)
+            path.write_text("cache invalid\n")
+            self.assertEqual(function(estimate, 0.5, root), (1000, {}))
+            (root / "memory.stat").write_text(
+                "file 800\nshmem 100\nfile_mapped 100\nfile_dirty 50\n"
+                "file_writeback 50\nunevictable 100\n"
+            )
+            estimate.observations = (("cgroup_v2_headroom", 1000),)
+            self.assertEqual(function(estimate, 0.5, root)[0], 1200)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@
     "gpu_memory_fraction": 0.8,
     "gpu_bytes_per_experiment": 4294967296,
     "host_memory_fraction": 0.8,
+    "reclaimable_file_cache_fraction": 0.5,
     "host_bytes_per_gpu_experiment": 4294967296,
     "worker_bytes": 1073741824,
     "parquet_cache_bytes": 536870912,

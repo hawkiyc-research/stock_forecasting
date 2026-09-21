@@ -135,14 +135,17 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         # Execute the actual resource planner with device probes stubbed, without
         # importing any local ML package or inspecting a training environment.
         tree = ast.parse((ROOT / "src/stock_forecasting/baseline_build.py").read_text())
-        definition = next(
-            node for node in tree.body if getattr(node, "name", None) == "resource_plan"
-        )
-        code = compile(ast.Module(body=[definition], type_ignores=[]), "resource-plan", "exec")
+        definitions = [
+            node
+            for node in tree.body
+            if getattr(node, "name", None) in ("resource_plan", "baseline_memory_budget")
+        ]
+        code = compile(ast.Module(body=definitions, type_ignores=[]), "resource-plan", "exec")
         parameters = json.loads((ROOT / "configs/baseline.json").read_text())
         for cpus in (7, 8, 12, 16, 32):
             with self.subTest(cpus=cpus):
                 namespace = {
+                    "Path": Path,
                     "detect_visible_cpu_count": lambda cpus=cpus: cpus,
                     "detect_available_memory": lambda: SimpleNamespace(
                         available_bytes=64 * 1024**3

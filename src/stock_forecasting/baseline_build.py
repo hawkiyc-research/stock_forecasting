@@ -695,6 +695,49 @@ def run_job(config_payload, root_string, name, seed, parameters, scales, plan):
         atomic_write_json(directory / "execution.json", execution)
 
 
+def baseline_memory_budget(estimate, fraction, root=Path("/sys/fs/cgroup")):
+    """Count a bounded fraction of clean, unmapped file cache, never anonymous RAM."""
+    observations = dict(getattr(estimate, "observations", ()))
+    if not observations:
+        return estimate.available_bytes, {}
+    reclaimed = {}
+    for name, path, cache, excluded in (
+        (
+            "cgroup_v1_headroom",
+            root / "memory/memory.stat",
+            "cache",
+            ("shmem", "mapped_file", "dirty", "writeback", "unevictable"),
+        ),
+        (
+            "cgroup_v2_headroom",
+            root / "memory.stat",
+            "file",
+            ("shmem", "file_mapped", "file_dirty", "file_writeback", "unevictable"),
+        ),
+    ):
+        if name not in observations:
+            continue
+        try:
+            stats = {
+                key: int(value)
+                for key, value in (line.split() for line in path.read_text().splitlines())
+            }
+            prefix = "total_" if name == "cgroup_v1_headroom" and "total_cache" in stats else ""
+            values = [stats[prefix + key] for key in (cache, *excluded)]
+            if min(values) < 0:
+                raise ValueError("Negative memory observation")
+        except (OSError, ValueError, KeyError):
+            continue
+        # Subtraction can conservatively overlap; never over-credit reclaimable RAM.
+        reclaimed[name] = int(max(0, values[0] - sum(values[1:])) * fraction)
+    limits = [
+        value + reclaimed.get(name, 0)
+        for name, value in observations.items()
+        if name != "posix_free_pages_fallback"
+    ]
+    return min(limits) if limits else estimate.available_bytes, reclaimed
+
+
 def resource_plan(parameters, train_count, horizons, context_length=128):
     settings = parameters["resources"]
     for key in (
@@ -736,7 +779,11 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
             raise ValueError(
                 f"Baseline resource fraction must reserve at least 15% headroom: {key}"
             )
-    memory = detect_available_memory().available_bytes
+    cache_fraction = settings.get("reclaimable_file_cache_fraction", 0.5)
+    if isinstance(cache_fraction, bool) or not 0 <= cache_fraction <= 0.5:
+        raise ValueError("Baseline cache credit must remain between zero and one half")
+    estimate = detect_available_memory()
+    memory, cache_credit = baseline_memory_budget(estimate, cache_fraction)
     cpus = detect_visible_cpu_count()
     free_gpu, total_gpu = torch.cuda.mem_get_info()
     gpu_slots = min(
@@ -804,6 +851,8 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
         "cpu_slots": cpu_slots,
         "visible_cpus": cpus,
         "available_host_bytes": memory,
+        "raw_available_host_bytes": estimate.available_bytes,
+        "reclaimable_cache_credit_bytes": cache_credit,
         "available_gpu_bytes": free_gpu,
         "shared_memory_bytes": shared_memory,
         "input_workers": input_workers,
