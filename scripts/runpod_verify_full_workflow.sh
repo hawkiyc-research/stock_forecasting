@@ -4,6 +4,13 @@ set -Eeuo pipefail
 umask 077
 main() {
 # Parse the full body before executing; never hot-edit a running shell workflow.
+REGRESSION_ONLY=0
+if [[ "${1:-}" == "--regression-only" && $# -eq 1 ]]; then
+    REGRESSION_ONLY=1
+elif [[ $# -ne 0 ]]; then
+    echo "Usage: runpod_verify_full_workflow.sh [--regression-only]" >&2
+    exit 2
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/runpod_paths.sh"
 NETWORK_VOLUME_ROOT="${NETWORK_VOLUME_ROOT:-/runpod-volume}"
@@ -22,6 +29,26 @@ mkdir -p "${OUTPUT}"
 # traffic on the network volume. Persistent evidence stays in OUTPUT.
 export TMPDIR="$(mktemp -d /tmp/fin-ts-qa.XXXXXXXX)"
 # No completion manifest is written under baselines/. This is not a baseline build.
+if [[ "${REGRESSION_ONLY}" -eq 1 ]]; then
+    set +e
+    timeout --kill-after=15s 120 .venv/bin/ruff check . >"${OUTPUT}/ruff.log" 2>&1
+    lint_exit=$?
+    test_exit=125
+    if [[ "${lint_exit}" -eq 0 ]]; then
+        # SIGINT lets pytest finalize JUnit and the durable journal on timeout.
+        timeout --signal=INT --kill-after=30s 2400 \
+            .venv/bin/python scripts/verify_cloud_regression.py --output "${OUTPUT}" \
+            >"${OUTPUT}/pytest.log" 2>&1
+        test_exit=$?
+    fi
+    set -e
+    printf '{"mode":"regression-only","pytest":%s,"ruff":%s}\n' \
+        "${test_exit}" "${lint_exit}" >"${OUTPUT}/regression-status.json"
+    tail -n 75 "${OUTPUT}/pytest.log" 2>/dev/null || true
+    tail -n 20 "${OUTPUT}/ruff.log"
+    printf 'Regression complete; awaiting control-host review within the existing hard deadline.\n'
+    while sleep 10; do :; done
+fi
 set +e
 timeout --kill-after=15s 1100 .venv/bin/python scripts/verify_baseline_throughput.py \
     --output "${OUTPUT}/baseline-throughput" >"${OUTPUT}/baseline-throughput.log" 2>&1
