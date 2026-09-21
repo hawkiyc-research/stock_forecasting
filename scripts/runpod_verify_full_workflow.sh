@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Authorized synthetic verification only: no production training or market-data calls.
+# Authorized bounded verification only: no production training or market-data calls.
 set -Eeuo pipefail
 umask 077
 main() {
@@ -50,7 +50,7 @@ tail -n 30 "${OUTPUT}/kronos-smoke.log"
 tail -n 30 "${OUTPUT}/capacity.log"
 tail -n 20 "${OUTPUT}/lazy-evaluation.log"
 tail -n 10 "${OUTPUT}/baseline-throughput.log"
-printf 'Synthetic verification: pytest=%s ruff=%s output=%s\n' "${test_exit}" "${lint_exit}" "${OUTPUT}"
+printf 'Bounded verification: pytest=%s ruff=%s output=%s\n' "${test_exit}" "${lint_exit}" "${OUTPUT}"
 # Keep the authorized debugging window bounded by tmux timeout and the local
 # hard-limit guard. The control host publishes the terminal lifecycle after QA.
 printf 'Awaiting control-host QA completion; the hard deadline remains armed.\n'

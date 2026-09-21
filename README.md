@@ -1304,7 +1304,7 @@ bash scripts/runpod_workflow.sh selection show
 bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
 bash scripts/runpod_workflow.sh readiness --gpu
-bash scripts/runpod_workflow.sh gpu-list
+bash scripts/runpodctl_project.sh gpu list
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
@@ -3515,7 +3515,7 @@ bash scripts/runpod_workflow.sh selection show
 bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
 bash scripts/runpod_workflow.sh readiness --gpu
-bash scripts/runpod_workflow.sh gpu-list
+bash scripts/runpodctl_project.sh gpu list
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
 

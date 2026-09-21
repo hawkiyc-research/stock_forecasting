@@ -157,6 +157,11 @@ def _pipeline_probe(model, source, parameters, scales, *, training, batch_size, 
     original_mode = model.training
     with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
         probe = deepcopy(model)
+        # Deepcopy invalidates cuDNN's contiguous RNN weight storage. Restore
+        # the same fast path as the production model before measuring it.
+        for module in probe.modules():
+            if isinstance(module, torch.nn.RNNBase):
+                module.flatten_parameters()
         probe.train(training)
         optimizer = (
             torch.optim.AdamW(
@@ -329,7 +334,7 @@ def tune_baseline_runtime(model, source, parameters, plan, *, scales=None, evalu
                 return
             trials.append(trial)
 
-        for workers in sorted({1, maximum_workers}):
+        for workers in sorted({1, (maximum_workers + 1) // 2, maximum_workers}):
             for size in sizes:
                 measure(size, workers, plan["prefetch_factor"])
         accepted = [row for row in trials if row["accepted"]]
