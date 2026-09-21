@@ -2,6 +2,10 @@
 
 ## 中文
 
+目前 `master` 另包含 baseline tensor 資料管線的執行效率修正：限定吞吐與接續測試
+已通過，完整回歸尚未完成。最近完整驗收的 tag 仍為 `v0.2.1`；最新進度與限制見
+[tensor 資料管線驗證紀錄](docs/baseline_tensor_pipeline_validation.md)。
+
 `v0.2.1` 全量評估／可重用 baseline 架構已完成限定範圍的工程驗收；
 training 保留動態 sampling，validation／testing 完整列舉所有合法 windows。
 Baseline 支援硬體自動 batch／prefetch 調整、向量化有界資料讀取與中途接續訓練；
@@ -1370,6 +1374,11 @@ windows，spawn 不會傳遞檔案 handles；worker 記憶體預算預設為 1 G
 不會默默延後成 CPU-only 尾段。GPU jobs 全部完成後，GBDT 在下一次 native fit 使用
 釋出的 CPU threads；`live-resources.json` 記錄配置，`progress.json` 記錄資料等待比例。
 GBDT 的總工作量仍可能比神經模型長；此排程不保證完全消除 CPU-only 尾段。
+Baseline 規劃可保守計入 cgroup 中乾淨、未映射檔案快取的 50%，再套用上述安全空間；
+不計入匿名記憶體、shared memory、mapped／dirty／writeback 頁面，仍受所有有效的
+容器與主機可用記憶體上限限制。`resources.reclaimable_file_cache_fraction` 可調整此比例，
+統計不可用時回到原始 headroom；`resource-plan.json` 同時記錄原始預算及快取折抵量。
+這是保守的准入估計，不代表作業系統保證能即時回收；CPU prepare 的規劃不受影響。
 
 經審核且數值契約不變的執行效率修正，可透過
 `configs/baseline_execution_compatibility.json` 的**完整 source hash 白名單**保留既有
@@ -1994,6 +2003,11 @@ Stage 1 只證明腳本與契約可運作，不用來宣稱模型具備 alpha。
 ---
 
 ## English
+
+Current `master` additionally contains baseline tensor-pipeline execution repairs.
+Bounded throughput/resume checks passed, but full regression remains incomplete.
+The latest fully accepted tag remains `v0.2.1`; see the
+[tensor-pipeline validation record](docs/baseline_tensor_pipeline_validation.md).
 
 The `v0.2.1` full-evaluation/reusable-baseline architecture has completed bounded
 engineering acceptance. Training retains dynamic sampling; validation/testing
@@ -3592,6 +3606,13 @@ GBDT to a CPU-only tail. Once GPU jobs finish, the next native GBDT fit receives
 released CPU threads. `live-resources.json` records allocation and `progress.json`
 records input-wait fractions. GBDT may still outlast the neural experiments; this
 scheduler does not guarantee elimination of the CPU-only tail.
+Baseline admission may credit 50% of clean, unmapped cgroup file cache before applying
+the safety margin. Anonymous memory, shared memory, mapped, dirty and writeback pages
+receive no credit; all valid container and host memory limits still apply. Configure
+the fraction with `resources.reclaimable_file_cache_fraction`. Missing statistics fall
+back to raw headroom, and `resource-plan.json` records both raw availability and cache
+credit. This conservative estimate is not an OS reclamation guarantee and does not
+change CPU-prepare resource planning.
 
 Reviewed execution-only changes with unchanged numerical contracts can preserve the
 baseline ID, inputs, completed jobs and resume checkpoints through the **exact source
