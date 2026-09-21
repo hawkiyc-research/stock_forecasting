@@ -7,10 +7,12 @@ runpod_load_active_selection() {
     local helper="${project_root}/scripts/runpod_selection.py"
     local key=""
     local value=""
-    local selection_options=()
+    # Bash 3.2 treats an empty array expansion as unset under nounset.
+    # Keep the command nonempty for both normal and baseline selection consumers.
+    local selection_command=(python3 "${helper}" export --project-root "${project_root}" --null)
     case "${2:-training}" in
         training) ;;
-        baseline) selection_options+=(--data-only) ;;
+        baseline) selection_command+=(--data-only) ;;
         *) echo "Unsupported selection consumer: $2" >&2; return 2 ;;
     esac
 
@@ -50,7 +52,7 @@ runpod_load_active_selection() {
                 return 2
                 ;;
         esac
-    done < <(python3 "${helper}" export --project-root "${project_root}" --null "${selection_options[@]}")
+    done < <("${selection_command[@]}")
 
     if [[ -z "${RUNPOD_SELECTION_ID:-}" \
         || -z "${RUNPOD_SELECTION_SHA256:-}" \
