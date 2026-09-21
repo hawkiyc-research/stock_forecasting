@@ -17,15 +17,18 @@ import numpy as np
 import torch
 from sklearn.ensemble import HistGradientBoostingRegressor
 from threadpoolctl import threadpool_limits
-from torch.utils.data import DataLoader
 
-from stock_forecasting.baseline_contract import runtime_contract, validate_complete
+from stock_forecasting.baseline_contract import (
+    execution_identity,
+    runtime_contract,
+    validate_complete,
+)
+from stock_forecasting.baseline_input import close_neural_loader, neural_loader
 from stock_forecasting.baseline_runtime import SampleCursorBatchSampler, tune_baseline_runtime
 from stock_forecasting.baseline_storage import (
     SIGNAL_NAMES,
     build_tabular_cache,
     lazy_dataset,
-    loader_options,
     open_tabular,
 )
 from stock_forecasting.baselines import (
@@ -37,7 +40,6 @@ from stock_forecasting.baselines import (
     _seed_baseline,
 )
 from stock_forecasting.config import ExperimentConfig
-from stock_forecasting.data.dataset import FinancialBatchCollator
 from stock_forecasting.data.manifest import atomic_write_json, sha256_file
 from stock_forecasting.evaluation_store import CHUNK_ROWS, META_DTYPE, EvaluationStore, Moments
 from stock_forecasting.optimization_policy import ValidationPlateauScheduler
@@ -63,6 +65,8 @@ def _save_pickle(path: Path, payload):
 
 
 def _sequence(batch, device):
+    if "sequences" in batch:
+        return batch["sequences"].to(device, non_blocking=True)
     return torch.stack((batch["asset_series"], batch["benchmark_series"]), dim=1).to(
         device, non_blocking=True
     )
@@ -80,22 +84,13 @@ def _loader(
     persistent=False,
 ):
     source = lazy_dataset(config, split, relative=True, validated_root=validated_root)
-    options = loader_options(workers, prefetch, persistent=persistent)
-    if sampler is not None:
-        return DataLoader(
-            source,
-            batch_sampler=sampler,
-            collate_fn=FinancialBatchCollator(),
-            pin_memory=True,
-            **options,
-        )
-    return DataLoader(
+    return neural_loader(
         source,
+        workers=workers,
         batch_size=batch_size,
-        shuffle=False,
-        collate_fn=FinancialBatchCollator(),
-        pin_memory=True,
-        **options,
+        batch_sampler=sampler,
+        prefetch=prefetch,
+        metadata=split != "train",
     )
 
 
@@ -140,14 +135,11 @@ def _neural_test(model, loader, output, horizons, scales):
 def _close_loader(loader):
     """Release a persistent pool before admitting another evaluation phase."""
 
-    iterator = getattr(loader, "_iterator", None)
-    if iterator is not None:
-        iterator._shutdown_workers()
-        loader._iterator = None
+    close_neural_loader(loader)
 
 
 def _train_neural(config, directory, name, seed, parameters, scales, plan):
-    # All callbacks run on success, interruption and failure; never retain a third pool.
+    # All callbacks run on success, interruption and failure; retain only the active pool.
     with ExitStack() as loaders:
         return _train_neural_impl(config, directory, name, seed, parameters, scales, plan, loaders)
 
@@ -170,7 +162,16 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
     )
     source = lazy_dataset(config, "train", relative=True, validated_root=source_root)
     count = len(source)
-    runtime = tune_baseline_runtime(model, source, parameters, plan)
+    runtime = tune_baseline_runtime(
+        model,
+        source,
+        parameters,
+        plan,
+        scales=scales,
+        evaluation_source=lazy_dataset(
+            config, "validation", relative=True, validated_root=source_root
+        ),
+    )
     atomic_write_json(directory / "runtime-plan.json", runtime)
     batch_size = runtime["training_batch_size"]
     print(f"{name}/{seed} runtime: {json.dumps(runtime)}", flush=True)
@@ -178,7 +179,7 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
     train = _loader(
         config,
         "train",
-        plan["loader_workers"],
+        runtime["loader_workers"],
         batch_size,
         sampler=sampler,
         prefetch=runtime["prefetch_factor"],
@@ -189,9 +190,9 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
     validation = _loader(
         config,
         "validation",
-        plan["loader_workers"],
+        runtime.get("evaluation_workers", runtime["loader_workers"]),
         runtime["evaluation_batch_size"],
-        prefetch=runtime["prefetch_factor"],
+        prefetch=runtime.get("evaluation_prefetch_factor", runtime["prefetch_factor"]),
         validated_root=source_root,
         persistent=True,
     )
@@ -259,7 +260,23 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
         nonlocal best, stale, validated_cursor, finished
         # A pending full validation is replayed after interruption, never skipped.
         save(epoch)
-        score = _neural_validation(model, validation, list(horizons), scales)
+        atomic_write_json(
+            directory / "progress.json",
+            {
+                "phase": "validation",
+                "epoch": epoch + 1,
+                "sample_cursor": cursor,
+                "train_count": count,
+                "validation_count": len(validation.dataset),
+                "runtime": runtime,
+            },
+        )
+        # Only the active phase owns workers, metadata caches and pinned queues.
+        _close_loader(train)
+        try:
+            score = _neural_validation(model, validation, list(horizons), scales)
+        finally:
+            _close_loader(validation)
         improved = score < best - parameters["early_stopping_min_delta"]
         best, stale = (score, 0) if improved else (best, stale + 1)
         if improved:
@@ -311,48 +328,61 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
             validate(epoch)
             if finished:
                 break
-        sampler.set_epoch(epoch, cursor=cursor)
-        model.train()
-        for batch in train:
-            optimizer.zero_grad(set_to_none=True)
-            prediction = model(_sequence(batch, "cuda"))
-            loss = _normalized_pinball_torch(
-                prediction, batch["target_alpha"].cuda(non_blocking=True), scale_tensor
-            )
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            cursor += len(batch["target_alpha"])
-            schedule.realign(epoch * count + cursor, schedule.warmup_steps)
-            if cursor in sampler.boundaries:
-                validate(epoch)
-            elif not last.is_file() or time.monotonic() - saved_at >= settings.get(
-                "checkpoint_seconds", 300
-            ):
-                save(epoch)
-            now = time.monotonic()
-            if now - reported_at >= settings.get("progress_seconds", 30):
-                rate = (epoch * count + cursor - reported_cursor) / max(now - reported_at, 1e-9)
-                atomic_write_json(
-                    directory / "progress.json",
-                    {
-                        "phase": "training",
-                        "epoch": epoch + 1,
-                        "sample_cursor": cursor,
-                        "train_count": count,
-                        "windows_per_second": rate,
-                        "learning_rates": schedule.get_last_lr(),
-                        "runtime": runtime,
-                    },
+        while cursor < count and not finished:
+            sampler.set_epoch(epoch, cursor=cursor)
+            model.train()
+            input_wait = 0.0
+            consumed_at = time.monotonic()
+            for batch in train:
+                input_wait += time.monotonic() - consumed_at
+                optimizer.zero_grad(set_to_none=True)
+                prediction = model(_sequence(batch, "cuda"))
+                loss = _normalized_pinball_torch(
+                    prediction, batch["target_alpha"].cuda(non_blocking=True), scale_tensor
                 )
-                print(
-                    f"{name}/{seed} epoch={epoch + 1} samples={cursor}/{count} "
-                    f"windows/s={rate:.1f}",
-                    flush=True,
-                )
-                reported_at, reported_cursor = now, epoch * count + cursor
-            if finished:
-                break
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                cursor += len(batch["target_alpha"])
+                schedule.realign(epoch * count + cursor, schedule.warmup_steps)
+                boundary = cursor in sampler.boundaries
+                if boundary:
+                    validate(epoch)
+                    # Report training rates separately from full validation time.
+                    reported_at, reported_cursor = time.monotonic(), epoch * count + cursor
+                    input_wait = 0.0
+                elif not last.is_file() or time.monotonic() - saved_at >= settings.get(
+                    "checkpoint_seconds", 300
+                ):
+                    save(epoch)
+                now = time.monotonic()
+                if now - reported_at >= settings.get("progress_seconds", 30):
+                    rate = (epoch * count + cursor - reported_cursor) / max(now - reported_at, 1e-9)
+                    atomic_write_json(
+                        directory / "progress.json",
+                        {
+                            "phase": "training",
+                            "epoch": epoch + 1,
+                            "sample_cursor": cursor,
+                            "train_count": count,
+                            "windows_per_second": rate,
+                            "input_wait_seconds": input_wait,
+                            "input_wait_fraction": input_wait / max(now - reported_at, 1e-9),
+                            "learning_rates": schedule.get_last_lr(),
+                            "runtime": runtime,
+                        },
+                    )
+                    print(
+                        f"{name}/{seed} epoch={epoch + 1} samples={cursor}/{count} "
+                        f"windows/s={rate:.1f}",
+                        flush=True,
+                    )
+                    reported_at, reported_cursor = now, epoch * count + cursor
+                    input_wait = 0.0
+                consumed_at = time.monotonic()
+                if boundary or finished:
+                    # Discard only unconsumed prefetch; restart at the committed cursor.
+                    break
         if not finished:
             if cursor != count or validated_cursor != count:
                 raise RuntimeError(
@@ -371,11 +401,12 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
     test = _loader(
         config,
         "test",
-        plan["loader_workers"],
+        runtime.get("evaluation_workers", runtime["loader_workers"]),
         runtime["evaluation_batch_size"],
-        prefetch=runtime["prefetch_factor"],
+        prefetch=runtime.get("evaluation_prefetch_factor", runtime["prefetch_factor"]),
         validated_root=source_root,
     )
+    loaders.callback(_close_loader, test)
     metrics = _neural_test(model, test, directory / "test", list(horizons), scales)
     return metrics
 
@@ -491,7 +522,16 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
                 if iteration == active_iteration and h * 3 + q < next_model:
                     continue
                 model.set_params(max_iter=iteration)
-                model.fit(arrays["train"]["features"], arrays["train"]["targets"][:, h])
+                allocation = root / "live-resources.json"
+                thread_limit = None
+                if allocation.is_file():
+                    thread_limit = json.loads(allocation.read_text())["gbdt_threads"]
+                    if type(thread_limit) is not int or not 1 <= thread_limit <= max(
+                        1, detect_visible_cpu_count() - 2
+                    ):
+                        raise ValueError("Invalid live GBDT CPU allocation")
+                with threadpool_limits(limits=thread_limit):
+                    model.fit(arrays["train"]["features"], arrays["train"]["targets"][:, h])
                 save_gbdt(iteration - settings["validation_every"], iteration, h * 3 + q + 1)
                 atomic_write_json(
                     directory / "progress.json",
@@ -500,6 +540,7 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
                         "iteration": iteration,
                         "completed_models": h * 3 + q + 1,
                         "total_models": len(horizons) * 3,
+                        "cpu_threads": thread_limit,
                     },
                 )
         score = _tabular_score(
@@ -671,6 +712,8 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
         "max_prefetch_factor",
         "batch_probe_repetitions",
         "loader_probe_batches",
+        "runtime_probe_warmup_samples",
+        "runtime_probe_samples",
         "checkpoint_seconds",
         "progress_seconds",
         "parquet_cache_bytes",
@@ -680,6 +723,12 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
             raise ValueError(f"Baseline resource limit must be a positive integer: {key}")
     if type(settings.get("auto_batch")) is not bool:
         raise ValueError("Baseline auto_batch must be a boolean")
+    if (
+        settings["runtime_probe_warmup_samples"] > 65536
+        or settings["runtime_probe_samples"] > 131072
+        or settings["loader_probe_batches"] > 128
+    ):
+        raise ValueError("Baseline runtime probes must remain bounded")
     if settings["parquet_cache_bytes"] > settings["worker_bytes"] * 0.75:
         raise ValueError("Parquet cache must leave at least 25% of the worker memory reserve free")
     for key in ("gpu_memory_fraction", "host_memory_fraction"):
@@ -694,7 +743,7 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
         settings["max_gpu_experiments"],
         int(free_gpu * settings["gpu_memory_fraction"]) // settings["gpu_bytes_per_experiment"],
         # Reserve two control cores plus an input parent and at least one worker.
-        max(0, (cpus - 4) // 3),
+        max(0, (cpus - 4) // 2),
         int(memory * 0.3) // settings["host_bytes_per_gpu_experiment"],
     )
     if gpu_slots < 1:
@@ -711,10 +760,25 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
             f"Full GBDT requires estimated {gbdt_bytes} host bytes; budget is {host_budget}. "
             "Choose a larger-memory Pod; never subsample."
         )
+    # Training and validation are mutually exclusive phases. Only one worker
+    # pool is resident per GPU job; reserve GBDT memory before admitting GPUs.
+    gpu_parent_buffers = 2 * 1024**3
+    minimum_gpu_host = max(
+        settings["host_bytes_per_gpu_experiment"],
+        gpu_parent_buffers + settings["worker_bytes"],
+    )
+    while gpu_slots > 0 and gbdt_bytes + gpu_slots * minimum_gpu_host > host_budget:
+        gpu_slots -= 1
+    if gpu_slots < 1:
+        raise MemoryError(
+            "Host RAM cannot safely overlap the full GBDT with one GPU experiment; "
+            "choose a higher-memory Pod instead of paying for a serialized GPU workload."
+        )
     workers = min(
         settings["max_loader_workers_per_experiment"],
-        max(1, (cpus - 4 - gpu_slots) // (2 * gpu_slots)),
-        max(1, (host_budget // (gpu_slots * 2)) // settings["worker_bytes"]),
+        max(1, (cpus - 4 - gpu_slots) // gpu_slots),
+        (host_budget - gbdt_bytes - gpu_slots * gpu_parent_buffers)
+        // (gpu_slots * settings["worker_bytes"]),
     )
     shared_memory = shutil.disk_usage("/dev/shm").free
     batch_bytes = parameters["batch_size"] * 2 * context_length * 5 * 4
@@ -730,7 +794,7 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
             f"host_budget={host_budget}, shm_free={shared_memory}",
             flush=True,
         )
-    cpu_budget = cpus - gpu_slots * (2 * workers + 1) - 2
+    cpu_budget = cpus - gpu_slots * (workers + 1) - 2
     cpu_slots = min(settings["max_cpu_experiments"], cpu_budget)
     input_workers = min(workers, cpu_budget - 1)
     if cpu_slots < 1 or input_workers < 1:
@@ -755,14 +819,37 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
         "prefetch_factor": settings["prefetch_factor"],
         "loader_workers": workers,
         "cpu_threads": cpu_budget // cpu_slots,
+        "cpu_threads_without_gpu": max(1, cpus - 2),
+        "active_loader_pools_per_gpu_job": 1,
+        "full_gbdt_gpu_overlap": True,
         "host_budget": host_budget,
         "gbdt_bytes": gbdt_bytes,
         "gpu_job_host_bytes": max(
             settings["host_bytes_per_gpu_experiment"],
-            2 * workers * settings["worker_bytes"] + 2 * 1024**3,
+            workers * settings["worker_bytes"] + gpu_parent_buffers,
         ),
         "gpu_fraction_per_job": settings["gpu_memory_fraction"] * free_gpu / total_gpu / gpu_slots,
         "timeout_seconds": settings["timeout_seconds"],
+    }
+
+
+def live_cpu_allocation(plan, running, waiting):
+    """Reserve pending GPU/CPU slots before a long native fit begins."""
+    gpu_count = sum(row[2] for row in running)
+    cpu_count = len(running) - gpu_count
+    pending_gpu = sum(job[0] not in ("inputs", "rules", "gbdt") for job in waiting)
+    reserved_gpu = min(plan["gpu_slots"], gpu_count + pending_gpu)
+    reserved_cpu = min(plan["cpu_slots"], cpu_count + len(waiting) - pending_gpu)
+    return {
+        "gpu_jobs": gpu_count,
+        "cpu_jobs": cpu_count,
+        "reserved_gpu_jobs": reserved_gpu,
+        "gbdt_threads": max(
+            1,
+            (plan["visible_cpus"] - 2 - reserved_gpu * (plan["loader_workers"] + 1))
+            // max(1, reserved_cpu),
+        ),
+        "phase": "mixed" if reserved_gpu else "cpu_tail",
     }
 
 
@@ -809,6 +896,9 @@ def build_baselines(config):
         raise OSError(f"Complete baseline artifacts need approximately {remaining_disk} more bytes")
     plan["estimated_remaining_disk_bytes"] = remaining_disk
     atomic_write_json(root / "resource-plan.json", plan)
+    atomic_write_json(
+        root / "execution-contract.json", execution_identity(Path(__file__).resolve().parents[2])
+    )
     calibration = resolve_runtime_robust_scales(
         train,
         sample_count=parameters["label_scale_calibration_samples"],
@@ -818,12 +908,12 @@ def build_baselines(config):
     scales = np.asarray(calibration.scales, dtype=np.float32).tolist()
     jobs = [
         ("inputs", None),
-        ("rules", None),
         *(
             (name, seed)
             for seed in parameters["seeds"]
             for name in ("gbdt", "gru", "dlinear", "patchtst")
         ),
+        ("rules", None),
     ]
     waiting = [
         job
@@ -833,6 +923,7 @@ def build_baselines(config):
         ).is_file()
     ]
     running = []
+    previous_allocation = None
     context = multiprocessing.get_context("spawn")
     # Bound BLAS in spawned imports, before each library constructs thread pools.
     for name in (
@@ -844,6 +935,11 @@ def build_baselines(config):
         os.environ[name] = "1"
     try:
         while waiting or running:
+            allocation = live_cpu_allocation(plan, running, waiting)
+            if allocation != previous_allocation:
+                atomic_write_json(root / "live-resources.json", allocation)
+                print(f"Baseline live resources: {json.dumps(allocation)}", flush=True)
+                previous_allocation = allocation
             for job in list(waiting):
                 if (
                     job[0] in ("rules", "gbdt")
@@ -870,12 +966,12 @@ def build_baselines(config):
                     name=f"baseline-{job[0]}-{job[1]}",
                 )
                 process.start()
-                running.append((process, time.monotonic(), gpu, memory))
+                running.append((process, time.monotonic(), gpu, memory, job[0]))
                 waiting.remove(job)
             if waiting and not running:
                 raise MemoryError("No pending baseline job fits the resource plan")
             for row in list(running):
-                process, started, _, _ = row
+                process, started, _, _, _ = row
                 if time.monotonic() - started > plan["timeout_seconds"]:
                     raise TimeoutError(
                         f"Baseline job exceeded its bounded deadline: {process.name}"

@@ -41,10 +41,13 @@ def test_baseline_cpu_budget_includes_parents_and_concurrent_inputs(monkeypatch,
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (24 * 1024**3, 24 * 1024**3))
     monkeypatch.setattr(build.shutil, "disk_usage", lambda path: SimpleNamespace(free=16 * 1024**3))
     plan = build.resource_plan(parameters, 1_000, list(range(1, 15)))
-    gpu_cores = plan["gpu_slots"] * (2 * plan["loader_workers"] + 1)
+    gpu_cores = plan["gpu_slots"] * (plan["loader_workers"] + 1)
     assert gpu_cores + 2 + plan["cpu_slots"] * plan["cpu_threads"] <= cpus
     assert gpu_cores + 2 + plan["input_workers"] + 1 <= cpus
     assert plan["input_workers"] >= 1 and plan["loader_workers"] >= 1
+    assert (
+        plan["gbdt_bytes"] + plan["gpu_slots"] * plan["gpu_job_host_bytes"] <= plan["host_budget"]
+    )
 
 
 @pytest.fixture
@@ -150,6 +153,52 @@ def test_vectorized_windows_and_baseline_features_match_legacy(small_lazy_config
             assert actual.dates == expected.dates and actual.symbols == expected.symbols
 
 
+@pytest.mark.parametrize("split", ["train", "validation", "test"])
+@pytest.mark.parametrize("h_start", [1, 3])
+def test_neural_tensor_batch_is_exact_and_lazy(small_lazy_config, split, h_start):
+    from stock_forecasting.baseline_input import NeuralBatchDataset, neural_loader
+    from stock_forecasting.data.dataset import FinancialBatchCollator, LazyFinancialWindowDataset
+
+    source = LazyFinancialWindowDataset(
+        small_lazy_config.data.bar_store_path,
+        split=split,
+        window_size=32,
+        h_start=h_start,
+        series_mode="relative",
+        symbol_cache_size=4,
+    )
+    indices = [0, 7, len(source) // 2, -1, 7, 2]
+    expected = FinancialBatchCollator()(source.__getitems__(indices))
+    actual = NeuralBatchDataset(source, metadata=True).__getitems__(indices)
+    torch.testing.assert_close(
+        actual["sequences"],
+        torch.stack((expected["asset_series"], expected["benchmark_series"]), dim=1),
+        rtol=0,
+        atol=0,
+    )
+    torch.testing.assert_close(actual["target_alpha"], expected["target_alpha"], rtol=0, atol=0)
+    for key in ("symbols", "cutoff_at", "markets", "asset_types", "providers"):
+        assert actual[key] == expected[key]
+    assert actual["sequences"].is_contiguous()
+    assert set(NeuralBatchDataset(source).__getitems__(indices)) == {"sequences", "target_alpha"}
+    arrays = source.array_batch(indices, include_metadata=False, include_timestamps=False)
+    assert "metadata" not in arrays and "timestamp_features" not in arrays
+    loader = neural_loader(source, workers=2, batch_size=47, metadata=True)
+    from stock_forecasting.baseline_input import close_neural_loader
+
+    try:
+        population = [
+            (symbol, date)
+            for batch in loader
+            for symbol, date in zip(batch["symbols"], batch["cutoff_at"], strict=True)
+        ]
+        oracle = [source[i] for i in range(len(source))]
+        assert population == [(row["symbol"], row["cutoff_at"]) for row in oracle]
+        assert len(population) == len(source)
+    finally:
+        close_neural_loader(loader)
+
+
 def test_numeric_arrow_reader_reuses_bounded_shard_handles(small_lazy_config, monkeypatch):
     import pickle
 
@@ -241,7 +290,23 @@ def test_tabular_cache_resumes_durable_offset(small_lazy_config, tmp_path, monke
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires authorized cloud CUDA")
-def test_neural_baseline_full_splits_and_resume(small_lazy_config, tmp_path):
+def test_neural_baseline_full_splits_and_resume(small_lazy_config, tmp_path, monkeypatch):
+    import stock_forecasting.baseline_build as build
+
+    original_loader, original_validation = build._loader, build._neural_validation
+    loaders = []
+
+    def track_loader(*args, **kwargs):
+        loader = original_loader(*args, **kwargs)
+        loaders.append(loader)
+        return loader
+
+    def check_exclusive_validation(model, loader, horizons, scales):
+        assert all(other._iterator is None for other in loaders if other is not loader)
+        return original_validation(model, loader, horizons, scales)
+
+    monkeypatch.setattr(build, "_loader", track_loader)
+    monkeypatch.setattr(build, "_neural_validation", check_exclusive_validation)
     parameters = json.loads((ROOT / "configs/baseline.json").read_text())
     parameters.update(epochs=1, batch_size=16, evaluations_per_epoch=2)
     parameters["resources"]["auto_batch"] = False
@@ -253,6 +318,7 @@ def test_neural_baseline_full_splits_and_resume(small_lazy_config, tmp_path):
     second = _train_neural(small_lazy_config, directory, "dlinear", 42, parameters, scales, plan)
     assert first == second
     assert (directory / "model.pt").is_file() and (directory / "resume.pt").is_file()
+    assert all(loader._iterator is None for loader in loaders)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires authorized cloud CUDA")
@@ -288,6 +354,7 @@ def test_neural_mid_epoch_resume_rebatch(
     assert before["sample_cursor"] > 0 and before["epoch"] == 0
     monkeypatch.setattr(build, "_save_torch", original)
     parameters["batch_size"] = 47
+    plan["loader_workers"] = 2
     parameters["resources"]["checkpoint_seconds"] = 300
     result = build._train_neural(
         small_lazy_config, directory, "dlinear", 42, parameters, scales, plan
@@ -297,6 +364,7 @@ def test_neural_mid_epoch_resume_rebatch(
     assert after["epoch"] == 1 and after["sample_cursor"] == 0
     assert after["scheduler"]["last_epoch"] == count
     assert after["runtime"]["training_batch_size"] == 47
+    assert after["runtime"]["loader_workers"] == 2
     assert result["samples"] == len(lazy_dataset(small_lazy_config, "test"))
 
 

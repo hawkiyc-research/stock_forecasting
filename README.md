@@ -1350,9 +1350,13 @@ baseline 以 `configs/baseline.json` 管理參數及資源：預設同張 GPU �
 與進度 log 判斷硬體需求，不要以降低資料量繞過檢查。`.pt`／`.pkl` 是本專案受信任的
 hash-scoped 輸出，勿載入第三方不可信權重。
 
-每個 deep baseline 啟動時會在分配給該 experiment 的 GPU 記憶體分額內，分別實測
-training／evaluation batch size，再以實際 DataLoader 等待時間及 host／shared-memory
-預算選擇 prefetch。CPU workers／GBDT threads 同時受 affinity 與 cgroup v1／v2 CPU
+每個 deep baseline 先以 GPU probe 排除超出記憶體預算的 batch，再分別以真實 train／
+validation windows 聯合實測 batch size、worker 數與 prefetch；選擇端到端吞吐在最佳值
+95% 內、資源占用較低的組合。探測使用模型副本，不更新正式權重、optimizer 或 RNG。
+神經模型直接接收固定形狀的連續 tensor batch，在 pin memory 前完成合併；不建立逐筆
+Kronos metadata／padding，亦不預先展開全資料集。training／validation／testing 交替
+使用單一 worker pool，切換時釋放上一個 pool，再從已提交的 sample cursor 恢復。
+CPU workers／GBDT threads 同時受 affinity 與 cgroup v1／v2 CPU
 quota 限制，不會把主機核心數直接當成容器可用核心數。調校結果與測量保存在各 job 的
 `runtime-plan.json`；可在 `configs/baseline.json` 的 `resources` 調整 batch／prefetch
 上限、probe 次數及保存間隔。`auto_batch=false` 才使用固定 `batch_size`。
@@ -1360,6 +1364,18 @@ quota 限制，不會把主機核心數直接當成容器可用核心數。調�
 Parquet metadata cache（預設最多 128 個檔案、512 MiB 的保守 metadata 記憶體估計），
 由 `resources.parquet_cache_files`／`parquet_cache_bytes` 調整。快取不包含展開後的
 windows，spawn 不會傳遞檔案 handles；worker 記憶體預算預設為 1 GiB。
+
+排程預留完整 GBDT 與 GPU jobs 的共同 host RAM（預設保留 20% 安全空間），CPU inputs
+完成後優先啟動 GBDT。若連一個 GPU job 都無法安全重疊，會拒絕執行並提示較大 RAM，
+不會默默延後成 CPU-only 尾段。GPU jobs 全部完成後，GBDT 在下一次 native fit 使用
+釋出的 CPU threads；`live-resources.json` 記錄配置，`progress.json` 記錄資料等待比例。
+GBDT 的總工作量仍可能比神經模型長；此排程不保證完全消除 CPU-only 尾段。
+
+經審核且數值契約不變的執行效率修正，可透過
+`configs/baseline_execution_compatibility.json` 的**完整 source hash 白名單**保留既有
+baseline ID、inputs、完成的 jobs 與 resume checkpoint。`execution-contract.json` 記錄
+實際程式版本；任何不在白名單內的 baseline 程式修改仍使 ID 失效，資料期間、模型參數、
+標籤或校準契約改變也不會被忽略。不同 Python 版本使用同一個穩定 AST hash 格式。
 
 續訓使用相同的上述 `baseline`／tmux 命令，不需指定 checkpoint 路徑。神經模型在第一個
 batch 後、預設每 300 秒及完整 validation 前後保存 `resume.pt`，包含權重、optimizer、
@@ -3550,9 +3566,15 @@ execution. Full GBDT RAM and full-validation cost can be much higher than the fo
 20,000-row workflow; inspect resource plans/logs instead of bypassing checks through
 subsampling. Load `.pt`/`.pkl` only from trusted project-generated hash-scoped output.
 
-Each deep baseline probes training and evaluation batch sizes separately within its
-concurrent GPU-memory allocation. Actual DataLoader wait measurements and host/shared
-memory budgets determine prefetch. CPU workers and GBDT threads respect both affinity
+Each deep baseline first uses GPU probes for memory admission, then jointly measures
+batch size, workers and prefetch on real train/validation windows. It selects a
+lower-resource configuration within 95% of the best end-to-end throughput. Probes use
+isolated model copies without changing production weights, optimizer or RNG state.
+Neural jobs receive fixed-shape contiguous tensor batches assembled before pinning,
+without per-window Kronos metadata/padding or materializing the complete window dataset.
+Training, validation and testing alternate one worker pool; phase changes release the
+previous pool and resume from the committed sample cursor.
+CPU workers and GBDT threads respect both affinity
 and cgroup v1/v2 bandwidth quotas rather than assuming all host cores are available.
 Per-job `runtime-plan.json` records the measurements and selected settings. Configure
 batch/prefetch ceilings, probe repetitions and checkpoint intervals under `resources`
@@ -3562,6 +3584,21 @@ Each baseline worker has a bounded Parquet metadata cache: at most 128 files and
 512 MiB conservative metadata estimate by default, controlled by
 `resources.parquet_cache_files`/`parquet_cache_bytes`. It never caches expanded windows
 or serializes file handles into spawned workers. The default worker reserve is 1 GiB.
+
+Admission reserves host RAM jointly for full GBDT and GPU jobs, with 20% headroom by
+default. GBDT starts before rule jobs once CPU inputs are complete. If even one GPU
+job cannot safely overlap, admission requests more RAM instead of silently deferring
+GBDT to a CPU-only tail. Once GPU jobs finish, the next native GBDT fit receives the
+released CPU threads. `live-resources.json` records allocation and `progress.json`
+records input-wait fractions. GBDT may still outlast the neural experiments; this
+scheduler does not guarantee elimination of the CPU-only tail.
+
+Reviewed execution-only changes with unchanged numerical contracts can preserve the
+baseline ID, inputs, completed jobs and resume checkpoints through the **exact source
+hash allowlist** in `configs/baseline_execution_compatibility.json`.
+`execution-contract.json` records the actual implementation. Unknown baseline source
+changes still invalidate identity, as do changed data periods, model parameters,
+labels or calibration contracts. Python versions share a stable AST serialization.
 
 Resume with the same `baseline` and tmux commands above; no checkpoint path is needed.
 Neural jobs save `resume.pt` after the first batch, every 300 seconds by default, and

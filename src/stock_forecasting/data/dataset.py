@@ -825,7 +825,13 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             raise ValueError("OHLCV context must contain only finite values")
         return values
 
-    def array_batch(self, indices: Sequence[int]) -> dict[str, Any]:
+    def array_batch(
+        self,
+        indices: Sequence[int],
+        *,
+        include_metadata: bool = True,
+        include_timestamps: bool = True,
+    ) -> dict[str, Any]:
         """Build one bounded raw float64 batch for tensors and numerical baselines."""
         ordinals = np.asarray(indices, dtype=np.int64)
         if ordinals.ndim != 1 or len(ordinals) == 0:
@@ -841,10 +847,12 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             "asset": np.empty((count, self.window_size, 5), dtype=np.float64),
             "benchmark": np.empty((count, self.window_size, 5), dtype=np.float64),
             "targets": np.empty((count, len(self.horizons)), dtype=np.float64),
-            "timestamp_features": np.empty((count, self.window_size, 5), dtype=np.int64),
-            "metadata": [None] * count,
             "horizons": self.horizons,
         }
+        if include_timestamps:
+            result["timestamp_features"] = np.empty((count, self.window_size, 5), dtype=np.int64)
+        if include_metadata:
+            result["metadata"] = [None] * count
         for symbol in np.unique(symbols):
             selected = np.flatnonzero(symbols == symbol)
             cutoff = cutoffs[selected]
@@ -865,7 +873,8 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
                 raise RuntimeError("Prepared cutoff range lost exact benchmark calendar coverage")
             result["asset"][selected] = self._numeric_context(asset, context)
             result["benchmark"][selected] = self._numeric_context(benchmark, benchmark_context)
-            result["timestamp_features"][selected] = asset["time_features"][context]
+            if include_timestamps:
+                result["timestamp_features"][selected] = asset["time_features"][context]
             gross = []
             for bars, positions in ((asset, future), (benchmark, benchmark_future)):
                 entry = (
@@ -880,13 +889,14 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
                     )
                 gross.append(values[:, np.asarray(self.horizons) - 1])
             result["targets"][selected] = np.log(gross[0]) - np.log(gross[1])
-            for position, cut in zip(selected, cutoff, strict=True):
-                result["metadata"][position] = (
-                    symbol,
-                    benchmark_symbol,
-                    asset["timestamps"][cut],
-                    row,
-                )
+            if include_metadata:
+                for position, cut in zip(selected, cutoff, strict=True):
+                    result["metadata"][position] = (
+                        symbol,
+                        benchmark_symbol,
+                        asset["timestamps"][cut],
+                        row,
+                    )
         return result
 
     def record_at(self, index: int) -> dict[str, Any]:

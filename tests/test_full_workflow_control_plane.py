@@ -27,6 +27,7 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         for relative in (
             *CONTRACT["BASELINE_SOURCES"],
             "configs/baseline.json",
+            "configs/baseline_execution_compatibility.json",
             "src/stock_forecasting/training.py",
         ):
             path = self.root / relative
@@ -87,6 +88,28 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         path.write_text(json.dumps(parameters))
         self.assertNotEqual(before, self.identity())
 
+    def test_execution_bridge_is_exact_and_fails_closed_for_unknown_changes(self):
+        self.assertIn(
+            'append_manifest_file "configs/baseline_execution_compatibility.json"',
+            (ROOT / "scripts/sync_project_to_runpod_volume.sh").read_text(),
+        )
+        execution = CONTRACT["execution_identity"](self.root)
+        self.assertEqual(execution["compatibility"], "v0.2.1-tensor-pipeline")
+        before = self.identity()
+        registry = self.root / "configs/baseline_execution_compatibility.json"
+        payload = json.loads(registry.read_text())
+        self.assertEqual(
+            before["contract"]["implementation"], payload["entries"][0]["canonical_implementation"]
+        )
+        path = self.root / "src/stock_forecasting/baseline_input.py"
+        path.write_text(path.read_text() + "\n# Unreviewed change\n")
+        self.assertIsNone(CONTRACT["execution_identity"](self.root)["compatibility"])
+        self.assertNotEqual(before, self.identity())
+        payload["entries"][0]["canonical_implementation"] = {"../unsafe": "0" * 64}
+        registry.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            self.identity()
+
     def test_baseline_identity_matches_legacy_ast_serialization(self):
         expected = self.identity()
         original = ast.dump
@@ -133,10 +156,14 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
                 }
                 exec(code, namespace)
                 plan = namespace["resource_plan"](parameters, 1000, list(range(1, 15)))
-                gpu_cores = plan["gpu_slots"] * (2 * plan["loader_workers"] + 1)
+                gpu_cores = plan["gpu_slots"] * (plan["loader_workers"] + 1)
                 self.assertLessEqual(gpu_cores + 2 + plan["cpu_slots"] * plan["cpu_threads"], cpus)
                 self.assertLessEqual(gpu_cores + 2 + plan["input_workers"] + 1, cpus)
                 self.assertGreaterEqual(plan["input_workers"], 1)
+                self.assertLessEqual(
+                    plan["gbdt_bytes"] + plan["gpu_slots"] * plan["gpu_job_host_bytes"],
+                    plan["host_budget"],
+                )
 
     def test_local_parameter_gate_reads_both_stage_configs_without_ml_imports(self):
         parameters = json.loads((ROOT / "configs/baseline.json").read_text())

@@ -23,7 +23,7 @@ mkdir -p "${OUTPUT}"
 export TMPDIR="$(mktemp -d /tmp/fin-ts-qa.XXXXXXXX)"
 # No completion manifest is written under baselines/. This is not a baseline build.
 set +e
-timeout --kill-after=15s 600 .venv/bin/python scripts/verify_baseline_throughput.py \
+timeout --kill-after=15s 1100 .venv/bin/python scripts/verify_baseline_throughput.py \
     --output "${OUTPUT}/baseline-throughput" >"${OUTPUT}/baseline-throughput.log" 2>&1
 throughput_exit=$?
 timeout --kill-after=15s 1200 .venv/bin/python -m pytest tests \

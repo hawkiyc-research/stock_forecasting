@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ast
+import json
 import math
 import runpy
 import tempfile
 import unittest
 from itertools import islice
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCES = runpy.run_path(str(ROOT / "src/stock_forecasting/runtime_resources.py"))
@@ -82,7 +84,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(sorted(i for batch in first for i in batch), list(range(1003)))
         self.assertEqual(len(resumed), len(list(resumed)))
 
-    def test_prefetch_budget_accounts_for_both_live_pools(self):
+    def test_prefetch_budget_accounts_for_one_active_pool_and_copies(self):
         namespace = definitions(
             "src/stock_forecasting/baseline_runtime.py", {"bounded_prefetch"}, {}
         )
@@ -96,7 +98,7 @@ class RuntimeTests(unittest.TestCase):
                 desired=8,
                 maximum=4,
             ),
-            2,
+            4,
         )
         with self.assertRaises(MemoryError):
             plan(
@@ -107,6 +109,36 @@ class RuntimeTests(unittest.TestCase):
                 desired=2,
                 maximum=4,
             )
+
+    def test_full_size_mixed_admission_and_live_cpu_reallocation(self):
+        memory = 52.4 * 1024**3
+        namespace = {
+            "detect_visible_cpu_count": lambda: 13,
+            "detect_available_memory": lambda: SimpleNamespace(available_bytes=int(memory)),
+            "torch": SimpleNamespace(
+                cuda=SimpleNamespace(mem_get_info=lambda: (24 * 1024**3, 24 * 1024**3))
+            ),
+            "shutil": SimpleNamespace(disk_usage=lambda path: SimpleNamespace(free=16 * 1024**3)),
+        }
+        definitions(
+            "src/stock_forecasting/baseline_build.py",
+            {"resource_plan", "live_cpu_allocation"},
+            namespace,
+        )
+        parameters = json.loads((ROOT / "configs/baseline.json").read_text())
+        plan = namespace["resource_plan"](parameters, 30_224_227, list(range(1, 15)))
+        self.assertEqual((plan["gpu_slots"], plan["loader_workers"]), (2, 2))
+        self.assertEqual(plan["cpu_threads"], 5)
+        allocation = namespace["live_cpu_allocation"]
+        pending = [("gbdt", 42), ("gru", 42), ("dlinear", 42), ("patchtst", 42)]
+        self.assertEqual(allocation(plan, [], pending)["gbdt_threads"], 5)
+        running = [(None, 0, False, 1, "gbdt")]
+        self.assertEqual(allocation(plan, running, [("patchtst", 42)])["gbdt_threads"], 8)
+        tail = allocation(plan, running, [])
+        self.assertEqual((tail["phase"], tail["gbdt_threads"]), ("cpu_tail", 11))
+        memory = 43 * 1024**3
+        with self.assertRaisesRegex(MemoryError, "overlap"):
+            namespace["resource_plan"](parameters, 30_224_227, list(range(1, 15)))
 
 
 if __name__ == "__main__":

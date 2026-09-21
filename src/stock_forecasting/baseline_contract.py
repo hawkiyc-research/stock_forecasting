@@ -13,6 +13,7 @@ BASELINE_SOURCES = (
     "src/stock_forecasting/baseline_build.py",
     "src/stock_forecasting/baseline_storage.py",
     "src/stock_forecasting/baseline_runtime.py",
+    "src/stock_forecasting/baseline_input.py",
     "src/stock_forecasting/baselines.py",
     "src/stock_forecasting/evaluation_store.py",
     "src/stock_forecasting/metrics.py",
@@ -66,20 +67,58 @@ def digest(payload) -> str:
     ).hexdigest()
 
 
+def execution_identity(project: Path) -> dict:
+    """Accept only an explicitly reviewed, exact execution-only compatibility bridge."""
+    implementation = {
+        name: hashlib.sha256((project / name).read_bytes()).hexdigest() for name in BASELINE_SOURCES
+    }
+    shared = shared_training_identity(project)
+    result = {
+        "implementation": implementation,
+        "canonical_implementation": implementation,
+        "shared_calibration_sampling": shared,
+        "compatibility": None,
+    }
+    registry = project / "configs/baseline_execution_compatibility.json"
+    if not registry.is_file():
+        return result
+    payload = json.loads(registry.read_text())
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("entries"), list):
+        raise ValueError("Invalid baseline execution compatibility registry")
+    if len(payload["entries"]) > 32:
+        raise ValueError("Baseline execution compatibility registry is too large")
+    for entry in payload["entries"]:
+        canonical = entry.get("canonical_implementation", {})
+        if not canonical or any(
+            name not in BASELINE_SOURCES
+            or not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+            for name, value in canonical.items()
+        ):
+            raise ValueError("Invalid canonical baseline source hashes")
+        if (
+            entry.get("execution_implementation") == implementation
+            and entry.get("shared_calibration_sampling") == shared
+        ):
+            result["canonical_implementation"] = canonical
+            result["compatibility"] = entry["name"]
+            break
+    return result
+
+
 def baseline_contract(project: Path, selection: dict) -> dict:
     parameters = json.loads((project / "configs/baseline.json").read_text())
     # Scheduling/resource limits cannot change numerical identity or force a rebuild.
     parameters.pop("resources", None)
     request = selection["dataset_request"]
+    execution = execution_identity(project)
     core = {
         "schema_version": 1,
         "data": request,
         "parameters": parameters,
-        "implementation": {
-            name: hashlib.sha256((project / name).read_bytes()).hexdigest()
-            for name in BASELINE_SOURCES
-        },
-        "shared_calibration_sampling": shared_training_identity(project),
+        "implementation": execution["canonical_implementation"],
+        "shared_calibration_sampling": execution["shared_calibration_sampling"],
         "evaluation": "full-canonical-stock-date-v2",
     }
     return {"baseline_id": "baseline-" + digest(core), "contract": core}
