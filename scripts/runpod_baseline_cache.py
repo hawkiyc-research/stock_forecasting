@@ -21,7 +21,7 @@ def main(argv=None):
     project = args.project_root.resolve()
     selection_tools = runpy.run_path(str(project / "scripts/runpod_selection.py"))
     _, selection = selection_tools["_resolve_selection_path"](
-        project, os.environ.get("RUNPOD_SELECTION_FILE")
+        project, os.environ.get("RUNPOD_SELECTION_FILE"), validate_local_config=False
     )
     contract_tools = runpy.run_path(str(project / "src/stock_forecasting/baseline_contract.py"))
     identity = contract_tools["baseline_contract"](project, selection)

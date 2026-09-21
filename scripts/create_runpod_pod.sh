@@ -17,7 +17,11 @@ source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
 runpod_load_create_env "${LOCAL_PROJECT_ROOT}"
 # shellcheck source=lib/runpod_selection.sh
 source "${SCRIPT_DIR}/lib/runpod_selection.sh"
-runpod_load_active_selection "${LOCAL_PROJECT_ROOT}"
+if [[ "${RUNPOD_GPU_WORKFLOW:-train}" == "baseline" ]]; then
+    runpod_load_active_selection "${LOCAL_PROJECT_ROOT}" baseline
+else
+    runpod_load_active_selection "${LOCAL_PROJECT_ROOT}"
+fi
 
 # Explicit CLI choices take precedence over the immutable selection's legacy runtime defaults.
 if [[ -n "${RUNPOD_CLI_MAX_RUNTIME_SECONDS:-}" ]]; then
@@ -252,7 +256,7 @@ if [[ ! "${RUNPOD_CONFIG}" =~ ^[A-Za-z0-9._/-]+$ \
     exit 2
 fi
 LOCAL_CONFIG_PATH="${LOCAL_PROJECT_ROOT}/${RUNPOD_CONFIG}"
-if [[ "${RUNPOD_TEST_MODE:-0}" != "1" && ! -r "${LOCAL_CONFIG_PATH}" ]]; then
+if [[ "${RUNPOD_GPU_WORKFLOW}" != "baseline" && "${RUNPOD_TEST_MODE:-0}" != "1" && ! -r "${LOCAL_CONFIG_PATH}" ]]; then
     echo "RUNPOD_CONFIG is not readable in the uploaded local project: ${LOCAL_CONFIG_PATH}" >&2
     exit 2
 fi
@@ -318,7 +322,11 @@ if [[ "${RUNPOD_TEST_READINESS_READY:-0}" == "1" ]]; then
     fi
 else
     # This gate runs before the paid GPU Pod creation request.
-    bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" --gpu
+    if [[ "${RUNPOD_GPU_WORKFLOW}" == "baseline" ]]; then
+        bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" --baseline
+    else
+        bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" --gpu
+    fi
 fi
 
 verify_remote_checkpoint_run() {

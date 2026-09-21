@@ -168,19 +168,22 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
                     plan["host_budget"],
                 )
 
-    def test_local_parameter_gate_reads_both_stage_configs_without_ml_imports(self):
+    def test_local_parameter_gate_does_not_read_main_model_configs(self):
         parameters = json.loads((ROOT / "configs/baseline.json").read_text())
         for stage in ("stage1", "stage2"):
             selection = {
+                "dataset_request": {"preparation": {"h_start": 1, "window_size": 128}},
                 "stage": {
-                    "config_path": f"configs/{stage}_kronos_base_lora.yaml",
+                    "config_path": f"configs/missing-{stage}.yaml",
                     "feature_mode": "combined",
                 }
             }
             CONTRACT["validate_local_configuration"](ROOT, selection, parameters)
             selection["stage"]["feature_mode"] = "baseline"
-            with self.assertRaisesRegex(ValueError, "feature mode"):
-                CONTRACT["validate_local_configuration"](ROOT, selection, parameters)
+            CONTRACT["validate_local_configuration"](ROOT, selection, parameters)
+        parameters["epochs"] = 0
+        with self.assertRaisesRegex(ValueError, "Invalid baseline parameter"):
+            CONTRACT["validate_local_configuration"](ROOT, selection, parameters)
 
     def test_scheduler_trains_at_low_lr_before_stop(self):
         class Optimizer:

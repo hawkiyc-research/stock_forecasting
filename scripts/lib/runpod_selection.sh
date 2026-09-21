@@ -7,6 +7,12 @@ runpod_load_active_selection() {
     local helper="${project_root}/scripts/runpod_selection.py"
     local key=""
     local value=""
+    local selection_options=()
+    case "${2:-training}" in
+        training) ;;
+        baseline) selection_options+=(--data-only) ;;
+        *) echo "Unsupported selection consumer: $2" >&2; return 2 ;;
+    esac
 
     if [[ ! -f "${helper}" || -L "${helper}" ]]; then
         echo "RunPod selection helper is unavailable: ${helper}" >&2
@@ -44,7 +50,7 @@ runpod_load_active_selection() {
                 return 2
                 ;;
         esac
-    done < <(python3 "${helper}" export --project-root "${project_root}" --null)
+    done < <(python3 "${helper}" export --project-root "${project_root}" --null "${selection_options[@]}")
 
     if [[ -z "${RUNPOD_SELECTION_ID:-}" \
         || -z "${RUNPOD_SELECTION_SHA256:-}" \

@@ -21,7 +21,7 @@ Usage:
   bash scripts/runpod_workflow.sh selection show
   bash scripts/runpod_workflow.sh sync [--dry-run|--apply]
   bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
-  bash scripts/runpod_workflow.sh readiness [--code-only|--gpu]
+  bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline]
   bash scripts/runpod_workflow.sh train [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh baseline [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh resume [--maxRuntime DURATION] [--gpuId GPU_ID] [RUN_ID]

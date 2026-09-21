@@ -5,9 +5,9 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 BASELINE_SOURCES = (
     "src/stock_forecasting/baseline_build.py",
@@ -196,7 +196,7 @@ def validate_optimization_alignment(config, parameters):
         "plateau_min_low_lr_evaluations",
     ):
         if getattr(config.training, name) != parameters[name]:
-            raise ValueError(f"Main model and baseline optimization policy differ: {name}")
+            raise ValueError(f"Baseline runtime differs from its own optimization policy: {name}")
     if config.training.learning_rate_schedule != "validation_plateau":
         raise ValueError("The full baseline workflow requires the validation-plateau schedule")
     if (
@@ -209,50 +209,95 @@ def validate_optimization_alignment(config, parameters):
         or config.data.label_scale_calibration_samples
         != parameters["label_scale_calibration_samples"]
     ):
-        raise ValueError("Main model and baseline train-only loss calibration must align")
+        raise ValueError("Baseline runtime differs from its own train-only loss calibration")
     if (
         set(config.validation.models) - {"kronos_full"} != set(parameters["models"])
         or config.validation.seeds != parameters["seeds"]
     ):
-        raise ValueError("Main model and baseline model/seed manifests must align")
+        raise ValueError("Baseline runtime differs from its own model/seed manifest")
 
 
 def validate_local_configuration(project: Path, selection: dict, parameters: dict) -> None:
-    """Read only the repository's small YAML scalar/list contract, without ML imports."""
-    sections, section, active_list = {}, None, None
-    for line in (project / selection["stage"]["config_path"]).read_text().splitlines():
-        text = line.strip()
-        if not text or text.startswith("#"):
-            continue
-        indentation = len(line) - len(line.lstrip())
-        if indentation == 0:
-            section = text.rstrip(":")
-            sections[section] = {}
-        elif indentation == 2 and section is not None and ":" in text:
-            key, value = text.split(":", 1)
-            value = value.strip()
-            active_list = key if not value else None
-            try:
-                parsed = json.loads(value) if value else []
-            except ValueError:
-                parsed = value.strip("\"'")
-            sections[section][key] = parsed
-        elif indentation == 4 and text.startswith("- ") and active_list is not None:
-            sections[section][active_list].append(text[2:].strip("\"'"))
-    config = SimpleNamespace(
-        **{name: SimpleNamespace(**values) for name, values in sections.items()}
-    )
-    validate_optimization_alignment(config, parameters)
-    if sections["model"].get("explicit_output_scale") and selection["stage"][
-        "feature_mode"
-    ] not in ("scales", "combined"):
-        raise ValueError("Production output-scale control requires feature mode scales or combined")
+    """Validate baseline-owned inputs only; never read a main-model YAML or cache."""
+    for name in (
+        "epochs", "batch_size", "evaluations_per_epoch", "early_stopping_patience_evaluations",
+        "early_stopping_start_epoch", "plateau_patience_evaluations",
+        "plateau_min_low_lr_evaluations", "label_scale_calibration_samples",
+    ):
+        if type(parameters.get(name)) is not int or parameters[name] < 1:
+            raise ValueError(f"Invalid baseline parameter: {name}")
+    for name in ("learning_rate", "plateau_factor", "plateau_min_ratio"):
+        value = parameters.get(name)
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Invalid baseline parameter: {name}")
+    if parameters["plateau_factor"] >= 1 or parameters["plateau_min_ratio"] >= 1:
+        raise ValueError("Baseline plateau ratios must be below one")
+    if parameters["early_stopping_start_epoch"] > parameters["epochs"]:
+        raise ValueError("Baseline early stopping starts after its final epoch")
+    for name in ("seeds", "models"):
+        values = parameters.get(name)
+        if not isinstance(values, list) or not values or len(values) != len(set(values)):
+            raise ValueError(f"Invalid baseline parameter: {name}")
+    preparation = selection["dataset_request"]["preparation"]
+    if preparation["h_start"] not in (1, 2, 3) or preparation["window_size"] < 32:
+        raise ValueError("Invalid baseline data horizon or context length")
+
+
+def baseline_runtime_payload(selection: dict, parameters: dict, volume: Path) -> dict:
+    """Adapt data and baseline parameters to the shared worker serialization format.
+
+    The unused backbone section only satisfies the common configuration envelope;
+    no backbone is constructed by baseline_build. Every learned baseline still
+    uses its real GRU/DLinear/PatchTST/GBDT implementation and saved weights.
+    """
+    request = selection["dataset_request"]
+    preparation = request["preparation"]
+    root = volume / "datasets" / selection["dataset_request_sha256"]
+    training = {
+        name: parameters[name]
+        for name in (
+            "epochs", "learning_rate", "weight_decay", "warmup_ratio", "evaluations_per_epoch",
+            "early_stopping_patience_evaluations", "early_stopping_min_delta",
+            "early_stopping_start_epoch", "plateau_patience_evaluations", "plateau_factor",
+            "plateau_min_ratio", "plateau_min_low_lr_evaluations",
+        )
+    }
+    return {
+        "experiment_name": "independent-full-data-baselines",
+        "data": {
+            "raw_path": str(root / "raw/market.parquet"),
+            "bar_store_path": str(root / "prepared/bar-store"),
+            "manifest_path": str(root / "dataset-manifest.json"),
+            "dataset_profile": request["profile"],
+            "input_length": preparation["window_size"],
+            "h_start": preparation["h_start"],
+            "max_abs_log_return": preparation["max_abs_log_return"],
+            "effective_embargo_trading_days": preparation["effective_embargo_bars"],
+            "train_fraction": 1.0,
+            "max_samples": None,
+            **preparation["fixed_split"],
+            "calibration_seed": parameters["calibration_seed"],
+            "label_scale_calibration_samples": parameters["label_scale_calibration_samples"],
+        },
+        "model": {"time_series_backend": "mock", "lora": {"enabled": False}},
+        "training": {
+            **training, "stage": "stage2", "evaluation_max_samples": None,
+            "learning_rate_schedule": "validation_plateau",
+            "lora_learning_rate": min(1e-5, parameters["learning_rate"]),
+        },
+        "validation": {
+            "models": parameters["models"], "seeds": parameters["seeds"],
+            "baseline_max_samples_per_split": None,
+        },
+        "wandb": {"enabled": False},
+        "runtime": {"auto_terminate_pod": False},
+    }
 
 
 def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
     _project, identity = runtime_contract()
-    parameters = identity["contract"]["parameters"]
-    validate_optimization_alignment(config, parameters)
+    # Main-model optimization and architecture do not determine baseline validity.
+    # Data identity, complete populations and persisted artifacts are checked below.
     root = (
         Path(
             os.environ.get(

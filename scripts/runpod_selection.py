@@ -823,6 +823,8 @@ def _verify_environment(
     selection_path: Path,
     selection: Dict[str, Any],
     environment: Dict[str, str],
+    *,
+    data_only: bool = False,
 ) -> None:
     exports = _selection_exports(selection_path, selection)
     network_volume_root = environment.get("NETWORK_VOLUME_ROOT") or environment.get(
@@ -853,6 +855,11 @@ def _verify_environment(
     }
     expected["DATA_ROOT"] = f"{network_volume_root}/datasets/{selection['dataset_request_sha256']}"
     expected["RUNPOD_REMOTE_SELECTION_PATH"] = str(selection_path)
+    if data_only:
+        for key in (
+            "RUNPOD_STAGE", "RUNPOD_CONFIG", "RUNPOD_STAGE_CONFIG_SHA256", "FIN_TS_FEATURE_MODE"
+        ):
+            expected.pop(key)
     for key, expected_value in expected.items():
         actual_value = environment.get(key)
         if key in OPTIONAL_EMPTY_ENVIRONMENT_KEYS and expected_value == "" and actual_value is None:
@@ -921,7 +928,9 @@ def command_show(arguments: argparse.Namespace) -> int:
 
 def command_export(arguments: argparse.Namespace) -> int:
     project_root = _validate_project_root(arguments.project_root)
-    selection_path, payload = _resolve_selection_path(project_root, arguments.selection)
+    selection_path, payload = _resolve_selection_path(
+        project_root, arguments.selection, validate_local_config=not arguments.data_only
+    )
     exports = _selection_exports(selection_path, payload)
     if arguments.null:
         output = sys.stdout.buffer
@@ -948,9 +957,13 @@ def command_verify_marker(arguments: argparse.Namespace) -> int:
 
 def command_verify_selection_copy(arguments: argparse.Namespace) -> int:
     project_root = _validate_project_root(arguments.project_root)
-    _, selected = _resolve_selection_path(project_root, arguments.selection)
+    _, selected = _resolve_selection_path(
+        project_root, arguments.selection, validate_local_config=not arguments.data_only
+    )
     candidate = _load_marker(arguments.candidate)
-    candidate = _validate_selection(candidate, project_root=project_root)
+    candidate = _validate_selection(
+        candidate, project_root=None if arguments.data_only else project_root
+    )
     _assert_equal(candidate["selection_id"], selected["selection_id"], "selection_id")
     _assert_equal(
         candidate["selection_sha256"],
@@ -987,9 +1000,9 @@ def command_verify_environment(arguments: argparse.Namespace) -> int:
     selection_path, selection = _resolve_selection_path(
         project_root,
         arguments.selection,
-        validate_local_config=True,
+        validate_local_config=not arguments.data_only,
     )
-    _verify_environment(selection_path, selection, dict(os.environ))
+    _verify_environment(selection_path, selection, dict(os.environ), data_only=arguments.data_only)
     print(f"Pod selection environment verified: {selection['selection_id']}")
     return 0
 
@@ -1067,6 +1080,10 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--project-root", required=True)
     export.add_argument("--selection")
     export.add_argument("--null", action="store_true")
+    export.add_argument(
+        "--data-only", action="store_true",
+        help="Baseline data selection; no main-model config dependency.",
+    )
     export.set_defaults(handler=command_export)
 
     verify_marker = subparsers.add_parser("verify-marker")
@@ -1079,6 +1096,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_selection_copy.add_argument("--project-root", required=True)
     verify_selection_copy.add_argument("--selection")
     verify_selection_copy.add_argument("--candidate", required=True)
+    verify_selection_copy.add_argument("--data-only", action="store_true")
     verify_selection_copy.set_defaults(handler=command_verify_selection_copy)
 
     bind_marker = subparsers.add_parser("bind-marker")
@@ -1091,6 +1109,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_environment = subparsers.add_parser("verify-environment")
     verify_environment.add_argument("--project-root", required=True)
     verify_environment.add_argument("--selection", required=True)
+    verify_environment.add_argument("--data-only", action="store_true")
     verify_environment.set_defaults(handler=command_verify_environment)
     return parser
 

@@ -1308,10 +1308,16 @@ bash scripts/runpod_workflow.sh configure --reuse-current
 bash scripts/runpod_workflow.sh selection show
 bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
-bash scripts/runpod_workflow.sh readiness --gpu
+bash scripts/runpod_workflow.sh readiness --baseline
 bash scripts/runpodctl_project.sh gpu list
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
+
+`readiness --baseline` 只驗證所選 dataset 的既有資料、完整切分、bar-store 發布狀態與
+上傳程式；不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定。A／B 各自讀取
+自己的 dataset manifest，不使用共用的「最近一次 CPU prepare」紀錄判定另一組是否就緒。
+本機驗證小型 metadata 的 checksum 與全部 shard/index 的物件大小；Pod 掛載後再串流驗證
+實際資料 checksum。`readiness --gpu` 保留給主模型，不是 baseline 的前置要求。
 
 `baseline` 自動讀 `.env` 的 network volume 與 active selection。在本機檢查完成 manifest
 和所有輸出物件大小；完全匹配就顯示 cache hit 並結束，**不建立 Pod**。若建立 Pod，使用
@@ -1346,6 +1352,28 @@ bash scripts/runpod_workflow.sh train --maxRuntime 24h --gpuId "NVIDIA GeForce R
 主模型 Pod SSH 後執行 `bash scripts/runpod_tmux_launch.sh stage1-train`；名稱保留相容性，
 實際使用 active stage。`train` 在本機找不到匹配完整 baseline 就拒絕建立 Pod，不會自動
 偷偷訓練 baseline。不同 train 年份的 A／B dataset 各建立一份，之後同 dataset 的主模型共用。
+baseline 的參數、early stopping 與模型清單來自 `configs/baseline.json`；主模型的
+Kronos revision、LoRA、feature mode、學習率與 checkpoint 不參與 baseline 啟動或快取判定。
+變更主模型設定不會令已完成的 baseline 失效。資料內容／切分或 baseline 自身數值契約
+改變仍須建立對應結果，不能混用不同股票—日期集合。
+
+切換至**已完成 CPU prepare 的** A 組（2021 起始）時，先在本機設定下列完整資料選擇；
+切回 B 組只將 `--start` 改為 `2016-01-01`。其餘選項須維持原先 prepare 的設定：
+
+```bash
+bash scripts/runpod_workflow.sh configure \
+  --stage stage2 --data-profile us_tw_eodhd --dataset-revision v1 \
+  --start 2021-01-01 --end 2026-06-01 \
+  --h-start 1 --feature-mode combined --universe all
+bash scripts/runpod_workflow.sh sync --dry-run
+bash scripts/runpod_workflow.sh sync --apply
+bash scripts/runpod_workflow.sh readiness --baseline
+bash scripts/runpodctl_project.sh gpu list
+bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+此流程不執行 prepare、不重新切分或下載行情，也不需要手動調整 manifest、SHA 或路徑。
+如果資料檢查失敗，先處理明確指出的資料問題；不要直接重跑 CPU prepare。
 
 baseline 以 `configs/baseline.json` 管理參數及資源：預設同張 GPU 最多兩個 deep jobs，
 另有一個 CPU rule／GBDT job；先按 CPU、cgroup 記憶體、GPU 可用記憶體與 `/dev/shm`
@@ -3530,10 +3558,17 @@ bash scripts/runpod_workflow.sh configure --reuse-current
 bash scripts/runpod_workflow.sh selection show
 bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
-bash scripts/runpod_workflow.sh readiness --gpu
+bash scripts/runpod_workflow.sh readiness --baseline
 bash scripts/runpodctl_project.sh gpu list
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
+
+`readiness --baseline` verifies the selected dataset, full splits, bar-store publication
+and uploaded source. It does not require Kronos/HF caches or read main-model training
+YAML. A/B each resolve their own dataset manifests instead of a shared "most recent
+CPU prepare" record. The local gate verifies small metadata checksums and every
+shard/index object size; mounted admission streams the actual data checksums.
+`readiness --gpu` remains the main-model gate, not a baseline prerequisite.
 
 `baseline` reads the volume from `.env` and uses the active selection. It checks the
 complete manifest and artifact sizes **locally before allocating a paid Pod**.
@@ -3572,6 +3607,31 @@ Inside that Pod, run `bash scripts/runpod_tmux_launch.sh stage1-train`; the name
 retained for compatibility while the active stage determines the config. A missing
 baseline causes `train` to refuse Pod creation, never to train baselines implicitly.
 A/B datasets with different training histories each build their own reusable cache.
+Baseline parameters, early stopping and model lists come from `configs/baseline.json`.
+Main-model Kronos revisions, LoRA, feature mode, learning rate and checkpoints do not
+control baseline admission or cache identity. Main-model changes do not invalidate
+completed baselines. Changed data/splits or baseline numerical contracts still require
+matching results; different stock-date populations cannot be mixed.
+
+To select an A dataset (starting in 2021) whose **CPU preparation is already complete**,
+run the full selection below locally. To switch back to B, change only `--start` to
+`2016-01-01`; retain the other options used for its original preparation:
+
+```bash
+bash scripts/runpod_workflow.sh configure \
+  --stage stage2 --data-profile us_tw_eodhd --dataset-revision v1 \
+  --start 2021-01-01 --end 2026-06-01 \
+  --h-start 1 --feature-mode combined --universe all
+bash scripts/runpod_workflow.sh sync --dry-run
+bash scripts/runpod_workflow.sh sync --apply
+bash scripts/runpod_workflow.sh readiness --baseline
+bash scripts/runpodctl_project.sh gpu list
+bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+This does not prepare/split data again or download market data. No manual manifest,
+SHA or path editing is required. If data admission fails, investigate the reported
+data issue instead of automatically rerunning CPU preparation.
 
 `configs/baseline.json` controls numerical parameters and resource limits. Defaults
 allow two deep-model experiments on one GPU plus one CPU rule/GBDT job. Admission

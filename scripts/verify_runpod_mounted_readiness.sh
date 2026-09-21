@@ -19,14 +19,17 @@ RUNPOD_REMOTE_SELECTION_PATH="${RUNPOD_REMOTE_SELECTION_PATH:-}"
 RUNPOD_EXPECTED_VOLUME_ID="${RUNPOD_EXPECTED_VOLUME_ID:-}"
 RUNPOD_VOLUME_ID="${RUNPOD_VOLUME_ID:-}"
 MOUNT_ONLY=0
+BASELINE_ONLY=0
 if [[ $# -gt 1 ]]; then
-    echo "Usage: verify_runpod_mounted_readiness.sh [--mount-only]" >&2
+    echo "Usage: verify_runpod_mounted_readiness.sh [--mount-only|--baseline]" >&2
     exit 2
 fi
 if [[ "${1:-}" == "--mount-only" ]]; then
     MOUNT_ONLY=1
+elif [[ "${1:-}" == "--baseline" ]]; then
+    BASELINE_ONLY=1
 elif [[ $# -ne 0 ]]; then
-    echo "Usage: verify_runpod_mounted_readiness.sh [--mount-only]" >&2
+    echo "Usage: verify_runpod_mounted_readiness.sh [--mount-only|--baseline]" >&2
     exit 2
 fi
 
@@ -99,6 +102,18 @@ runpod_validate_absolute_path "${RUNPOD_PYTHON_BIN}" RUNPOD_PYTHON_BIN
 if [[ ! -x "${RUNPOD_PYTHON_BIN}" ]]; then
     echo "RunPod image Python is unavailable" >&2
     exit 127
+fi
+if [[ ${BASELINE_ONLY} -eq 1 ]]; then
+    "${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_readiness.py" quarantine-stale-code \
+        --marker "${CODE_MARKER}" --project-root "${PROJECT_ROOT}" \
+        --network-volume-root "${NETWORK_VOLUME_ROOT}"
+    "${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_readiness.py" check-code \
+        --marker "${CODE_MARKER}" --project-root "${PROJECT_ROOT}"
+    "${RUNPOD_PYTHON_BIN}" "${RUNPOD_SELECTION_HELPER}" verify-environment --data-only \
+        --project-root "${PROJECT_ROOT}" --selection "${RUNPOD_REMOTE_SELECTION_PATH}"
+    exec "${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_baseline_readiness.py" \
+        --project-root "${PROJECT_ROOT}" --selection "${RUNPOD_REMOTE_SELECTION_PATH}" \
+        --network-volume-root "${NETWORK_VOLUME_ROOT}"
 fi
 if [[ "${RUNPOD_CONFIG}" == /workspace || "${RUNPOD_CONFIG}" == /workspace/* ]]; then
     echo "RUNPOD_CONFIG must never use /workspace" >&2

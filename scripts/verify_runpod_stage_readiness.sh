@@ -16,20 +16,25 @@ source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
 runpod_load_create_env "${LOCAL_PROJECT_ROOT}"
 # shellcheck source=lib/runpod_selection.sh
 source "${SCRIPT_DIR}/lib/runpod_selection.sh"
-runpod_load_active_selection "${LOCAL_PROJECT_ROOT}"
 
 if [[ $# -ne 1 ]]; then
-    echo "Usage: verify_runpod_stage_readiness.sh --code-only|--gpu" >&2
+    echo "Usage: verify_runpod_stage_readiness.sh --code-only|--gpu|--baseline" >&2
     exit 2
 fi
 case "$1" in
     --code-only) MODE=code-only ;;
     --gpu) MODE=gpu ;;
+    --baseline) MODE=baseline ;;
     *)
-        echo "Usage: verify_runpod_stage_readiness.sh --code-only|--gpu" >&2
+        echo "Usage: verify_runpod_stage_readiness.sh --code-only|--gpu|--baseline" >&2
         exit 2
         ;;
 esac
+if [[ "${MODE}" == "baseline" ]]; then
+    runpod_load_active_selection "${LOCAL_PROJECT_ROOT}" baseline
+else
+    runpod_load_active_selection "${LOCAL_PROJECT_ROOT}"
+fi
 
 if [[ ! "${RUNPOD_NETWORK_VOLUME_ID:-}" =~ ^[A-Za-z0-9_-]+$ ]]; then
     echo "RUNPOD_NETWORK_VOLUME_ID is required" >&2
@@ -43,12 +48,12 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "python3 is required for readiness verification" >&2
     exit 127
 fi
-if [[ ! "${RUNPOD_CONFIG}" =~ ^[A-Za-z0-9._/-]+$ \
+if [[ "${MODE}" != "baseline" && ( ! "${RUNPOD_CONFIG}" =~ ^[A-Za-z0-9._/-]+$ \
     || "${RUNPOD_CONFIG}" == /* \
     || "/${RUNPOD_CONFIG}/" == *"/../"* \
     || "/${RUNPOD_CONFIG}/" == *"/./"* \
     || "${RUNPOD_CONFIG}" == *"//"* \
-    || ! -f "${LOCAL_PROJECT_ROOT}/${RUNPOD_CONFIG}" ]]; then
+    || ! -f "${LOCAL_PROJECT_ROOT}/${RUNPOD_CONFIG}" ) ]]; then
     echo "RUNPOD_CONFIG must be an existing safe path relative to the local project" >&2
     exit 2
 fi
@@ -63,6 +68,19 @@ printf '%s\n' "${CODE_JSON}" \
 
 if [[ "${MODE}" == "code-only" ]]; then
     printf 'CPU preparation gate passed: uploaded code is ready.\n'
+    exit 0
+fi
+
+if [[ "${MODE}" == "baseline" ]]; then
+    REMOTE_SELECTION_JSON="$(bash "${S3_WRAPPER}" s3 cp \
+        "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" - \
+        --only-show-errors)"
+    printf '%s\n' "${REMOTE_SELECTION_JSON}" \
+        | python3 "${SCRIPT_DIR}/runpod_selection.py" verify-selection-copy --data-only \
+            --project-root "${LOCAL_PROJECT_ROOT}" --selection "${RUNPOD_SELECTION_FILE}" --candidate -
+    python3 "${SCRIPT_DIR}/runpod_baseline_readiness.py" --project-root "${LOCAL_PROJECT_ROOT}" \
+        --selection "${RUNPOD_SELECTION_FILE}"
+    printf 'Baseline gate passed: selected full dataset is ready; no main-model cache is required.\n'
     exit 0
 fi
 
