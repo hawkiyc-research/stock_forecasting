@@ -2,8 +2,9 @@
 
 ## 中文
 
-目前 `master` 另包含 baseline tensor 資料管線的執行效率修正：限定吞吐與接續測試
-已通過，完整回歸尚未完成。最近完整驗收的 tag 仍為 `v0.2.1`；最新進度與限制見
+`v0.2.2` baseline tensor 資料管線已完成限定範圍的工程驗收：完整雲端回歸
+590 passed、97 subtests passed；另 1 項 Git-dependent 檢查在本機通過。
+完整 baseline 建置／快取重用、CUDA 並行與中途接續均通過；實測與限制見
 [tensor 資料管線驗證紀錄](docs/baseline_tensor_pipeline_validation.md)。
 
 `v0.2.1` 全量評估／可重用 baseline 架構已完成限定範圍的工程驗收；
@@ -2004,9 +2005,10 @@ Stage 1 只證明腳本與契約可運作，不用來宣稱模型具備 alpha。
 
 ## English
 
-Current `master` additionally contains baseline tensor-pipeline execution repairs.
-Bounded throughput/resume checks passed, but full regression remains incomplete.
-The latest fully accepted tag remains `v0.2.1`; see the
+The `v0.2.2` baseline tensor pipeline has completed bounded engineering acceptance:
+590 cloud tests and 97 subtests passed; one Git-dependent check passed locally.
+Complete baseline building/cache reuse, CUDA concurrency and mid-epoch resume passed;
+see the measurements and limitations in the
 [tensor-pipeline validation record](docs/baseline_tensor_pipeline_validation.md).
 
 The `v0.2.1` full-evaluation/reusable-baseline architecture has completed bounded

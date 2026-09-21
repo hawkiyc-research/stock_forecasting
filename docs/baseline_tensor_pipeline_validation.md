@@ -2,11 +2,12 @@
 
 ## 中文
 
-**狀態：部分驗證通過，完整回歸尚未完成；未發布新的驗收版本 tag。**
+**狀態：完整回歸與限定實際資料補驗已通過，對應工程驗收版本 v0.2.2。**
+下列保留首輪吞吐測試與未完成回歸的歷史證據，並記錄本次補驗；不是正式全量訓練結果。
 
 ### 範圍與環境
 
-- 日期：2026-09-21；受測功能程式碼：`c16f4ae`，包含 `0083c8e`、`49e68b4`、
+- 首輪日期：2026-09-21；受測功能程式碼：`c16f4ae`，包含 `0083c8e`、`49e68b4`、
   `bb215f1` 與 `08bfb8f` 的修正。本紀錄不覆蓋 v0.2.1 的歷史驗收。
 - 驗證 run：`baseline-run-20260921T073833Z-10520`；RTX 4090 24 GiB，
   CPU quota 13.6 cores，規劃使用 13 cores。這不是舊 RTX 5090 Pod 的跨硬體測速比較。
@@ -105,17 +106,17 @@ job 有 3 workers，且程式尚未加入最後的 cuDNN／shutdown／cache-cred
 - 1,264,861 筆**合成預測**的磁碟 backing／指標聚合：29.74 秒，peak RSS 約
   1.48 GiB。這不是完整真實 testing 的模型分數。
 
-最終 `tensor-final-status.json` 是 `pytest=124`、`baseline_throughput=0`、`ruff=1`，
-**不能標記完整驗收通過**。Pytest 的 740 秒單次預算到期時，堆疊位於
+首輪最終 `tensor-final-status.json` 是 `pytest=124`、`baseline_throughput=0`、`ruff=1`，
+**該輪不能標記完整驗收通過**。Pytest 的 740 秒單次預算到期時，堆疊位於
 `test_complete_baseline_builder_and_cache_reuse`／`build_baselines` 的子工作等待迴圈，
 沒有產生最終 JUnit XML。僅憑此堆疊，不能斷言只是測試太慢，也不能判定正式訓練死鎖；
-需在下一個獲授權的驗證中優先重跑 builder 與完整 suite，保留逐測試及子工作進度。
+因此補驗優先重跑 builder 與完整 suite，保留逐測試及子工作進度，結果見下節。
 
 雲端 Ruff 的兩項 E501 是控制測試中的長字串。下載的測試檔仍為未換行版本，已提交的
 本機檔案已換行；兩者 AST 完全相同。受測的 11 個 baseline implementation 檔案
 SHA-256 全部與本機相同，因此這不是 baseline 功能程式的版本差異。本機完整 Ruff
 重跑通過，另有 13 項控制平面、7 項 runtime 控制測試通過；這不替代未完成的雲端
-suite。下一次驗證須先確認所有受測來源檔案與部署 manifest 一致。
+suite。補驗已先確認所有受測來源檔案與部署 manifest 一致。
 
 整個 Pod 觀測到 cgroup 記憶體高水位 27,139,686,400 bytes（約 25.28 GiB），
 `memory.failcnt=0`、`oom_kill=0`；包含多輪驗證及 file cache，不是正式長時間訓練
@@ -124,6 +125,59 @@ suite。下一次驗證須先確認所有受測來源檔案與部署 manifest �
 第一輪 pytest 為保留最終版重跑時間而主動中斷（164 passed、1 skipped，exit 2），
 不列為完整通過；第一次 checkpoint-copy 提前退出的 worker shutdown 異常有保留，
 已修正並重測，不能將初輪 log 說成無錯誤。
+
+### 完整回歸補驗（2026-09-21）
+
+- Run：`baseline-run-20260921T090212Z-27498`；受測 checkout `c3050b0`，包含
+  `9b47984` 的有界持久化診斷及 tmux `--regression-only` 參數修正。213 個部署
+  來源檔案 SHA-256 全部與本機一致；11 個 baseline 核心實作及 shared calibration
+  contract 與首輪最終版相同。這輪沒有再調整模型／baseline 數值邏輯。
+- RTX 4090 24 GiB，CPU quota 6.8 cores、規劃採 6 cores，container RAM limit
+  45,999,996,928 bytes。小型 builder fixture 因 CPU 預算只准入 1 個 GPU job、
+  每個 loader 1 worker；另有獨立的同 GPU 雙模型並行測試，不能將兩者混為一談。
+- 完整 `pytest tests`：**590 passed、97 subtests passed、1 skipped**，耗時
+  1,458.08 秒；pytest 與 Ruff 均 exit 0。JUnit 包含 688 個結果，0 failures、
+  0 errors。唯一 skip 是 source-only Pod 沒有 Git metadata 的準備語意檢查，
+  已在本機 13 項 control-plane tests 中通過；本機另有 7 項 runtime、4 項診斷
+  控制與 4 項 tmux tests 通過，沒有建立／檢查本機訓練環境。
+- 503 個 pytest warnings 主要來自 PyTorch pin-memory 參數棄用提示、刻意測試
+  舊 evaluation sample cap，以及 test assertion 的 scalar conversion；沒有
+  unhandled worker/thread exception。診斷觀察器錯誤清單為空，沒有跳過 CUDA 測試。
+- 完整 baseline builder／cache reuse fixture 通過，耗時 523.40 秒，涵蓋全部
+  baseline 與該 fixture 全部 400／26／68 個 train／validation／test windows。
+  快取命中時禁止再初始化 dataset／CUDA plan／worker；這不是三千萬筆正式訓練。
+- 神經模型完整 splits／接續、batch 32→47 與 workers 1→2 的 epoch 中途恢復、
+  validation 邊界恢復、同 GPU 雙程序，以及主模型 testing 只讀 baseline 指標
+  而不重訓／重新 inference，均通過。Training 動態抽樣契約保持不變。
+- 真實離線 Kronos 的 4 筆 CUDA forward／backward／optimizer 通過；LoRA rank 32，
+  16,075,607 個可訓練參數，LoRA／market embedding／scale gate 梯度有限且非零。
+  4,096 筆 holdout profile 使用 batch 32、4 workers、prefetch 14、pin memory、
+  `drop_last=false`，17.71 秒；Dataset spawn payload 344 bytes，GPU allocation
+  高水位 4,005,177,856 bytes。這仍不是完整 holdout scoring。
+- 4 workers 獨立稽核全部 44,784 eligible products，179.80 秒完成；validation
+  1,232,972／test 1,264,861 windows，成員 digest 與本頁記錄完全相同，prepared
+  manifest 未改變，沒有物化 input windows。
+- 1,264,861 筆合成預測的磁碟 backing／指標聚合：34.43 秒，peak RSS
+  1,591,734,272 bytes（約 1.48 GiB）、輸出 1,133,315,904 bytes。合成 member
+  dates／分數只作容量測試，不能當成真實 holdout 的日期集合或模型成效。
+- `supplementary-status.json` 的 Kronos／coverage／capacity 均為 0。整個補驗 Pod
+  的 cgroup 高水位 6,070,329,344 bytes（約 5.65 GiB），failcnt／oom_kill 均為 0；
+  本輪沒有重跑 full-size GBDT fit 或 baseline batch／吞吐調校。
+- 正式 inputs marker、GRU／DLinear 的 `model.pt`／`resume.pt` 及 prepared manifest
+  的 ETag／大小／最後修改時間，驗證前後完全相同；另核對上述權重與 manifest 的
+  SHA-256 與首輪一致。原 baseline ID 保留，不需新行情 API call 或 CPU prepare。
+- Pod `i0qw3iuzhw0b2x` 於 09:02:34 UTC 建立，本機 55 分鐘 guard 保護；本機 CLI
+  於 09:43:52 UTC 刪除，API 確認清單為空，約 41 分 18 秒，未超過核准的一小時。
+  本機 guard 隨後清理；未啟動正式 baseline／A／B 訓練。
+
+補驗證據位於 network volume 的
+`diagnostics/full-workflow/baseline-run-20260921T090212Z-27498/`，以及本機
+`.runpod/verification/regression-20260921/`。關鍵檔案為 `pytest.xml`、`pytest.log`、
+`pytest-status.json`、`regression-status.json`、`verified-sources.json`、
+`journal/events.jsonl`、有界子工作快照、`supplementary-status.json`、
+`kronos-smoke.json`、`lazy-evaluation-audit.json`、`capacity/capacity.json`，及本機
+`artifacts-before.json`／`artifacts-after.json`／`final-snapshot.json`。
+首輪 timeout 的歷史紀錄保留；本次完整通過，不再以部分測試結果替代完整回歸。
 
 ### 追溯與限制
 
@@ -150,11 +204,13 @@ GBDT 仍可能比 neural jobs 花更長時間；目前沒有自動遷移 CPU-onl
 
 ## English
 
-**Status: partial validation only; full regression is incomplete. No new accepted-release tag.**
+**Status: full regression and bounded real-data follow-up checks passed; engineering version v0.2.2.**
+The initial throughput/unfinished-regression evidence is preserved below, followed by
+the completed acceptance rerun. Neither run is production full-data training.
 
 ### Scope and environment
 
-- Date: 2026-09-21. Tested implementation: `c16f4ae`, including fixes `0083c8e`,
+- Initial run date: 2026-09-21. Tested implementation: `c16f4ae`, including fixes `0083c8e`,
   `49e68b4`, `bb215f1` and `08bfb8f`. The historical v0.2.1 record is retained.
 - Run: `baseline-run-20260921T073833Z-10520`; RTX 4090 24 GiB, 13.6-core container
   CPU quota, 13 cores admitted. This is not a cross-hardware comparison against
@@ -260,21 +316,21 @@ measurements above; do not select the larger preliminary numbers as the conclusi
 - Disk-backed aggregation of **1,264,861 synthetic predictions** took 29.74 seconds
   with approximately 1.48 GiB peak RSS; these are not real test accuracy metrics.
 
-Final `tensor-final-status.json`: `pytest=124`, `baseline_throughput=0`, `ruff=1`.
-**Full acceptance has not passed.** The 740-second pytest budget expired in the
+Initial final `tensor-final-status.json`: `pytest=124`, `baseline_throughput=0`, `ruff=1`.
+**That run did not pass full acceptance.** The 740-second pytest budget expired in the
 child-job wait loop of `build_baselines`, inside
 `test_complete_baseline_builder_and_cache_reuse`; no final JUnit XML was produced.
 This stack alone establishes neither harmless slowness nor a production deadlock.
-The next authorized check must prioritize the builder and full suite with durable
-per-test and child-job progress.
+The authorized follow-up therefore prioritized the builder and full suite with durable
+per-test and child-job progress, as recorded below.
 
 The two cloud Ruff E501 findings concern long strings in a control test. The
 downloaded deployed copy was unwrapped, whereas the committed local copy was already
 wrapped; their ASTs are identical. All 11 tested baseline implementation hashes
 match the local files, so this is not a baseline implementation-version mismatch.
 The full local Ruff rerun passed, as did 13 control-plane and seven runtime-control
-tests. These do not replace the unfinished cloud suite. Before the next run,
-verify every deployed test/source file against its manifest.
+tests. Those local checks did not replace the unfinished cloud suite. The follow-up
+verified every deployed test/source file against its manifest before execution.
 
 Observed Pod-wide cgroup memory high water was 27,139,686,400 bytes (approximately
 25.28 GiB), with `memory.failcnt=0` and `oom_kill=0`. This includes repeated checks
@@ -283,6 +339,65 @@ and file cache, not a long-running production peak-memory guarantee.
 The initial pytest run was deliberately interrupted to leave time for final-code
 retesting (164 passed, one skipped, exit 2); it is not a complete pass. The initial
 checkpoint-copy shutdown failure remains in logs and was repaired/retested.
+
+### Full regression follow-up (2026-09-21)
+
+- Run: `baseline-run-20260921T090212Z-27498`; tested checkout `c3050b0`, including
+  durable bounded diagnostics from `9b47984` and the tmux `--regression-only`
+  argument repair. All 213 deployed file SHA-256 hashes matched the local checkout.
+  Eleven baseline implementation files and the shared calibration contract were
+  identical to the final initial-run code. No model/baseline numerical changes.
+- RTX 4090 24 GiB, 6.8-core CPU quota (six admitted), container RAM limit
+  45,999,996,928 bytes. The small builder fixture admitted one GPU job/one loader
+  worker because of CPU limits. A separate test exercised two simultaneous CUDA
+  experiments; do not conflate these two resource configurations.
+- Complete `pytest tests`: **590 passed, 97 subtests passed, one skipped** in
+  1,458.08 seconds; pytest and Ruff both exited 0. JUnit contains 688 results with
+  zero failures/errors. The sole skip requires Git metadata absent from source-only
+  Pods; it passed in the 13 local control-plane tests. Seven runtime-control, four
+  diagnostic-control and four tmux tests also passed locally, without creating or
+  inspecting a local training environment.
+- The 503 pytest warnings primarily concern PyTorch pin-memory deprecations,
+  intentional legacy evaluation-cap checks and scalar conversion in a test
+  assertion. No unhandled worker/thread exception, observer errors or skipped CUDA tests.
+- Complete builder/cache reuse passed in 523.40 seconds: every baseline and all
+  400/26/68 train/validation/test windows in the fixture. A cache hit forbids new
+  dataset/CUDA-plan/worker initialization. This is not 30-million-row production training.
+- Full neural splits/resume, batch 32-to-47 and workers one-to-two mid-epoch resume,
+  validation-boundary recovery, simultaneous CUDA processes and main testing that
+  only reads cached baseline metrics all passed. Dynamic training sampling is unchanged.
+- Real offline Kronos four-row CUDA forward/backward/optimizer check passed: LoRA
+  rank 32, 16,075,607 trainable parameters and finite, nonzero LoRA/market-embedding/
+  scale-gate gradients. The 4,096-row holdout profile used batch 32, four workers,
+  prefetch 14, pinned memory and `drop_last=false`: 17.71 seconds, a 344-byte dataset
+  spawn payload and 4,005,177,856-byte GPU allocation peak. It is not full holdout scoring.
+- Four workers independently audited all 44,784 eligible products in 179.80 seconds:
+  1,232,972 validation and 1,264,861 test windows, identical membership digests and
+  unchanged prepared manifest, without materializing input windows.
+- Disk-backed aggregation of 1,264,861 synthetic predictions: 34.43 seconds,
+  1,591,734,272-byte peak RSS (about 1.48 GiB) and 1,133,315,904 output bytes.
+  Synthetic dates/scores are capacity fixtures, not real holdout members/model scores.
+- Kronos/coverage/capacity all exited 0 in `supplementary-status.json`. Pod-wide
+  cgroup high water: 6,070,329,344 bytes (about 5.65 GiB), zero failcnt/oom_kill.
+  No full-size GBDT fit or baseline batch/throughput tuning was repeated in this run.
+- Production inputs marker, GRU/DLinear `model.pt`/`resume.pt` and prepared manifest
+  retained identical ETags, sizes and modification times before/after verification.
+  Weight/manifest SHA-256 hashes also matched the initial run. The baseline identity
+  remains unchanged, without new market-data API calls or CPU preparation.
+- Pod `i0qw3iuzhw0b2x` was created at 09:02:34 UTC under a 55-minute local guard and
+  deleted through the control-host CLI at 09:43:52 UTC; the API then returned an empty
+  Pod list. Approximately 41m18s, within the authorized hour. The local guard was
+  subsequently cleaned up. No production baseline/A/B training was started.
+
+Follow-up evidence: network-volume
+`diagnostics/full-workflow/baseline-run-20260921T090212Z-27498/`, downloaded to local
+`.runpod/verification/regression-20260921/`. Key files: `pytest.xml`, `pytest.log`,
+`pytest-status.json`, `regression-status.json`, `verified-sources.json`,
+`journal/events.jsonl`, bounded child-state snapshots, `supplementary-status.json`,
+`kronos-smoke.json`, `lazy-evaluation-audit.json`, `capacity/capacity.json`, plus local
+`artifacts-before.json`, `artifacts-after.json` and `final-snapshot.json`.
+Historical timeout evidence is retained. This rerun completed the full suite rather
+than treating a partial run as full acceptance.
 
 ### Evidence and limitations
 

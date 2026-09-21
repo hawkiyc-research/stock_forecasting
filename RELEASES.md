@@ -2,6 +2,21 @@
 
 ## 中文
 
+### v0.2.2 2026-09-21
+
+- Baseline 直接供應連續 tensor，保留動態 training sampling 與完整 lazy evaluation；
+  以真實資料端到端吞吐共同調整 batch／workers／prefetch，每個 job 僅保留一個
+  活躍 worker pool，提前關閉時有界排空 prefetch。
+- Full GBDT／GPU jobs 共同 RAM 准入、待啟動 GPU jobs 的 CPU 預留，以及保守的
+  clean-file-cache 折抵；經精確 hash 審核的 execution-only 修正保留既有 baseline ID。
+- 完整雲端回歸 590 passed、97 subtests passed，pytest／Ruff exit 0；唯一
+  Git-dependent skip 已在本機通過。加入逐測試／子工作持久化診斷及 tmux 驗證入口。
+- 離線 Kronos CUDA 梯度、44,784 products 的完整 cutoff 稽核、百萬筆磁碟 backing
+  指標聚合補驗通過。既有 inputs／GRU／DLinear checkpoint 及 prepared manifest 未改變。
+- 限定真實輸入測速為 GRU 1.34 倍、DLinear 1.44 倍；GPU 平均使用率仍約 19%，
+  不宣稱已滿載、完整訓練等比例加速或模型準確度改善。
+  詳見 [tensor 資料管線驗收](docs/baseline_tensor_pipeline_validation.md)。
+
 ### v0.2.1 2026-09-21
 
 - Baseline 向量化動態 windows／數值特徵，新增有界 Parquet metadata cache 與必要欄位
@@ -48,6 +63,25 @@
 資料不納入 Git，須以 run ID、checkpoint 與各自 manifest 追溯。
 
 ## English
+
+### v0.2.2 2026-09-21
+
+- Direct contiguous baseline tensors with dynamic training sampling and exhaustive
+  lazy evaluation; jointly tune batch/workers/prefetch on real end-to-end throughput.
+  Keep one active worker pool per job and drain only bounded submitted prefetch.
+- Joint full-GBDT/GPU RAM admission, CPU reservations for pending GPU jobs and
+  conservative clean-file-cache credit. Exact hash-reviewed execution-only repairs
+  retain the existing baseline identity.
+- Full cloud regression: 590 tests and 97 subtests passed; pytest/Ruff exit 0. The
+  sole Git-dependent skip passed locally. Add durable test/child-job diagnostics
+  and the tmux regression entry point.
+- Offline Kronos CUDA gradients, exhaustive cutoff auditing of 44,784 products and
+  million-row disk-backed metric aggregation passed. Existing inputs, GRU/DLinear
+  checkpoints and the prepared manifest are unchanged.
+- Bounded real-input measurements: GRU 1.34x and DLinear 1.44x; average GPU utilization
+  remains approximately 19%. These are not claims of saturation, proportional
+  whole-training speedups or improved accuracy.
+  See [tensor-pipeline acceptance](docs/baseline_tensor_pipeline_validation.md).
 
 ### v0.2.1 2026-09-21
 
