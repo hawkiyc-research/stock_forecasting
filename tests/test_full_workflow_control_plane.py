@@ -87,6 +87,21 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         path.write_text(json.dumps(parameters))
         self.assertNotEqual(before, self.identity())
 
+    def test_baseline_identity_matches_legacy_ast_serialization(self):
+        expected = self.identity()
+        original = ast.dump
+
+        def python_312_dump(node, **kwargs):
+            if "show_empty" in kwargs:
+                raise TypeError("Python 3.12 has no show_empty parameter")
+            try:
+                return original(node, show_empty=True, **kwargs)
+            except TypeError:
+                return original(node, **kwargs)
+
+        with patch.object(ast, "dump", side_effect=python_312_dump):
+            self.assertEqual(expected, self.identity())
+
     def test_incomplete_cache_fails_closed(self):
         with self.assertRaises(ValueError):
             CONTRACT["validate_complete"](

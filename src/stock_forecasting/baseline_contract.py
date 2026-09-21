@@ -48,7 +48,14 @@ def shared_training_identity(project: Path) -> str:
     names = {getattr(node, "name", None) for node in selected}
     if not set(SHARED_TRAINING_DEFINITIONS) <= names:
         raise ValueError("Baseline shared calibration/sampling definitions are missing")
-    return hashlib.sha256(ast.dump(ast.Module(body=selected, type_ignores=[])).encode()).hexdigest()
+    module = ast.Module(body=selected, type_ignores=[])
+    # Python 3.13 omits optional empty AST fields by default; retain the 3.12
+    # representation used by persisted GPU artifacts on every control host.
+    try:
+        representation = ast.dump(module, show_empty=True)
+    except TypeError:
+        representation = ast.dump(module)
+    return hashlib.sha256(representation.encode()).hexdigest()
 
 
 def digest(payload) -> str:
