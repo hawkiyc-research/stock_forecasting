@@ -24,6 +24,39 @@ def definitions(path, names, namespace):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_loader_shutdown_drains_only_bounded_pending_work_and_propagates_errors(self):
+        close = definitions(
+            "src/stock_forecasting/baseline_input.py", {"close_neural_loader"}, {}
+        )["close_neural_loader"]
+
+        class Iterator:
+            _send_idx, _rcvd_idx, _shutdown = 7, 3, False
+            error = None
+
+            def __next__(self):
+                if self.error is not None:
+                    raise self.error
+                if next(self._sampler_iter, None) is not None:
+                    raise AssertionError("Cleanup submitted new samples")
+                self._rcvd_idx += 1
+                return object()
+
+            def _shutdown_workers(self):
+                self._shutdown = True
+
+        for error in (None, ValueError("worker failed")):
+            iterator = Iterator()
+            iterator.error = error
+            loader = SimpleNamespace(_iterator=iterator, num_workers=2, prefetch_factor=2)
+            if error is None:
+                close(loader)
+                self.assertEqual(iterator._rcvd_idx, 7)
+            else:
+                with self.assertRaisesRegex(ValueError, "worker failed"):
+                    close(loader)
+            self.assertIsNone(loader._iterator)
+            self.assertTrue(iterator._shutdown)
+
     def test_fractional_container_quota_is_not_host_cpu_count(self):
         select = RESOURCES["select_visible_cpu_count"]
         self.assertEqual(

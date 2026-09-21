@@ -80,5 +80,21 @@ def close_neural_loader(loader):
     """Release the active pool at a phase boundary, including queued batches."""
     iterator = getattr(loader, "_iterator", None)
     if iterator is not None:
-        iterator._shutdown_workers()
-        loader._iterator = None
+        try:
+            if not iterator._shutdown:
+                # Stop submission, then drain only the already-prefetched tasks.
+                # Closing IPC while a worker exports tensor storage can abort its
+                # C++ background thread. Discarded batches never advance the
+                # training sample cursor. These internals are pinned to torch 2.9.1.
+                pending = iterator._send_idx - iterator._rcvd_idx
+                capacity = loader.num_workers * loader.prefetch_factor
+                if not 0 <= pending <= capacity:
+                    raise RuntimeError("Neural loader exceeded its bounded prefetch contract")
+                iterator._sampler_iter = iter(())
+                for _ in range(pending):
+                    next(iterator)
+        finally:
+            try:
+                iterator._shutdown_workers()
+            finally:
+                loader._iterator = None

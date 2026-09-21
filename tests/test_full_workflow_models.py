@@ -122,6 +122,23 @@ def test_neural_validation_reuses_and_closes_its_worker_pool(small_lazy_config):
     assert all(not p.is_alive() for p in processes)
 
 
+def test_neural_partial_iteration_closes_workers_cleanly(small_lazy_config, capfd):
+    from stock_forecasting.baseline_build import _close_loader, _loader
+
+    loader = _loader(small_lazy_config, "train", 2, 16, prefetch=2)
+    iterator = iter(loader)
+    next(iterator)
+    processes = list(iterator._workers)
+    before = iterator._rcvd_idx
+    pending = iterator._send_idx - before
+    assert pending <= 4
+    _close_loader(loader)
+    assert iterator._rcvd_idx == before + pending
+    assert loader._iterator is None
+    assert all(not process.is_alive() and process.exitcode == 0 for process in processes)
+    assert "terminate called without an active exception" not in capfd.readouterr().err
+
+
 def test_vectorized_windows_and_baseline_features_match_legacy(small_lazy_config):
     from stock_forecasting.baselines import baseline_arrays, baseline_arrays_from_windows
     from stock_forecasting.data.dataset import LazyFinancialWindowDataset
