@@ -86,7 +86,8 @@ for path_name in PROJECT_ROOT LOG_ROOT; do
         "${path_value}" "${NETWORK_VOLUME_ROOT}" "${path_name}" NETWORK_VOLUME_ROOT
 done
 
-if [[ $# -lt 1 || ( "$1" != "probe-scales" && $# -ne 1 ) ]]; then
+if [[ $# -lt 1 || ( "$1" != "probe-scales" && $# -ne 1 \
+    && ! ( "$1" == "verify-full-workflow" && $# -eq 2 && "$2" == "--regression-only" ) ) ]]; then
     echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|stage1-train|stage1-validate|baseline|probe-scales [PROBE OPTIONS]" >&2
     exit 2
 fi

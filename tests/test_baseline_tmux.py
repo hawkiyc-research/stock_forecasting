@@ -64,6 +64,26 @@ class BaselineTmuxTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("allocated by the local workflow", result.stderr)
 
+    def test_verification_forwards_only_allowlisted_regression_option(self):
+        harness = self.harness()
+        harness.write_script(
+            harness.scripts / "runpod_verify_full_workflow.sh",
+            r"""
+            [[ "${RUNPOD_GPU_WORKFLOW_LEASE_HELD:-0}" == 1 && -e /dev/fd/9 ]] || exit 97
+            printf '%s\n' "$@" > "${HARNESS_ROOT}/verification-arguments"
+            """,
+        )
+        result = harness.command(
+            "runpod_tmux_launch.sh", "verify-full-workflow", "--regression-only"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        worker = harness.run_worker()
+        self.assertEqual(worker.returncode, 0, worker.stdout + worker.stderr)
+        self.assertEqual(harness.read("verification-arguments"), "--regression-only\n")
+        for role in ("baseline", "verify-full-workflow"):
+            rejected = harness.command("runpod_tmux_launch.sh", role, "--unsupported")
+            self.assertNotEqual(rejected.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

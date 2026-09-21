@@ -182,8 +182,8 @@ def main():
                 [
                     "tests",
                     "-vv",
-                "-ra",
-                "--capture=tee-sys",
+                    "-ra",
+                    "--capture=tee-sys",
                     "--durations=25",
                     "-o",
                     "addopts=",
