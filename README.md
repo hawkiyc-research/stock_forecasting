@@ -39,19 +39,6 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 
 這是研究與能力驗證用的 PoC，不是投資建議、交易系統或可保證獲利的模型。
 
-### 專案命名與持久化識別
-
-Python 專案、套件與 W&B project 名稱統一為 `stock_forecasting`；命令列入口、
-新建 Pod 與新建 tmux session 使用對應的 `stock-forecasting-` 前綴。
-訓練、評估、baseline 與 CPU preparation Pod 的預設名稱分別為
-`stock-forecasting-train`、`stock-forecasting-validation`、
-`stock-forecasting-baseline`、`stock-forecasting-cpu-prepare`。
-自訂 Pod 名稱也必須保留專案前綴；統一入口仍是 `bash scripts/runpod_workflow.sh`。
-
-顯示名稱與套件 metadata 不參與 dataset、baseline 或 checkpoint 的數值相容性識別。
-更名不搬移既有資料、日誌或訓練結果，也不重寫歷史 manifest。歷史日誌仍按原紀錄
-讀取；既有 Pod 與 tmux session 的名稱維持原樣，新的名稱只在後續建立時生效。
-
 ### 數值輸出契約
 
 `MultiHorizonAlphaHead` 的唯一預測輸出是：
@@ -2105,22 +2092,6 @@ numerical time series:
 
 This is a research and capability-validation PoC. It is not investment advice,
 a production trading system, or a claim of guaranteed profitability.
-
-### Project names and persistent identities
-
-The Python project, import package, and W&B project are named `stock_forecasting`.
-Console entry points, new Pods, and new tmux sessions use the corresponding
-`stock-forecasting-` prefix. Default Pod names are `stock-forecasting-train`,
-`stock-forecasting-validation`, `stock-forecasting-baseline`, and
-`stock-forecasting-cpu-prepare`. Custom Pod names must retain the project prefix.
-The common workflow entry point remains `bash scripts/runpod_workflow.sh`.
-
-Display names and package metadata do not participate in the numerical
-compatibility identities of datasets, baselines, or checkpoints. Renaming does
-not move existing data, logs, or training results, or rewrite historical
-manifests. Historical logs remain readable at their recorded paths. Existing
-Pods and tmux sessions keep their original names; the new names apply only to
-subsequent launches.
 
 ### Numerical output contract
 

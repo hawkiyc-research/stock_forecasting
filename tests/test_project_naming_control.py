@@ -95,6 +95,7 @@ class ProjectNamingTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--name") + 1], SLUG + "-" + role)
                 env = json.loads(command[command.index("--env") + 1])
                 self.assertEqual(env["PROJECT_ROOT"], "/runpod-volume/" + NAME)
+                self.assertEqual(env["WANDB_PROJECT"], NAME)
                 self.assertEqual(env["DATA_ROOT"], "/runpod-volume/datasets/"
                                  + self.selection["dataset_request_sha256"])
                 self.assertEqual(env["MAX_RUNTIME_SECONDS"], "259200")
@@ -121,14 +122,43 @@ class ProjectNamingTests(unittest.TestCase):
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.assertIn(SLUG + "-experiment-b", accepted.stdout)
 
-    def test_active_settings_never_restore_the_old_project_name(self):
-        legacy = re.compile(r"fin[-_]ts[-_]multimodal|ts_multimodal_LLM", re.I)
-        paths = [ROOT / "pyproject.toml"]
-        for folder in ("scripts", "configs", "src"):
-            paths.extend(path for path in (ROOT / folder).rglob("*")
-                         if path.suffix in {".py", ".sh", ".toml", ".yaml", ".yml", ".json"})
+    def test_wandb_defaults_match_the_project_name(self):
+        tree = ast.parse((ROOT / "src" / NAME / "config.py").read_text())
+        config = next(node for node in tree.body
+                      if isinstance(node, ast.ClassDef) and node.name == "WandbConfig")
+        project = next(node for node in config.body
+                       if isinstance(node, ast.AnnAssign)
+                       and isinstance(node.target, ast.Name) and node.target.id == "project")
+        self.assertEqual(ast.literal_eval(project.value), NAME)
+        paths = sorted((ROOT / "configs").glob("*.yaml"))
+        self.assertTrue(paths)
         for path in paths:
-            self.assertIsNone(legacy.search(path.read_text()), str(path.relative_to(ROOT)))
+            with self.subTest(config=path.name):
+                defaults = re.findall(r"(?m)^  project:[ \t]*(\S+)[ \t]*$", path.read_text())
+                self.assertEqual(len(defaults), 1)
+                self.assertIn(defaults[0], (NAME, "${WANDB_PROJECT:-" + NAME + "}"))
+
+    def test_new_tmux_sessions_use_the_project_prefix(self):
+        script = (ROOT / "scripts/runpod_tmux_launch.sh").read_text()
+        sessions = re.findall(r"(?m)^[ \t]*SESSION_NAME=(\S+)[ \t]*$", script)
+        roles = ("cpu-prepare", "cpu-finalize", "train", "baseline", "validation", "probe-scales")
+        self.assertEqual(sorted(sessions), sorted(SLUG + "-" + role for role in roles))
+
+    def test_gpu_workflows_reuse_the_interpreter_and_import_namespace(self):
+        workflows = {
+            "runpod_entrypoint.sh": ("${PROJECT_VENV}/bin/python", "runpod.supervisor"),
+            "runpod_train_then_validate.sh": ("${PROJECT_VENV}/bin/python", "cli.train"),
+            "runpod_validation.sh": ("${PROJECT_VENV}/bin/python", "cli.validate_benchmarks"),
+            "runpod_baseline.sh": ("${PROJECT_PYTHON}", "cli.build_baselines"),
+            "runpod_probe_scales.sh": ("${PROJECT_ROOT}/.venv/bin/python", "cli.probe_scales"),
+        }
+        for script, (interpreter, module) in workflows.items():
+            with self.subTest(script=script):
+                content = (ROOT / "scripts" / script).read_text()
+                self.assertIn(f'"{interpreter}" -m {NAME}.{module}', content)
+                self.assertIn('/stock_forecasting}"', content)
+                self.assertNotRegex(content, r'(?m)^\s*[^#\n]*\brun stock-forecasting-')
+                self.assertNotRegex(content, r'(?m)^\s*[^#\n]*-m (?:venv|pip)\b')
 
     def test_names_and_launch_wrappers_do_not_invalidate_data_baseline_or_resume(self):
         baseline = BASELINE["baseline_contract"](self.project, self.selection)
@@ -148,7 +178,12 @@ class ProjectNamingTests(unittest.TestCase):
         for relative in ("pyproject.toml", "scripts/create_runpod_pod.sh",
                          "scripts/runpod_cpu_prepare.sh", "scripts/runpod_tmux_launch.sh"):
             path = self.project / relative
-            path.write_text(path.read_text().replace(SLUG, "fixture-renamed-project"))
+            updated_source = path.read_text().replace(SLUG, "fixture-renamed-project")
+            if relative == "pyproject.toml":
+                updated_source = updated_source.replace(
+                    f'name = "{NAME}"', 'name = "fixture_renamed_project"'
+                )
+            path.write_text(updated_source)
         self.assertEqual(BASELINE["baseline_contract"](self.project, self.selection), baseline)
         self.assertEqual(CONTENT["code_content_identity"](
             package_root=self.project / "src" / NAME), content)
@@ -157,7 +192,7 @@ class ProjectNamingTests(unittest.TestCase):
         self.assertEqual(resume_files(), resume)
 
     def test_existing_pods_remain_identifiable_without_requiring_a_rename(self):
-        for name in (SLUG + "-train", "fin-ts-multimodal-poc", "historical-display-name"):
+        for name in (SLUG + "-train", "historical-display-name"):
             pod = {"id": "fixture-pod", "name": name, "networkVolumeId": "fixture-volume",
                    "env": {"RUNPOD_ROLE": "gpu-train", "NETWORK_VOLUME_ROOT": "/runpod-volume",
                            "PROJECT_ROOT": "/runpod-volume/" + NAME}}

@@ -4,6 +4,7 @@ import argparse
 import copy
 import importlib.util
 import shutil
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -17,10 +18,13 @@ SPEC.loader.exec_module(SELECTION)
 
 
 def test_declared_python_namespace_matches_source_directory() -> None:
-    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert 'packages = [{ include = "stock_forecasting", from = "src" }]' in project
-    assert "fin_ts_multimodal" not in project
+    assert project["project"]["name"] == "stock_forecasting"
+    assert project["tool"]["poetry"]["packages"] == [
+        {"include": "stock_forecasting", "from": "src"}
+    ]
+    assert (ROOT / "src" / "stock_forecasting").is_dir()
 
 
 def _project_root(tmp_path: Path) -> Path:
