@@ -34,7 +34,8 @@ class ProbeDataset(Dataset):
         return {
             "asset_series": series, "benchmark_series": series + 1,
             "asset_timestamp_features": timestamps, "benchmark_timestamp_features": timestamps,
-            "target_alpha": torch.arange(14, dtype=torch.float32) / 100 + index / 1000,
+            # Adjacent securities must exceed the ranking loss's 0.01 dead zone.
+            "target_alpha": torch.arange(14, dtype=torch.float32) / 100 + (index % 64) / 50,
             "sample_id": str(index), "symbol": f"S{index % 64}", "benchmark_symbol": "INDEX",
             "asset_type": "stock", "market": "US", "provider": "fixture",
             "dataset_profile": "fixture", "cutoff_at": "2025-01-03", "diagnostics": {},
@@ -99,22 +100,22 @@ def test_probe_rolls_back_parameters_buffers_modes_and_rng_even_on_failure(fail)
     before = {name: value.clone() for name, value in model.state_dict().items()}
     python_rng, numpy_rng, cpu_rng = random.getstate(), np.random.get_state(), torch.get_rng_state()
     modes = [module.training for module in model.modules()]
-    with pytest.raises(RuntimeError, match="injected") if fail else nullcontext():
-        with training._preserve_probe_state(model):
-            optimizer = torch.optim.AdamW(model.parameters())
-            model.train()
-            batch = training.ModelBatchCollator()([ProbeDataset()[i] for i in range(4)])
-            output = training.forward_batch(
-                SimpleNamespace(model=model),
-                training._move_batch_to_device(batch, torch.device("cpu")),
-                None, torch.device("cpu"),
-            )
-            output.loss.backward()
-            optimizer.step()
-            random.random()
-            np.random.random()
-            if fail:
-                raise RuntimeError("injected")
+    failure = pytest.raises(RuntimeError, match="injected") if fail else nullcontext()
+    with failure, training._preserve_probe_state(model):
+        optimizer = torch.optim.AdamW(model.parameters())
+        model.train()
+        batch = training.ModelBatchCollator()([ProbeDataset()[i] for i in range(4)])
+        output = training.forward_batch(
+            SimpleNamespace(model=model),
+            training._move_batch_to_device(batch, torch.device("cpu")),
+            None, torch.device("cpu"),
+        )
+        output.loss.backward()
+        optimizer.step()
+        random.random()
+        np.random.random()
+        if fail:
+            raise RuntimeError("injected")
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, before[name], rtol=0, atol=0)
     assert all(parameter.grad is None for parameter in model.parameters())

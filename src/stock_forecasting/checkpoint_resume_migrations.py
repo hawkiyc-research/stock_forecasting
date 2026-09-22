@@ -6,6 +6,21 @@ from typing import Final
 
 CHECKPOINT_RETENTION_MIGRATIONS: Final = (
     {
+        # Fresh initialization ignores calibration-cache warmth. Resumed parameters,
+        # optimizer state and RNG are still restored from the unchanged checkpoint.
+        "id": "cache-independent-model-initialization-v1",
+        "from_files": {
+            "training.py": (
+                "18c947d1754969a14c0a4f4ce0a4b5fac1b216c590d2b89f96f81a4b37c7cb76"
+            ),
+        },
+        "to_files": {
+            "training.py": (
+                "800e2994473534506ce0f234b613f2c7a4a31614ddb446a739d7fe8da17404d2"
+            ),
+        },
+    },
+    {
         # Execution-only: identical windows, loss, optimizer and model parameters.
         # Probe updates are rolled back; existing checkpoint progress/RNG is loaded
         # afterwards. All other source/config/data fingerprints must still match.
@@ -17,7 +32,7 @@ CHECKPOINT_RETENTION_MIGRATIONS: Final = (
         },
         "to_files": {
             "training.py": (
-                "18c947d1754969a14c0a4f4ce0a4b5fac1b216c590d2b89f96f81a4b37c7cb76"
+                "800e2994473534506ce0f234b613f2c7a4a31614ddb446a739d7fe8da17404d2"
             ),
         },
     },

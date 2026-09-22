@@ -371,11 +371,11 @@ else:
             ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
         ]
         for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and node.name in names:
-                nodes.append(node)
-            elif isinstance(node, ast.Assign) and any(
-                isinstance(target, ast.Name) and target.id == "TRAINING_IMPLEMENTATION_PATHS"
-                for target in node.targets
+            if (isinstance(node, ast.FunctionDef) and node.name in names) or (
+                isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "TRAINING_IMPLEMENTATION_PATHS"
+                    for target in node.targets
+                )
             ):
                 nodes.append(node)
         migrations = runpy.run_path(str(

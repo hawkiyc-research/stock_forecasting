@@ -606,10 +606,11 @@ def test_cpu_log_lifecycle_and_downloader_share_canonical_paths() -> None:
     assert 'LIFECYCLE_FIELDS="$(python3 - "${LOCAL_CPU_ROOT}/cpu-preparation.json"' in download
     assert 'DATASET_KEY="lifecycle/stage1/dataset.json"' in download
     assert "The immutable dataset marker is useful context" in download
-    assert "expected_log_dir = expected_prefix + launch_id" in download
-    assert 'expected_log_file = expected_log_dir + "/combined.log"' in download
-    assert "log_path == expected_log_dir" in download
-    assert "log_path == expected_log_file" in download
+    assert '"stock-forecasting-cpu-prepare"' in download
+    assert "for session in allowed_sessions:" in download
+    assert 'expected_log_dir = f"/runpod-volume/logs/tmux/{session}/{launch_id}"' in download
+    assert 'log_path in {expected_log_dir, expected_log_dir + "/combined.log"}' in download
+    assert "if not resolved_log_dir:" in download
 
 
 def test_cpu_acquisition_budget_is_resumable_and_reserves_preparation_time() -> None:

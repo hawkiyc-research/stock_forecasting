@@ -223,7 +223,9 @@ class RunPodSyncControlTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("No valid active RunPod selection", result.stderr)
         self.assertNotIn("unbound variable", result.stderr)
-        self.assertEqual([event["state"] for event in self.writes() if "state" in event], ["syncing"])
+        self.assertEqual(
+            [event["state"] for event in self.writes() if "state" in event], ["syncing"]
+        )
         self.assertFalse((self.volume / "lifecycle/selections").exists())
 
 

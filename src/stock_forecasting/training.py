@@ -2978,6 +2978,9 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
         if config.model.feature_mode in ("scales", "combined")
         else None
     )
+    # Calibration workers consume RNG only on cache misses. Keep model initialization
+    # independent of cache warmth; resume restores checkpoint RNG after probing below.
+    set_global_seed(config.training.seed)
     bundle = build_model_bundle(
         config,
         device,

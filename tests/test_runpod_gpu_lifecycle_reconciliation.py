@@ -342,13 +342,20 @@ def test_reconciler_blocks_on_runpod_network_error(tmp_path: Path) -> None:
     assert json.loads(marker_path.read_text(encoding="utf-8")) == marker
 
 
-def test_gpu_gate_uses_pipeline_digest_and_orphan_reconciler() -> None:
+def test_gpu_gate_checks_selected_artifacts_before_orphan_reconciliation() -> None:
     gate = (ROOT / "scripts/verify_runpod_stage_readiness.sh").read_text(
         encoding="utf-8"
     )
     creator = (ROOT / "scripts/create_runpod_pod.sh").read_text(encoding="utf-8")
+    training_gate = (ROOT / "scripts/runpod_training_readiness.py").read_text(encoding="utf-8")
 
-    assert "code-numerical-pipeline-digest" in gate
-    assert "--expected-numerical-pipeline-digest" in gate
+    assert '"${READINESS_HELPER}" check-code' in gate
+    assert '"${SCRIPT_DIR}/runpod_selection.py" verify-selection-copy' in gate
+    assert '"${SCRIPT_DIR}/runpod_training_readiness.py"' in gate
+    assert '--selection "${RUNPOD_SELECTION_FILE}"' in gate
+    assert 'DATA_GATE["verify_data"](' in training_gate
+    assert "training_artifacts=True" in training_gate
+    assert "verify_models(config_path, reader, workers=workers)" in training_gate
+    assert "lifecycle/stage1/dataset.json" not in gate
     assert "--expected-code-release-digest" not in gate
     assert "ensure_runpod_gpu_workflow_available.sh" in creator

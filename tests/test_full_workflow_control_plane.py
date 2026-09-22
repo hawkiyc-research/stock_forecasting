@@ -237,7 +237,7 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         ).returncode:
             self.skipTest("Source-only RunPod deployments intentionally omit Git metadata")
         content = runpy.run_path(str(ROOT / "src/stock_forecasting/data/content_identity.py"))
-        paths = content["semantic_source_paths"]() + ["src/stock_forecasting/dataset_identity.py"]
+        paths = [*content["semantic_source_paths"](), "src/stock_forecasting/dataset_identity.py"]
         changed = subprocess.check_output(
             ["git", "diff", "v0.1.0", "--name-only", "--", *paths], cwd=ROOT, text=True
         )
