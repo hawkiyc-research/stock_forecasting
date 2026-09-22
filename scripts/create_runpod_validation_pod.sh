@@ -89,7 +89,6 @@ else
 fi
 
 export RUNPOD_GPU_WORKFLOW=validation
-export RUNPOD_POD_NAME="${RUNPOD_POD_NAME:-fin-ts-multimodal-validation}"
 export WANDB_RUN_ID=""
 export RESUME_CHECKPOINT=""
 export RUNPOD_CLI_MAX_RUNTIME_SECONDS="${VALIDATION_MAX_SECONDS}"

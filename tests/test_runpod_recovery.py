@@ -20,7 +20,7 @@ SPEC.loader.exec_module(RECOVERY)
 def _pod(role: str = "gpu-train", *, stage: str = "stage2") -> dict[str, object]:
     return {
         "id": "recovery-pod",
-        "name": "fin-ts-multimodal-poc",
+        "name": "stock-forecasting-train",
         "runtimeStatus": "running",
         "networkVolumeId": "volume-id",
         "uptimeSeconds": 3600,

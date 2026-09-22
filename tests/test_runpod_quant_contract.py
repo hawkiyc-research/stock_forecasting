@@ -653,7 +653,7 @@ def test_cpu_acquisition_budget_is_resumable_and_reserves_preparation_time() -> 
     assert '"checkpoint="' in status
     assert 'for key in ("category", "error_type", "operation", "item", "status_code")' in status
     assert 'ln "${RAW_STAGING}" "${RAW_FINAL}"' in prepare
-    assert "fin-ts-verify-download" in prepare
+    assert "stock-forecasting-verify-download" in prepare
     assert '--output "${BAR_STORE_FINAL}"' in prepare
     assert '--deadline-epoch-seconds "$((WORKFLOW_DEADLINE_EPOCH - 120))"' in prepare
     assert 'PREP_RESUMABLE_STATE=waiting_for_preparation' in prepare
@@ -713,7 +713,7 @@ def test_cpu_execution_lifecycle_cannot_overwrite_immutable_dataset_readiness() 
     assert "archive_dataset_readiness stale-selection" in prepare
     for writer in (prepare, finalize):
         assert 'DATASET_MARKER_STAGING=' in writer
-        assert 'fin-ts-verify-stage1-data' in writer
+        assert 'stock-forecasting-verify-stage1-data' in writer
         assert '--verify-only > "${DATASET_MARKER_STAGING}"' in writer
         assert '--marker "${DATASET_MARKER_STAGING}"' in writer
         assert 'mv "${DATASET_MARKER_STAGING}" "${DATASET_MARKER}"' in writer
@@ -743,7 +743,7 @@ def test_cpu_execution_lifecycle_cannot_overwrite_immutable_dataset_readiness() 
     finalizer_stager = finalize.split(
         "stage_dataset_readiness() {", maxsplit=1
     )[1].split("\n}", maxsplit=1)[0]
-    assert 'fin-ts-verify-stage1-data' in finalizer_stager
+    assert 'stock-forecasting-verify-stage1-data' in finalizer_stager
     assert '--dataset-manifest "${DATASET_MANIFEST}"' in finalizer_stager
     assert '--model-manifest "${MODEL_MANIFEST}"' in finalizer_stager
     assert '--verify-only > "${DATASET_MARKER_STAGING}"' in finalizer_stager
@@ -1353,7 +1353,7 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
     assert '"${TPEX_PROXY_URL%/}/_internal/warmup"' in warmup
     assert "no TPEx upstream request was sent" in warmup
     warmup_index = cpu_prepare.index('warm_tpex_cloud_run_relay.sh"')
-    download_index = cpu_prepare.index('run fin-ts-download "${DOWNLOAD_ARGUMENTS[@]}"')
+    download_index = cpu_prepare.index('run stock-forecasting-download "${DOWNLOAD_ARGUMENTS[@]}"')
     assert warmup_index < download_index
 
 

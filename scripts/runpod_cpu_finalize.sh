@@ -129,7 +129,7 @@ stage_dataset_readiness() {
         echo "Refusing to overwrite a staged dataset readiness marker: ${DATASET_MARKER_STAGING}" >&2
         return 3
     fi
-    "${POETRY_BIN}" run fin-ts-verify-stage1-data \
+    "${POETRY_BIN}" run stock-forecasting-verify-stage1-data \
         --dataset-manifest "${DATASET_MANIFEST}" \
         --code-manifest "${CODE_MARKER}" \
         --model-manifest "${MODEL_MANIFEST}" \

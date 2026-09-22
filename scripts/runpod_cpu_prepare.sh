@@ -409,7 +409,7 @@ publish_dataset_readiness() {
         echo "Refusing to overwrite a staged dataset readiness marker: ${DATASET_MARKER_STAGING}" >&2
         return 3
     fi
-    "${POETRY_BIN}" run fin-ts-verify-stage1-data \
+    "${POETRY_BIN}" run stock-forecasting-verify-stage1-data \
         --dataset-manifest "${dataset_manifest}" \
         --code-manifest "${CODE_MARKER}" \
         --model-manifest "${MODEL_MANIFEST}" \
@@ -489,7 +489,7 @@ fi
 cd "${PROJECT_ROOT}"
 "${POETRY_BIN}" env use "${PROJECT_ROOT}/.venv/bin/python"
 "${POETRY_BIN}" run ruff check .
-PYTEST_TMPDIR="/tmp/fin-ts-pytest-${LAUNCH_ID}"
+PYTEST_TMPDIR="/tmp/stock-forecasting-pytest-${LAUNCH_ID}"
 PYTEST_DATASET_MARKER="${PYTEST_TMPDIR}/pytest-dataset-readiness.json"
 PYTEST_ARGUMENTS=()
 if [[ "${RUNPOD_PYTEST_WORKERS}" != "0" ]]; then
@@ -513,7 +513,7 @@ RUNPOD_ROLE=cpu-prep RUNPOD_CONFIG="${RUNPOD_CONFIG}" \
     bash "${SCRIPT_DIR}/prefetch_hf_models.sh" --smoke-time-series-backbone
 
 if [[ ${REUSE_READY_DATASET} -eq 1 ]]; then
-    if ! "${POETRY_BIN}" run fin-ts-verify-download \
+    if ! "${POETRY_BIN}" run stock-forecasting-verify-download \
         --manifest "${DOWNLOAD_MANIFEST_FINAL}" \
         --raw "${RAW_FINAL}"; then
         quarantine_known_files incompatible-acquisition "${FINAL_DATA_FILES[@]}"
@@ -526,7 +526,7 @@ if [[ ${REUSE_READY_DATASET} -eq 1 ]]; then
     "${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_readiness.py" check-code \
         --marker "${CODE_MARKER}" \
         --project-root "${PROJECT_ROOT}"
-    if ! "${POETRY_BIN}" run fin-ts-verify-stage1-data \
+    if ! "${POETRY_BIN}" run stock-forecasting-verify-stage1-data \
         --dataset-manifest "${DATASET_MANIFEST_FINAL}" \
         --code-manifest "${CODE_MARKER}" \
         --model-manifest "${MODEL_MANIFEST}" \
@@ -539,7 +539,7 @@ if [[ ${REUSE_READY_DATASET} -eq 1 ]]; then
         REUSE_READY_DATASET=0
         REUSE_DOWNLOADED_DATASET=1
         printf '%s\n' \
-            'Provider materialization remains valid. The dataset manifest will be regenerated; fin-ts-prepare will reuse a content-compatible bar store or quarantine and rebuild only that derived store when its content identity changed.' >&2
+            'Provider materialization remains valid. The dataset manifest will be regenerated; stock-forecasting-prepare will reuse a content-compatible bar store or quarantine and rebuild only that derived store when its content identity changed.' >&2
     fi
 fi
 if [[ ${REUSE_READY_DATASET} -eq 1 ]]; then
@@ -569,7 +569,7 @@ publish_download_checkpoint() {
 }
 
 if [[ ${REUSE_DOWNLOADED_DATASET} -eq 1 ]]; then
-    if ! "${POETRY_BIN}" run fin-ts-verify-download \
+    if ! "${POETRY_BIN}" run stock-forecasting-verify-download \
         --manifest "${DOWNLOAD_MANIFEST_FINAL}" \
         --raw "${RAW_FINAL}"; then
         quarantine_known_files invalid-acquisition "${FINAL_DATA_FILES[@]}"
@@ -638,7 +638,7 @@ if [[ ${REUSE_DOWNLOADED_DATASET} -eq 0 ]]; then
         bash "${SCRIPT_DIR}/warm_tpex_cloud_run_relay.sh"
     fi
     set +e
-    "${POETRY_BIN}" run fin-ts-download "${DOWNLOAD_ARGUMENTS[@]}"
+    "${POETRY_BIN}" run stock-forecasting-download "${DOWNLOAD_ARGUMENTS[@]}"
     DOWNLOAD_EXIT_CODE=$?
     set -e
     if [[ ${DOWNLOAD_EXIT_CODE} -eq 75 ]]; then
@@ -659,7 +659,7 @@ print(state)' "${DOWNLOAD_PROGRESS}")"
         exit "${DOWNLOAD_EXIT_CODE}"
     fi
     publish_download_checkpoint
-    "${POETRY_BIN}" run fin-ts-verify-download \
+    "${POETRY_BIN}" run stock-forecasting-verify-download \
         --manifest "${DOWNLOAD_MANIFEST_FINAL}" \
         --raw "${RAW_FINAL}"
 fi
@@ -675,7 +675,7 @@ fi
 write_lifecycle_state preparing
 
 set +e
-"${POETRY_BIN}" run fin-ts-prepare \
+"${POETRY_BIN}" run stock-forecasting-prepare \
     --input "${RAW_FINAL}" \
     --output "${BAR_STORE_FINAL}" \
     --download-manifest "${DOWNLOAD_MANIFEST_FINAL}" \
@@ -706,7 +706,7 @@ fi
     --marker "${CODE_MARKER}" \
     --project-root "${PROJECT_ROOT}"
 
-"${POETRY_BIN}" run fin-ts-verify-stage1-data \
+"${POETRY_BIN}" run stock-forecasting-verify-stage1-data \
     --dataset-manifest "${DATASET_MANIFEST_STAGING}" \
     --code-manifest "${CODE_MARKER}" \
     --model-manifest "${MODEL_MANIFEST}" \

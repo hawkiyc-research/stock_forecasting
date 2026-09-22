@@ -39,6 +39,19 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 
 這是研究與能力驗證用的 PoC，不是投資建議、交易系統或可保證獲利的模型。
 
+### 專案命名與持久化識別
+
+Python 專案、套件與 W&B project 名稱統一為 `stock_forecasting`；命令列入口、
+新建 Pod 與新建 tmux session 使用對應的 `stock-forecasting-` 前綴。
+訓練、評估、baseline 與 CPU preparation Pod 的預設名稱分別為
+`stock-forecasting-train`、`stock-forecasting-validation`、
+`stock-forecasting-baseline`、`stock-forecasting-cpu-prepare`。
+自訂 Pod 名稱也必須保留專案前綴；統一入口仍是 `bash scripts/runpod_workflow.sh`。
+
+顯示名稱與套件 metadata 不參與 dataset、baseline 或 checkpoint 的數值相容性識別。
+更名不搬移既有資料、日誌或訓練結果，也不重寫歷史 manifest。歷史日誌仍按原紀錄
+讀取；既有 Pod 與 tmux session 的名稱維持原樣，新的名稱只在後續建立時生效。
+
 ### 數值輸出契約
 
 `MultiHorizonAlphaHead` 的唯一預測輸出是：
@@ -358,7 +371,7 @@ Poetry environment、重新產生 canonical `poetry.lock`，再執行 lint、完
 只使用台股官方資料：
 
 ```bash
-poetry run fin-ts-download \
+poetry run stock-forecasting-download \
   --profile tw_only \
   --start 2010-01-01 \
   --end 2026-07-28 \
@@ -368,7 +381,7 @@ poetry run fin-ts-download \
 以小型美股 universe 驗證 EODHD：
 
 ```bash
-poetry run fin-ts-download \
+poetry run stock-forecasting-download \
   --profile us_only_eodhd \
   --symbols AAPL MSFT \
   --etf-symbols SPY QQQ \
@@ -380,7 +393,7 @@ poetry run fin-ts-download \
 建立或接續 lazy symbol bar store（不建立 window/label 檔）：
 
 ```bash
-poetry run fin-ts-prepare \
+poetry run stock-forecasting-prepare \
   --fixed-evaluation --h-start 1 \
   --input data/raw/market.parquet \
   --output data/prepared/bar-store
@@ -625,7 +638,7 @@ TPEx client 仍使用原始 `https://www.tpex.org.tw` endpoint 與 public query 
 計算 request SHA-256；Cloud Run URL、relay token 與 transport 模式都不會進入 raw
 cache key 或 dataset request identity。切換 relay 後，既有成功的 TWSE、TPEx 與
 EODHD JSON cache 會照常續用，只對缺少的 TPEx response 經 relay 發出請求。CPU
-workflow 只在確定需要 provider acquisition 時，緊接 `fin-ts-download` 前呼叫已驗證的
+workflow 只在確定需要 provider acquisition 時，緊接 `stock-forecasting-download` 前呼叫已驗證的
 `/_internal/warmup`；該 request 不會呼叫 TPEx。它不放在 tmux 啟動開頭，避免完整
 pytest 與 Hugging Face prefetch 期間 relay 又 scale to zero。若完整 raw checkpoint
 已可重用，連 warmup 都不會執行。
@@ -974,7 +987,7 @@ bash scripts/runpod_tmux_launch.sh cpu-prepare
 如需即時查看，可 attach 到 tmux；離開時用 `Ctrl-b d`，不要停止 session：
 
 ```bash
-tmux -L fin-ts-cpu-prepare attach -t fin-ts-cpu-prepare
+tmux -L stock-forecasting-cpu-prepare attach -t stock-forecasting-cpu-prepare
 ```
 
 `cpu-prepare` 會依序：
@@ -1158,7 +1171,7 @@ provider 資料快照時才改 `--dataset-revision`，新 revision 不會沿用�
 `waiting_for_preparation`、`failed` 或 `timed_out`，先從
 `lifecycle/stage1/cpu-preparation.json` 讀取
 `launch_id`、`log_path` 與可用的 `progress_path`。tmux log 目錄固定為
-`logs/tmux/fin-ts-cpu-prepare/<launch-id>/`；由腳本解析並下載到本機診斷目錄：
+`logs/tmux/stock-forecasting-cpu-prepare/<launch-id>/`；由腳本解析並下載到本機診斷目錄：
 
 ```bash
 bash scripts/runpod_workflow.sh cpu-logs
@@ -1247,13 +1260,13 @@ Stage 2 會從相同 pretrained base 開始，不接續 Stage 1 checkpoint。切
    即時查看 tmux：
 
    ```bash
-   tmux -L fin-ts-cpu-finalize attach -t fin-ts-cpu-finalize
+   tmux -L stock-forecasting-cpu-finalize attach -t stock-forecasting-cpu-finalize
    ```
 
    Finalizer 只會驗證程式碼、runtime、既有 dataset/bar store、Hugging Face cache 與
    Stage 2 config，執行完整 pytest，然後把既有 dataset readiness marker 綁到新的
-   Stage 2 selection。它不會執行 `fin-ts-download`、provider API acquisition、
-   `fin-ts-prepare` 或 bar-store materialization。
+   Stage 2 selection。它不會執行 `stock-forecasting-download`、provider API acquisition、
+   `stock-forecasting-prepare` 或 bar-store materialization。
 
 6. **本機控制端：等待 CPU finalization 完成並通過 GPU gate。** Pod 終止後執行：
 
@@ -1290,7 +1303,7 @@ Stage 2 會從相同 pretrained base 開始，不接續 Stage 1 checkpoint。切
    config。若要即時查看：
 
    ```bash
-   tmux -L fin-ts-stage1-train attach -t fin-ts-stage1-train
+   tmux -L stock-forecasting-train attach -t stock-forecasting-train
    ```
 
 9. **本機控制端：確認 terminal state。** 訓練與自動 validation 完成、Pod 終止後執行：
@@ -1342,7 +1355,7 @@ bash scripts/runpod_tmux_launch.sh baseline
 工作由 detached tmux 執行；不需要持續維持 SSH。查看即時 log：
 
 ```bash
-tmux -L fin-ts-baseline attach -t fin-ts-baseline
+tmux -L stock-forecasting-baseline attach -t stock-forecasting-baseline
 ```
 
 按 `Ctrl-b d` 離開不會中斷工作。完成／失敗／逾時後由**本機 guard**終止 Pod，
@@ -1523,7 +1536,7 @@ bash scripts/runpod_tmux_launch.sh stage1-train
 Stage 2 由 immutable selection 所映射的 `RUNPOD_CONFIG` 決定。即時查看：
 
 ```bash
-tmux -L fin-ts-stage1-train attach -t fin-ts-stage1-train
+tmux -L stock-forecasting-train attach -t stock-forecasting-train
 ```
 
 訓練會先驗證 image runtime、CUDA、mounted readiness、dataset/model
@@ -1661,7 +1674,7 @@ bash scripts/runpod_tmux_launch.sh stage1-train
 selection 的 config 決定。即時查看：
 
 ```bash
-tmux -L fin-ts-stage1-train attach -t fin-ts-stage1-train
+tmux -L stock-forecasting-train attach -t stock-forecasting-train
 ```
 
 訓練正常跑完或 early stopping 觸發後，流程會發布 immutable
@@ -1779,7 +1792,7 @@ identity、artifact integrity、validation-selection、資料、模型與訓練�
 內執行，不在本機載入 checkpoint：
 
 ```bash
-poetry run fin-ts-infer \
+poetry run stock-forecasting-infer \
   --config /runpod-volume/savedModel/<run-id>/<checkpoint>/resolved-config.yaml \
   --checkpoint /runpod-volume/savedModel/<run-id>/<checkpoint> \
   --input "${DATA_ROOT}/raw/market.parquet" \
@@ -1856,14 +1869,14 @@ model/tokenizer cache 必須仍存在且契約一致；不能直接改指向另�
 
 本機使用 `runpod_workflow.sh` 建立 Pod；Pod 內的診斷一律使用
 `runpod_tmux_launch.sh probe-scales` 啟動，與前述部署及訓練流程一致。
-此命令會啟動 `fin-ts-probe-scales` 背景 session。看到 `Detached tmux session started`
+此命令會啟動 `stock-forecasting-probe-scales` 背景 session。看到 `Detached tmux session started`
 後，即可中斷 SSH，不需要保持終端連線。
 
 需要查看即時輸出時，在 Pod 仍運行期間重新 SSH 登入後 attach；按 `Ctrl-b d` 可離開畫面而
 不中止工作，不要按 `Ctrl-c` 當作 detach：
 
 ```bash
-tmux -L fin-ts-probe-scales attach -t fin-ts-probe-scales
+tmux -L stock-forecasting-probe-scales attach -t stock-forecasting-probe-scales
 ```
 
 診斷沿用既有的 timeout 與**本機監控終止**流程：runner 取得排他 GPU lease 後，先發布
@@ -1884,7 +1897,7 @@ runner 的 timeout 沿用 Pod 建立時的 `MAX_RUNTIME_SECONDS`（上例為 2 �
 launcher 會印出這次工作的確切路徑。執行狀態與診斷數值報告分開保存：
 
 ```text
-/runpod-volume/logs/tmux/fin-ts-probe-scales/<launch-id>/
+/runpod-volume/logs/tmux/stock-forecasting-probe-scales/<launch-id>/
   combined.log                 # Worker stdout/stderr and local-guard handoff messages
   status.json                  # Terminal job state: succeeded / failed / timed_out
   runner.sh                    # Quoted arguments, timeout, lease and local-guard handoff
@@ -2092,6 +2105,22 @@ numerical time series:
 
 This is a research and capability-validation PoC. It is not investment advice,
 a production trading system, or a claim of guaranteed profitability.
+
+### Project names and persistent identities
+
+The Python project, import package, and W&B project are named `stock_forecasting`.
+Console entry points, new Pods, and new tmux sessions use the corresponding
+`stock-forecasting-` prefix. Default Pod names are `stock-forecasting-train`,
+`stock-forecasting-validation`, `stock-forecasting-baseline`, and
+`stock-forecasting-cpu-prepare`. Custom Pod names must retain the project prefix.
+The common workflow entry point remains `bash scripts/runpod_workflow.sh`.
+
+Display names and package metadata do not participate in the numerical
+compatibility identities of datasets, baselines, or checkpoints. Renaming does
+not move existing data, logs, or training results, or rewrite historical
+manifests. Historical logs remain readable at their recorded paths. Existing
+Pods and tmux sessions keep their original names; the new names apply only to
+subsequent launches.
 
 ### Numerical output contract
 
@@ -2488,7 +2517,7 @@ inject the EODHD token; do not export a plaintext token into shell history.
 Taiwan official data only:
 
 ```bash
-poetry run fin-ts-download \
+poetry run stock-forecasting-download \
   --profile tw_only \
   --start 2010-01-01 \
   --end 2026-07-28 \
@@ -2498,7 +2527,7 @@ poetry run fin-ts-download \
 Small EODHD US validation universe:
 
 ```bash
-poetry run fin-ts-download \
+poetry run stock-forecasting-download \
   --profile us_only_eodhd \
   --symbols AAPL MSFT \
   --etf-symbols SPY QQQ \
@@ -2510,7 +2539,7 @@ poetry run fin-ts-download \
 Build or resume the lazy symbol bar store (no window/label files):
 
 ```bash
-poetry run fin-ts-prepare \
+poetry run stock-forecasting-prepare \
   --fixed-evaluation --h-start 1 \
   --input data/raw/market.parquet \
   --output data/prepared/bar-store
@@ -2796,7 +2825,7 @@ and transport mode do not enter raw-cache keys or dataset-request identity.
 After switching transports, all successful TWSE, TPEx, and EODHD JSON cache
 entries remain reusable; only missing TPEx responses pass through the relay.
 The CPU workflow calls authenticated `/_internal/warmup` immediately before
-`fin-ts-download`, and only when provider acquisition is actually required.
+`stock-forecasting-download`, and only when provider acquisition is actually required.
 Warmup never contacts TPEx. It is intentionally not placed at tmux startup,
 because the complete pytest suite and Hugging Face prefetch could let the relay
 scale back to zero before acquisition. Reusing a complete raw checkpoint skips
@@ -3180,7 +3209,7 @@ Attach for live observation if needed. Detach with `Ctrl-b d`; do not stop the
 session:
 
 ```bash
-tmux -L fin-ts-cpu-prepare attach -t fin-ts-cpu-prepare
+tmux -L stock-forecasting-cpu-prepare attach -t stock-forecasting-cpu-prepare
 ```
 
 `cpu-prepare` performs the following sequence:
@@ -3406,7 +3435,7 @@ If the state is `waiting_for_budget`, `waiting_for_provider`,
 `waiting_for_resume`, `waiting_for_preparation`, `failed`, or `timed_out`, first
 read `launch_id`, `log_path`, and any `progress_path` from
 `lifecycle/stage1/cpu-preparation.json`. The tmux log directory is
-`logs/tmux/fin-ts-cpu-prepare/<launch-id>/`; let the script resolve and download
+`logs/tmux/stock-forecasting-cpu-prepare/<launch-id>/`; let the script resolve and download
 it into the local diagnostic directory:
 
 ```bash
@@ -3503,13 +3532,13 @@ Follow this sequence and do not skip the dataset request SHA comparison:
    Attach for live observation:
 
    ```bash
-   tmux -L fin-ts-cpu-finalize attach -t fin-ts-cpu-finalize
+   tmux -L stock-forecasting-cpu-finalize attach -t stock-forecasting-cpu-finalize
    ```
 
    The finalizer validates the code, runtime, existing dataset/bar store,
    Hugging Face cache, and Stage 2 config; runs the complete pytest suite; and
    binds the existing dataset readiness marker to the new Stage 2 selection. It
-   does not run `fin-ts-download`, provider API acquisition, `fin-ts-prepare`, or
+   does not run `stock-forecasting-download`, provider API acquisition, `stock-forecasting-prepare`, or
    bar-store materialization.
 
 6. **Local control machine: wait for finalization and pass the GPU gate.** After
@@ -3551,7 +3580,7 @@ Follow this sequence and do not skip the dataset request SHA comparison:
    must identify the Stage 2 config. Attach for live observation with:
 
    ```bash
-   tmux -L fin-ts-stage1-train attach -t fin-ts-stage1-train
+   tmux -L stock-forecasting-train attach -t stock-forecasting-train
    ```
 
 9. **Local control machine: verify the terminal state.** After training plus
@@ -3609,7 +3638,7 @@ bash scripts/runpod_tmux_launch.sh baseline
 The detached tmux job survives SSH disconnection. To observe progress:
 
 ```bash
-tmux -L fin-ts-baseline attach -t fin-ts-baseline
+tmux -L stock-forecasting-baseline attach -t stock-forecasting-baseline
 ```
 
 Detach with `Ctrl-b d`. The **local guard** terminates the Pod after completion,
@@ -3817,7 +3846,7 @@ Stage 1 or Stage 2 runs; the `stage1-train` command name does not override that
 selection. Attach for live observation:
 
 ```bash
-tmux -L fin-ts-stage1-train attach -t fin-ts-stage1-train
+tmux -L stock-forecasting-train attach -t stock-forecasting-train
 ```
 
 Training verifies the image runtime, CUDA, mounted readiness, dataset/model
@@ -3971,7 +4000,7 @@ bash scripts/runpod_tmux_launch.sh stage1-train
 config determines whether Stage 1 or Stage 2 resumes. Attach for live output:
 
 ```bash
-tmux -L fin-ts-stage1-train attach -t fin-ts-stage1-train
+tmux -L stock-forecasting-train attach -t stock-forecasting-train
 ```
 
 Normal completion or early stopping publishes immutable
@@ -4103,7 +4132,7 @@ Inference also runs inside a RunPod Pod with the project Poetry environment and
 the same network volume mounted; do not load the checkpoint locally:
 
 ```bash
-poetry run fin-ts-infer \
+poetry run stock-forecasting-infer \
   --config /runpod-volume/savedModel/<run-id>/<checkpoint>/resolved-config.yaml \
   --checkpoint /runpod-volume/savedModel/<run-id>/<checkpoint> \
   --input "${DATA_ROOT}/raw/market.parquet" \
@@ -4192,14 +4221,14 @@ the read-only diagnostic never triggers checkpoint reconciliation or deletion.
 Use `runpod_workflow.sh` locally to create the Pod, then use
 `runpod_tmux_launch.sh probe-scales` inside the Pod to start diagnostics, consistently
 with the deployment and training workflows above. This starts the detached
-`fin-ts-probe-scales` session. After `Detached tmux session started` appears,
+`stock-forecasting-probe-scales` session. After `Detached tmux session started` appears,
 SSH may disconnect without stopping the job.
 
 While the Pod is still running, reconnect over SSH and attach to view live output.
 Use `Ctrl-b d` to detach without stopping work; do not use `Ctrl-c` to detach:
 
 ```bash
-tmux -L fin-ts-probe-scales attach -t fin-ts-probe-scales
+tmux -L stock-forecasting-probe-scales attach -t stock-forecasting-probe-scales
 ```
 
 Diagnostics reuse the existing timeout and **local monitoring/termination** flow. After
@@ -4226,7 +4255,7 @@ The launcher prints the exact paths for this invocation. Execution status is sto
 separately from numerical diagnostic reports:
 
 ```text
-/runpod-volume/logs/tmux/fin-ts-probe-scales/<launch-id>/
+/runpod-volume/logs/tmux/stock-forecasting-probe-scales/<launch-id>/
   combined.log                 # Worker stdout/stderr and local-guard handoff messages
   status.json                  # Terminal job state: succeeded / failed / timed_out
   runner.sh                    # Quoted arguments, timeout, lease and local-guard handoff

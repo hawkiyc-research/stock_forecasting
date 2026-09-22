@@ -1,5 +1,5 @@
 [project]
-name = "fin-ts-multimodal"
+name = "stock_forecasting"
 version = "0.1.0"
 description = "Quant-only OHLCV forecasting with a finance-pretrained time-series foundation model."
 authors = [{ name = "Project Contributors" }]
@@ -22,20 +22,20 @@ dependencies = [
 ]
 
 [project.scripts]
-fin-ts-download = "stock_forecasting.cli.download_market_data:main"
-fin-ts-verify-download = "stock_forecasting.cli.verify_download:main"
-fin-ts-synthetic = "stock_forecasting.cli.generate_synthetic_data:main"
-fin-ts-prepare = "stock_forecasting.cli.prepare_data_runtime:main"
-fin-ts-train = "stock_forecasting.cli.train:main"
-fin-ts-evaluate = "stock_forecasting.cli.evaluate:main"
-fin-ts-probe-scales = "stock_forecasting.cli.probe_scales:main"
-fin-ts-infer = "stock_forecasting.cli.infer:main"
-fin-ts-preflight = "stock_forecasting.cli.preflight:main"
-fin-ts-benchmark = "stock_forecasting.cli.benchmark_baselines:main"
-fin-ts-validate-benchmarks = "stock_forecasting.cli.validate_benchmarks:main"
-fin-ts-wandb-sync = "stock_forecasting.cli.sync_wandb:main"
-fin-ts-verify-stage1-data = "stock_forecasting.cli.verify_stage1_data:main"
-fin-ts-supervise = "stock_forecasting.runpod.supervisor:main"
+stock-forecasting-download = "stock_forecasting.cli.download_market_data:main"
+stock-forecasting-verify-download = "stock_forecasting.cli.verify_download:main"
+stock-forecasting-synthetic = "stock_forecasting.cli.generate_synthetic_data:main"
+stock-forecasting-prepare = "stock_forecasting.cli.prepare_data_runtime:main"
+stock-forecasting-train = "stock_forecasting.cli.train:main"
+stock-forecasting-evaluate = "stock_forecasting.cli.evaluate:main"
+stock-forecasting-probe-scales = "stock_forecasting.cli.probe_scales:main"
+stock-forecasting-infer = "stock_forecasting.cli.infer:main"
+stock-forecasting-preflight = "stock_forecasting.cli.preflight:main"
+stock-forecasting-benchmark = "stock_forecasting.cli.benchmark_baselines:main"
+stock-forecasting-validate-benchmarks = "stock_forecasting.cli.validate_benchmarks:main"
+stock-forecasting-wandb-sync = "stock_forecasting.cli.sync_wandb:main"
+stock-forecasting-verify-stage1-data = "stock_forecasting.cli.verify_stage1_data:main"
+stock-forecasting-supervise = "stock_forecasting.runpod.supervisor:main"
 
 [tool.poetry]
 packages = [{ include = "stock_forecasting", from = "src" }]

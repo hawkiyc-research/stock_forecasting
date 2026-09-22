@@ -27,7 +27,7 @@ OUTPUT="${NETWORK_VOLUME_ROOT}/diagnostics/full-workflow/${WANDB_RUN_ID:?}"
 mkdir -p "${OUTPUT}"
 # Short, Pod-local scratch avoids AF_UNIX path limits and repeated fixture-copy
 # traffic on the network volume. Persistent evidence stays in OUTPUT.
-export TMPDIR="$(mktemp -d /tmp/fin-ts-qa.XXXXXXXX)"
+export TMPDIR="$(mktemp -d /tmp/stock-forecasting-qa.XXXXXXXX)"
 # No completion manifest is written under baselines/. This is not a baseline build.
 if [[ "${REGRESSION_ONLY}" -eq 1 ]]; then
     set +e

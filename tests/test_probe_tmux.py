@@ -308,8 +308,12 @@ class ProbeTmuxTests(unittest.TestCase):
         arguments = ("--checkpoint", "run-selected", "--batch-size", "8")
         result = harness.command("runpod_tmux_launch.sh", "probe-scales", *arguments)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Detached tmux session started: fin-ts-probe-scales", result.stdout)
-        self.assertIn("new-session -d -s fin-ts-probe-scales", harness.read("tmux-calls"))
+        self.assertIn(
+            "Detached tmux session started: stock-forecasting-probe-scales", result.stdout
+        )
+        self.assertIn(
+            "new-session -d -s stock-forecasting-probe-scales", harness.read("tmux-calls")
+        )
         self.assertIn("remain-on-exit on", harness.read("tmux-calls"))
         self.assertFalse((harness.root / "worker-args").exists())
         self.assertFalse((harness.root / "lease-calls").exists())

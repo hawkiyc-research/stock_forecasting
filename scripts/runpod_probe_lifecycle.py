@@ -14,9 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 MAX_MARKER_BYTES = 65536
+PROBE_SESSION_NAME = "stock-forecasting-probe-scales"
+LEGACY_PROBE_SESSION_NAME = "fin-ts-probe-scales"
 
 
-def identity(volume_root, pod_id, owner_run_id, launch_id):
+def identity(volume_root, pod_id, owner_run_id, launch_id, *, session=PROBE_SESSION_NAME):
     if (
         not re.fullmatch(r"/[A-Za-z0-9._/-]+", volume_root)
         or volume_root == "/"
@@ -32,8 +34,10 @@ def identity(volume_root, pod_id, owner_run_id, launch_id):
     ):
         if not isinstance(value, str) or re.fullmatch(pattern, value) is None or "--" in value:
             raise ValueError("Invalid " + label)
+    if session not in {PROBE_SESSION_NAME, LEGACY_PROBE_SESSION_NAME}:
+        raise ValueError("Invalid diagnostic session name")
     root = Path(volume_root)
-    job_dir = root / "logs/tmux/fin-ts-probe-scales" / launch_id
+    job_dir = root / "logs/tmux" / session / launch_id
     return {
         "marker": root / "lifecycle/diagnostics/representation-scales" / (pod_id + ".json"),
         "log_path": job_dir / "combined.log",
@@ -51,7 +55,15 @@ def load_bounded(stream):
 def validate(payload, volume_root, pod_id, owner_run_id):
     if not isinstance(payload, dict):
         raise ValueError("Diagnostic marker must be an object")
-    paths = identity(volume_root, pod_id, owner_run_id, payload.get("launch_id"))
+    # Existing guards must still read old signals without moving or rewriting them.
+    candidates = [
+        identity(volume_root, pod_id, owner_run_id, payload.get("launch_id"), session=session)
+        for session in (PROBE_SESSION_NAME, LEGACY_PROBE_SESSION_NAME)
+    ]
+    paths = next((candidate for candidate in candidates if (
+        payload.get("log_path") == str(candidate["log_path"])
+        and payload.get("status_path") == str(candidate["status_path"])
+    )), None)
     if (
         type(payload.get("schema_version")) is not int
         or payload["schema_version"] != 1
@@ -59,8 +71,7 @@ def validate(payload, volume_root, pod_id, owner_run_id):
         or payload.get("pod_id") != pod_id
         or payload.get("owner_run_id") != owner_run_id
         or payload.get("gpu_lease_acquired") is not True
-        or payload.get("log_path") != str(paths["log_path"])
-        or payload.get("status_path") != str(paths["status_path"])
+        or paths is None
     ):
         raise ValueError("Diagnostic marker identity or paths do not match this guard")
     state, code = payload.get("state"), payload.get("exit_code")

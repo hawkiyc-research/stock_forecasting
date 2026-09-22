@@ -77,14 +77,15 @@ if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", launch_id) is None:
     raise SystemExit("CPU preparation lifecycle has no valid launch_id")
 
 log_path = str(payload.get("log_path", ""))
-expected_prefix = "/runpod-volume/logs/tmux/fin-ts-cpu-prepare/"
-expected_log_dir = expected_prefix + launch_id
-expected_log_file = expected_log_dir + "/combined.log"
-if log_path == expected_log_dir:
-    resolved_log_dir = log_path
-elif log_path == expected_log_file:
-    resolved_log_dir = expected_log_dir
-else:
+# Read historical logs in place; only new launches use the project-named directory.
+allowed_sessions = ("stock-forecasting-cpu-prepare", "fin-ts-cpu-prepare")
+resolved_log_dir = ""
+for session in allowed_sessions:
+    expected_log_dir = f"/runpod-volume/logs/tmux/{session}/{launch_id}"
+    if log_path in {expected_log_dir, expected_log_dir + "/combined.log"}:
+        resolved_log_dir = expected_log_dir
+        break
+if not resolved_log_dir:
     raise SystemExit(f"Unexpected CPU log_path: {log_path or '<missing>'}")
 
 print("\t".join((state, launch_id, resolved_log_dir)))

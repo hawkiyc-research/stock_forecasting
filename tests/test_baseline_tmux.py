@@ -35,7 +35,7 @@ class BaselineTmuxTests(unittest.TestCase):
                 harness.environment.update(values)
                 launched = harness.command("runpod_tmux_launch.sh", "baseline")
                 self.assertEqual(launched.returncode, 0, launched.stderr)
-                self.assertIn("fin-ts-baseline", launched.stdout)
+                self.assertIn("stock-forecasting-baseline", launched.stdout)
                 result = harness.run_worker()
                 self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
                 self.assertEqual(harness.status()["state"], state)

@@ -93,7 +93,7 @@ def test_transitive_locked_torch_can_be_allowed_without_allowing_direct_torch(
 def test_poetry_files_remain_valid_toml() -> None:
     project_root = Path(__file__).parents[1]
     with (project_root / "pyproject.toml").open("rb") as stream:
-        assert tomllib.load(stream)["project"]["name"] == "fin-ts-multimodal"
+        assert tomllib.load(stream)["project"]["name"] == "stock_forecasting"
 
 
 def test_runpod_lint_version_is_pinned() -> None:

@@ -78,7 +78,7 @@ class ProbeGuardTests(unittest.TestCase):
         return harness
 
     def payload(self, harness: ProbeHarness, state: str = "succeeded", code: int = 0) -> dict:
-        job_dir = harness.volume / "logs/tmux/fin-ts-probe-scales/launch-fixture"
+        job_dir = harness.volume / "logs/tmux/stock-forecasting-probe-scales/launch-fixture"
         return {
             "schema_version": 1,
             "kind": "representation-scale-probe",

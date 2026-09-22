@@ -37,19 +37,19 @@ SAVED_MODEL_ROOT="${SAVED_MODEL_ROOT:-${RUNPOD_VOLUME_MOUNT_PATH}/savedModel}"
 RUNPOD_GPU_WORKFLOW="${RUNPOD_GPU_WORKFLOW:-train}"
 case "${RUNPOD_GPU_WORKFLOW}" in
     train)
-        RUNPOD_POD_NAME="${RUNPOD_POD_NAME:-fin-ts-multimodal-poc}"
+        RUNPOD_POD_NAME="${RUNPOD_POD_NAME:-stock-forecasting-train}"
         RUNPOD_GPU_ROLE=gpu-train
         RUNPOD_GUARD_LIFECYCLE_KEY=lifecycle/stage1/training.json
         RUNPOD_TMUX_WORKFLOW=stage1-train
         ;;
     validation)
-        RUNPOD_POD_NAME="${RUNPOD_POD_NAME:-fin-ts-multimodal-validation}"
+        RUNPOD_POD_NAME="${RUNPOD_POD_NAME:-stock-forecasting-validation}"
         RUNPOD_GPU_ROLE=gpu-validation
         RUNPOD_GUARD_LIFECYCLE_KEY=lifecycle/stage1/validation.json
         RUNPOD_TMUX_WORKFLOW=stage1-validate
         ;;
     baseline)
-        RUNPOD_POD_NAME="${RUNPOD_POD_NAME:-fin-ts-baseline}"
+        RUNPOD_POD_NAME="${RUNPOD_POD_NAME:-stock-forecasting-baseline}"
         RUNPOD_GPU_ROLE=gpu-baseline
         RUNPOD_GUARD_LIFECYCLE_KEY=lifecycle/stage1/baseline.json
         RUNPOD_TMUX_WORKFLOW=baseline
@@ -59,6 +59,7 @@ case "${RUNPOD_GPU_WORKFLOW}" in
         exit 2
         ;;
 esac
+runpod_validate_project_resource_name "${RUNPOD_POD_NAME}" RUNPOD_POD_NAME
 RUNPOD_GPU_ID="${RUNPOD_CLI_GPU_ID:-${RUNPOD_GPU_ID:-NVIDIA GeForce RTX 5090}}"
 RUNPOD_GPU_COUNT="${RUNPOD_GPU_COUNT:-1}"
 RUNPOD_IMAGE="${RUNPOD_IMAGE:-runpod/pytorch:1.0.7-cu1281-torch291-ubuntu2404}"

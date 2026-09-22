@@ -237,16 +237,18 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         ).returncode:
             self.skipTest("Source-only RunPod deployments intentionally omit Git metadata")
         content = runpy.run_path(str(ROOT / "src/stock_forecasting/data/content_identity.py"))
-        paths = ["src/stock_forecasting/" + p for p in content["semantic_source_paths"]()]
-        paths += [
-            "src/stock_forecasting/dataset_identity.py",
-            "scripts/runpod_cpu_prepare.sh",
-            "scripts/runpod_cpu_finalize.sh",
-        ]
+        paths = content["semantic_source_paths"]() + ["src/stock_forecasting/dataset_identity.py"]
         changed = subprocess.check_output(
             ["git", "diff", "v0.1.0", "--name-only", "--", *paths], cwd=ROOT, text=True
         )
         self.assertEqual(changed, "")
+        for path in ("scripts/runpod_cpu_prepare.sh", "scripts/runpod_cpu_finalize.sh"):
+            original = subprocess.check_output(
+                ["git", "show", f"v0.1.0:{path}"], cwd=ROOT, text=True
+            )
+            # Only the reviewed CLI/scratch-name prefix changes; every other byte stays exact.
+            expected = original.replace("fin-ts-", "stock-forecasting-")
+            self.assertEqual((ROOT / path).read_text(), expected, path)
 
     def test_configuration_refresh_preserves_dataset_identity(self):
         parser = SELECTION["build_parser"]()

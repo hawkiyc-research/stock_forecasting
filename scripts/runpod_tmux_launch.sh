@@ -98,7 +98,7 @@ fi
 bash "${SCRIPT_DIR}/verify_runpod_mounted_readiness.sh" --mount-only
 case "$1" in
     cpu-prepare)
-        SESSION_NAME=fin-ts-cpu-prepare
+        SESSION_NAME=stock-forecasting-cpu-prepare
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_cpu_prepare.sh"
         JOB_ROLE=cpu-prep
         MAX_RUNTIME_SECONDS="${RUNPOD_CPU_MAX_RUNTIME_SECONDS:-21600}"
@@ -108,7 +108,7 @@ case "$1" in
         PROVIDER_WAIT_EXIT_ALLOWED=1
         ;;
     cpu-finalize)
-        SESSION_NAME=fin-ts-cpu-finalize
+        SESSION_NAME=stock-forecasting-cpu-finalize
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_cpu_finalize.sh"
         JOB_ROLE=cpu-prep
         MAX_RUNTIME_SECONDS="${RUNPOD_CPU_FINALIZE_MAX_RUNTIME_SECONDS:-${RUNPOD_CPU_MAX_RUNTIME_SECONDS:-21600}}"
@@ -117,7 +117,7 @@ case "$1" in
         FAILURE_LIFECYCLE_KIND=stage1-mixed-finalization
         ;;
     stage1-train)
-        SESSION_NAME=fin-ts-stage1-train
+        SESSION_NAME=stock-forecasting-train
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_entrypoint.sh"
         JOB_ROLE=gpu-train
         MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-21600}"
@@ -145,7 +145,7 @@ case "$1" in
         RUN_DIRECTORY_ID="${WANDB_RUN_ID}"
         ;;
     baseline|verify-full-workflow)
-        SESSION_NAME=fin-ts-baseline
+        SESSION_NAME=stock-forecasting-baseline
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_baseline.sh"
         if [[ "$1" == "verify-full-workflow" ]]; then
             JOB_SCRIPT="${SCRIPT_DIR}/runpod_verify_full_workflow.sh"
@@ -163,7 +163,7 @@ case "$1" in
         RUN_DIRECTORY_ID="${WANDB_RUN_ID}"
         ;;
     stage1-validate)
-        SESSION_NAME=fin-ts-stage1-validate
+        SESSION_NAME=stock-forecasting-validation
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_validation.sh"
         JOB_ROLE=gpu-validation
         MAX_RUNTIME_SECONDS="${RUNPOD_VALIDATION_MAX_RUNTIME_SECONDS:-${MAX_RUNTIME_SECONDS:-21600}}"
@@ -205,7 +205,7 @@ case "$1" in
         fi
         ;;
     probe-scales)
-        SESSION_NAME=fin-ts-probe-scales
+        SESSION_NAME=stock-forecasting-probe-scales
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_probe_scales.sh"
         JOB_ROLE=gpu-probe
         MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-21600}"

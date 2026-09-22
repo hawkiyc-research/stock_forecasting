@@ -2,6 +2,15 @@
 
 # Read allowlisted values from a project-local dotenv file without executing it.
 
+runpod_validate_project_resource_name() {
+    local resource_name="${1:-}"
+    local resource_label="${2:-RESOURCE_NAME}"
+    if [[ ! "${resource_name}" =~ ^stock-forecasting(-[A-Za-z0-9][A-Za-z0-9._-]*)?$ ]]; then
+        echo "${resource_label} must use stock-forecasting or the stock-forecasting- prefix" >&2
+        return 2
+    fi
+}
+
 runpod_project_env_file() {
     local project_root="$1"
     printf '%s\n' "${RUNPOD_ENV_FILE:-${project_root}/.env}"
