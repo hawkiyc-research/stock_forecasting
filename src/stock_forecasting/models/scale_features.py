@@ -41,12 +41,44 @@ EXTENDED_FEATURE_NAMES = (
 )
 
 
+def validate_scale_feature_inputs(
+    asset: Tensor,
+    benchmark: Tensor,
+    *,
+    mask: Tensor | None = None,
+    extended: bool = False,
+) -> None:
+    """Validate observed inputs before H2D; direct callers retain strict checks."""
+    if asset.ndim != 3 or asset.shape != benchmark.shape or asset.shape[-1] != 5:
+        raise ValueError("Scale inputs must be aligned [batch, time, 5] OHLCV tensors")
+    if mask is None:
+        if asset.shape[1] < 61:
+            raise ValueError("Historical scales require at least 61 valid observed bars")
+    else:
+        if mask.shape != asset.shape[:2] or mask.dtype != torch.bool:
+            raise ValueError("Scale mask must be an aligned boolean tensor")
+        if not bool((mask.sum(dim=1) >= 61).all()):
+            raise ValueError("Historical scales require at least 61 valid observed bars")
+    closes = torch.stack((asset[..., 3].float(), benchmark[..., 3].float()), dim=-1)
+    if mask is not None:
+        closes = closes.masked_fill(~mask[..., None], 1.0)
+    if not bool((torch.isfinite(closes) & (closes > 0)).all()):
+        raise ValueError("Historical adjusted closes must be finite and positive")
+    if extended:
+        volume = torch.stack((asset[..., 4].float(), benchmark[..., 4].float()), dim=-1)
+        if mask is not None:
+            volume = volume.masked_fill(~mask[..., None], 0)
+        if not bool((torch.isfinite(volume) & (volume >= 0)).all()):
+            raise ValueError("Observed historical volume must be finite and nonnegative")
+
+
 def historical_scale_features(
     asset: Tensor,
     benchmark: Tensor,
     *,
     mask: Tensor | None = None,
     extended: bool = False,
+    inputs_validated: bool = False,
 ) -> Tensor:
     """Vectorize eight scale statistics and optionally twelve market descriptors.
 
@@ -55,6 +87,8 @@ def historical_scale_features(
     extra model/worker copy is needed.
     """
 
+    if not inputs_validated:
+        validate_scale_feature_inputs(asset, benchmark, mask=mask, extended=extended)
     if asset.ndim != 3 or asset.shape != benchmark.shape or asset.shape[-1] != 5:
         raise ValueError("Scale inputs must be aligned [batch, time, 5] OHLCV tensors")
     if mask is None:
@@ -62,12 +96,8 @@ def historical_scale_features(
     if mask.shape != asset.shape[:2] or mask.dtype != torch.bool:
         raise ValueError("Scale mask must be an aligned boolean tensor")
     lengths = mask.sum(dim=1)
-    if not bool((lengths >= 61).all()):
-        raise ValueError("Historical scales require at least 61 valid observed bars")
     closes = torch.stack((asset[..., 3].float(), benchmark[..., 3].float()), dim=-1)
     valid_closes = closes.masked_fill(~mask[..., None], 1.0)
-    if not bool((torch.isfinite(valid_closes) & (valid_closes > 0)).all()):
-        raise ValueError("Historical adjusted closes must be finite and positive")
     positions = torch.arange(asset.shape[1], device=asset.device).expand_as(mask)
     order = positions.masked_fill(~mask, asset.shape[1]).sort(dim=1).values
     ordered = valid_closes.gather(
@@ -119,8 +149,6 @@ def historical_scale_features(
     ).sqrt()
     volume = torch.stack((asset[..., 4].float(), benchmark[..., 4].float()), -1)
     volume = volume.masked_fill(~mask[..., None], 0)
-    if not bool((torch.isfinite(volume) & (volume >= 0)).all()):
-        raise ValueError("Observed historical volume must be finite and nonnegative")
     volume = volume.gather(1, order.clamp_max(asset.shape[1] - 1)[..., None].expand(-1, -1, 2))
     selected_volume = (positions >= lengths[:, None] - 20) & (positions < lengths[:, None])
     mean_volume = volume.masked_fill(~selected_volume[..., None], 0).sum(1) / 20

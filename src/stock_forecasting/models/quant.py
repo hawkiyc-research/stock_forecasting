@@ -70,13 +70,15 @@ class QuantForecastModel(nn.Module):
         market_ids: Tensor | None = None,
         ranking_group_ids: Tensor | None = None,
         security_ids: Tensor | None = None,
+        ranking_pairs: Tensor | None = None,
+        scale_inputs_validated: bool = False,
     ) -> QuantForecastOutput:
         scales = None
         branch = self.alpha_head.numeric_branch
         if branch is not None and branch.scale_projection is not None:
             if (asset_attention_mask is None) != (benchmark_attention_mask is None):
                 raise ValueError("Scale branch requires aligned asset and benchmark masks")
-            if asset_attention_mask is not None and not torch.equal(
+            if not scale_inputs_validated and asset_attention_mask is not None and not torch.equal(
                 asset_attention_mask, benchmark_attention_mask
             ):
                 raise ValueError("Scale branch requires aligned asset and benchmark masks")
@@ -86,6 +88,7 @@ class QuantForecastModel(nn.Module):
                     benchmark_ohlcv,
                     mask=asset_attention_mask,
                     extended=self.alpha_head.explicit_output_scale,
+                    inputs_validated=scale_inputs_validated,
                 )
         can_fuse_pair = (
             asset_ohlcv.shape == benchmark_ohlcv.shape
@@ -164,6 +167,7 @@ class QuantForecastModel(nn.Module):
                 ranking_group_ids,
                 security_ids,
                 self.ranking_max_pairs,
+                eligible_pairs=ranking_pairs,
             )
         total_loss = (
             pinball_loss

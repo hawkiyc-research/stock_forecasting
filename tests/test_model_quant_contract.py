@@ -389,7 +389,7 @@ def test_runtime_execution_plan_reuses_only_matching_safe_hardware() -> None:
         available_memory_bytes=56 * gib,
     )
     batch = RuntimeBatchPlan(
-        source="cuda_pipeline_v2",
+        source="cuda_pipeline_v3",
         training_batch_size=256,
         evaluation_batch_size=512,
         gradient_accumulation_steps=1,

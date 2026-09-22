@@ -85,8 +85,10 @@ AUTO_BATCH_EXPANSION_MAX_SIZE = 4_096
 AUTO_EVALUATION_BATCH_EXPANSION_MAX_SIZE = 8_192
 AUTO_BATCH_EXPANSION_MEMORY_QUANTUM_BYTES = 24 * 1024**3
 CUDA_FREE_MEMORY_FRACTION = 0.90
-CUDA_PIPELINE_PROBE_SOURCE = "cuda_pipeline_v2"
-CUDA_PIPELINE_MIN_PROBE_BATCHES = 16
+CUDA_PIPELINE_PROBE_SOURCE = "cuda_pipeline_v3"
+CUDA_PIPELINE_MIN_PROBE_BATCHES = 64
+CUDA_PIPELINE_BATCH_CONFIRMATIONS = 2
+CUDA_PIPELINE_BATCH_FINALISTS = 3
 ROBUST_SCALE_BATCH_SIZE = 256
 ROBUST_SCALE_SELECTION_BLOCK_SIZE = 16
 ROBUST_SCALE_CACHE_SCHEMA_VERSION = "1.0"
@@ -1127,7 +1129,8 @@ def build_dataloaders(
             batch_size=training_batch_size,
         )
     )
-    collator = ModelBatchCollator()
+    collator = ModelBatchCollator.for_model(config, training=True)
+    evaluation_collator = ModelBatchCollator.for_model(config, training=False)
     pin_memory = torch.cuda.is_available()
     train_loader = DataLoader(
         train_source,
@@ -1142,7 +1145,7 @@ def build_dataloaders(
         sampler=validation_sampler,
         shuffle=False,
         drop_last=False,
-        collate_fn=collator,
+        collate_fn=evaluation_collator,
         pin_memory=pin_memory,
         **_loader_process_options(worker_plan, persistent=True),
     )
@@ -1152,7 +1155,7 @@ def build_dataloaders(
         sampler=test_sampler,
         shuffle=False,
         drop_last=False,
-        collate_fn=collator,
+        collate_fn=evaluation_collator,
         pin_memory=pin_memory,
         **_loader_process_options(worker_plan, persistent=True),
     )
@@ -1409,16 +1412,57 @@ def _uses_full_length_context(batch: dict[str, Any], prefix: str) -> bool:
 
 
 class ModelBatchCollator(FinancialBatchCollator):
-    """Prepare small categorical tensors in loader workers, before pinning."""
+    """Validate inputs and prepare deterministic membership before pinning/H2D."""
+
+    def __init__(self, *, validate_scales=False, extended_scales=False, prepare_ranking=True):
+        super().__init__()
+        self.validate_scales = validate_scales
+        self.extended_scales = extended_scales
+        self.prepare_ranking = prepare_ranking
+
+    @classmethod
+    def for_model(cls, config, *, training):
+        return cls(
+            validate_scales=config.model.feature_mode in ("scales", "combined"),
+            extended_scales=config.model.explicit_output_scale,
+            prepare_ranking=training and bool(config.model.ranking_loss_weight),
+        )
+
+    def estimated_batch_bytes(self, sample, batch_size):
+        from stock_forecasting.models.ranking import MAX_RANKING_CANDIDATES
+
+        size = _batch_tensor_bytes(self([sample])) * batch_size
+        if self.prepare_ranking and batch_size <= MAX_RANKING_CANDIDATES:
+            # Pair membership is quadratic, unlike OHLCV. Budget the all-valid
+            # upper bound for both shared-memory transport and pinned copies.
+            size += 2 * 8 * batch_size * (batch_size - 1) // 2
+        return size
 
     def __call__(self, samples):
-        from stock_forecasting.models.ranking import market_ids, ranking_groups
+        from stock_forecasting.models.ranking import (
+            eligible_ranking_pairs,
+            market_ids,
+            ranking_groups,
+        )
+        from stock_forecasting.models.scale_features import validate_scale_feature_inputs
 
         batch = super().__call__(samples)
+        if self.validate_scales:
+            if not torch.equal(batch["asset_attention_mask"], batch["benchmark_attention_mask"]):
+                raise ValueError("Scale branch requires aligned asset and benchmark masks")
+            validate_scale_feature_inputs(
+                batch["asset_series"], batch["benchmark_series"],
+                mask=batch["asset_attention_mask"], extended=self.extended_scales,
+            )
+            batch["scale_inputs_validated"] = True
         batch["market_ids"] = market_ids(batch["markets"], "cpu")
         batch["ranking_group_ids"], batch["security_ids"] = ranking_groups(
             batch["cutoff_at"], batch["markets"], batch["symbols"], "cpu"
         )
+        if self.prepare_ranking:
+            pairs = eligible_ranking_pairs(batch["ranking_group_ids"], batch["security_ids"])
+            if pairs is not None:
+                batch["ranking_pairs"] = pairs
         return batch
 
 
@@ -1441,7 +1485,7 @@ def _move_batch_to_device(
             device,
             non_blocking=non_blocking,
         )
-    for key in ("market_ids", "ranking_group_ids", "security_ids"):
+    for key in ("market_ids", "ranking_group_ids", "security_ids", "ranking_pairs"):
         if key in batch:
             moved[key] = batch[key].to(device, non_blocking=non_blocking)
     for prefix in ("asset", "benchmark"):
@@ -1524,6 +1568,8 @@ def forward_batch(
         market_ids=markets,
         ranking_group_ids=groups,
         security_ids=securities,
+        ranking_pairs=batch.get("ranking_pairs"),
+        scale_inputs_validated=batch.get("scale_inputs_validated", False),
     )
 
 
@@ -1689,12 +1735,11 @@ def _measure_cuda_batch(
             optimizer_state_reserve_bytes=optimizer_state_reserve_bytes,
             seconds_per_training_batch=None, training_probe=(), evaluation_probe=(),
         )
-        # Estimate fixed-length batch bytes without allocating a giant host batch.
+        collator = ModelBatchCollator.for_model(config, training=training)
+        # Bound OHLCV and quadratic pair metadata without allocating a giant batch.
         workers = plan_runtime_prefetch(
             worker_plan, config=config, batch_plan=provisional,
-            largest_host_batch_bytes=(
-                _batch_tensor_bytes(ModelBatchCollator()([sample])) * batch_size
-            ),
+            largest_host_batch_bytes=collator.estimated_batch_bytes(sample, batch_size),
         )
         if workers.effective_workers and probe_prefetch_factor is not None:
             per_factor = workers.estimated_peak_prefetch_memory_bytes // workers.prefetch_factor
@@ -1718,11 +1763,12 @@ def _measure_cuda_batch(
             2 * workers.prefetched_batches_per_pool, 2 * accumulation,
         )
         measured_batches = math.ceil(minimum / accumulation) * accumulation
+        warmup_batches = math.ceil(max(16, 2 * accumulation) / accumulation) * accumulation
         batch_sampler = _ProbeBatchSampler(
-            sampler, batch_size, accumulation + measured_batches
+            sampler, batch_size, warmup_batches + measured_batches
         )
         loader = DataLoader(
-            dataset, batch_sampler=batch_sampler, collate_fn=ModelBatchCollator(),
+            dataset, batch_sampler=batch_sampler, collate_fn=collator,
             pin_memory=True,
             generator=torch.Generator().manual_seed(config.training.seed),
             **_loader_process_options(workers, persistent=False),
@@ -1742,7 +1788,7 @@ def _measure_cuda_batch(
             for index in range(len(batch_sampler)):
                 before_fetch = time.perf_counter()
                 device_batch = next(device_iterator)
-                if index >= accumulation:
+                if index >= warmup_batches:
                     fetch_seconds += time.perf_counter() - before_fetch
                 context = nullcontext() if training else torch.inference_mode()
                 with context, _autocast_context(config, device):
@@ -1758,11 +1804,11 @@ def _measure_cuda_batch(
                         optimizer.step()
                         optimizer.zero_grad(set_to_none=True)
                 ranking = getattr(output, "ranking_loss", None)
-                if index >= accumulation and ranking is not None:
+                if index >= warmup_batches and ranking is not None:
                     ranking_sum = (
                         ranking.detach() if ranking_sum is None else ranking_sum + ranking.detach()
                     )
-                if index + 1 == accumulation:
+                if index + 1 == warmup_batches:
                     torch.cuda.synchronize(device)
                     torch.cuda.reset_peak_memory_stats(device)
                     cpu_before = _cpu_pressure_snapshot()
@@ -1789,6 +1835,7 @@ def _measure_cuda_batch(
                 "training": training, "batch_size": batch_size,
                 "workers": workers.effective_workers, "prefetch_factor": workers.prefetch_factor,
                 "measured_batches": measured_batches, "elapsed_seconds": elapsed,
+                "warmup_batches": warmup_batches,
                 "samples_per_second": batch_size / max(seconds_per_batch, 1e-12),
                 "host_fetch_enqueue_seconds": fetch_seconds,
                 "ranking_loss_mean": (
@@ -2142,6 +2189,101 @@ def resolve_runtime_batch_plan(
     )
 
 
+def _confirm_training_batch_plan(
+    config, *, bundle, dataset, sample, device, workers, batch_plan, memory_limit,
+):
+    """Recheck batch finalists after tuning workers, with order-balanced repeats."""
+    if (getattr(config.training, "batch_size", None) != "auto"
+            or config.training.gradient_accumulation_steps != "auto"):
+        return workers, batch_plan
+    accepted = sorted(
+        (row for row in batch_plan.training_probe if row.accepted),
+        key=lambda row: row.samples_per_second, reverse=True,
+    )
+    candidates = [batch_plan.training_batch_size]
+    for row in accepted:
+        if row.batch_size not in candidates:
+            candidates.append(row.batch_size)
+        if len(candidates) == CUDA_PIPELINE_BATCH_FINALISTS:
+            break
+    repeated = {size: [] for size in candidates}
+    for repeat in range(CUDA_PIPELINE_BATCH_CONFIRMATIONS):
+        order = candidates if repeat % 2 == 0 else list(reversed(candidates))
+        for size in order:
+            if repeated[size] and not repeated[size][-1].accepted:
+                continue
+            measurement = _measure_cuda_batch(
+                bundle=bundle, sample=sample, batch_size=size, config=config, device=device,
+                training=True, dataset=dataset, worker_plan=workers,
+                probe_prefetch_factor=workers.prefetch_factor,
+                optimizer_state_reserve_bytes=batch_plan.optimizer_state_reserve_bytes,
+                device_memory_limit_bytes=memory_limit,
+            )
+            repeated[size].append(measurement)
+    confirmed = []
+    for rows in repeated.values():
+        if len(rows) == CUDA_PIPELINE_BATCH_CONFIRMATIONS and all(row.accepted for row in rows):
+            # Combine equal-size trials by elapsed time, not an optimistic best run.
+            seconds = sum(row.seconds_per_batch for row in rows) / len(rows)
+            confirmed.append(replace(
+                rows[0], seconds_per_batch=seconds,
+                samples_per_second=rows[0].batch_size / seconds,
+                peak_allocated_bytes=max(row.peak_allocated_bytes for row in rows),
+                projected_peak_bytes=max(row.projected_peak_bytes for row in rows),
+            ))
+    if not confirmed:
+        raise RuntimeError("No safe batch candidate passed sustained pipeline confirmation")
+    best = max(row.samples_per_second for row in confirmed)
+    near = [row for row in confirmed
+            if row.samples_per_second >= best * (1 - AUTO_BATCH_THROUGHPUT_TOLERANCE)]
+    # Amortize host dispatch when throughput is equivalent, without increasing
+    # the canonical effective batch merely to occupy more VRAM.
+    equivalent = [row for row in near
+                  if row.batch_size <= batch_plan.effective_batch_size]
+    selected = (max(equivalent, key=lambda row: row.batch_size) if equivalent
+                else max(near, key=lambda row: row.samples_per_second))
+    accumulation = _automatic_gradient_accumulation_steps(
+        target_effective_batch_size=config.training.target_effective_batch_size,
+        training_batch_size=selected.batch_size,
+    )
+    updated = {row.batch_size: row for row in batch_plan.training_probe}
+    updated.update({row.batch_size: row for row in confirmed})
+    batch_plan = replace(
+        batch_plan, training_batch_size=selected.batch_size,
+        gradient_accumulation_steps=accumulation,
+        effective_batch_size=selected.batch_size * accumulation,
+        seconds_per_training_batch=selected.seconds_per_batch,
+        training_probe=tuple(updated[size] for size in sorted(updated)),
+    )
+    largest = max(
+        ModelBatchCollator.for_model(config, training=is_training).estimated_batch_bytes(
+            sample, size
+        )
+        for is_training, size in (
+            (True, selected.batch_size), (False, batch_plan.evaluation_batch_size)
+        )
+    )
+    safe_workers = plan_runtime_prefetch(
+        workers, config=config, batch_plan=batch_plan, largest_host_batch_bytes=largest,
+    )
+    factor = min(workers.prefetch_factor, safe_workers.prefetch_factor)
+    safe_workers = replace(
+        safe_workers, prefetch_factor=factor,
+        prefetched_batches_per_pool=safe_workers.effective_workers * factor,
+        estimated_peak_prefetch_memory_bytes=(
+            safe_workers.estimated_peak_prefetch_memory_bytes
+            // safe_workers.prefetch_factor * factor
+        ),
+    )
+    print(json.dumps({"training_batch_confirmation": {
+        "candidates": [row.as_dict() for row in confirmed],
+        "batch_size": selected.batch_size, "gradient_accumulation_steps": accumulation,
+        "workers": safe_workers.effective_workers, "prefetch_factor": factor,
+        "repetitions": CUDA_PIPELINE_BATCH_CONFIRMATIONS,
+    }}, sort_keys=True), flush=True)
+    return safe_workers, batch_plan
+
+
 def refine_training_pipeline_plan(
     config, *, bundle, dataset, sample, device, worker_plan, batch_plan,
 ):
@@ -2203,12 +2345,16 @@ def refine_training_pipeline_plan(
         "prefetch_factor": workers.prefetch_factor,
         "samples_per_second": measurement.samples_per_second,
     }}, sort_keys=True), flush=True)
-    return workers, replace(
+    batch_plan = replace(
         batch_plan, seconds_per_training_batch=measurement.seconds_per_batch,
         training_probe=tuple(
             measurement if row.batch_size == measurement.batch_size else row
             for row in batch_plan.training_probe
         ),
+    )
+    return _confirm_training_batch_plan(
+        config, bundle=bundle, dataset=dataset, sample=sample, device=device,
+        workers=workers, batch_plan=batch_plan, memory_limit=limit,
     )
 
 
@@ -2242,14 +2388,12 @@ def build_evaluation_loader(
         worker_plan=workers,
         evaluation_only=True,
     )
-    collator = ModelBatchCollator()
+    collator = ModelBatchCollator.for_model(config, training=False)
     workers = plan_runtime_prefetch(
         workers,
         config=config,
         batch_plan=plan,
-        largest_host_batch_bytes=_batch_tensor_bytes(
-            collator([sample])
-        ) * plan.evaluation_batch_size,
+        largest_host_batch_bytes=collator.estimated_batch_bytes(sample, plan.evaluation_batch_size),
     )
     print(
         json.dumps(
@@ -3003,10 +3147,14 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             worker_plan=worker_plan,
         )
     )
-    collator = ModelBatchCollator()
     largest_host_batch_bytes = max(
-        batch_plan.training_batch_size, batch_plan.evaluation_batch_size
-    ) * _batch_tensor_bytes(collator([probe_sample]))
+        ModelBatchCollator.for_model(config, training=is_training).estimated_batch_bytes(
+            probe_sample, size
+        )
+        for is_training, size in (
+            (True, batch_plan.training_batch_size), (False, batch_plan.evaluation_batch_size)
+        )
+    )
     if not reuse_checkpoint_plan:
         worker_plan = plan_runtime_prefetch(
             worker_plan,

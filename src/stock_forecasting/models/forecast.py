@@ -137,6 +137,17 @@ class MultiHorizonAlphaHead(nn.Module):
             torch.tensor(scales, dtype=torch.float32),
             persistent=False,
         )
+        # Integer buffers survive model dtype conversions. Store the exact FP32
+        # level bits: GPU division by ten rounds q90 differently from the literal.
+        # Nonpersistent buffers keep existing checkpoint state keys intact.
+        self.register_buffer(
+            "_horizon_values", torch.tensor(ordered_horizons, dtype=torch.long), persistent=False
+        )
+        self.register_buffer(
+            "_quantile_level_bits",
+            torch.tensor(ordered_quantiles, dtype=torch.float32).view(torch.int32),
+            persistent=False,
+        )
 
     def forward(
         self,
@@ -187,7 +198,7 @@ class MultiHorizonAlphaHead(nn.Module):
             if scale_features is None:
                 raise ValueError("Output scale requires past-only relative volatility")
             # A strictly positive historical anchor controls both location and interval widths.
-            horizon = quantiles.new_tensor(self.horizons).sqrt()
+            horizon = self._horizon_values.to(dtype=quantiles.dtype).sqrt()
             anchor = scale_features[:, 2:3] * horizon[None, :]
             floor = self.robust_scales[None, :] * 0.1
             anchor = torch.minimum(torch.maximum(anchor, floor), self.robust_scales[None, :] * 10)
@@ -207,7 +218,7 @@ class MultiHorizonAlphaHead(nn.Module):
         safe_target = torch.where(valid, target, torch.zeros_like(target))
         scales = self.robust_scales.to(device=predictions.device, dtype=predictions.dtype)
         errors = (safe_target[..., None] - predictions) / scales[None, :, None]
-        levels = predictions.new_tensor(self.quantiles)
+        levels = self._quantile_level_bits.view(torch.float32).to(dtype=predictions.dtype)
         losses = torch.maximum(levels * errors, (levels - 1.0) * errors)
         weights = valid[..., None].expand_as(losses).to(dtype=losses.dtype)
         return (losses * weights).sum() / weights.sum().clamp_min(1.0)

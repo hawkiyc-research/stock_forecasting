@@ -51,6 +51,21 @@ def samplers():
 
 
 class TrainingPipelineControlTests(unittest.TestCase):
+    def test_hotpath_migration_covers_only_the_verified_model_execution_patch(self):
+        registry = runpy.run_path(str(
+            ROOT / "src/stock_forecasting/checkpoint_resume_migrations.py"
+        ))["CHECKPOINT_RETENTION_MIGRATIONS"]
+        migration = next(row for row in registry if row["id"] == "asynchronous-model-hotpath-v1")
+        self.assertEqual(set(migration["from_files"]), {
+            "training.py", "models/forecast.py", "models/quant.py", "models/ranking.py",
+            "models/scale_features.py",
+        })
+        self.assertEqual(migration["from_files"].keys(), migration["to_files"].keys())
+        for name, digest in migration["to_files"].items():
+            self.assertEqual(digest, hashlib.sha256(
+                (ROOT / "src/stock_forecasting" / name).read_bytes()
+            ).hexdigest(), name)
+
     def test_cpu_pressure_accounting_supports_cgroup_v1_v2_and_missing_stats(self):
         mapping = {}
 
@@ -151,12 +166,15 @@ class TrainingPipelineControlTests(unittest.TestCase):
         )
         stored = SimpleNamespace(hardware=hardware, worker_plan=workers, batch_plan=batch)
         scope = {"DATALOADER_PREFETCH_MEMORY_FRACTION": .10,
-                 "CUDA_PIPELINE_PROBE_SOURCE": "cuda_pipeline_v2"}
+                 "CUDA_PIPELINE_PROBE_SOURCE": "cuda_pipeline_v3"}
         definitions(TRAINING, {"runtime_resource_plan_reuse_reason"}, scope)
         reason = scope["runtime_resource_plan_reuse_reason"]
         self.assertEqual(reason(stored, current_hardware=hardware, current_worker_plan=workers),
                          "pipeline_probe_version_changed")
         batch.source = "cuda_pipeline_v2"
+        self.assertEqual(reason(stored, current_hardware=hardware, current_worker_plan=workers),
+                         "pipeline_probe_version_changed")
+        batch.source = "cuda_pipeline_v3"
         self.assertEqual(reason(stored, current_hardware=hardware, current_worker_plan=workers),
                          "checkpoint_hardware_match")
 
@@ -287,11 +305,14 @@ class TrainingPipelineControlTests(unittest.TestCase):
         config = SimpleNamespace(training=SimpleNamespace(auto_batch_memory_fraction=.72))
         scope = {
             "math": math, "os": os, "json": json, "replace": replace,
-            "CUDA_PIPELINE_PROBE_SOURCE": "cuda_pipeline_v2",
+            "CUDA_PIPELINE_PROBE_SOURCE": "cuda_pipeline_v3",
             "CUDA_FREE_MEMORY_FRACTION": .9, "AUTO_BATCH_THROUGHPUT_TOLERANCE": .03,
             "_measure_cuda_batch": measure,
             "_requested_dataloader_workers": lambda _config: (128, "training_config_auto"),
             "_cpu_pressure_snapshot": lambda: None,
+            "_confirm_training_batch_plan": lambda _config, **kwargs: (
+                kwargs["workers"], kwargs["batch_plan"]
+            ),
             "torch": SimpleNamespace(cuda=SimpleNamespace(
                 mem_get_info=lambda _device: (9000, 10000), memory_allocated=lambda _device: 1000,
             )),
@@ -308,6 +329,87 @@ class TrainingPipelineControlTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             scope["refine_training_pipeline_plan"](config, **kwargs)
         self.assertEqual(visited, [(8, 2), (8, 4)])
+
+    def test_batch_confirmation_rechecks_order_and_preserves_effective_batch_and_memory(self):
+        @dataclass
+        class Measurement:
+            batch_size: int
+            samples_per_second: float
+            seconds_per_batch: float
+            peak_allocated_bytes: int = 100
+            projected_peak_bytes: int = 100
+            accepted: bool = True
+
+            def as_dict(self):
+                return self.__dict__
+
+        @dataclass
+        class Plan:
+            training_batch_size: int = 32
+            evaluation_batch_size: int = 128
+            gradient_accumulation_steps: int = 8
+            effective_batch_size: int = 256
+            optimizer_state_reserve_bytes: int = 10
+            seconds_per_training_batch: float = .32
+            training_probe: tuple = (
+                Measurement(32, 100, .32), Measurement(64, 99, 64 / 99),
+                Measurement(128, 70, 128 / 70),
+            )
+
+        @dataclass
+        class Workers:
+            effective_workers: int = 4
+            prefetch_factor: int = 2
+            prefetched_batches_per_pool: int = 8
+            estimated_peak_prefetch_memory_bytes: int = 800
+
+        visited = []
+        fail_size = None
+
+        def measure(**kwargs):
+            size = kwargs["batch_size"]
+            visited.append(size)
+            speed = {32: 100, 64: 101, 128: 70}[size]
+            return Measurement(size, speed, size / speed, accepted=size != fail_size)
+
+        config = SimpleNamespace(training=SimpleNamespace(
+            batch_size="auto", gradient_accumulation_steps="auto", target_effective_batch_size=256,
+        ))
+        scope = {
+            "replace": replace, "json": json, "CUDA_PIPELINE_BATCH_CONFIRMATIONS": 2,
+            "CUDA_PIPELINE_BATCH_FINALISTS": 3, "AUTO_BATCH_THROUGHPUT_TOLERANCE": .03,
+            "_measure_cuda_batch": measure,
+            "ModelBatchCollator": SimpleNamespace(for_model=lambda *_args, **_kw: SimpleNamespace(
+                estimated_batch_bytes=lambda _sample, size: size * 100,
+            )),
+            "plan_runtime_prefetch": lambda workers, **kwargs: replace(
+                workers, prefetch_factor=4, prefetched_batches_per_pool=16,
+                estimated_peak_prefetch_memory_bytes=1600,
+            ),
+        }
+        definitions(TRAINING, {
+            "_confirm_training_batch_plan", "_automatic_gradient_accumulation_steps",
+        }, scope)
+        confirm = scope["_confirm_training_batch_plan"]
+        kwargs = dict(bundle=None, dataset=None, sample=None, device=None,
+                      workers=Workers(), batch_plan=Plan(), memory_limit=1000)
+        with contextlib.redirect_stdout(io.StringIO()):
+            workers, plan = confirm(config, **kwargs)
+        self.assertEqual(visited, [32, 64, 128, 128, 64, 32])
+        self.assertEqual((plan.training_batch_size, plan.gradient_accumulation_steps), (64, 4))
+        self.assertEqual(plan.effective_batch_size, 256)
+        self.assertEqual(workers.prefetch_factor, 2)
+        self.assertEqual(workers.estimated_peak_prefetch_memory_bytes, 800)
+        visited.clear()
+        fail_size = 64
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, plan = confirm(config, **kwargs)
+        self.assertEqual(visited.count(64), 1)
+        self.assertEqual(plan.training_batch_size, 32)
+        visited.clear()
+        config.training.batch_size = 32
+        self.assertEqual(confirm(config, **kwargs), (kwargs["workers"], kwargs["batch_plan"]))
+        self.assertEqual(visited, [])
 
     def test_production_and_probe_share_dynamic_selection_but_evaluation_remains_full(self):
         tree = ast.parse(TRAINING.read_text())
