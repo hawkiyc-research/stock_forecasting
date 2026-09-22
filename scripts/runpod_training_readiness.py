@@ -57,6 +57,8 @@ def verify_snapshot_file(reader, repository, revision, filename):
         snapshot = reader.volume / key
         resolved = snapshot.resolve(strict=True)
         repository_root = (reader.volume / base).resolve(strict=True)
+        if not repository_root.is_relative_to(reader.volume.resolve(strict=True)):
+            raise ValueError(f"Cached model repository escapes the mounted volume: {repository}")
         if not resolved.is_relative_to(repository_root) or not resolved.is_file():
             raise ValueError(f"Cached model file escapes its repository: {key}")
         size = resolved.stat().st_size

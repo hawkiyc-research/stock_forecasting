@@ -200,6 +200,19 @@ class TrainingDatasetSwitchingTests(unittest.TestCase):
             with patch.dict(os.environ, env), self.assertRaisesRegex(ValueError, "date_range"):
                 scope["collect_selection_provenance"]()
 
+    def test_model_repository_cannot_link_outside_the_volume(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            volume = root / "volume"
+            write_objects(volume, model_fixture())
+            repository = volume / "cache/huggingface/hub/models--NeoQuasar--Kronos-base"
+            external = root / "outside-repository"
+            repository.rename(external)
+            repository.symlink_to(external, target_is_directory=True)
+            reader = DATA["ArtifactReader"](ROOT, volume=volume)
+            with self.assertRaisesRegex(ValueError, "escapes the mounted volume"):
+                GATE["verify_models"](ROOT / self.a["stage"]["config_path"], reader, workers=2)
+
     def test_real_shell_gates_switch_a_b_a_without_preparation(self):
         with tempfile.TemporaryDirectory(prefix="training-switch-") as temporary:
             volume = Path(temporary).resolve() / "volume"
