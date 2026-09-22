@@ -367,7 +367,9 @@ else:
             "_canonical_payload_digest", "_validated_implementation_files",
             "_checkpoint_retention_migration_matches", "compatible_training_resume_contract_digest",
         }
-        nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
+        nodes = [
+            ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
+        ]
         for node in tree.body:
             if isinstance(node, ast.FunctionDef) and node.name in names:
                 nodes.append(node)
@@ -383,7 +385,8 @@ else:
         exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
                      str(path), "exec"), scope)
         migration = next(row for row in migrations if row["id"] == "dataset-scoped-provenance-v1")
-        actual = hashlib.sha256((ROOT / "src/stock_forecasting/tracking.py").read_bytes()).hexdigest()
+        tracking_path = ROOT / "src/stock_forecasting/tracking.py"
+        actual = hashlib.sha256(tracking_path.read_bytes()).hexdigest()
         self.assertEqual(migration["to_files"]["tracking.py"], actual)
         old_files = {name: "0" * 64 for name in scope["TRAINING_IMPLEMENTATION_PATHS"]}
         old_files.update(migration["from_files"])
