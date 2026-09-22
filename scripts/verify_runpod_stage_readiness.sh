@@ -9,7 +9,6 @@ LOCAL_PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 S3_WRAPPER="${SCRIPT_DIR}/runpod_s3_project.sh"
 READINESS_HELPER="${SCRIPT_DIR}/runpod_readiness.py"
 CODE_MARKER_KEY="lifecycle/stage1/code.json"
-DATASET_MARKER_KEY="lifecycle/stage1/dataset.json"
 
 # shellcheck source=lib/runpod_project_env.sh
 source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
@@ -84,18 +83,6 @@ if [[ "${MODE}" == "baseline" ]]; then
     exit 0
 fi
 
-CODE_NUMERICAL_PIPELINE_DIGEST="$(printf '%s\n' "${CODE_JSON}" \
-    | python3 "${READINESS_HELPER}" code-numerical-pipeline-digest \
-        --marker - \
-        --dataset-profile "${FIN_TS_DATASET_PROFILE}")"
-DATASET_JSON="$(bash "${S3_WRAPPER}" s3 cp \
-    "s3://${RUNPOD_NETWORK_VOLUME_ID}/${DATASET_MARKER_KEY}" - \
-    --only-show-errors)"
-printf '%s\n' "${DATASET_JSON}" \
-    | python3 "${SCRIPT_DIR}/runpod_selection.py" verify-marker \
-        --project-root "${LOCAL_PROJECT_ROOT}" \
-        --selection "${RUNPOD_SELECTION_FILE}" \
-        --marker -
 REMOTE_SELECTION_JSON="$(bash "${S3_WRAPPER}" s3 cp \
     "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" - \
     --only-show-errors)"
@@ -104,43 +91,8 @@ printf '%s\n' "${REMOTE_SELECTION_JSON}" \
         --project-root "${LOCAL_PROJECT_ROOT}" \
         --selection "${RUNPOD_SELECTION_FILE}" \
         --candidate -
-printf '%s\n' "${DATASET_JSON}" \
-    | python3 "${READINESS_HELPER}" check-dataset \
-        --marker - \
-        --expected-numerical-pipeline-digest "${CODE_NUMERICAL_PIPELINE_DIGEST}" \
-        --stage-config "${LOCAL_PROJECT_ROOT}/${RUNPOD_CONFIG}"
-
-verify_remote_size() {
-    local artifact_name="$1"
-    local label="$2"
-    local object_key=""
-    local expected_size=""
-    local remote_size
-    object_key="$(printf '%s\n' "${DATASET_JSON}" | python3 -c \
-        'import json, sys; print(json.load(sys.stdin)[sys.argv[1]]["relative_path"])' \
-        "${artifact_name}")"
-    expected_size="$(printf '%s\n' "${DATASET_JSON}" | python3 -c \
-        'import json, sys; print(json.load(sys.stdin)[sys.argv[1]]["size_bytes"])' \
-        "${artifact_name}")"
-    remote_size="$(bash "${S3_WRAPPER}" s3api head-object \
-        --bucket "${RUNPOD_NETWORK_VOLUME_ID}" \
-        --key "${object_key}" \
-        --query ContentLength \
-        --output text)"
-    if [[ "${remote_size}" != "${expected_size}" ]]; then
-        printf '%s size does not match its readiness manifest\n' "${label}" >&2
-        exit 3
-    fi
-}
-
-verify_remote_size raw "Raw dataset"
-verify_remote_size bar_store_manifest "Bar-store manifest"
-verify_remote_size symbol_index "Symbol index"
-verify_remote_size cutoff_ranges "Lazy cutoff ranges"
-verify_remote_size dataset_manifest "Dataset manifest"
-verify_remote_size download_manifest "Download manifest"
-verify_remote_size request_log "API request log"
-verify_remote_size model_manifest "Hugging Face model manifest"
+python3 "${SCRIPT_DIR}/runpod_training_readiness.py" \
+    --project-root "${LOCAL_PROJECT_ROOT}" --selection "${RUNPOD_SELECTION_FILE}"
 
 printf '%s\n' \
     'GPU artifact gate passed: code, dataset, and offline model cache are ready; checking GPU workflow availability next.'

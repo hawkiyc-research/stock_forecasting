@@ -29,7 +29,6 @@ summarize_marker() {
     local found=0
     local listed_key=""
     local payload=""
-    local dataset_contract_valid=1
 
     for listed_key in ${AVAILABLE_KEYS}; do
         if [[ "${listed_key}" == "${key}" ]]; then
@@ -44,13 +43,6 @@ summarize_marker() {
     payload="$(bash "${S3_WRAPPER}" s3 cp \
         "s3://${RUNPOD_NETWORK_VOLUME_ID}/${key}" - \
         --only-show-errors)"
-    if [[ "${label}" == "dataset" ]] \
-        && ! printf '%s' "${payload}" | python3 "${RUNPOD_SELECTION_HELPER}" \
-            verify-marker \
-            --project-root "${PROJECT_ROOT}" \
-            --marker - >/dev/null 2>&1; then
-        dataset_contract_valid=0
-    fi
     printf '%s' "${payload}" | python3 -c '
 import json
 import sys
@@ -58,16 +50,7 @@ import sys
 label = sys.argv[1]
 payload = json.load(sys.stdin)
 reported_state = str(payload.get("state", "unknown"))
-dataset_contract_valid = sys.argv[2] == "1"
-fields = [
-    "state=" + (
-        "invalid"
-        if label == "dataset" and reported_state == "ready" and not dataset_contract_valid
-        else reported_state
-    ),
-]
-if label == "dataset" and reported_state == "ready" and not dataset_contract_valid:
-    fields.extend(("reported_state=ready", "reason=selection_contract"))
+fields = ["state=" + reported_state]
 for key in (
     "selection_id",
     "dataset_profile",
@@ -79,7 +62,43 @@ for key in (
     if value:
         fields.append(key + "=" + str(value))
 print("{:<12} {}".format(label, " ".join(fields)))
-' "${label}" "${dataset_contract_valid}"
+' "${label}"
+}
+
+summarize_selected_dataset() {
+    # Status is metadata-only; readiness still verifies the complete artifact inventory.
+    python3 - "${PROJECT_ROOT}" <<'PY'
+import json
+import os
+import runpy
+import sys
+from pathlib import Path
+
+project = Path(sys.argv[1])
+gate = runpy.run_path(str(project / "scripts/runpod_dataset_readiness.py"))
+try:
+    _, selected = gate["SELECTION"]["_resolve_selection_path"](
+        project, None, validate_local_config=False
+    )
+    key = "datasets/" + selected["dataset_request_sha256"] + "/dataset-manifest.json"
+    reader = gate["ArtifactReader"](project, bucket=os.environ["RUNPOD_NETWORK_VOLUME_ID"])
+    payload = json.loads(reader.read(key))
+    if not isinstance(payload, dict):
+        raise ValueError("Selected dataset manifest is not a JSON object")
+    request = selected["dataset_request"]
+    valid = all(payload.get(field) == value for field, value in (
+        ("kind", "ohlcv-bar-store-dataset"), ("schema_version", "4.0"),
+        ("dataset_profile", request["profile"]), ("date_range", request["date_range"]),
+        ("selected_datasets", request["selected_datasets"]),
+        ("storage_preparation_spec", gate["DATA"]["dataset_request_identity_payload"](request)["storage_preparation"]),
+    ))
+    state = str(payload.get("state", "unknown")) if valid else "invalid"
+    print("dataset      state=" + state + " selection_id=" + selected["selection_id"]
+          + " dataset_request_sha256=" + selected["dataset_request_sha256"]
+          + " verification=manifest-summary")
+except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+    print("dataset      state=unavailable reason=" + str(error))
+PY
 }
 
 summarize_download_progress() {
@@ -221,7 +240,7 @@ print("{:<12} {}".format("wandb", " ".join(fields)))
 
 summarize_marker lifecycle/stage1/code.json code
 summarize_marker lifecycle/stage1/cpu-preparation.json cpu_prepare
-summarize_marker lifecycle/stage1/dataset.json dataset
+summarize_selected_dataset
 summarize_download_progress
 summarize_marker lifecycle/stage1/training.json training
 summarize_marker lifecycle/stage1/baseline.json baseline

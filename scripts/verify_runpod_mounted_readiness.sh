@@ -12,7 +12,6 @@ PROJECT_ROOT="${PROJECT_ROOT:-${NETWORK_VOLUME_ROOT}/stock_forecasting}"
 RUNPOD_PYTHON_BIN="${RUNPOD_PYTHON_BIN:-/usr/local/bin/python}"
 LIFECYCLE_ROOT="${LIFECYCLE_ROOT:-${NETWORK_VOLUME_ROOT}/lifecycle}"
 CODE_MARKER="${LIFECYCLE_ROOT}/stage1/code.json"
-DATASET_MARKER="${LIFECYCLE_ROOT}/stage1/dataset.json"
 RUNPOD_CONFIG="${RUNPOD_CONFIG:-configs/stage1_kronos_base_lora.yaml}"
 RUNPOD_SELECTION_HELPER="${PROJECT_ROOT}/scripts/runpod_selection.py"
 RUNPOD_REMOTE_SELECTION_PATH="${RUNPOD_REMOTE_SELECTION_PATH:-}"
@@ -93,7 +92,7 @@ if [[ ${MOUNT_ONLY} -eq 1 ]]; then
         "${NETWORK_VOLUME_ROOT}" "${RUNPOD_VOLUME_ID}"
     exit 0
 fi
-for path_name in PROJECT_ROOT LIFECYCLE_ROOT CODE_MARKER DATASET_MARKER \
+for path_name in PROJECT_ROOT LIFECYCLE_ROOT CODE_MARKER \
     RUNPOD_SELECTION_HELPER RUNPOD_REMOTE_SELECTION_PATH; do
     runpod_validate_path_in_root \
         "${!path_name}" "${NETWORK_VOLUME_ROOT}" "${path_name}" NETWORK_VOLUME_ROOT
@@ -154,12 +153,6 @@ fi
 "${RUNPOD_PYTHON_BIN}" "${RUNPOD_SELECTION_HELPER}" verify-environment \
     --project-root "${PROJECT_ROOT}" \
     --selection "${RUNPOD_REMOTE_SELECTION_PATH}"
-"${RUNPOD_PYTHON_BIN}" "${RUNPOD_SELECTION_HELPER}" verify-marker \
-    --project-root "${PROJECT_ROOT}" \
-    --selection "${RUNPOD_REMOTE_SELECTION_PATH}" \
-    --marker "${DATASET_MARKER}"
-"${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_readiness.py" check-dataset \
-    --marker "${DATASET_MARKER}" \
-    --code-marker "${CODE_MARKER}" \
-    --stage-config "${CONFIG_PATH}" \
+"${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_training_readiness.py" \
+    --project-root "${PROJECT_ROOT}" --selection "${RUNPOD_REMOTE_SELECTION_PATH}" \
     --network-volume-root "${NETWORK_VOLUME_ROOT}"

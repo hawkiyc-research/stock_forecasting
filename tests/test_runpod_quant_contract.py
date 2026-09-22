@@ -787,9 +787,9 @@ def test_cpu_execution_lifecycle_cannot_overwrite_immutable_dataset_readiness() 
         in create_cpu
     )
     assert "lifecycle/stage1/cpu-preparation.json cpu_prepare" in status
-    assert 'verify-marker' in status
-    assert 'reported_state=ready' in status
-    assert 'reason=selection_contract' in status
+    assert 'summarize_selected_dataset' in status
+    assert 'verification=manifest-summary' in status
+    assert 'verify-marker' not in status
 
 
 def test_gpu_gate_verifies_lazy_bar_store_artifacts() -> None:
@@ -797,9 +797,12 @@ def test_gpu_gate_verifies_lazy_bar_store_artifacts() -> None:
         encoding="utf-8"
     )
 
-    for artifact in ("bar_store_manifest", "symbol_index", "cutoff_ranges"):
-        assert f"verify_remote_size {artifact}" in gate
-    assert "verify_remote_size processed" not in gate
+    shared = (ROOT / "scripts/runpod_dataset_readiness.py").read_text(encoding="utf-8")
+    assert "runpod_training_readiness.py" in gate
+    for artifact in ("bar_store_manifest", "symbol_index", "cutoff_ranges", "shards"):
+        assert f'"{artifact}"' in shared
+    assert "bounded_map(reader.verify" in shared
+    assert "DATASET_MARKER_KEY" not in gate
 
 
 def test_checkpoint_contract_persists_runtime_label_scales() -> None:

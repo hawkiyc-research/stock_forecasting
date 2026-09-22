@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 from typing import Any
 
@@ -30,19 +31,34 @@ def _configure_selection_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
-    dataset_request_sha256: str,
-) -> None:
-    marker = tmp_path / "dataset.json"
+    different_dataset: bool = False,
+) -> dict[str, Any]:
+    project = Path(__file__).resolve().parents[1]
+    helper = runpy.run_path(str(project / "scripts/runpod_selection.py"))
+    args = helper["build_parser"]().parse_args([
+        "create", "--project-root", str(project), "--stage", "stage2",
+        "--data-profile", "us_tw_eodhd", "--start", "2021-01-01", "--end", "2026-06-01",
+        "--universe", "all",
+    ])
+    selected = helper["_build_selection"](args, project)
+    selection_file = tmp_path / (selected["selection_id"] + ".json")
+    selection_file.write_text(json.dumps(selected), encoding="utf-8")
+    request = selected["dataset_request"]
+    marker = tmp_path / "datasets" / selected["dataset_request_sha256"] / "dataset-manifest.json"
+    marker.parent.mkdir(parents=True)
     marker.write_text(
         json.dumps(
             {
-                "selection_id": "selection-1111111111111111",
-                "selection_sha256": "1" * 64,
-                "dataset_request_sha256": dataset_request_sha256,
-                "selected_stage": "stage1",
-                "stage_config_path": "configs/stage1_kronos_base_lora.yaml",
-                "stage_config_sha256": "2" * 64,
-                "requested_dataset": {"profile": "us_tw_eodhd"},
+                "kind": "ohlcv-bar-store-dataset", "state": "ready",
+                "dataset_profile": request["profile"],
+                "selected_datasets": request["selected_datasets"],
+                "date_range": {
+                    **request["date_range"],
+                    "start_inclusive": "2016-01-01" if different_dataset else "2021-01-01",
+                },
+                "storage_preparation_spec": helper["dataset_request_identity_payload"](
+                    request
+                )["storage_preparation"],
             }
         ),
         encoding="utf-8",
@@ -50,39 +66,29 @@ def _configure_selection_provenance(
     monkeypatch.setenv("RUNPOD_POD_ID", "test-pod")
     monkeypatch.setenv("NETWORK_VOLUME_ROOT", str(tmp_path))
     monkeypatch.setenv("RUNPOD_VOLUME_ROOT", str(tmp_path))
-    monkeypatch.setenv("DATASET_READINESS_MANIFEST", str(marker))
-    monkeypatch.setenv("RUNPOD_SELECTION_ID", "selection-aaaaaaaaaaaaaaaa")
-    monkeypatch.setenv("RUNPOD_SELECTION_SHA256", "a" * 64)
-    monkeypatch.setenv("RUNPOD_DATASET_REQUEST_SHA256", "d" * 64)
-    monkeypatch.setenv("RUNPOD_STAGE", "stage1")
-    monkeypatch.setenv("RUNPOD_CONFIG", "configs/stage1_kronos_base_lora.yaml")
-    monkeypatch.setenv("RUNPOD_STAGE_CONFIG_SHA256", "b" * 64)
+    for key, value in helper["_selection_exports"](selection_file, selected).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RUNPOD_REMOTE_SELECTION_PATH", str(selection_file))
+    # An unrelated last CPU preparation is not the active dataset's provenance.
+    legacy = tmp_path / "lifecycle/stage1/dataset.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{"state":"ready","stage_config_sha256":"obsolete"}')
+    return selected
 
 
 def test_tracking_accepts_training_only_selection_revisions(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _configure_selection_provenance(
-        monkeypatch,
-        tmp_path,
-        dataset_request_sha256="d" * 64,
-    )
+    selected = _configure_selection_provenance(monkeypatch, tmp_path)
 
     provenance = collect_selection_provenance()
 
-    assert provenance["selection_id"] == "selection-aaaaaaaaaaaaaaaa"
-    assert provenance["selection_sha256"] == "a" * 64
-    assert provenance["stage_config_sha256"] == "b" * 64
-    assert provenance["dataset_request_sha256"] == "d" * 64
-    assert provenance["dataset_marker_selection"] == {
-        "selection_id": "selection-1111111111111111",
-        "selection_sha256": "1" * 64,
-        "selected_stage": "stage1",
-        "stage_config_path": "configs/stage1_kronos_base_lora.yaml",
-        "stage_config_sha256": "2" * 64,
-    }
-    assert provenance["dataset_marker_selection_matches_active"] is False
+    assert provenance["selection_id"] == selected["selection_id"]
+    assert provenance["selection_sha256"] == selected["selection_sha256"]
+    assert provenance["stage_config_sha256"] == selected["stage"]["config_sha256"]
+    assert provenance["dataset_request_sha256"] == selected["dataset_request_sha256"]
+    assert provenance["path"].endswith("/dataset-manifest.json")
 
 
 def test_tracking_rejects_a_different_dataset_request(
@@ -92,10 +98,10 @@ def test_tracking_rejects_a_different_dataset_request(
     _configure_selection_provenance(
         monkeypatch,
         tmp_path,
-        dataset_request_sha256="e" * 64,
+        different_dataset=True,
     )
 
-    with pytest.raises(ValueError, match="dataset_request_sha256"):
+    with pytest.raises(ValueError, match="date_range"):
         collect_selection_provenance()
 
 

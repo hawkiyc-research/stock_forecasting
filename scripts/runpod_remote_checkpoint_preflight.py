@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import sys
@@ -143,7 +144,7 @@ def _validate_run_manifest(
     leaderboard_contract_digest,
     config_sha256,
     resolved_config,
-    dataset_readiness,
+    dataset_manifest_key,
     dataset_manifest,
     dataset_manifest_sha256,
 ):
@@ -173,7 +174,7 @@ def _validate_run_manifest(
     if hashlib.sha256(encoded_contract).hexdigest() != manifest_contract_digest:
         raise ValueError("Run manifest training contract snapshot has a different digest")
     current_dataset_contract = _dataset_contract(
-        dataset_readiness,
+        dataset_manifest_key,
         dataset_manifest,
         dataset_manifest_sha256,
     )
@@ -188,39 +189,21 @@ def _required_sha256(payload, key):
     return value
 
 
-def _dataset_artifact(payload, name):
-    value = payload.get(name)
-    if not isinstance(value, dict):
-        raise ValueError(f"Dataset readiness manifest has no valid {name} artifact")
-    relative_path = value.get("relative_path")
+def _run_dataset_manifest_key(manifest, expected_dataset_request_sha256):
+    """Resolve only the dataset bound into the checkpoint's hashed resume contract."""
+    contract = manifest.get("training_resume_contract", {})
+    dataset = contract.get("dataset_artifacts", {}) if isinstance(contract, dict) else {}
+    path = dataset.get("path", "") if isinstance(dataset, dict) else ""
+    match = re.fullmatch(r"/runpod-volume/(datasets/([0-9a-f]{64})/dataset-manifest[.]json)", path)
+    if match is None:
+        raise ValueError("Run checkpoint has no canonical dataset-scoped manifest path")
     if (
-        not isinstance(relative_path, str)
-        or not relative_path
-        or "\\" in relative_path
-        or Path(relative_path).is_absolute()
-        or ".." in Path(relative_path).parts
+        not isinstance(expected_dataset_request_sha256, str)
+        or SHA256_PATTERN.fullmatch(expected_dataset_request_sha256) is None
+        or match.group(2) != expected_dataset_request_sha256
     ):
-        raise ValueError(f"Dataset readiness manifest has an unsafe {name} artifact path")
-    sha256 = value.get("sha256")
-    size_bytes = value.get("size_bytes")
-    row_count = value.get("row_count")
-    if not isinstance(sha256, str) or SHA256_PATTERN.fullmatch(sha256) is None:
-        raise ValueError(f"Dataset readiness manifest has an invalid {name} artifact digest")
-    if (
-        not isinstance(size_bytes, int)
-        or isinstance(size_bytes, bool)
-        or size_bytes <= 0
-        or not isinstance(row_count, int)
-        or isinstance(row_count, bool)
-        or row_count <= 0
-    ):
-        raise ValueError(f"Dataset readiness manifest has invalid {name} artifact bounds")
-    return {
-        "relative_path": relative_path,
-        "sha256": sha256,
-        "size_bytes": size_bytes,
-        "row_count": row_count,
-    }
+        raise ValueError("Run checkpoint dataset differs from the active selection")
+    return match.group(1)
 
 
 def _manifest_artifact(payload, name):
@@ -258,14 +241,9 @@ def _manifest_artifact(payload, name):
     }
 
 
-def _dataset_contract(readiness_payload, dataset_payload, dataset_manifest_sha256):
-    if (
-        not isinstance(readiness_payload, dict)
-        or readiness_payload.get("schema_version") != 2
-        or readiness_payload.get("kind") != "stage1-dataset"
-        or readiness_payload.get("state") != "ready"
-    ):
-        raise ValueError("Dataset readiness manifest must contain a ready JSON object")
+def _dataset_contract(dataset_manifest_key, dataset_payload, dataset_manifest_sha256):
+    if re.fullmatch(r"datasets/[0-9a-f]{64}/dataset-manifest[.]json", dataset_manifest_key) is None:
+        raise ValueError("Dataset manifest path must be dataset-scoped")
     if (
         not isinstance(dataset_payload, dict)
         or dataset_payload.get("schema_version") != "4.0"
@@ -273,35 +251,14 @@ def _dataset_contract(readiness_payload, dataset_payload, dataset_manifest_sha25
         or dataset_payload.get("state") != "ready"
     ):
         raise ValueError("Numerical dataset manifest must contain a ready JSON object")
-    readiness_dataset_manifest = _dataset_artifact(readiness_payload, "dataset_manifest")
-    if readiness_dataset_manifest["sha256"] != dataset_manifest_sha256:
-        raise ValueError("Dataset readiness marker and dataset manifest digest disagree")
     raw = _manifest_artifact(dataset_payload, "raw")
     lazy_artifacts = {
         name: _manifest_artifact(dataset_payload, name)
         for name in ("bar_store_manifest", "symbol_index", "cutoff_ranges")
     }
-    if raw["sha256"] != _dataset_artifact(readiness_payload, "raw")["sha256"] or any(
-        artifact["sha256"] != _dataset_artifact(readiness_payload, name)["sha256"]
-        for name, artifact in lazy_artifacts.items()
-    ):
-        raise ValueError("Dataset readiness marker and numerical artifacts disagree")
-    for key in (
-        "dataset_profile",
-        "selected_datasets",
-        "data_pipeline_digest",
-        "universe_sha256",
-        "split_counts",
-    ):
-        if readiness_payload.get(key) != dataset_payload.get(key):
-            raise ValueError(f"Dataset readiness marker and dataset manifest disagree on {key}")
-    if readiness_payload.get("storage_preparation_spec_sha256") != dataset_payload.get(
-        "storage_preparation_spec_sha256"
-    ):
-        raise ValueError("Dataset readiness marker and storage preparation contract disagree")
     return {
         "status": "ready",
-        "path": f"/runpod-volume/{readiness_dataset_manifest['relative_path']}",
+        "path": f"/runpod-volume/{dataset_manifest_key}",
         "sha256": dataset_manifest_sha256,
         "dataset_profile": dataset_payload["dataset_profile"],
         "selected_datasets": dataset_payload["selected_datasets"],
@@ -468,6 +425,7 @@ def validate_remote_checkpoint_run(
     checkpoint_name,
     selection_policy,
     config_path,
+    expected_dataset_request_sha256,
 ):
     """Validate the requested resume or validation artifact before Pod creation."""
 
@@ -478,16 +436,11 @@ def validate_remote_checkpoint_run(
         f"{run_root}/resolved-config.yaml",
         "run resolved config",
     )
-    dataset_readiness = reader.json_object(
-        "lifecycle/stage1/dataset.json",
-        "dataset readiness manifest",
-    )
-    dataset_manifest_artifact = _dataset_artifact(
-        dataset_readiness,
-        "dataset_manifest",
+    dataset_manifest_key = _run_dataset_manifest_key(
+        manifest, expected_dataset_request_sha256,
     )
     dataset_manifest_bytes = reader.bytes_object(
-        dataset_manifest_artifact["relative_path"],
+        dataset_manifest_key,
         "numerical dataset manifest",
     )
     try:
@@ -508,7 +461,7 @@ def validate_remote_checkpoint_run(
         contract_digest,
         hashlib.sha256(config_path.read_bytes()).hexdigest(),
         resolved_config,
-        dataset_readiness,
+        dataset_manifest_key,
         dataset_manifest,
         hashlib.sha256(dataset_manifest_bytes).hexdigest(),
     )
@@ -634,6 +587,9 @@ def build_parser():
         required=True,
     )
     parser.add_argument("--checkpoint-name")
+    parser.add_argument(
+        "--dataset-request-sha256", default=os.environ.get("RUNPOD_DATASET_REQUEST_SHA256")
+    )
     return parser
 
 
@@ -647,6 +603,7 @@ def main():
             checkpoint_name=arguments.checkpoint_name,
             selection_policy=arguments.selection_policy,
             config_path=arguments.config.expanduser().resolve(strict=False),
+            expected_dataset_request_sha256=arguments.dataset_request_sha256,
         )
     except (OSError, ValueError, RemoteCheckpointPreflightError) as error:
         print(f"Remote checkpoint preflight failed: {error}", file=sys.stderr)

@@ -6,6 +6,20 @@ from typing import Final
 
 CHECKPOINT_RETENTION_MIGRATIONS: Final = (
     {
+        # Only provenance lookup changes; all data/model/optimizer semantics must still match.
+        "id": "dataset-scoped-provenance-v1",
+        "from_files": {
+            "tracking.py": (
+                "baee48c80779374c8e1cdc215540b9d3f06087ceaeef8a626d01ce799d2d3dea"
+            ),
+        },
+        "to_files": {
+            "tracking.py": (
+                "29fd76b6818c6b0d11efb13298e1cde25feaca4cbe6fc5bfc9e811345e9d129e"
+            ),
+        },
+    },
+    {
         "id": "adaptive-gpu-resource-planning-v1",
         "from_files": {
             "training.py": (

@@ -883,8 +883,9 @@ artifact 不會上傳。`poetry.lock` 也不會上傳；它會依 approved RunPo
 
 任何 allowlisted 程式碼或 config 修改後，都要重新執行 `--dry-run`、
 `--apply` 與 readiness check。config 修改也會使 active selection 失效，必須
-重新執行 `configure`。若資料 marker 綁定的是舊 code release 或舊 selection，
-還必須重跑 CPU preparation，不能略過 GPU gate。
+重新執行 `configure`。只要所選資料集已完成 prepare，且資料內容與 preparation
+契約未改變，切換 selection 或更新非資料程式不需重跑 CPU preparation。
+GPU gate 仍會驗證所選資料集完整性及目前模型的離線快取，不得略過。
 
 #### 3. 遠端部署模型與離線資料層
 
@@ -1045,7 +1046,9 @@ tmux -L fin-ts-cpu-prepare attach -t fin-ts-cpu-prepare
    寫入 `/runpod-volume/lifecycle/stage1/dataset.json`。這個檔案只表示不可變資料已
    `ready`，不承載 `preparing`、失敗或續傳狀態；CPU 工作的所有執行狀態只寫入
    `cpu-preparation.json`，因此 lint、setup 或下載失敗不會覆寫已完成的 dataset
-   readiness。若新的 active selection 改變資料請求，舊 selection 的 marker 會先移入
+   readiness。它是最近一次 CPU prepare 的相容性摘要，不是訓練資料的選擇依據；
+   主模型與 baseline 都按 active selection 讀取 `datasets/<dataset_request_sha256>/`
+   內的 manifest。若新的 active selection 改變資料請求，舊 selection 的 marker 會先移入
    `lifecycle/stage1/history/`，只移動 canonical pointer，不刪除舊資料集。只有全部檢查
    成功才發布新的 dataset marker，CPU guard 再依獨立的
    `cpu-preparation.json` 終態自動終止 Pod。
@@ -1260,7 +1263,8 @@ Stage 2 會從相同 pretrained base 開始，不接續 Stage 1 checkpoint。切
    ```
 
    `status` 必須顯示 dataset ready，且 `readiness --gpu` 必須成功。Finalization 完成前，
-   dataset marker 暫時仍顯示舊 Stage 1 selection ID 是正常的；不要以此判定資料需要重建。
+   共用 CPU 摘要暫時仍顯示舊 Stage 1 selection ID 是正常的；`status` 的 dataset 列
+   顯示目前所選資料集的 manifest 摘要，不等於完整 artifact readiness 驗證。
 
 7. **本機控制端：先完成下節「獨立 baseline 與既有資料升級」的 baseline 流程，再列出 GPU 並建立 Stage 2 training Pod。** `gpuId` 必須使用清單中的
    完整名稱；`--maxRuntime` 同時涵蓋訓練與自動 validation：
@@ -1318,6 +1322,13 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 自己的 dataset manifest，不使用共用的「最近一次 CPU prepare」紀錄判定另一組是否就緒。
 本機驗證小型 metadata 的 checksum 與全部 shard/index 的物件大小；Pod 掛載後再串流驗證
 實際資料 checksum。`readiness --gpu` 保留給主模型，不是 baseline 的前置要求。
+
+主模型的 `readiness --gpu`、Pod 內檢查及訓練紀錄同樣使用所選資料集的 manifest；
+Kronos cache 另外依目前 config 的 repository、固定 revision 與離線驗證結果檢查，
+不與 CPU prepare 當時的共用 HF manifest 檔案雜湊綁定。切換至已完成 prepare 的
+A／B 資料集，無須重跑 CPU prepare、下載或切分，也不會使既有 baseline 失效。
+續訓／評估則驗證 run 本身記錄的資料 manifest、原始 checksum 及目前 selection；
+不會以另一組最後完成 prepare 的摘要取代該 run 的資料身分。
 
 `baseline` 自動讀 `.env` 的 network volume 與 active selection。在本機檢查完成 manifest
 和所有輸出物件大小；完全匹配就顯示 cache hit 並結束，**不建立 Pod**。若建立 Pod，使用
@@ -3066,8 +3077,10 @@ environment on the network volume.
 
 After any allowlisted source or config change, rerun `--dry-run`, `--apply`, and
 the readiness check. A config change also invalidates the active selection, so
-rerun `configure`. If the dataset marker is bound to an older code release or
-selection, rerun CPU preparation as well. Never bypass the GPU gate.
+rerun `configure`. Switching selections or changing non-data code does not require
+CPU preparation again when the selected dataset is already prepared and its data
+content/preparation contract is unchanged. The GPU gate still verifies that
+dataset's integrity and the current model's offline cache; never bypass it.
 
 #### 3. Deploy the model and offline data layer remotely
 
@@ -3257,7 +3270,10 @@ tmux -L fin-ts-cpu-prepare attach -t fin-ts-cpu-prepare
    immutable `ready` data; it never carries preparing, failure, or resumable
    execution states. Every CPU execution state goes to `cpu-preparation.json`, so
    a lint, setup, or acquisition failure cannot overwrite completed dataset
-   readiness. If a new active selection changes the dataset request, the old
+   readiness. This is a compatibility summary of the latest CPU preparation,
+   not a training dataset selector. Both main-model and baseline workflows read
+   manifests under the active selection's `datasets/<dataset_request_sha256>/`.
+   If a new active selection changes the dataset request, the old
    selection marker moves to `lifecycle/stage1/history/`; this moves only the
    canonical pointer and does not delete the old dataset. The new dataset marker
    is published only after every check passes, and the CPU guard then terminates
@@ -3505,8 +3521,9 @@ Follow this sequence and do not skip the dataset request SHA comparison:
    ```
 
    `status` must report a ready dataset and `readiness --gpu` must succeed. Until
-   finalization completes, it is normal for the dataset marker to retain the old
-   Stage 1 selection ID; that alone is not a rebuild signal.
+   finalization completes, the shared CPU summary may retain the old Stage 1
+   selection ID. The dataset row in `status` summarizes the selected dataset's
+   own manifest; it does not replace the full artifact readiness check.
 
 7. **Local control machine: complete the independent baseline workflow below, then list GPUs and create the Stage 2 training Pod.** Use
    one complete `gpuId` from the current list. `--maxRuntime` covers training and
@@ -3569,6 +3586,15 @@ YAML. A/B each resolve their own dataset manifests instead of a shared "most rec
 CPU prepare" record. The local gate verifies small metadata checksums and every
 shard/index object size; mounted admission streams the actual data checksums.
 `readiness --gpu` remains the main-model gate, not a baseline prerequisite.
+
+Main-model `readiness --gpu`, mounted admission, and run provenance also use the
+selected dataset's own manifest. Kronos is checked independently against the
+current config's repositories, pinned revisions, and offline verification result,
+not the shared HF manifest file hash from an earlier CPU preparation. Switching
+between already-prepared A/B datasets requires no CPU preparation, downloads, or
+resplitting and does not invalidate completed baselines. Resume/evaluation checks
+use the dataset manifest and original checksums recorded by that run plus the
+active selection, never the most recently prepared dataset's shared summary.
 
 `baseline` reads the volume from `.env` and uses the active selection. It checks the
 complete manifest and artifact sizes **locally before allocating a paid Pod**.
