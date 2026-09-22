@@ -6,6 +6,22 @@ from typing import Final
 
 CHECKPOINT_RETENTION_MIGRATIONS: Final = (
     {
+        # Execution-only: identical windows, loss, optimizer and model parameters.
+        # Probe updates are rolled back; existing checkpoint progress/RNG is loaded
+        # afterwards. All other source/config/data fingerprints must still match.
+        "id": "end-to-end-pipeline-probe-v2",
+        "from_files": {
+            "training.py": (
+                "b34e527e81fc8a09fcc668b667a1a123a8501936603266c23d5163a65b387b56"
+            ),
+        },
+        "to_files": {
+            "training.py": (
+                "18c947d1754969a14c0a4f4ce0a4b5fac1b216c590d2b89f96f81a4b37c7cb76"
+            ),
+        },
+    },
+    {
         # Only provenance lookup changes; all data/model/optimizer semantics must still match.
         "id": "dataset-scoped-provenance-v1",
         "from_files": {
