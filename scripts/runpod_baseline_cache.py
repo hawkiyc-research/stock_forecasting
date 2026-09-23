@@ -65,6 +65,15 @@ def main(argv=None):
         return 0
     payload = json.loads(response.stdout)
     contract_tools["validate_complete"](payload, identity)
+    if payload.get("evaluation_data") is None:
+        if args.command == "require":
+            raise ValueError(
+                "Baseline results need storage finalization, not retraining. "
+                "Run: bash scripts/runpod_workflow.sh baseline"
+            )
+        print(json.dumps({"complete": False, "storage_finalization_pending": True, **identity}))
+        return 0
+    contract_tools["validate_complete"](payload, identity, require_shared=True)
     # Verify the active immutable manifest locally as well, before any paid Pod.
     manifest_key = (
         f"datasets/{selection['dataset_request_sha256']}/prepared/bar-store/bar-store.json"

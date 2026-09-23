@@ -135,7 +135,18 @@ def runtime_contract() -> tuple[Path, dict]:
     return project, baseline_contract(project, selection)
 
 
-def validate_complete(payload: dict, expected: dict) -> None:
+def shared_evaluation_paths() -> dict:
+    """Reuse the existing full-population input arrays, independent of model identity."""
+    return {
+        split: {
+            "membership": f"inputs/{split}/metadata.npy",
+            "targets": f"inputs/{split}/targets.npy",
+        }
+        for split in ("validation", "test")
+    }
+
+
+def validate_complete(payload: dict, expected: dict, *, require_shared: bool = False) -> None:
     if payload.get("state") != "complete" or payload.get("identity") != expected:
         raise ValueError("No complete baseline matches the active data/training contract")
     models = expected["contract"]["parameters"]["models"]
@@ -145,18 +156,40 @@ def validate_complete(payload: dict, expected: dict) -> None:
         raise ValueError("A baseline model is incomplete")
     if not payload.get("artifacts") or not payload.get("evaluation_membership"):
         raise ValueError("Baseline completion is missing reusable artifacts or full membership")
+    shared = payload.get("evaluation_data")
+    if shared is not None:
+        if shared != shared_evaluation_paths():
+            raise ValueError("Baseline shared evaluation paths are invalid")
+        for paths in shared.values():
+            for relative in paths.values():
+                if relative not in payload["artifacts"]:
+                    raise ValueError(f"Missing shared baseline evaluation artifact: {relative}")
+        if any(
+            path.startswith("jobs/") and Path(path).name in ("membership.npy", "targets.npy")
+            for path in payload["artifacts"]
+        ):
+            raise ValueError("Published baseline artifacts contain duplicate evaluation data")
+    elif require_shared:
+        raise ValueError(
+            "Baseline result storage is not finalized; run the baseline workflow to finalize "
+            "the existing results without retraining"
+        )
     for name in models:
         learned = name in {"gbdt", "gru", "dlinear", "patchtst"}
         for seed in expected["contract"]["parameters"]["seeds"] if learned else [None]:
             directory = f"jobs/{name}-{seed}" if learned else f"jobs/rules/{name}"
             weight = "model.pkl" if name == "gbdt" else "model.pt" if learned else "model.json"
-            for relative in (
+            required = (
                 f"{directory}/{weight}",
                 f"{directory}/validation-metrics.json",
                 f"{directory}/test/predictions.npy",
-                f"{directory}/test/targets.npy",
-                f"{directory}/test/membership.npy",
-            ):
+            )
+            if shared is None:
+                # The numerical builder returns staged output before storage publication.
+                required += (f"{directory}/test/targets.npy", f"{directory}/test/membership.npy")
+            else:
+                required += (f"{directory}/validation/predictions.npy",)
+            for relative in required:
                 if relative not in payload["artifacts"]:
                     raise ValueError(
                         f"Baseline completion lacks required reusable artifact: {relative}"
@@ -311,7 +344,7 @@ def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
     if not path.is_file():
         raise ValueError("Build matching baselines first: bash scripts/runpod_workflow.sh baseline")
     payload = json.loads(path.read_text())
-    validate_complete(payload, identity)
+    validate_complete(payload, identity, require_shared=True)
     from stock_forecasting.data.manifest import sha256_file
     from stock_forecasting.training_paths import resolve_bar_store_path
 

@@ -335,9 +335,13 @@ class BaselineIndependenceTests(unittest.TestCase):
                 weight = "model.pkl" if name == "gbdt" else "model.pt" if learned else "model.json"
                 for suffix in (
                     weight, "validation-metrics.json", "test/predictions.npy",
-                    "test/targets.npy", "test/membership.npy",
+                    "validation/predictions.npy",
                 ):
                     payload["artifacts"][f"{job}/{suffix}"] = {"bytes": 1}
+        payload["evaluation_data"] = CONTRACT["shared_evaluation_paths"]()
+        for paths in payload["evaluation_data"].values():
+            for relative in paths.values():
+                payload["artifacts"][relative] = {"bytes": 1}
         with tempfile.TemporaryDirectory() as directory:
             volume = Path(directory)
             bar = volume / "prepared"

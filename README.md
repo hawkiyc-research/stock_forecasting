@@ -436,6 +436,12 @@ checkpoint 保存 plateau 狀態，resume／更換 batch plan 不會把已降低
 資料／universe／horizon 語意與 baseline 訓練程式和 `configs/baseline.json` 數值參數識別；
 修改主模型、README、部署腳本或資源並行上限不會使其失效。不可把不同資料內容只因日期相同
 就視為同一份 baseline。若完整 GBDT 無法放進記憶體預算，流程會拒絕執行，不會退回抽樣。
+baseline 建置收尾會共用既有 `inputs/<split>/metadata.npy`（樣本 membership）與
+`inputs/<split>/targets.npy`，其中 `<split>` 為 `validation` 或 `test`。完成紀錄的
+`evaluation_data` 指向這四個共用檔案；各模型結果目錄只保留自己的預測、權重與指標，
+不保留重複的 `membership.npy`／`targets.npy`。收尾先串流驗證內容一致，再原子更新
+檔案引用，最後移除副本；若清理被中斷，重跑 baseline 流程只完成收尾，不重訓。
+這項儲存整理不改資料期間、標籤、模型參數或 baseline 數值身分。
 結果 schema 為 `6.0`，明列 `selection_split=validation`、`evaluation_split=test`；只有
 完成配對檢查後才發布 `test_unlocked=true`。舊 schema 的完成結果不能直接續用。
 
@@ -2580,6 +2586,15 @@ it never silently subsamples. Result schema `6.0` explicitly records
 `selection_split=validation` and `evaluation_split=test`; `test_unlocked=true`
 is published only after paired checks pass. Old-schema completed scores cannot
 be reused.
+
+Baseline finalization reuses `inputs/<split>/metadata.npy` (sample membership) and
+`inputs/<split>/targets.npy` for `validation` and `test`. The completion record's
+`evaluation_data` references these four shared files. Each model retains its own
+predictions, weights and metrics, not duplicate membership/target arrays. Finalization
+streams checksum verification, atomically publishes shared references, then removes
+redundant copies. If cleanup is interrupted, the baseline workflow finishes publication
+without retraining. This storage change does not alter periods, labels, parameters
+or baseline numerical identity.
 
 Reports include month, market, and horizon breakdowns plus full-model-minus-baseline
 differences in mean daily normalized pinball. The 95% interval uses a 14-date

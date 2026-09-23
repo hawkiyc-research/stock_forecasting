@@ -16,6 +16,7 @@ from stock_forecasting.baseline_contract import (
     baseline_runtime_payload,
     validate_local_configuration,
 )
+from stock_forecasting.baseline_result_storage import finalize_baseline_storage
 from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.data.manifest import atomic_write_json
 
@@ -59,6 +60,9 @@ def main(argv=None):
     publish("preparing")
     try:
         payload = build_baselines(config)
+        payload = finalize_baseline_storage(
+            root / "baselines" / payload["identity"]["baseline_id"], apply=True
+        )["payload"]
         publish("finalizing" if os.environ.get("RUNPOD_TMUX_LOG_FILE") else "ready")
         print(json.dumps({"state": "complete", "baseline_id": payload["identity"]["baseline_id"]}))
     except BaseException as error:

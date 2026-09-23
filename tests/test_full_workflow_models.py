@@ -421,7 +421,13 @@ def test_complete_baseline_builder_and_cache_reuse(small_lazy_config, tmp_path, 
     monkeypatch.setattr(build, "runtime_contract", lambda: (project, identity))
     monkeypatch.setenv("NETWORK_VOLUME_ROOT", str(tmp_path))
     first = build.build_baselines(config)
-    validate_complete(first, identity)
+    from stock_forecasting.baseline_result_storage import finalize_baseline_storage
+
+    root = tmp_path / "baselines" / identity["baseline_id"]
+    first = finalize_baseline_storage(root, apply=True, progress=None)["payload"]
+    validate_complete(first, identity, require_shared=True)
+    assert not list((root / "jobs").rglob("membership.npy"))
+    assert not list((root / "jobs").rglob("targets.npy"))
     assert first["sample_counts"] == {
         split: len(lazy_dataset(config, split)) for split in ("train", "validation", "test")
     }

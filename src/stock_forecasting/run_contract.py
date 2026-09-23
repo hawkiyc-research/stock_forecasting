@@ -33,7 +33,6 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "models/quant.py",
     "models/scale_features.py",
     "preflight.py",
-    "run_contract.py",
     "run_paths.py",
     "tracking.py",
     "training.py",
@@ -46,7 +45,6 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "optimization_policy.py",
     "date_market_sampler.py",
     "models/ranking.py",
-    "baseline_contract.py",
 )
 
 
@@ -140,7 +138,9 @@ def _validated_implementation_files(
     files = implementation.get("files")
     if (
         not isinstance(files, dict)
-        or set(files) != set(TRAINING_IMPLEMENTATION_PATHS)
+        or not set(TRAINING_IMPLEMENTATION_PATHS) <= set(files)
+        or set(files) - set(TRAINING_IMPLEMENTATION_PATHS)
+        - {"baseline_contract.py", "run_contract.py"}
         or any(
             not isinstance(path, str)
             or not isinstance(digest, str)
@@ -153,7 +153,10 @@ def _validated_implementation_files(
     expected_digest = _canonical_payload_digest(files)
     if implementation.get("sha256") != expected_digest:
         raise ValueError(f"{label} training implementation digest is inconsistent")
-    return dict(files)
+    # Historical snapshots included these control-plane readers. Their storage
+    # layout/validation code does not define model, data, loss or optimizer math.
+    # Validate the original snapshot above, then compare only numerical sources.
+    return {path: files[path] for path in TRAINING_IMPLEMENTATION_PATHS}
 
 
 def _checkpoint_retention_migration_matches(
@@ -177,9 +180,17 @@ def _checkpoint_retention_migration_matches(
         label="Current training resume contract",
     )
     changed_files = {path for path in stored_files if stored_files[path] != current_files[path]}
+    if not changed_files:
+        return True
     for migration in CHECKPOINT_RETENTION_MIGRATIONS:
-        from_files = migration["from_files"]
-        to_files = migration["to_files"]
+        from_files = {
+            path: value for path, value in migration["from_files"].items()
+            if path in TRAINING_IMPLEMENTATION_PATHS
+        }
+        to_files = {
+            path: value for path, value in migration["to_files"].items()
+            if path in TRAINING_IMPLEMENTATION_PATHS
+        }
         if (
             changed_files == set(from_files) == set(to_files)
             and all(stored_files[path] == digest for path, digest in from_files.items())
