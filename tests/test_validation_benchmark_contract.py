@@ -215,7 +215,7 @@ def test_runtime_plan_reader_fix_preserves_completed_baselines_on_resume(tmp_pat
 
 
 @pytest.mark.parametrize("side", ["stored", "current"])
-@pytest.mark.parametrize("name", ["cli/evaluate.py", "validation_benchmark.py", "metrics.py"])
+@pytest.mark.parametrize("name", ["cli/evaluate.py", "metrics.py"])
 def test_runtime_plan_reader_migration_rejects_unapproved_code(
     tmp_path: Path, side: str, name: str,
 ) -> None:

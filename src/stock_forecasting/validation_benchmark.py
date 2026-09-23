@@ -74,6 +74,20 @@ ALL_VALIDATION_MODELS = (*RULE_BASELINE_NAMES, *LEARNED_BASELINES, FULL_MODEL_NA
 EVALUATION_CONTRACT_VERSION = "6.0"
 VALIDATION_BENCHMARK_SCHEMA_VERSION = "6.0"
 LEGACY_EVALUATION_CONTRACT_VERSIONS: tuple[str, ...] = ()
+# File provenance for numerical kernels only. Storage readers and this workflow's
+# resume/report orchestration are not numerical identities. Changes to scoring
+# semantics must change EVALUATION_PROTOCOL_VERSION, even in the orchestration.
+EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS = (
+    "baselines.py",
+    "evaluation_protocol.py",
+    "metrics.py",
+    "cli/evaluate.py",
+    "evaluation_store.py",
+)
+EVALUATION_CONTROL_IMPLEMENTATION_PATHS = (
+    "validation_benchmark.py",
+    "baseline_contract.py",
+)
 VALIDATION_NON_NUMERICAL_CONFIG_FIELDS = (
     "enabled",
     "auto_run_after_training",
@@ -221,9 +235,22 @@ def _evaluation_contract_resume_view(
     numerical_config = _stored_validation_numerical_config(inputs)
     if numerical_config is None:
         return None
+    implementation = inputs["evaluation_implementation"]
+    numerical_paths = set(EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS)
+    if (
+        not isinstance(implementation, dict)
+        or not numerical_paths <= set(implementation)
+        or set(implementation) - numerical_paths - set(EVALUATION_CONTROL_IMPLEMENTATION_PATHS)
+    ):
+        return None
     return {
         **{name: inputs[name] for name in required_inputs},
         "validation_numerical_config": numerical_config,
+        # Version 6 snapshots also recorded control-plane files. Their paths and
+        # publication checks can change without invalidating saved model scores.
+        "evaluation_implementation": {
+            name: implementation[name] for name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
+        },
     }
 
 
@@ -249,12 +276,22 @@ def _evaluation_contracts_are_resume_compatible(
     ):
         return False
     changed_files = {name for name in stored_files if stored_files[name] != current_files[name]}
-    return any(
-        changed_files == set(migration["from_files"]) == set(migration["to_files"])
-        and all(stored_files[name] == value for name, value in migration["from_files"].items())
-        and all(current_files[name] == value for name, value in migration["to_files"].items())
-        for migration in EVALUATION_RESUME_MIGRATIONS
-    )
+    for migration in EVALUATION_RESUME_MIGRATIONS:
+        before = {
+            name: value for name, value in migration["from_files"].items()
+            if name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
+        }
+        after = {
+            name: value for name, value in migration["to_files"].items()
+            if name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
+        }
+        if (
+            changed_files == set(before) == set(after)
+            and all(stored_files[name] == value for name, value in before.items())
+            and all(current_files[name] == value for name, value in after.items())
+        ):
+            return True
+    return False
 
 
 def build_evaluation_contract(
@@ -296,15 +333,7 @@ def build_evaluation_contract(
             },
             "evaluation_implementation": {
                 name: _file_fingerprint(Path(__file__).parent / name)
-                for name in (
-                    "validation_benchmark.py",
-                    "baselines.py",
-                    "evaluation_protocol.py",
-                    "metrics.py",
-                    "cli/evaluate.py",
-                    "evaluation_store.py",
-                    "baseline_contract.py",
-                )
+                for name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
             },
         },
     }

@@ -13,6 +13,39 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
+def _has_duplicate_arrays(wrapper, bucket, prefix, relative_paths):
+    """Inspect names only; cleanup progress must not gate model/data reuse."""
+    expected = {prefix + path for path in relative_paths}
+    continuation = None
+    seen_tokens = set()
+    # Sequential pages depend on the previous token. Bound both response size
+    # and pagination; the artifact suite is small and no array is downloaded.
+    for _page in range(32):
+        command = [
+            "bash", wrapper, "s3api", "list-objects-v2", "--bucket", bucket,
+            "--prefix", prefix + "jobs/", "--max-keys", "1000", "--no-paginate",
+            "--output", "json",
+        ]
+        if continuation is not None:
+            command.extend(["--continuation-token", continuation])
+        response = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        if response.returncode:
+            raise RuntimeError("Unable to inspect baseline cleanup; no Pod will be created")
+        page = json.loads(response.stdout)
+        contents = page.get("Contents", [])
+        if not isinstance(contents, list) or len(contents) > 1000:
+            raise ValueError("Invalid baseline storage listing")
+        if any(item["Key"] in expected for item in contents):
+            return True
+        if page.get("IsTruncated") is False:
+            return False
+        continuation = page.get("NextContinuationToken")
+        if not isinstance(continuation, str) or not continuation or continuation in seen_tokens:
+            raise ValueError("Incomplete baseline storage listing; no Pod will be created")
+        seen_tokens.add(continuation)
+    raise ValueError("Baseline storage listing exceeds the bounded suite limit")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("check", "require", "identity"))
@@ -128,6 +161,13 @@ def main(argv=None):
     )
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(check_artifact, payload["artifacts"].items()))
+    if args.command == "check" and _has_duplicate_arrays(
+        wrapper, bucket, prefix, contract_tools["duplicate_evaluation_paths"](payload)
+    ):
+        # Published shared arrays are already usable by training/testing. Only
+        # the baseline workflow needs to finish an interrupted storage cleanup.
+        print(json.dumps({"complete": False, "storage_finalization_pending": True, **identity}))
+        return 0
     print(json.dumps({"complete": True, **identity}))
     return 0
 

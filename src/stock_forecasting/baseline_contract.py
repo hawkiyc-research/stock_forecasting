@@ -146,6 +146,20 @@ def shared_evaluation_paths() -> dict:
     }
 
 
+def duplicate_evaluation_paths(payload: dict) -> dict[str, str]:
+    """Enumerate only redundant job arrays and their existing canonical sources."""
+    result = {}
+    parameters = payload["identity"]["contract"]["parameters"]
+    for model in parameters["models"]:
+        learned = model in {"gbdt", "gru", "dlinear", "patchtst"}
+        for seed in parameters["seeds"] if learned else [None]:
+            job = f"jobs/{model}-{seed}" if learned else f"jobs/rules/{model}"
+            for split, paths in shared_evaluation_paths().items():
+                for kind, source in paths.items():
+                    result[f"{job}/{split}/{kind}.npy"] = source
+    return result
+
+
 def validate_complete(payload: dict, expected: dict, *, require_shared: bool = False) -> None:
     if payload.get("state") != "complete" or payload.get("identity") != expected:
         raise ValueError("No complete baseline matches the active data/training contract")

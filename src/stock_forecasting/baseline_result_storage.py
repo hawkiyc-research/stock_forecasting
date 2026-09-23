@@ -14,7 +14,11 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from stock_forecasting.baseline_contract import shared_evaluation_paths, validate_complete
+from stock_forecasting.baseline_contract import (
+    duplicate_evaluation_paths,
+    shared_evaluation_paths,
+    validate_complete,
+)
 
 CHUNK_BYTES = 4 * 1024**2
 MAX_ARTIFACTS = 4096
@@ -195,17 +199,11 @@ def finalize_baseline_storage(
             for paths in shared_evaluation_paths().values() for path in paths.values()
         }
         # Enumerate exact job destinations from saved model/seed parameters, not a glob.
-        duplicates = {}
-        parameters = current["identity"]["contract"]["parameters"]
-        for model in parameters["models"]:
-            learned = model in {"gbdt", "gru", "dlinear", "patchtst"}
-            for seed in parameters["seeds"] if learned else [None]:
-                job = f"jobs/{model}-{seed}" if learned else f"jobs/rules/{model}"
-                for split, paths in shared_evaluation_paths().items():
-                    for kind, source in paths.items():
-                        relative = f"{job}/{split}/{kind}.npy"
-                        if (root / relative).exists() or (root / relative).is_symlink():
-                            duplicates[relative] = shared[source]
+        duplicates = {
+            relative: shared[source]
+            for relative, source in duplicate_evaluation_paths(current).items()
+            if (root / relative).exists() or (root / relative).is_symlink()
+        }
     for relative in duplicates:
         if DUPLICATE_PATH.fullmatch(relative) is None:
             raise ValueError(f"Refusing an out-of-scope removal: {relative}")
@@ -272,5 +270,14 @@ def finalize_baseline_storage(
     if duplicates:
         audit.update(state="complete", deleted_files=deleted, finished_at=time.time())
         _atomic_json(receipt, audit)
+    elif receipt.is_file():
+        # A crash after the final unlink may leave only the progress note stale.
+        # This note never determines whether the shared arrays can be consumed.
+        pending = json.loads(receipt.read_text())
+        if pending.get("state") == "verified":
+            pending.update(
+                state="complete", deleted_files=pending["duplicate_files"], finished_at=time.time()
+            )
+            _atomic_json(receipt, pending)
     result["deleted_files"] = deleted
     return result
