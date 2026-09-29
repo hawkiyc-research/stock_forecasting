@@ -368,7 +368,7 @@ def rearm_guard(pod: dict[str, Any], remaining: int, guard_dir: Path) -> None:
     if expected is None:
         raise RuntimeError("Pod role has no approved lifecycle mapping")
     _, lifecycle_key = expected
-    required_commands = ["bash", "python3", "runpodctl", "aws"]
+    required_commands = ["bash", "python3", "aws"]
     if sys.platform == "darwin":
         required_commands.append("caffeinate")
     missing_commands = [name for name in required_commands if shutil.which(name) is None]

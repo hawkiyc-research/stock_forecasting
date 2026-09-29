@@ -108,10 +108,6 @@ if [[ ( "${LIFECYCLE_KEY}" == "lifecycle/stage1/training.json" \
     echo "GPU lifecycle guards require RUNPOD_GUARD_RUN_ID" >&2
     exit 2
 fi
-if ! command -v runpodctl >/dev/null 2>&1; then
-    echo "runpodctl is required on the external guard host" >&2
-    exit 127
-fi
 if [[ ! -f "${RUNPODCTL_WRAPPER}" || ! -r "${RUNPODCTL_WRAPPER}" \
     || ! -f "${RUNPOD_READINESS_HELPER}" || ! -r "${RUNPOD_READINESS_HELPER}" ]]; then
     echo "Project guard dependencies are unavailable" >&2

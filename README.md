@@ -498,8 +498,14 @@ API raw cache、manifest 與模型 cache。CPU preparation Pod 負責建立這�
 
 #### 1. 建立 RunPod 帳號資源與本機設定
 
-本機控制端需要 `bash`、Python 3、AWS CLI、`curl` 與 `runpodctl`。此處的系統
-Python 3 只供無第三方相依的 manifest/JSON control helper 使用，不代表建立、載入或
+本機控制端需要 `bash`、Python 3、AWS CLI 與 `curl`。建立帶有供應商端
+`--terminate-after` 截止時間的 GPU Pod 時，另外需要支援此參數的
+`runpodctl`（目前使用 2.11.x）。一般 Pod 查詢、啟停、終止、CPU Pod 與
+network volume 操作使用 RunPod REST API v2；REST v2 不接受非 2 的冪次
+vCPU 數量，這類 CPU Pod 建立使用 REST API v1。GPU Pod 建立所需的供應商端
+截止時間目前沒有 REST v2 或 v1 對應欄位，因此保留 CLI 的 GraphQL 建立路徑。
+此處的系統 Python 3 只供無第三方相依的 manifest/JSON control helper 使用，
+不代表建立、載入或
 檢查本機專案 Python environment。RunPod 官方文件：
 
 - [Network volumes](https://docs.runpod.io/storage/network-volumes)
@@ -2652,10 +2658,16 @@ bar store and never calls an external market-data API from the training loop.
 
 #### 1. Create RunPod account resources and local configuration
 
-The local control machine needs `bash`, Python 3, AWS CLI, `curl`, and
-`runpodctl`. This system Python runs dependency-free manifest and JSON control
-helpers only; it does not create, load, or validate a local project Python
-environment. Official RunPod references:
+The local control machine needs `bash`, Python 3, AWS CLI, and `curl`.
+Creating GPU Pods with the provider-side `--terminate-after` deadline also
+requires a `runpodctl` release that supports that flag (currently 2.11.x).
+Routine Pod lookup, actions, termination, CPU Pod creation, and network volume
+operations use RunPod REST API v2. CPU Pod creation with a non-power-of-two
+vCPU count uses REST API v1 because v2 rejects that count. GPU Pod creation
+retains the CLI's GraphQL path because neither REST version exposes the
+provider-side deadline. This system Python runs dependency-free manifest and
+JSON control helpers only; it does not create, load, or validate a local
+project Python environment. Official RunPod references:
 
 - [Network volumes](https://docs.runpod.io/storage/network-volumes)
 - [S3-compatible API](https://docs.runpod.io/storage/s3-api)

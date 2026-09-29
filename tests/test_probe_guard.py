@@ -25,6 +25,7 @@ class ProbeGuardTests(unittest.TestCase):
         for relative in (
             "scripts/terminate_runpod_after.sh",
             "scripts/runpodctl_project.sh",
+            "scripts/runpod_rest_v2_control.py",
             "scripts/lib/runpod_project_env.sh",
             "scripts/runpod_readiness.py",
             "src/stock_forecasting/data/content_identity.py",
@@ -42,19 +43,21 @@ class ProbeGuardTests(unittest.TestCase):
         )
         env_file.chmod(0o600)
         harness.write_script(
-            harness.bin / "python3", "exec " + shlex.quote(sys.executable) + ' "$@"\n'
+            harness.bin / "python3",
+            r"""
+            if [[ "$1" == */runpod_rest_v2_control.py ]]; then
+                root="$(cd "$(dirname "$1")/../../.." && pwd)"
+                [[ "${RUNPOD_API_KEY:-}" == local-test-only ]] || exit 91
+                [[ "$2 $3 $4" == 'pod delete probe-fixture' ]] || exit 92
+                printf '%s\n' "$2 $3 $4" >> "${root}/local-delete-calls"
+                printf '{"id":"probe-fixture","deleted":true}\n'
+                exit 0
+            fi
+            exec """
+            + shlex.quote(sys.executable)
+            + ' "$@"\n',
         )
         harness.write_script(harness.bin / "aws", "exit 90\n")
-        # Use the real project credential wrapper; only the final CLI is fake.
-        harness.write_script(
-            harness.bin / "runpodctl",
-            r"""
-            root="$(cd "$(dirname "$0")/.." && pwd)"
-            [[ "${RUNPOD_API_KEY:-}" == local-test-only ]] || exit 91
-            [[ "$*" == 'pod delete probe-fixture' ]] || exit 92
-            printf '%s\n' "$*" >> "${root}/local-delete-calls"
-            """,
-        )
         harness.write_script(
             harness.scripts / "runpod_s3_project.sh",
             r"""

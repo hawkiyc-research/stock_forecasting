@@ -24,7 +24,7 @@ SHUTDOWN_DIR="${RUNPOD_SHUTDOWN_DIR:-${LOG_ROOT}/${RUN_KEY}}"
 MARKER_PATH="${RUNPOD_SHUTDOWN_MARKER:-${SHUTDOWN_DIR}/shutdown.json}"
 # RunPod requires termination instead of stop for Pods with a network volume.
 ACTION="${RUNPOD_SHUTDOWN_ACTION:-terminate}"
-API_BASE_URL="${RUNPOD_API_BASE_URL:-https://rest.runpod.io/v1}"
+API_BASE_URL="${RUNPOD_API_BASE_URL:-https://api.runpod.io/v2}"
 
 runpod_validate_absolute_path "${NETWORK_VOLUME_ROOT}" NETWORK_VOLUME_ROOT || exit $?
 case "${NETWORK_VOLUME_ROOT}" in
@@ -78,10 +78,12 @@ case "${ACTION}" in
     terminate)
         HTTP_METHOD="DELETE"
         API_URL="${API_BASE_URL%/}/pods/${RUNPOD_POD_ID}"
+        CURL_BODY_ARGUMENTS=(--header 'Accept: application/json')
         ;;
     stop)
         HTTP_METHOD="POST"
-        API_URL="${API_BASE_URL%/}/pods/${RUNPOD_POD_ID}/stop"
+        API_URL="${API_BASE_URL%/}/pods/${RUNPOD_POD_ID}/action"
+        CURL_BODY_ARGUMENTS=(--data '{"action":"stop"}')
         ;;
     *)
         printf '{"attempted":false,"error":"invalid-shutdown-action"}\n' > "${MARKER_PATH}"
@@ -98,6 +100,7 @@ HTTP_CODE="$({
     --silent --show-error \
     --request "${HTTP_METHOD}" \
     --url "${API_URL}" \
+    "${CURL_BODY_ARGUMENTS[@]}" \
     --connect-timeout "${RUNPOD_SHUTDOWN_CONNECT_TIMEOUT_SECONDS:-10}" \
     --max-time "${RUNPOD_SHUTDOWN_TIMEOUT_SECONDS:-30}" \
     --output "${RESPONSE_PATH}" \

@@ -351,19 +351,22 @@ def shutdown_runpod(
         marker_path,
         {"action": action, "attempted_at": _utc_now(), "pod_id": pod_id, "state": "started"},
     )
-    api_base = os.environ.get("RUNPOD_API_BASE_URL", "https://rest.runpod.io/v1").rstrip("/")
+    api_base = os.environ.get("RUNPOD_API_BASE_URL", "https://api.runpod.io/v2").rstrip("/")
     encoded_pod_id = quote(pod_id, safe="")
     if action == "terminate":
         method = "DELETE"
         url = f"{api_base}/pods/{encoded_pod_id}"
+        body = None
     else:
         method = "POST"
-        url = f"{api_base}/pods/{encoded_pod_id}/stop"
+        url = f"{api_base}/pods/{encoded_pod_id}/action"
+        body = json.dumps({"action": "stop"}).encode("utf-8")
 
     api_request = Request(
         url,
+        data=body,
         method=method,
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
     max_attempts = max(1, int(os.environ.get("RUNPOD_SHUTDOWN_MAX_ATTEMPTS", "5")))
     retry_seconds = max(0.1, float(os.environ.get("RUNPOD_SHUTDOWN_RETRY_SECONDS", "5")))

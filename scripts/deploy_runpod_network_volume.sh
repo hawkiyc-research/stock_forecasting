@@ -54,8 +54,9 @@ if [[ ! "${VOLUME_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
     exit 2
 fi
 if [[ ! "${VOLUME_SIZE_GB}" =~ ^[1-9][0-9]{0,3}$ \
+    || "${VOLUME_SIZE_GB}" -lt 10 \
     || "${VOLUME_SIZE_GB}" -gt 4000 ]]; then
-    echo "Network volume size must be between 1 and 4000 GB" >&2
+    echo "Network volume size must be between 10 and 4000 GB" >&2
     exit 2
 fi
 if [[ ! "${DATACENTER_ID}" =~ ^[A-Z0-9]+(-[A-Z0-9]+)+$ ]]; then
@@ -95,7 +96,7 @@ if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
 if not isinstance(payload, dict):
     raise SystemExit("RunPod volume response is not a JSON object")
 volume_id = payload.get("id", "")
-datacenter = payload.get("dataCenterId", payload.get("data_center_id", ""))
+datacenter = payload.get("dataCenter", payload.get("dataCenterId", payload.get("data_center_id", "")))
 if not isinstance(volume_id, str) or re.fullmatch(r"[A-Za-z0-9_-]+", volume_id) is None:
     raise SystemExit("RunPod volume response has no safe volume ID")
 if datacenter and datacenter != sys.argv[1]:
