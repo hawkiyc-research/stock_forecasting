@@ -570,18 +570,16 @@ URL，以及遷移前的 Cloudflare 欄位。Cloudflare 欄位不再被新 workf
 Cloud Run live verification 與後續 CPU Pod 實際成功前，腳本也不會刪除舊 Worker
 或撤銷舊 token。若 volume 已部署完成，不要重跑 `credentials` 或 `volume deploy`。
 
-`deploy` 會使用本機 `.env` 內既有的 `RUNPOD_API_KEY` 呼叫官方 GraphQL
-`secretCreate`。`secretCreate` 是 API mutation 名稱，不是建立 RunPod API key 時可
-單獨勾選的權限。`deploy` 會在任何 GCP 寫入前先執行只讀的 `myself { id }` GraphQL
-preflight，不會在檢查階段建立資源。RunPod 的 Cloudflare WAF 會以 Error 1010 拒絕
-Python `urllib` 預設的瀏覽器簽章，因此控制程式固定傳送明確的專案 API-client
-`User-Agent`；不要把這種 403 直接判定成 API key 權限不足。若 gateway 仍拒絕，
-腳本會保留 `error_code`、`error_name`、`error_category` 與安全的 `detail`，同時遮蔽
+`deploy` 會使用本機 `.env` 內既有的 `RUNPOD_API_KEY`，以 Bearer 認證呼叫
+RunPod REST API v2。任何 GCP 寫入前，先以唯讀的 `GET /v2/account/secrets`
+檢查存取權，不會在預檢階段建立資源；完成 Cloud Run 驗證後，才以
+`POST /v2/account/secrets` 建立 Secret。控制程式固定傳送明確的專案 API-client
+`User-Agent`。若 API 拒絕請求，腳本會保留 HTTP 狀態與安全的錯誤細節，同時遮蔽
 API key 與 relay token。API key 只保存在本機 `.env`，不會隨 source sync 上傳；
-preflight 或 Secret 建立失敗時，`deploy` 會停止，也不會把新的 relay metadata
+預檢或 Secret 建立失敗時，`deploy` 會停止，也不會把新的 relay metadata
 啟用到本機 `.env`。
 
-GraphQL preflight 通過後，部署器才會建立 GCP 資源。共享 token 以 Secret Manager
+REST API v2 預檢通過後，部署器才會建立 GCP 資源。共享 token 以 Secret Manager
 的數字 version 掛入特定 Cloud Run revision，不使用會漂移的 `latest`。新 revision
 產生前，Node.js Buildpack 會透過 `gcp-build` 強制執行 relay 單元測試；測試或 build
 失敗就不會部署 revision。新 revision 上線後，部署器先驗證 authenticated warmup，
@@ -649,8 +647,7 @@ pytest 與 Hugging Face prefetch 期間 relay 又 scale to zero。若完整 raw 
 - [Cloud Run minimum instances 與 billing](https://docs.cloud.google.com/run/docs/configuring/min-instances)
 - [Cloud Run Secret Manager 整合](https://docs.cloud.google.com/run/docs/configuring/services/secrets)
 - [Cloud Run 定價](https://cloud.google.com/run/pricing)
-- [RunPod GraphQL 設定與認證](https://docs.runpod.io/sdks/graphql/configurations)
-- [RunPod GraphQL `secretCreate`](https://docs.runpod.io/sdks/graphql/manage-pod-templates)
+- [RunPod REST API v2 OpenAPI 規格](https://api.runpod.io/v2/openapi.json)
 
 接著由腳本建立 network volume。成功回傳的 volume ID、datacenter、S3 region
 與 endpoint 會自動寫回同一個 `.env`，不需要複製 ID：
@@ -2738,21 +2735,18 @@ Keep the old deployment until Cloud Run passes live verification and a CPU Pod
 has succeeded. Do not rerun `credentials` or `volume deploy` when the volume
 already exists.
 
-`deploy` uses the existing `RUNPOD_API_KEY` in the local `.env` to call the
-official GraphQL `secretCreate` mutation. `secretCreate` is an API operation,
-not a separately selectable permission when creating a RunPod API key. Before
-performing any GCP write, `deploy` runs the read-only `myself { id }` GraphQL
-preflight and creates no resource during that check. RunPod's Cloudflare WAF
-rejects Python `urllib`'s default browser signature with Error 1010, so the
-control script sends an explicit project API-client `User-Agent`; do not infer
-that this particular 403 means the API key lacks permission. If the gateway
-still rejects a request, the script preserves `error_code`, `error_name`,
-`error_category`, and a safe `detail` while redacting the API key and relay
-token. The API key remains in the local `.env` and is excluded from source
+`deploy` uses the existing `RUNPOD_API_KEY` in the local `.env` with Bearer
+authentication for RunPod REST API v2. Before any GCP write, it checks access
+with read-only `GET /v2/account/secrets` and creates no resource during that
+preflight. After Cloud Run verification, it creates the Secret with
+`POST /v2/account/secrets`. The control script sends an explicit project
+API-client `User-Agent`. If the API rejects a request, it preserves the HTTP
+status and safe error details while redacting the API key and relay token. The
+API key remains in the local `.env` and is excluded from source
 synchronization. If the preflight or Secret creation fails, `deploy` stops
 without activating new relay metadata in the local `.env`.
 
-Only after the GraphQL preflight does the deployer mutate GCP. The shared token
+Only after the REST API v2 preflight does the deployer mutate GCP. The shared token
 is mounted from a numbered Secret Manager version into one Cloud Run revision;
 it never uses a drifting `latest` reference. Before a revision is produced, the
 Node.js buildpack must pass the relay unit tests through `gcp-build`; a failed
@@ -2831,8 +2825,7 @@ Official references:
 - [Cloud Run minimum instances and billing](https://docs.cloud.google.com/run/docs/configuring/min-instances)
 - [Cloud Run Secret Manager integration](https://docs.cloud.google.com/run/docs/configuring/services/secrets)
 - [Cloud Run pricing](https://cloud.google.com/run/pricing)
-- [RunPod GraphQL configuration and authentication](https://docs.runpod.io/sdks/graphql/configurations)
-- [RunPod GraphQL `secretCreate`](https://docs.runpod.io/sdks/graphql/manage-pod-templates)
+- [RunPod REST API v2 OpenAPI specification](https://api.runpod.io/v2/openapi.json)
 
 Create the network volume through the script. The returned volume ID,
 datacenter, S3 region, and endpoint are written back to the same `.env`

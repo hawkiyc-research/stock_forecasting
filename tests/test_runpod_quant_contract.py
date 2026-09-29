@@ -1320,11 +1320,14 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
     relay_deploy_index = deploy_script.index('gcloud run deploy "${GCP_TPEX_RELAY_SERVICE}"')
     secret_create_index = deploy_script.rindex("create_runpod_tpex_proxy_secret.py")
     assert preflight_index < relay_deploy_index < secret_create_index
-    assert 'query="query { myself { id } }"' in secret_creator
-    assert 'RUNPOD_GRAPHQL_USER_AGENT = "stock-forecasting-runpod-control/0.1"' in (
+    assert 'RUNPOD_REST_V2_ENDPOINT = "https://api.runpod.io/v2"' in secret_creator
+    assert 'path="/account/secrets?name=tpex_relay_token_preflight"' in secret_creator
+    assert 'path="/account/secrets"' in secret_creator
+    assert 'RUNPOD_REST_USER_AGENT = "stock-forecasting-runpod-control/0.1"' in (
         secret_creator
     )
-    assert '"User-Agent": RUNPOD_GRAPHQL_USER_AGENT' in secret_creator
+    assert '"User-Agent": RUNPOD_REST_USER_AGENT' in secret_creator
+    assert '"Authorization": f"Bearer {api_key}"' in secret_creator
     assert '"error_code", "error_name", "error_category", "detail"' in secret_creator
     for action in ("configure", "deploy", "verify", "status"):
         assert action in workflow
