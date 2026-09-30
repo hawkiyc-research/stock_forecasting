@@ -22,7 +22,7 @@ else
 fi
 SHUTDOWN_DIR="${RUNPOD_SHUTDOWN_DIR:-${LOG_ROOT}/${RUN_KEY}}"
 MARKER_PATH="${RUNPOD_SHUTDOWN_MARKER:-${SHUTDOWN_DIR}/shutdown.json}"
-# RunPod requires termination instead of stop for Pods with a network volume.
+# The project terminates completed Pods while retaining the attached network volume.
 ACTION="${RUNPOD_SHUTDOWN_ACTION:-terminate}"
 API_BASE_URL="${RUNPOD_API_BASE_URL:-https://api.runpod.io/v2}"
 

@@ -46,6 +46,8 @@ STAGE_CONFIGS = {
     "stage2": "configs/stage2_kronos_base_lora.yaml",
 }
 STAGE_RUNTIME = {
+    # Keep terminate_after in immutable selection hashes created before REST v2 migration.
+    # Pod creation does not send this legacy field to RunPod.
     "stage1": {
         "max_runtime_seconds": 21600,
         "hard_limit_seconds": 25200,
@@ -131,7 +133,6 @@ EXPORT_KEYS = (
     "STAGE1_DATA_END",
     "MAX_RUNTIME_SECONDS",
     "RUNPOD_HARD_LIMIT_SECONDS",
-    "RUNPOD_TERMINATE_AFTER",
 )
 
 # RunPod may omit user-supplied environment entries whose value is an empty
@@ -643,7 +644,6 @@ def _selection_exports(selection_path: Path, payload: Dict[str, Any]) -> Dict[st
         "STAGE1_DATA_END": request["date_range"]["end_exclusive"],
         "MAX_RUNTIME_SECONDS": str(runtime["max_runtime_seconds"]),
         "RUNPOD_HARD_LIMIT_SECONDS": str(runtime["hard_limit_seconds"]),
-        "RUNPOD_TERMINATE_AFTER": runtime["terminate_after"],
     }
     if tuple(exports) != EXPORT_KEYS:
         _fail("Internal selection export order is inconsistent")

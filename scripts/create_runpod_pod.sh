@@ -23,11 +23,10 @@ else
     runpod_load_active_selection "${LOCAL_PROJECT_ROOT}"
 fi
 
-# Explicit CLI choices take precedence over the immutable selection's legacy runtime defaults.
+# Explicit CLI choices take precedence over the immutable selection's runtime defaults.
 if [[ -n "${RUNPOD_CLI_MAX_RUNTIME_SECONDS:-}" ]]; then
     MAX_RUNTIME_SECONDS="${RUNPOD_CLI_MAX_RUNTIME_SECONDS}"
     RUNPOD_HARD_LIMIT_SECONDS="${RUNPOD_CLI_HARD_LIMIT_SECONDS}"
-    RUNPOD_TERMINATE_AFTER="${RUNPOD_CLI_TERMINATE_AFTER}"
 fi
 
 RUNPOD_NETWORK_VOLUME_ID="${RUNPOD_NETWORK_VOLUME_ID:-}"
@@ -78,7 +77,6 @@ REMOTE_SELECTION_MOUNT_PATH="${RUNPOD_VOLUME_MOUNT_PATH}/${RUNPOD_REMOTE_SELECTI
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "validation" ]]; then
     MAX_RUNTIME_SECONDS="${RUNPOD_VALIDATION_MAX_RUNTIME_SECONDS:-${MAX_RUNTIME_SECONDS}}"
     RUNPOD_HARD_LIMIT_SECONDS="${RUNPOD_VALIDATION_HARD_LIMIT_SECONDS:-${RUNPOD_HARD_LIMIT_SECONDS}}"
-    RUNPOD_TERMINATE_AFTER="${RUNPOD_VALIDATION_TERMINATE_AFTER:-${RUNPOD_TERMINATE_AFTER}}"
 fi
 RUNPOD_GUARD_LOG_DIR="${RUNPOD_GUARD_LOG_DIR:-${HOME:-/tmp}/.local/state/runpod-guards}"
 RUNPOD_GUARD_LAUNCHER="${SCRIPT_DIR}/launch_runpod_guard.sh"
@@ -198,10 +196,6 @@ if [[ "${RUNPOD_HARD_LIMIT_SECONDS}" -le "${MAX_RUNTIME_SECONDS}" ]]; then
     echo "RUNPOD_HARD_LIMIT_SECONDS must exceed MAX_RUNTIME_SECONDS" >&2
     exit 2
 fi
-if [[ ! "${RUNPOD_TERMINATE_AFTER}" =~ ^[1-9][0-9]*[mhd]$ ]]; then
-    echo "RUNPOD_TERMINATE_AFTER must use a duration such as 30m, 7h, or 2d" >&2
-    exit 2
-fi
 if [[ "${VALIDATION_RECOMPUTE_FULL_MODEL}" != "0" \
     && "${VALIDATION_RECOMPUTE_FULL_MODEL}" != "1" ]]; then
     echo "VALIDATION_RECOMPUTE_FULL_MODEL must be 0 or 1" >&2
@@ -237,16 +231,6 @@ if [[ -n "${VALIDATION_CHECKPOINT}" ]]; then
         echo "VALIDATION_CHECKPOINT must equal SAVED_MODEL_ROOT/VALIDATION_RUN_ID/checkpoint-NNNNNN (six or more digits)" >&2
         exit 2
     fi
-fi
-TERMINATE_AFTER_VALUE="${RUNPOD_TERMINATE_AFTER%?}"
-case "${RUNPOD_TERMINATE_AFTER: -1}" in
-    m) TERMINATE_AFTER_SECONDS=$((TERMINATE_AFTER_VALUE * 60)) ;;
-    h) TERMINATE_AFTER_SECONDS=$((TERMINATE_AFTER_VALUE * 3600)) ;;
-    d) TERMINATE_AFTER_SECONDS=$((TERMINATE_AFTER_VALUE * 86400)) ;;
-esac
-if [[ "${TERMINATE_AFTER_SECONDS}" -le "${MAX_RUNTIME_SECONDS}" ]]; then
-    echo "RUNPOD_TERMINATE_AFTER must exceed MAX_RUNTIME_SECONDS" >&2
-    exit 2
 fi
 if [[ ! "${RUNPOD_CONFIG}" =~ ^[A-Za-z0-9._/-]+$ \
     || "${RUNPOD_CONFIG}" == /* \
@@ -436,12 +420,17 @@ if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
     fi
 fi
 
-TERMINATE_AFTER_DEADLINE="$(python3 "${SCRIPT_DIR}/utc_deadline.py" \
-    "${RUNPOD_TERMINATE_AFTER}")"
 WANDB_API_KEY_REFERENCE="{{ RUNPOD_SECRET_${RUNPOD_WANDB_SECRET_NAME} }}"
+POD_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS}"
+GUARD_SOFT_LIMIT_SECONDS=0
+if [[ "${RUNPOD_GPU_WORKFLOW}" == "train" ]]; then
+    # The remote runner needs enough time to finish a checkpoint during the local extension window.
+    POD_RUNTIME_SECONDS="${RUNPOD_HARD_LIMIT_SECONDS}"
+    GUARD_SOFT_LIMIT_SECONDS="${MAX_RUNTIME_SECONDS}"
+fi
 
 POD_ENV_JSON="$(printf \
-    '{"NETWORK_VOLUME_ROOT":"%s","RUNPOD_VOLUME_ROOT":"%s","RUNPOD_EXPECTED_VOLUME_ID":"%s","PROJECT_ROOT":"%s","DATA_ROOT":"%s","SAVED_MODEL_ROOT":"%s","WANDB_DIR":"%s","RUNPOD_CONFIG":"%s","RUNPOD_STAGE":"%s","RUNPOD_STAGE_CONFIG_SHA256":"%s","RUNPOD_SELECTION_ID":"%s","RUNPOD_SELECTION_SHA256":"%s","RUNPOD_DATASET_REQUEST_SHA256":"%s","RUNPOD_DATASET_REVISION":"%s","RUNPOD_REMOTE_SELECTION_PATH":"%s","FIN_TS_DATASET_PROFILE":"%s","FIN_TS_H_START":"%s","FIN_TS_FEATURE_MODE":"%s","STAGE1_US_SYMBOLS":"%s","STAGE1_US_ETF_SYMBOLS":"%s","STAGE1_SYMBOL_LIMIT":"%s","STAGE1_DATA_START":"%s","STAGE1_DATA_END":"%s","RUNPOD_ROLE":"%s","RUNPOD_REQUESTED_GPU_ID":"%s","MAX_RUNTIME_SECONDS":"%s","RUNPOD_SHUTDOWN_ACTION":"terminate","RUNPOD_IMAGE":"%s","RUNPOD_EXPECTED_TORCH_VERSION":"%s","RUNPOD_EXPECTED_CUDA_PREFIX":"%s","RUNPOD_EXPECTED_UBUNTU_VERSION":"%s","WANDB_API_KEY":"%s","WANDB_PROJECT":"%s","WANDB_ENTITY":"%s","WANDB_RUN_ID":"%s","RESUME_CHECKPOINT":"%s","VALIDATION_RECOMPUTE_FULL_MODEL":"%s","VALIDATION_RESUME":"%s","VALIDATION_FORCE_RECOMPUTE":"%s","VALIDATION_RUN_ID":"%s","VALIDATION_CHECKPOINT":"%s"}' \
+    '{"NETWORK_VOLUME_ROOT":"%s","RUNPOD_VOLUME_ROOT":"%s","RUNPOD_EXPECTED_VOLUME_ID":"%s","PROJECT_ROOT":"%s","DATA_ROOT":"%s","SAVED_MODEL_ROOT":"%s","WANDB_DIR":"%s","RUNPOD_CONFIG":"%s","RUNPOD_STAGE":"%s","RUNPOD_STAGE_CONFIG_SHA256":"%s","RUNPOD_SELECTION_ID":"%s","RUNPOD_SELECTION_SHA256":"%s","RUNPOD_DATASET_REQUEST_SHA256":"%s","RUNPOD_DATASET_REVISION":"%s","RUNPOD_REMOTE_SELECTION_PATH":"%s","FIN_TS_DATASET_PROFILE":"%s","FIN_TS_H_START":"%s","FIN_TS_FEATURE_MODE":"%s","STAGE1_US_SYMBOLS":"%s","STAGE1_US_ETF_SYMBOLS":"%s","STAGE1_SYMBOL_LIMIT":"%s","STAGE1_DATA_START":"%s","STAGE1_DATA_END":"%s","RUNPOD_ROLE":"%s","RUNPOD_REQUESTED_GPU_ID":"%s","MAX_RUNTIME_SECONDS":"%s","RUNPOD_REQUESTED_RUNTIME_SECONDS":"%s","RUNPOD_HARD_LIMIT_SECONDS":"%s","RUNPOD_SHUTDOWN_ACTION":"terminate","RUNPOD_IMAGE":"%s","RUNPOD_EXPECTED_TORCH_VERSION":"%s","RUNPOD_EXPECTED_CUDA_PREFIX":"%s","RUNPOD_EXPECTED_UBUNTU_VERSION":"%s","WANDB_API_KEY":"%s","WANDB_PROJECT":"%s","WANDB_ENTITY":"%s","WANDB_RUN_ID":"%s","RESUME_CHECKPOINT":"%s","VALIDATION_RECOMPUTE_FULL_MODEL":"%s","VALIDATION_RESUME":"%s","VALIDATION_FORCE_RECOMPUTE":"%s","VALIDATION_RUN_ID":"%s","VALIDATION_CHECKPOINT":"%s"}' \
     "${RUNPOD_VOLUME_MOUNT_PATH}" "${RUNPOD_VOLUME_MOUNT_PATH}" \
     "${RUNPOD_NETWORK_VOLUME_ID}" "${PROJECT_ROOT}" "${DATA_ROOT}" \
     "${SAVED_MODEL_ROOT}" "${RUNPOD_VOLUME_MOUNT_PATH}" \
@@ -452,7 +441,8 @@ POD_ENV_JSON="$(printf \
     "${FIN_TS_DATASET_PROFILE}" "${FIN_TS_H_START}" "${FIN_TS_FEATURE_MODE}" "${STAGE1_US_SYMBOLS}" \
     "${STAGE1_US_ETF_SYMBOLS}" "${STAGE1_SYMBOL_LIMIT}" \
     "${STAGE1_DATA_START}" "${STAGE1_DATA_END}" "${RUNPOD_GPU_ROLE}" \
-    "${RUNPOD_GPU_ID}" "${MAX_RUNTIME_SECONDS}" \
+    "${RUNPOD_GPU_ID}" "${POD_RUNTIME_SECONDS}" \
+    "${MAX_RUNTIME_SECONDS}" "${RUNPOD_HARD_LIMIT_SECONDS}" \
     "${RUNPOD_IMAGE}" "${RUNPOD_EXPECTED_TORCH_VERSION}" \
     "${RUNPOD_EXPECTED_CUDA_PREFIX}" "${RUNPOD_EXPECTED_UBUNTU_VERSION}" \
     "${WANDB_API_KEY_REFERENCE}" \
@@ -461,31 +451,40 @@ POD_ENV_JSON="$(printf \
     "${VALIDATION_FORCE_RECOMPUTE}" "${VALIDATION_RUN_ID}" \
     "${VALIDATION_CHECKPOINT}")"
 
-CREATE_COMMAND=(
-    bash "${SCRIPT_DIR}/runpodctl_project.sh" pod create
-    --name "${RUNPOD_POD_NAME}"
-    --gpu-id "${RUNPOD_GPU_ID}"
-    --gpu-count "${RUNPOD_GPU_COUNT}"
-    --image "${RUNPOD_IMAGE}"
-    --min-cuda-version "${RUNPOD_MIN_CUDA_VERSION}"
-    --cloud-type "${RUNPOD_CLOUD_TYPE}"
-    --data-center-ids "${RUNPOD_DATACENTER_ID}"
-    --container-disk-in-gb "${RUNPOD_CONTAINER_DISK_GB}"
-    --network-volume-id "${RUNPOD_NETWORK_VOLUME_ID}"
-    --volume-mount-path "${RUNPOD_VOLUME_MOUNT_PATH}"
-    --terminate-after "${TERMINATE_AFTER_DEADLINE}"
-    --env "${POD_ENV_JSON}"
-)
+POD_CREATE_JSON="$(RUNPOD_POD_NAME="${RUNPOD_POD_NAME}" \
+    RUNPOD_GPU_ID="${RUNPOD_GPU_ID}" RUNPOD_GPU_COUNT="${RUNPOD_GPU_COUNT}" \
+    RUNPOD_IMAGE="${RUNPOD_IMAGE}" RUNPOD_MIN_CUDA_VERSION="${RUNPOD_MIN_CUDA_VERSION}" \
+    RUNPOD_CLOUD_TYPE="${RUNPOD_CLOUD_TYPE}" RUNPOD_DATACENTER_ID="${RUNPOD_DATACENTER_ID}" \
+    RUNPOD_CONTAINER_DISK_GB="${RUNPOD_CONTAINER_DISK_GB}" \
+    RUNPOD_NETWORK_VOLUME_ID="${RUNPOD_NETWORK_VOLUME_ID}" \
+    RUNPOD_VOLUME_MOUNT_PATH="${RUNPOD_VOLUME_MOUNT_PATH}" \
+    POD_ENV_JSON="${POD_ENV_JSON}" python3 -c '
+import json
+import os
+
+payload = {
+    "name": os.environ["RUNPOD_POD_NAME"],
+    "gpuId": os.environ["RUNPOD_GPU_ID"],
+    "gpuCount": int(os.environ["RUNPOD_GPU_COUNT"]),
+    "imageName": os.environ["RUNPOD_IMAGE"],
+    "minCudaVersion": os.environ["RUNPOD_MIN_CUDA_VERSION"],
+    "cloudType": os.environ["RUNPOD_CLOUD_TYPE"],
+    "dataCenterIds": [os.environ["RUNPOD_DATACENTER_ID"]],
+    "containerDiskInGb": int(os.environ["RUNPOD_CONTAINER_DISK_GB"]),
+    "networkVolumeId": os.environ["RUNPOD_NETWORK_VOLUME_ID"],
+    "volumeMountPath": os.environ["RUNPOD_VOLUME_MOUNT_PATH"],
+    "env": json.loads(os.environ["POD_ENV_JSON"]),
+}
+print(json.dumps(payload, separators=(",", ":")))
+')"
 
 if [[ "${RUNPOD_CREATE_DRY_RUN:-0}" == "1" || "${RUNPOD_TEST_MODE:-0}" == "1" ]]; then
-    printf 'DRY RUN:'
-    printf ' %q' "${CREATE_COMMAND[@]}"
-    printf '\n'
+    printf 'DRY RUN: POST https://api.runpod.io/v2/pods --name %q --gpu-id %q --gpu-count %q --image %q --min-cuda-version %q --cloud-type %q --data-center-ids %q --container-disk-in-gb %q --network-volume-id %q --volume-mount-path %q --env %q\n' \
+        "${RUNPOD_POD_NAME}" "${RUNPOD_GPU_ID}" "${RUNPOD_GPU_COUNT}" \
+        "${RUNPOD_IMAGE}" "${RUNPOD_MIN_CUDA_VERSION}" "${RUNPOD_CLOUD_TYPE}" \
+        "${RUNPOD_DATACENTER_ID}" "${RUNPOD_CONTAINER_DISK_GB}" \
+        "${RUNPOD_NETWORK_VOLUME_ID}" "${RUNPOD_VOLUME_MOUNT_PATH}" "${POD_ENV_JSON}"
     exit 0
-fi
-if ! command -v runpodctl >/dev/null 2>&1; then
-    echo "runpodctl is required on the machine creating the Pod" >&2
-    exit 127
 fi
 if [[ ! -f "${SCRIPT_DIR}/runpodctl_project.sh" \
     || ! -r "${SCRIPT_DIR}/runpodctl_project.sh" ]]; then
@@ -497,11 +496,12 @@ if [[ ! -r "${RUNPOD_GUARD_LAUNCHER}" ]]; then
     exit 127
 fi
 
-CREATE_OUTPUT="$("${CREATE_COMMAND[@]}")"
+CREATE_OUTPUT="$(printf '%s' "${POD_CREATE_JSON}" \
+    | bash "${SCRIPT_DIR}/runpodctl_project.sh" pod create-gpu)"
 POD_ID="$(printf '%s' "${CREATE_OUTPUT}" | python3 -c \
     'import json, sys; payload=json.load(sys.stdin); print(payload.get("id", ""))')"
 if [[ ! "${POD_ID}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    echo "Unable to parse a safe Pod ID from runpodctl output; no guard was armed" >&2
+    echo "Unable to parse a safe Pod ID from REST v2 output; no guard was armed" >&2
     exit 3
 fi
 
@@ -510,6 +510,9 @@ GUARD_LOG="${RUNPOD_GUARD_LOG_DIR}/${POD_ID}.log"
 
 GUARD_PID="$(RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}" \
     RUNPOD_GUARD_RUN_ID="${VALIDATION_RUN_ID:-${WANDB_RUN_ID}}" \
+    RUNPOD_GUARD_SOFT_LIMIT_SECONDS="${GUARD_SOFT_LIMIT_SECONDS}" \
+    RUNPOD_GUARD_CHECKPOINT_CONFIG="${LOCAL_CONFIG_PATH}" \
+    RUNPOD_GUARD_DATASET_REQUEST_SHA256="${RUNPOD_DATASET_REQUEST_SHA256}" \
     bash "${RUNPOD_GUARD_LAUNCHER}" \
     "${POD_ID}" "${RUNPOD_HARD_LIMIT_SECONDS}" \
     "${RUNPOD_GUARD_LIFECYCLE_KEY}" "${GUARD_LOG}")"

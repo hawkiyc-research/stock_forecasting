@@ -208,6 +208,67 @@ def _create_cpu_pod() -> dict[str, object]:
     return _pod_compat(response)
 
 
+def _create_gpu_pod() -> dict[str, object]:
+    try:
+        source = json.load(sys.stdin)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ApiError(None, "usage_error", "GPU Pod request is invalid JSON") from error
+    if not isinstance(source, dict):
+        raise ApiError(None, "usage_error", "GPU Pod request must be an object")
+    gpu_id = source.get("gpuId")
+    gpu_count = source.get("gpuCount")
+    volume_id = source.get("networkVolumeId")
+    mount_path = source.get("volumeMountPath")
+    env = source.get("env")
+    datacenters = source.get("dataCenterIds")
+    disk = source.get("containerDiskInGb")
+    min_cuda = source.get("minCudaVersion")
+    if not isinstance(gpu_id, str) or not gpu_id or any(char in gpu_id for char in "\r\n"):
+        raise ApiError(None, "usage_error", "GPU type ID is invalid")
+    if type(gpu_count) is not int or gpu_count < 1:
+        raise ApiError(None, "usage_error", "GPU count is invalid")
+    if not isinstance(volume_id, str) or SAFE_ID.fullmatch(volume_id) is None:
+        raise ApiError(None, "usage_error", "GPU Pod network volume ID is invalid")
+    if not isinstance(mount_path, str) or not mount_path.startswith("/"):
+        raise ApiError(None, "usage_error", "GPU Pod network mount is invalid")
+    if not isinstance(env, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in env.items()
+    ):
+        raise ApiError(None, "usage_error", "GPU Pod environment is invalid")
+    if not isinstance(source.get("name"), str) or not isinstance(source.get("imageName"), str):
+        raise ApiError(None, "usage_error", "GPU Pod name or image is invalid")
+    if source.get("cloudType") not in {"SECURE", "COMMUNITY"}:
+        raise ApiError(None, "usage_error", "GPU Pod cloud type is invalid")
+    if type(disk) is not int or disk < 1:
+        raise ApiError(None, "usage_error", "GPU Pod disk size is invalid")
+    if not isinstance(datacenters, list) or not datacenters or not all(
+        isinstance(dc, str) and dc for dc in datacenters
+    ):
+        raise ApiError(None, "usage_error", "GPU Pod data centers are invalid")
+    if not isinstance(min_cuda, str) or re.fullmatch(r"[0-9]+\.[0-9]+", min_cuda) is None:
+        raise ApiError(None, "usage_error", "GPU Pod CUDA floor is invalid")
+    body: dict[str, object] = {
+        "name": source.get("name"),
+        "image": source.get("imageName"),
+        "cloud": source.get("cloudType"),
+        "disk": disk,
+        "gpu": {
+            "id": gpu_id,
+            "count": gpu_count,
+            "minCudaVersion": min_cuda,
+        },
+        "dataCenterIds": datacenters,
+        "env": env,
+        "mounts": {"network": [{"volumeId": volume_id, "path": mount_path}]},
+        "ports": ["22/tcp"],
+        "startSsh": True,
+    }
+    response = _request("POST", "/pods", body=body, expected_status=201)
+    if not isinstance(response, dict):
+        raise ApiError(None, "api_error", "Runpod REST v2 returned no created Pod")
+    return _pod_compat(response)
+
+
 def _print(value: object) -> None:
     print(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
 
@@ -228,6 +289,7 @@ def _parser() -> argparse.ArgumentParser:
     for action in ("delete", "start", "stop", "restart"):
         pod_actions.add_parser(action).add_argument("id")
     pod_actions.add_parser("create-cpu")
+    pod_actions.add_parser("create-gpu")
     volume = resources.add_parser("network-volume")
     volume_actions = volume.add_subparsers(dest="action", required=True)
     create = volume_actions.add_parser("create")
@@ -262,6 +324,8 @@ def main() -> int:
             _print({"id": args.id, "deleted": True})
         elif args.action == "create-cpu":
             _print(_create_cpu_pod())
+        elif args.action == "create-gpu":
+            _print(_create_gpu_pod())
         else:
             result = _request(
                 "POST",

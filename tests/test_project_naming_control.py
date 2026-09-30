@@ -98,7 +98,12 @@ class ProjectNamingTests(unittest.TestCase):
                 self.assertEqual(env["WANDB_PROJECT"], NAME)
                 self.assertEqual(env["DATA_ROOT"], "/runpod-volume/datasets/"
                                  + self.selection["dataset_request_sha256"])
-                self.assertEqual(env["MAX_RUNTIME_SECONDS"], "259200")
+                self.assertEqual(env["RUNPOD_REQUESTED_RUNTIME_SECONDS"], "259200")
+                self.assertEqual(env["RUNPOD_HARD_LIMIT_SECONDS"], "262800")
+                self.assertEqual(
+                    env["MAX_RUNTIME_SECONDS"],
+                    "262800" if workflow == "train" else "259200",
+                )
 
     def test_cpu_launch_name_changes_without_changing_preparation_identity(self):
         result = self.command("cpu", "prepare", "--max-api-calls", "1")

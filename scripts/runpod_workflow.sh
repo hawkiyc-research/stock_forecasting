@@ -382,7 +382,6 @@ EOF
         train_max_seconds="$(runpod_duration_seconds "${train_max_runtime}" --maxRuntime)"
         export RUNPOD_CLI_MAX_RUNTIME_SECONDS="${train_max_seconds}"
         export RUNPOD_CLI_HARD_LIMIT_SECONDS="$((train_max_seconds + 3600))"
-        export RUNPOD_CLI_TERMINATE_AFTER="$(((train_max_seconds + 3659) / 60))m"
         export RUNPOD_CLI_GPU_ID="${train_gpu_id}"
         exec env RUNPOD_GPU_WORKFLOW="${COMMAND}" bash "${SCRIPT_DIR}/create_runpod_pod.sh"
         ;;

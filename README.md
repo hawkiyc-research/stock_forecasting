@@ -498,12 +498,10 @@ API raw cache、manifest 與模型 cache。CPU preparation Pod 負責建立這�
 
 #### 1. 建立 RunPod 帳號資源與本機設定
 
-本機控制端需要 `bash`、Python 3、AWS CLI 與 `curl`。建立帶有供應商端
-`--terminate-after` 截止時間的 GPU Pod 時，另外需要支援此參數的
-`runpodctl`（目前使用 2.11.x）。一般 Pod 查詢、啟停、終止、CPU Pod 與
-network volume 操作使用 RunPod REST API v2。CPU Pod 的 vCPU 數量只接受
-`2`、`4`、`8`、`16` 或 `32`。GPU Pod 建立所需的供應商端
-截止時間目前沒有 REST v2 或 v1 對應欄位，因此保留 CLI 的 GraphQL 建立路徑。
+本機控制端需要 `bash`、Python 3、AWS CLI 與 `curl`。GPU Pod、CPU Pod、
+network volume 的建立與 Pod 查詢、啟停、終止都使用 RunPod REST API v2。
+CPU Pod 的 vCPU 數量只接受 `2`、`4`、`8`、`16` 或 `32`。
+On-demand Pod 沒有供應商端的執行時間上限；本專案以本機 guard 控制截止時間。
 此處的系統 Python 3 只供無第三方相依的 manifest/JSON control helper 使用，
 不代表建立、載入或
 檢查本機專案 Python environment。RunPod 官方文件：
@@ -511,7 +509,7 @@ network volume 操作使用 RunPod REST API v2。CPU Pod 的 vCPU 數量只接�
 - [Network volumes](https://docs.runpod.io/storage/network-volumes)
 - [S3-compatible API](https://docs.runpod.io/storage/s3-api)
 - [RunPod Secrets](https://docs.runpod.io/pods/templates/secrets)
-- [runpodctl](https://docs.runpod.io/runpodctl/overview)
+- [REST API v2](https://api.runpod.io/v2/openapi.json)
 
 在 RunPod Console 建立 project-scoped RunPod API key 與另一組 S3 API key，
 再建立下列固定名稱的 RunPod Secrets：
@@ -1479,17 +1477,21 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-`--maxRuntime` 控制訓練加 validation workflow 的可用時間；外部 guard 與
-RunPod `--terminate-after` 另保留一小時，只供 terminal lifecycle 寫入與失敗
-清理，不會延長模型工作本身。CLI 的實際 runtime 會透過
-`MAX_RUNTIME_SECONDS` 寫入 resolved Pydantic config，因此 W&B 不會仍顯示 YAML
-原始的 6 小時預設。
+`--maxRuntime` 是本機 guard 的預定截止時間。到達此時間且訓練尚未結束時，
+guard 驗證本次 Pod 啟動後產生的最新續訓 checkpoint，包括 manifest、檔案大小與必要內容；
+驗證通過便終止 Pod。若尚無完整 checkpoint，guard 每五分鐘重查，最多延長
+一小時，到硬上限仍未通過也會終止 Pod。Pod 端的訓練與 runner timeout 以
+硬上限為最長執行時間，讓額外時間可用於儲存 checkpoint；
+`RUNPOD_REQUESTED_RUNTIME_SECONDS` 記錄原始的 `--maxRuntime` 值。
+validation 與 baseline workflow 沿用原本的硬上限與 Pod 端逾時。
 
 建立指令會在本機先配置唯一 run ID、掛載同一個 network volume、注入 W&B
 Secret reference，並啟動獨立 hard-limit guard。本機 guard 在 macOS 會自動以
 `caffeinate -is -w <guard-pid>` 防止控制端睡眠，並把 guard、caffeinate 與
 keep-awake 狀態寫在提示的 guard log 同目錄；不要關閉 guard process 或讓本機
-斷電。Pod 端仍會自行終止，RunPod 的 `--terminate-after` 是第三層上限。
+斷電。Pod 端也會在完成或逾時後自行終止；RunPod 不提供此 Pod 的供應商端
+自動截止時間。本專案沿用終止 Pod 的流程，網路磁碟資料會保留；若僅停止 Pod，
+Pod 的 volume disk 仍可能產生儲存費用。
 
 ##### 本機休眠或關機後恢復 guard
 
@@ -2659,20 +2661,17 @@ bar store and never calls an external market-data API from the training loop.
 #### 1. Create RunPod account resources and local configuration
 
 The local control machine needs `bash`, Python 3, AWS CLI, and `curl`.
-Creating GPU Pods with the provider-side `--terminate-after` deadline also
-requires a `runpodctl` release that supports that flag (currently 2.11.x).
-Routine Pod lookup, actions, termination, CPU Pod creation, and network volume
-operations use RunPod REST API v2. CPU Pod vCPU count must be `2`, `4`, `8`,
-`16`, or `32`. GPU Pod creation
-retains the CLI's GraphQL path because neither REST version exposes the
-provider-side deadline. This system Python runs dependency-free manifest and
+GPU Pod, CPU Pod, and network volume creation, along with Pod lookup, actions,
+and termination, use RunPod REST API v2. CPU Pod vCPU count must be `2`, `4`,
+`8`, `16`, or `32`. On-demand Pods have no provider-side runtime limit; this
+project enforces deadlines with a local guard. This system Python runs dependency-free manifest and
 JSON control helpers only; it does not create, load, or validate a local
 project Python environment. Official RunPod references:
 
 - [Network volumes](https://docs.runpod.io/storage/network-volumes)
 - [S3-compatible API](https://docs.runpod.io/storage/s3-api)
 - [RunPod Secrets](https://docs.runpod.io/pods/templates/secrets)
-- [runpodctl](https://docs.runpod.io/runpodctl/overview)
+- [REST API v2](https://api.runpod.io/v2/openapi.json)
 
 In the RunPod Console, create a project-scoped RunPod API key and a separate S3
 API key. Then create these fixed-name RunPod Secrets:
@@ -3777,20 +3776,25 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-`--maxRuntime` bounds the combined training-and-validation workload. The
-external guard and RunPod `--terminate-after` retain one additional hour only
-for terminal-lifecycle publication and failure cleanup; it is not extra model
-runtime. `MAX_RUNTIME_SECONDS` also overrides the resolved Pydantic runtime
-config, so W&B records the CLI value instead of the YAML's original six-hour
-default.
+`--maxRuntime` is the local guard's target cutoff. If training is still active
+at that time, the guard verifies the latest resumable checkpoint created after
+this Pod's guard was armed, including its manifests, required contents, and file sizes. It
+terminates the Pod when verification succeeds. Otherwise it retries every five
+minutes for up to one additional hour, then terminates at the hard limit even
+if verification still fails. The training process and runner timeout use that
+hard limit so the extension can be used to save a checkpoint.
+`RUNPOD_REQUESTED_RUNTIME_SECONDS` records the original `--maxRuntime` value.
+Validation and baseline workflows keep their existing hard limit and Pod-side timeout.
 
 The creator first allocates one run ID locally, mounts the same network volume,
 injects a W&B Secret reference, and arms an independent hard-limit guard. On
 macOS, the local launcher automatically runs `caffeinate -is -w <guard-pid>` and
 writes guard, caffeinate, and keep-awake state beside the reported guard log.
 Do not stop the guard process or power off the control machine. Pod-side
-self-termination remains primary, and RunPod `--terminate-after` is a third
-deadline. SSH through the Console and run:
+self-termination remains active when work finishes or times out. RunPod does
+not provide a provider-side cutoff for this Pod. The project continues to
+terminate completed Pods while retaining the network volume; a merely stopped
+Pod can continue to incur volume-disk storage charges. SSH through the Console and run:
 
 ##### Recovering the guard after local sleep or shutdown
 

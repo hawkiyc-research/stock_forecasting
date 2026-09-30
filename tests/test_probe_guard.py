@@ -97,7 +97,8 @@ class ProbeGuardTests(unittest.TestCase):
         }
 
     def run_guard(
-        self, harness: ProbeHarness, seconds: int = 5, lifecycle: str = "training"
+        self, harness: ProbeHarness, seconds: int = 5, lifecycle: str = "training",
+        overrides: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
         environment = {
             **harness.environment,
@@ -110,6 +111,7 @@ class ProbeGuardTests(unittest.TestCase):
             "RUNPOD_GUARD_POLL_SECONDS": "1",
             "RUNPOD_GUARD_MAX_ATTEMPTS": "1",
         }
+        environment.update(overrides or {})
         environment.pop("RUNPOD_POD_ID")
         return subprocess.run(
             [
@@ -118,6 +120,57 @@ class ProbeGuardTests(unittest.TestCase):
             ],
             env=environment, capture_output=True, text=True, check=False, timeout=12,
         )
+
+    def test_local_limit_waits_for_verified_checkpoint_before_hard_limit(self) -> None:
+        harness = self.harness()
+        config = harness.project / "checkpoint-config.yaml"
+        config.write_text("checkpoint: test\n", encoding="utf-8")
+        (harness.scripts / "runpod_guard_checkpoint.py").write_text(
+            'import os, pathlib, sys\n'
+            'calls = pathlib.Path(os.environ["HARNESS_ROOT"]) / "checkpoint-checks"\n'
+            'with calls.open("a", encoding="utf-8") as stream: stream.write("checked\\n")\n'
+            'if len(calls.read_text(encoding="utf-8").splitlines()) < 2: sys.exit(3)\n'
+            'print("checkpoint-000123")\n',
+            encoding="utf-8",
+        )
+        result = self.run_guard(
+            harness,
+            seconds=6,
+            overrides={
+                "RUNPOD_GUARD_SOFT_LIMIT_SECONDS": "1",
+                "RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS": "1",
+                "RUNPOD_GUARD_CHECKPOINT_CONFIG": str(config),
+                "RUNPOD_GUARD_DATASET_REQUEST_SHA256": "0" * 64,
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(harness.read("checkpoint-checks"), "checked\nchecked\n")
+        self.assertIn(
+            "termination triggered by checkpoint-verified:checkpoint-000123",
+            harness.read("local-guard.log"),
+        )
+        self.assertEqual(harness.read("local-delete-calls"), "pod delete probe-fixture\n")
+
+    def test_checkpoint_failure_cannot_extend_past_hard_limit(self) -> None:
+        harness = self.harness()
+        config = harness.project / "checkpoint-config.yaml"
+        config.write_text("checkpoint: test\n", encoding="utf-8")
+        (harness.scripts / "runpod_guard_checkpoint.py").write_text(
+            'raise SystemExit(3)\n', encoding="utf-8"
+        )
+        result = self.run_guard(
+            harness,
+            seconds=3,
+            overrides={
+                "RUNPOD_GUARD_SOFT_LIMIT_SECONDS": "1",
+                "RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS": "1",
+                "RUNPOD_GUARD_CHECKPOINT_CONFIG": str(config),
+                "RUNPOD_GUARD_DATASET_REQUEST_SHA256": "0" * 64,
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("termination triggered by hard-limit", harness.read("local-guard.log"))
+        self.assertEqual(harness.read("local-delete-calls"), "pod delete probe-fixture\n")
 
     def test_complete_runner_to_local_guard_to_project_cli_chain(self) -> None:
         for environment, state, code in (

@@ -162,6 +162,40 @@ def test_rearm_disables_emergency_termination(
     assert command_env["RUNPOD_GUARD_EMERGENCY_TERMINATE_ON_STARTUP_FAILURE"] == "0"
 
 
+def test_rearm_preserves_training_checkpoint_cutoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+    pod = _pod()
+    pod["env"]["RUNPOD_CONFIG"] = "configs/stage1_kronos_base_lora.yaml"
+    pod["env"]["RUNPOD_DATASET_REQUEST_SHA256"] = "0" * 64
+    ready = {
+        "armed_at": (datetime.now(UTC) - timedelta(seconds=100)).isoformat(),
+        "delay_seconds": 300,
+        "soft_limit_seconds": 80,
+        "checkpoint_not_before": "2026-01-01T00:00:00Z",
+    }
+    (tmp_path / "recovery-pod.ready.json").write_text(json.dumps(ready), encoding="utf-8")
+    monkeypatch.setattr(RECOVERY.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(RECOVERY.os, "access", lambda path, mode: True)
+    monkeypatch.setattr(RECOVERY, "host_boot_identity", lambda: ("darwin-current-boot", 200))
+
+    def run_guard(*args: object, **kwargs: object) -> object:
+        captured["env"] = kwargs["env"]
+        return RECOVERY.subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(RECOVERY.subprocess, "run", run_guard)
+    RECOVERY.rearm_guard(pod, 200, tmp_path)
+    command_env = captured["env"]
+    assert isinstance(command_env, dict)
+    assert command_env["RUNPOD_GUARD_SOFT_LIMIT_SECONDS"] == "1"
+    assert command_env["RUNPOD_GUARD_DATASET_REQUEST_SHA256"] == "0" * 64
+    assert command_env["RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE"] == "2026-01-01T00:00:00Z"
+    assert command_env["RUNPOD_GUARD_CHECKPOINT_CONFIG"] == str(
+        ROOT / "configs/stage1_kronos_base_lora.yaml"
+    )
+
+
 def test_guard_pid_must_still_belong_to_the_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -10,6 +10,7 @@ RUNPODCTL_WRAPPER="${SCRIPT_DIR}/runpodctl_project.sh"
 RUNPOD_S3_WRAPPER="${SCRIPT_DIR}/runpod_s3_project.sh"
 RUNPOD_READINESS_HELPER="${SCRIPT_DIR}/runpod_readiness.py"
 PROBE_LIFECYCLE_HELPER="${SCRIPT_DIR}/runpod_probe_lifecycle.py"
+CHECKPOINT_GUARD_HELPER="${SCRIPT_DIR}/runpod_guard_checkpoint.py"
 # shellcheck source=lib/runpod_project_env.sh
 source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
 
@@ -29,6 +30,11 @@ READY_FILE="${RUNPOD_GUARD_READY_FILE:-}"
 REQUIRE_LIFECYCLE="${RUNPOD_GUARD_REQUIRE_LIFECYCLE:-0}"
 RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_GUARD_VOLUME_ROOT:-/runpod-volume}"
 RUNPOD_GUARD_RUN_ID="${RUNPOD_GUARD_RUN_ID:-}"
+RUNPOD_GUARD_SOFT_LIMIT_SECONDS="${RUNPOD_GUARD_SOFT_LIMIT_SECONDS:-0}"
+RUNPOD_GUARD_CHECKPOINT_CONFIG="${RUNPOD_GUARD_CHECKPOINT_CONFIG:-}"
+RUNPOD_GUARD_DATASET_REQUEST_SHA256="${RUNPOD_GUARD_DATASET_REQUEST_SHA256:-}"
+RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE="${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE:-}"
+RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS="${RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS:-300}"
 RUNPOD_GUARD_HOST_BOOT_ID="${RUNPOD_GUARD_HOST_BOOT_ID:-}"
 GUARD_S3_CONNECT_TIMEOUT="${RUNPOD_GUARD_S3_CONNECT_TIMEOUT:-5}"
 GUARD_S3_READ_TIMEOUT="${RUNPOD_GUARD_S3_READ_TIMEOUT:-15}"
@@ -44,6 +50,18 @@ if [[ ! "${POD_ID}" =~ ^[A-Za-z0-9_-]+$ ]]; then
 fi
 if [[ ! "${DELAY_SECONDS}" =~ ^[0-9]+$ ]]; then
     echo "DELAY_SECONDS must be a non-negative integer" >&2
+    exit 2
+fi
+if [[ ! "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" =~ ^[0-9]+$ \
+    || ( "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -ge "${DELAY_SECONDS}" \
+        && ! ( "${DELAY_SECONDS}" == 0 \
+            && "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" == 0 \
+            && "${RUNPOD_TEST_MODE:-0}" == 1 ) ) ]]; then
+    echo "Guard soft limit must be lower than its hard limit" >&2
+    exit 2
+fi
+if [[ ! "${RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Checkpoint retry interval must be positive" >&2
     exit 2
 fi
 if [[ "${DELAY_SECONDS}" -eq 0 && "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
@@ -108,12 +126,26 @@ if [[ ( "${LIFECYCLE_KEY}" == "lifecycle/stage1/training.json" \
     echo "GPU lifecycle guards require RUNPOD_GUARD_RUN_ID" >&2
     exit 2
 fi
+if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 \
+    && ( "${LIFECYCLE_KEY}" != "lifecycle/stage1/training.json" \
+        || ! -r "${RUNPOD_GUARD_CHECKPOINT_CONFIG}" \
+        || ! "${RUNPOD_GUARD_DATASET_REQUEST_SHA256}" =~ ^[0-9a-f]{64}$ \
+        || ! -r "${CHECKPOINT_GUARD_HELPER}" ) ]]; then
+    echo "Training checkpoint verification prerequisites are unavailable" >&2
+    exit 2
+fi
+if [[ -n "${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE}" \
+    && ! "${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    echo "Guard checkpoint creation threshold is invalid" >&2
+    exit 2
+fi
 if [[ ! -f "${RUNPODCTL_WRAPPER}" || ! -r "${RUNPODCTL_WRAPPER}" \
     || ! -f "${RUNPOD_READINESS_HELPER}" || ! -r "${RUNPOD_READINESS_HELPER}" ]]; then
     echo "Project guard dependencies are unavailable" >&2
     exit 127
 fi
 runpod_assert_project_env_file "${LOCAL_PROJECT_ROOT}"
+RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE="${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 mkdir -p "$(dirname "${LOG_FILE}")"
 
@@ -129,9 +161,10 @@ publish_guard_ready() {
         return 0
     fi
     local ready_tmp="${READY_FILE}.tmp.$$"
-    printf '{"state":"armed","pid":%d,"pod_id":"%s","run_id":"%s","lifecycle_key":"%s","delay_seconds":%d,"host_boot_id":"%s","armed_at":"%s"}\n' \
+    printf '{"state":"armed","pid":%d,"pod_id":"%s","run_id":"%s","lifecycle_key":"%s","delay_seconds":%d,"soft_limit_seconds":%d,"checkpoint_not_before":"%s","host_boot_id":"%s","armed_at":"%s"}\n' \
         "$$" "${POD_ID}" "${RUNPOD_GUARD_RUN_ID}" "${LIFECYCLE_KEY}" \
-        "${DELAY_SECONDS}" "${RUNPOD_GUARD_HOST_BOOT_ID}" \
+        "${DELAY_SECONDS}" "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" \
+        "${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE}" "${RUNPOD_GUARD_HOST_BOOT_ID}" \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         > "${ready_tmp}"
     mv "${ready_tmp}" "${READY_FILE}"
@@ -144,6 +177,7 @@ termination_reason="hard-limit"
 last_marker_json='{}'
 matching_run_lifecycle_observed=0
 diagnostic_workflow_observed=0
+next_checkpoint_check="${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}"
 pod_terminal_key=""
 case "${LIFECYCLE_KEY}" in
     lifecycle/stage1/training.json|lifecycle/stage1/validation.json|lifecycle/stage1/baseline.json)
@@ -325,6 +359,37 @@ raise SystemExit(0 if valid else 2)' \
                 break
             fi
             elapsed=$((SECONDS - guard_started))
+            if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 \
+                && "${elapsed}" -ge "${next_checkpoint_check}" \
+                && "${elapsed}" -lt "${DELAY_SECONDS}" ]]; then
+                checkpoint_timeout=$((DELAY_SECONDS - elapsed))
+                if [[ "${checkpoint_timeout}" -gt 120 ]]; then
+                    checkpoint_timeout=120
+                fi
+                checkpoint_name=""
+                if checkpoint_name="$(RUNPOD_S3_CONNECT_TIMEOUT_OVERRIDE="${GUARD_S3_CONNECT_TIMEOUT}" \
+                    RUNPOD_S3_READ_TIMEOUT_OVERRIDE="${GUARD_S3_READ_TIMEOUT}" \
+                    RUNPOD_S3_MAX_ATTEMPTS_OVERRIDE="${GUARD_S3_MAX_ATTEMPTS}" \
+                    python3 "${CHECKPOINT_GUARD_HELPER}" \
+                        --s3-wrapper "${RUNPOD_S3_WRAPPER}" \
+                        --bucket "${volume_id}" \
+                        --run-id "${RUNPOD_GUARD_RUN_ID}" \
+                        --config "${RUNPOD_GUARD_CHECKPOINT_CONFIG}" \
+                        --dataset-request-sha256 "${RUNPOD_GUARD_DATASET_REQUEST_SHA256}" \
+                        --created-after "${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE}" \
+                        --timeout-seconds "${checkpoint_timeout}" \
+                        2>>"${LOG_FILE}")" \
+                    && [[ "${checkpoint_name}" =~ ^checkpoint-[0-9]{6,}$ ]]; then
+                    termination_reason="checkpoint-verified:${checkpoint_name}"
+                    printf '[%s] resumable checkpoint verified at local runtime limit: %s\n' \
+                        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${checkpoint_name}" >> "${LOG_FILE}"
+                    break
+                fi
+                printf '[%s] checkpoint verification pending; bounded extension continues\n' \
+                    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${LOG_FILE}"
+                next_checkpoint_check=$((SECONDS - guard_started + RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS))
+            fi
+            elapsed=$((SECONDS - guard_started))
             remaining=$((DELAY_SECONDS - elapsed))
             if [[ ${remaining} -le 0 ]]; then
                 break
@@ -332,6 +397,11 @@ raise SystemExit(0 if valid else 2)' \
             sleep_seconds=${POLL_SECONDS}
             if [[ ${sleep_seconds} -gt ${remaining} ]]; then
                 sleep_seconds=${remaining}
+            fi
+            if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 \
+                && "${next_checkpoint_check}" -gt "${elapsed}" \
+                && "${sleep_seconds}" -gt "$((next_checkpoint_check - elapsed))" ]]; then
+                sleep_seconds=$((next_checkpoint_check - elapsed))
             fi
             sleep "${sleep_seconds}"
         done

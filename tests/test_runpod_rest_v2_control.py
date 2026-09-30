@@ -127,6 +127,43 @@ class RestV2ControlTests(unittest.TestCase):
         self.assertTrue(captured["body"]["startSsh"])
         self.assertEqual(created["id"], "cpu_pod")
 
+    def test_gpu_create_uses_rest_v2_with_cuda_floor_and_network_volume(self) -> None:
+        captured = {}
+
+        def fake_request(method, path, **kwargs):
+            captured.update(method=method, path=path, **kwargs)
+            return {"id": "gpu_pod", "status": "PROVISIONING", "runtime": None}
+
+        source = {
+            "name": "stock-forecasting-train",
+            "imageName": "runpod/pytorch:example",
+            "cloudType": "SECURE",
+            "containerDiskInGb": 50,
+            "gpuId": "NVIDIA GeForce RTX 5090",
+            "gpuCount": 1,
+            "minCudaVersion": "12.8",
+            "dataCenterIds": ["EU-RO-1"],
+            "env": {"RUNPOD_ROLE": "gpu-train"},
+            "networkVolumeId": "volume_one",
+            "volumeMountPath": "/runpod-volume",
+        }
+        with patch.dict(CONTROL["_create_gpu_pod"].__globals__, {"_request": fake_request}), \
+                patch.object(sys, "stdin", io.StringIO(json.dumps(source))):
+            created = CONTROL["_create_gpu_pod"]()
+        self.assertEqual((captured["method"], captured["path"]), ("POST", "/pods"))
+        self.assertEqual(captured["expected_status"], 201)
+        self.assertEqual(captured["body"]["gpu"], {
+            "id": "NVIDIA GeForce RTX 5090",
+            "count": 1,
+            "minCudaVersion": "12.8",
+        })
+        self.assertEqual(captured["body"]["mounts"], {
+            "network": [{"volumeId": "volume_one", "path": "/runpod-volume"}]
+        })
+        self.assertTrue(captured["body"]["startSsh"])
+        self.assertEqual(captured["body"]["ports"], ["22/tcp"])
+        self.assertEqual(created["id"], "gpu_pod")
+
     def test_unsupported_cpu_counts_are_rejected_by_v2_adapter(self) -> None:
         for count in (1, 3, 6, 33):
             with self.subTest(count=count), patch.object(sys, "stdin", io.StringIO(json.dumps({

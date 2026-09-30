@@ -391,6 +391,25 @@ def rearm_guard(pod: dict[str, Any], remaining: int, guard_dir: Path) -> None:
         env.get("NETWORK_VOLUME_ROOT", env.get("RUNPOD_VOLUME_ROOT", "/runpod-volume"))
     )
     command_env["RUNPOD_GUARD_RUN_ID"] = run_id
+    if lifecycle_key == "lifecycle/stage1/training.json" and remaining > 1:
+        ready_path = guard_dir / f"{pod['id']}.ready.json"
+        try:
+            previous_ready = json.loads(ready_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            previous_ready = {}
+        armed_at = parse_timestamp(previous_ready.get("armed_at"))
+        soft_limit = previous_ready.get("soft_limit_seconds")
+        if armed_at is not None and type(soft_limit) is int and soft_limit > 0:
+            soft_deadline = int(armed_at.timestamp()) + soft_limit
+            soft_remaining = max(1, min(remaining - 1, soft_deadline - int(time.time())))
+            command_env["RUNPOD_GUARD_SOFT_LIMIT_SECONDS"] = str(soft_remaining)
+            config = env.get("RUNPOD_CONFIG", "") if isinstance(env, dict) else ""
+            digest = env.get("RUNPOD_DATASET_REQUEST_SHA256", "") if isinstance(env, dict) else ""
+            command_env["RUNPOD_GUARD_CHECKPOINT_CONFIG"] = str(ROOT / str(config))
+            command_env["RUNPOD_GUARD_DATASET_REQUEST_SHA256"] = str(digest)
+            command_env["RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE"] = str(
+                previous_ready.get("checkpoint_not_before", previous_ready.get("armed_at", ""))
+            )
     command_env["RUNPOD_GUARD_EMERGENCY_TERMINATE_ON_STARTUP_FAILURE"] = "0"
     result = subprocess.run(
         [

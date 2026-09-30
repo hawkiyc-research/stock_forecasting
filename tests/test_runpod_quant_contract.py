@@ -1213,7 +1213,7 @@ def test_runpod_training_auto_tunes_multiprocess_data_loading() -> None:
     assert "iter_device_batches(" in training
     assert 'tracking.directory / "runtime-execution-plan.json"' in training
     assert '"RUNPOD_REQUESTED_GPU_ID":"%s"' in create_pod
-    assert '"${RUNPOD_GPU_ID}" "${MAX_RUNTIME_SECONDS}"' in create_pod
+    assert '"${RUNPOD_GPU_ID}" "${POD_RUNTIME_SECONDS}"' in create_pod
     assert '"RUNPOD_REQUESTED_GPU_ID"' in reexec
     assert "DATALOADER_SELECTION_BLOCK_SIZE = 128" in training
     assert '"dataloader_worker_plan": worker_plan.as_dict()' in training

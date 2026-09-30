@@ -2,6 +2,7 @@
 """Validate ranked numerical-model checkpoints before paid GPU work."""
 
 import argparse
+import datetime
 import hashlib
 import json
 import math
@@ -419,6 +420,17 @@ def _verify_checkpoint_artifacts(
             )
 
 
+def _require_checkpoint_created_after(selected_created_at, created_after):
+    if not isinstance(selected_created_at, str):
+        raise ValueError("Selected checkpoint has no creation time")
+    try:
+        checkpoint_time = datetime.datetime.fromisoformat(selected_created_at)
+    except ValueError as error:
+        raise ValueError("Selected checkpoint has an invalid creation time") from error
+    if checkpoint_time.tzinfo is None or checkpoint_time <= created_after:
+        raise ValueError("Selected checkpoint predates the current Pod guard")
+
+
 def validate_remote_checkpoint_run(
     reader,
     run_id,
@@ -426,6 +438,7 @@ def validate_remote_checkpoint_run(
     selection_policy,
     config_path,
     expected_dataset_request_sha256,
+    created_after=None,
 ):
     """Validate the requested resume or validation artifact before Pod creation."""
 
@@ -523,7 +536,14 @@ def validate_remote_checkpoint_run(
         or selected_checkpoint not in allowed_names
     ):
         raise ValueError("Selected checkpoint is not available under its requested policy")
+    if created_after is not None:
+        selected_row = next(
+            (row for row in checkpoints if row["path"] == selected_checkpoint),
+            temporary_row,
+        )
+        _require_checkpoint_created_after(selected_row.get("created_at"), created_after)
 
+    selected_created_at = None
     for row in checkpoints:
         retained_name = str(row["path"])
         trainer_state = reader.json_object(
@@ -539,6 +559,8 @@ def validate_remote_checkpoint_run(
             mode=mode,
             contract_digest=contract_digest,
         )
+        if retained_name == selected_checkpoint:
+            selected_created_at = trainer_state.get("created_at")
         _verify_checkpoint_artifacts(
             reader,
             canonical_run_id,
@@ -563,12 +585,17 @@ def validate_remote_checkpoint_run(
         )
         if trainer_state.get("created_at") != temporary_row["created_at"]:
             raise ValueError("Temporary checkpoint and its pointer disagree")
+        if temporary_name == selected_checkpoint:
+            selected_created_at = trainer_state.get("created_at")
         _verify_checkpoint_artifacts(
             reader,
             canonical_run_id,
             temporary_name,
             trainer_state,
         )
+
+    if created_after is not None:
+        _require_checkpoint_created_after(selected_created_at, created_after)
 
     return selected_checkpoint
 
@@ -587,6 +614,7 @@ def build_parser():
         required=True,
     )
     parser.add_argument("--checkpoint-name")
+    parser.add_argument("--created-after")
     parser.add_argument(
         "--dataset-request-sha256", default=os.environ.get("RUNPOD_DATASET_REQUEST_SHA256")
     )
@@ -596,6 +624,11 @@ def build_parser():
 def main():
     arguments = build_parser().parse_args()
     try:
+        created_after = None
+        if arguments.created_after:
+            created_after = datetime.datetime.fromisoformat(arguments.created_after)
+            if created_after.tzinfo is None:
+                raise ValueError("--created-after must include a timezone")
         reader = RunPodS3Reader(arguments.s3_wrapper, arguments.bucket)
         checkpoint_name = validate_remote_checkpoint_run(
             reader,
@@ -604,6 +637,7 @@ def main():
             selection_policy=arguments.selection_policy,
             config_path=arguments.config.expanduser().resolve(strict=False),
             expected_dataset_request_sha256=arguments.dataset_request_sha256,
+            created_after=created_after,
         )
     except (OSError, ValueError, RemoteCheckpointPreflightError) as error:
         print(f"Remote checkpoint preflight failed: {error}", file=sys.stderr)
