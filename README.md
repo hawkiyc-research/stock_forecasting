@@ -501,8 +501,8 @@ API raw cache、manifest 與模型 cache。CPU preparation Pod 負責建立這�
 本機控制端需要 `bash`、Python 3、AWS CLI 與 `curl`。建立帶有供應商端
 `--terminate-after` 截止時間的 GPU Pod 時，另外需要支援此參數的
 `runpodctl`（目前使用 2.11.x）。一般 Pod 查詢、啟停、終止、CPU Pod 與
-network volume 操作使用 RunPod REST API v2；REST v2 不接受非 2 的冪次
-vCPU 數量，這類 CPU Pod 建立使用 REST API v1。GPU Pod 建立所需的供應商端
+network volume 操作使用 RunPod REST API v2。CPU Pod 的 vCPU 數量只接受
+`2`、`4`、`8`、`16` 或 `32`。GPU Pod 建立所需的供應商端
 截止時間目前沒有 REST v2 或 v1 對應欄位，因此保留 CLI 的 GraphQL 建立路徑。
 此處的系統 Python 3 只供無第三方相依的 manifest/JSON control helper 使用，
 不代表建立、載入或
@@ -956,8 +956,8 @@ bash scripts/runpod_workflow.sh cpu prepare \
 `Retry-After` 得到的等待時間**超過**此值，只有該 provider 迴圈會退出（等於上限仍會
 等待）。EODHD 會在 `--max-api-calls` 用完或超過這個退避邊界時停止，兩者任一先發生
 即生效。
-`--cpuNumber` 必須是 1～32。`--cpuFlavor` 只接受下表六個 RunPod 值，其他值或
-超過 32 vCPU 會在建立 Pod 前失敗：
+`--cpuNumber` 只接受 `2`、`4`、`8`、`16` 或 `32`。`--cpuFlavor` 只接受下表六個
+RunPod 值；其他數值會在建立 Pod 前失敗：
 
 | Flavor | 世代 | 類型 | RAM / vCPU | 32 vCPU RAM | Container disk 上限 |
 | --- | ---: | --- | ---: | ---: | ---: |
@@ -2662,8 +2662,8 @@ The local control machine needs `bash`, Python 3, AWS CLI, and `curl`.
 Creating GPU Pods with the provider-side `--terminate-after` deadline also
 requires a `runpodctl` release that supports that flag (currently 2.11.x).
 Routine Pod lookup, actions, termination, CPU Pod creation, and network volume
-operations use RunPod REST API v2. CPU Pod creation with a non-power-of-two
-vCPU count uses REST API v1 because v2 rejects that count. GPU Pod creation
+operations use RunPod REST API v2. CPU Pod vCPU count must be `2`, `4`, `8`,
+`16`, or `32`. GPU Pod creation
 retains the CLI's GraphQL path because neither REST version exposes the
 provider-side deadline. This system Python runs dependency-free manifest and
 JSON control helpers only; it does not create, load, or validate a local
@@ -3169,9 +3169,9 @@ formula above; an explicit reserve must be shorter than max runtime.
 affected provider loop exits when its next exponential or `Retry-After` delay
 would **exceed** this limit; a delay equal to the limit is still performed.
 EODHD stops at whichever comes first: `--max-api-calls` exhaustion or this
-backoff boundary. `--cpuNumber` must be
-between 1 and 32. `--cpuFlavor` accepts only the six RunPod values below; any
-other value or more than 32 vCPUs fails before Pod creation:
+backoff boundary. `--cpuNumber` must be `2`, `4`, `8`, `16`, or `32`.
+`--cpuFlavor` accepts only the six RunPod values below; any other value fails
+before Pod creation:
 
 | Flavor | Generation | Type | RAM / vCPU | RAM at 32 vCPUs | Container-disk limit |
 | --- | ---: | --- | ---: | ---: | ---: |

@@ -560,7 +560,8 @@ def test_stable_runpod_lifecycle_and_synchronization_boundaries_remain() -> None
     for script in (create_gpu, create_cpu):
         assert "RUNPOD_NETWORK_VOLUME_ID" in script
         assert "RUNPOD_DATACENTER_ID" in script
-    assert "rest.runpod.io" in create_cpu
+    assert "rest.runpod.io" not in create_cpu
+    assert "runpod_rest_v2_control.py" in create_cpu
     assert "runpodctl_project.sh" in create_gpu
     assert "pod create" in create_gpu
     assert "--dry-run" in sync
@@ -882,7 +883,7 @@ def test_workflow_exposes_bounded_cpu_gpu_resume_and_validation_options() -> Non
     assert "train_max_runtime=12h" in workflow
     assert 'train_gpu_id="NVIDIA GeForce RTX 5090"' in workflow
     assert "cpu3c|cpu3g|cpu3m|cpu5c|cpu5g|cpu5m" in cpu_creator
-    assert '"${RUNPOD_CPU_VCPU_COUNT}" -gt 32' in cpu_creator
+    assert '2|4|8|16|32' in cpu_creator
     assert "CONTAINER_DISK_GB_PER_VCPU=10" in cpu_creator
     assert "CONTAINER_DISK_GB_PER_VCPU=15" in cpu_creator
     assert "MAX_CONTAINER_DISK_GB" in cpu_creator

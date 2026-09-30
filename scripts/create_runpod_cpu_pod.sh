@@ -92,11 +92,13 @@ case "${RUNPOD_CPU_FLAVOR_ID}" in
         exit 2
         ;;
 esac
-if [[ ! "${RUNPOD_CPU_VCPU_COUNT}" =~ ^[1-9][0-9]*$ \
-    || "${RUNPOD_CPU_VCPU_COUNT}" -gt 32 ]]; then
-    echo "RUNPOD_CPU_VCPU_COUNT must be an integer from 1 through 32" >&2
-    exit 2
-fi
+case "${RUNPOD_CPU_VCPU_COUNT}" in
+    2|4|8|16|32) ;;
+    *)
+        echo "RUNPOD_CPU_VCPU_COUNT must be one of: 2, 4, 8, 16, 32" >&2
+        exit 2
+        ;;
+esac
 case "${RUNPOD_CPU_FLAVOR_ID}" in
     cpu3c|cpu3g|cpu3m) CONTAINER_DISK_GB_PER_VCPU=10 ;;
     cpu5c|cpu5g|cpu5m) CONTAINER_DISK_GB_PER_VCPU=15 ;;
@@ -307,13 +309,8 @@ print(json.dumps(payload, separators=(",", ":")))
 )"
 
 if [[ "${RUNPOD_CREATE_DRY_RUN:-0}" == "1" || "${RUNPOD_TEST_MODE:-0}" == "1" ]]; then
-    DRY_RUN_API_BASE="${RUNPOD_API_BASE_URL%/}"
-    if (( RUNPOD_CPU_VCPU_COUNT < 2 \
-        || (RUNPOD_CPU_VCPU_COUNT & (RUNPOD_CPU_VCPU_COUNT - 1)) != 0 )); then
-        DRY_RUN_API_BASE="https://rest.runpod.io/v1"
-    fi
     printf 'DRY RUN: POST %s/pods --name %q --compute-type cpu --cloud-type %q --image-name %q --cpu-flavor-id %q --vcpu-count %q --data-center-ids %q --container-disk-in-gb %q --network-volume-id %q --volume-mount-path %q --env %q\n' \
-        "${DRY_RUN_API_BASE}" "${RUNPOD_POD_NAME}" \
+        "${RUNPOD_API_BASE_URL%/}" "${RUNPOD_POD_NAME}" \
         "${RUNPOD_CLOUD_TYPE}" "${RUNPOD_IMAGE}" \
         "${RUNPOD_CPU_FLAVOR_ID}" "${RUNPOD_CPU_VCPU_COUNT}" \
         "${RUNPOD_DATACENTER_ID}" "${RUNPOD_CONTAINER_DISK_GB}" \
@@ -322,47 +319,13 @@ if [[ "${RUNPOD_CREATE_DRY_RUN:-0}" == "1" || "${RUNPOD_TEST_MODE:-0}" == "1" ]]
     exit 0
 fi
 runpod_load_project_env_key "${LOCAL_PROJECT_ROOT}" RUNPOD_API_KEY required
-if ! command -v curl >/dev/null 2>&1; then
-    echo "curl is required on the local control machine" >&2
-    exit 127
-fi
 if [[ ! -r "${RUNPOD_GUARD_LAUNCHER}" ]]; then
     echo "External guard launcher is unavailable: ${RUNPOD_GUARD_LAUNCHER}" >&2
     exit 127
 fi
 
-if (( RUNPOD_CPU_VCPU_COUNT >= 2 \
-    && (RUNPOD_CPU_VCPU_COUNT & (RUNPOD_CPU_VCPU_COUNT - 1)) == 0 )); then
-    CREATE_BODY="$(printf '%s' "${POD_CREATE_JSON}" \
-        | python3 "${SCRIPT_DIR}/runpod_rest_v2_control.py" pod create-cpu)"
-else
-    # REST v2 accepts only power-of-two CPU counts; REST v1 preserves legacy choices.
-    set +e
-    CREATE_RESPONSE="$({
-        printf 'header = "Authorization: Bearer %s"\n' "${RUNPOD_API_KEY}"
-        printf 'header = "Content-Type: application/json"\n'
-    } | curl --config - \
-        --silent --show-error \
-        --request POST \
-        --url "https://rest.runpod.io/v1/pods" \
-        --connect-timeout 30 \
-        --max-time 120 \
-        --data "${POD_CREATE_JSON}" \
-        --write-out '%{http_code}')"
-    CURL_EXIT_CODE=$?
-    set -e
-    if [[ ${CURL_EXIT_CODE} -ne 0 || ${#CREATE_RESPONSE} -lt 3 ]]; then
-        echo "RunPod CPU Pod creation request failed" >&2
-        exit 4
-    fi
-    CREATE_HTTP_CODE="${CREATE_RESPONSE: -3}"
-    CREATE_BODY="${CREATE_RESPONSE:0:${#CREATE_RESPONSE}-3}"
-    if [[ ! "${CREATE_HTTP_CODE}" =~ ^2[0-9][0-9]$ ]]; then
-        printf 'RunPod CPU Pod creation returned HTTP %s: %s\n' \
-            "${CREATE_HTTP_CODE}" "${CREATE_BODY}" >&2
-        exit 4
-    fi
-fi
+CREATE_BODY="$(printf '%s' "${POD_CREATE_JSON}" \
+    | python3 "${SCRIPT_DIR}/runpod_rest_v2_control.py" pod create-cpu)"
 POD_ID="$(printf '%s' "${CREATE_BODY}" | python3 -c \
     'import json, sys; print(json.load(sys.stdin).get("id", ""))')"
 if [[ ! "${POD_ID}" =~ ^[A-Za-z0-9_-]+$ ]]; then

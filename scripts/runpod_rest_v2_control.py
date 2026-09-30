@@ -175,8 +175,8 @@ def _create_cpu_pod() -> dict[str, object]:
     ):
         raise ApiError(None, "usage_error", "CPU Pod data centers are invalid")
     vcpu_count = source.get("vcpuCount")
-    if type(vcpu_count) is not int or vcpu_count < 2 or vcpu_count & (vcpu_count - 1):
-        raise ApiError(None, "usage_error", "REST v2 CPU Pod requires a power-of-two vCPU count")
+    if type(vcpu_count) is not int or vcpu_count not in {2, 4, 8, 16, 32}:
+        raise ApiError(None, "usage_error", "CPU Pod requires 2, 4, 8, 16, or 32 vCPUs")
     volume_id = source.get("networkVolumeId")
     mount_path = source.get("volumeMountPath")
     if not isinstance(volume_id, str) or SAFE_ID.fullmatch(volume_id) is None:

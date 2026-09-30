@@ -110,6 +110,23 @@ class ProjectNamingTests(unittest.TestCase):
         self.assertEqual(env["RUNPOD_DATASET_REQUEST_SHA256"],
                          self.selection["dataset_request_sha256"])
 
+    def test_cpu_launch_accepts_only_rest_v2_vcpu_counts(self):
+        for count in ("2", "4", "8", "16", "32"):
+            with self.subTest(count=count):
+                result = self.command(
+                    "cpu", "prepare", "--max-api-calls", "1", "--cpuNumber", count
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("https://api.runpod.io/v2/pods", result.stdout)
+        for count in ("1", "3", "6", "33"):
+            with self.subTest(count=count):
+                result = self.command(
+                    "cpu", "prepare", "--max-api-calls", "1", "--cpuNumber", count
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("--cpuNumber must be one of: 2, 4, 8, 16, 32", result.stderr)
+                self.assertNotIn("Cloud access", result.stderr)
+
     def test_stale_resource_name_overrides_are_rejected_before_cloud_access(self):
         for workflow, variable in (("train", "RUNPOD_POD_NAME"),
                                    ("baseline", "RUNPOD_POD_NAME"),

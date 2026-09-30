@@ -127,14 +127,16 @@ class RestV2ControlTests(unittest.TestCase):
         self.assertTrue(captured["body"]["startSsh"])
         self.assertEqual(created["id"], "cpu_pod")
 
-    def test_cpu_v1_only_count_is_rejected_by_v2_adapter(self) -> None:
-        with patch.object(sys, "stdin", io.StringIO(json.dumps({
-            "cpuFlavorIds": ["cpu3g"], "vcpuCount": 3, "dataCenterIds": ["EU-RO-1"],
-            "networkVolumeId": "volume_one", "volumeMountPath": "/runpod-volume",
-        }))):
-            with self.assertRaises(CONTROL["ApiError"]) as caught:
-                CONTROL["_create_cpu_pod"]()
-        self.assertEqual(caught.exception.code, "usage_error")
+    def test_unsupported_cpu_counts_are_rejected_by_v2_adapter(self) -> None:
+        for count in (1, 3, 6, 33):
+            with self.subTest(count=count), patch.object(sys, "stdin", io.StringIO(json.dumps({
+                "cpuFlavorIds": ["cpu3g"], "vcpuCount": count,
+                "dataCenterIds": ["EU-RO-1"], "networkVolumeId": "volume_one",
+                "volumeMountPath": "/runpod-volume",
+            }))):
+                with self.assertRaises(CONTROL["ApiError"]) as caught:
+                    CONTROL["_create_cpu_pod"]()
+            self.assertEqual(caught.exception.code, "usage_error")
 
     def test_http_404_keeps_not_found_code_for_orphan_reconciliation(self) -> None:
         error = urllib.error.HTTPError(

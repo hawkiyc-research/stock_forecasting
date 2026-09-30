@@ -43,10 +43,13 @@ runpod_validate_cpu_flavor() {
 
 runpod_validate_cpu_number() {
     local value="$1"
-    if [[ ! "${value}" =~ ^[1-9][0-9]*$ || "${value}" -gt 32 ]]; then
-        echo "--cpuNumber must be an integer from 1 through 32" >&2
-        return 2
-    fi
+    case "${value}" in
+        2|4|8|16|32) return 0 ;;
+        *)
+            echo "--cpuNumber must be one of: 2, 4, 8, 16, 32" >&2
+            return 2
+            ;;
+    esac
 }
 
 runpod_validate_positive_integer() {
