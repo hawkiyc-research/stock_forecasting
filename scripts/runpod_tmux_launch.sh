@@ -345,8 +345,13 @@ mkdir -p "${JOB_DIR}"
         printf 'job_exit_code=$?\n'
         printf 'if [[ ${job_exit_code} -eq 0 ]]; then\n'
     fi
-    printf 'timeout --signal=TERM --kill-after=60 %qs bash %q' \
-        "${JOB_TIMEOUT_SECONDS}" "${JOB_SCRIPT}"
+    if [[ "${RUNPOD_SECTION_SAFE_STOP:-0}" == 1 \
+        && ( "${JOB_ROLE}" == gpu-train || "${JOB_ROLE}" == gpu-validation ) ]]; then
+        printf 'bash %q' "${JOB_SCRIPT}"
+    else
+        printf 'timeout --signal=TERM --kill-after=60 %qs bash %q' \
+            "${JOB_TIMEOUT_SECONDS}" "${JOB_SCRIPT}"
+    fi
     if [[ $# -gt 0 ]]; then
         printf ' %q' "$@"
     fi

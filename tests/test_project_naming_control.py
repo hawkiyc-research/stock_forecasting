@@ -115,6 +115,15 @@ class ProjectNamingTests(unittest.TestCase):
         self.assertEqual(env["RUNPOD_DATASET_REQUEST_SHA256"],
                          self.selection["dataset_request_sha256"])
 
+    def test_explicit_validation_run_uses_section_safe_runtime(self):
+        result = self.command("validate", "run-selected", "--maxRuntime", "72h")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        command = shlex.split(result.stdout.strip().removeprefix("DRY RUN:"))
+        env = json.loads(command[command.index("--env") + 1])
+        self.assertEqual(env["WANDB_RUN_ID"], "run-selected")
+        self.assertEqual(env["RUNPOD_SECTION_SAFE_STOP"], "1")
+        self.assertEqual(env["MAX_RUNTIME_SECONDS"], "262800")
+
     def test_cpu_launch_accepts_only_rest_v2_vcpu_counts(self):
         for count in ("2", "4", "8", "16", "32"):
             with self.subTest(count=count):

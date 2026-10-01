@@ -15,6 +15,7 @@ from stock_forecasting.run_paths import (
     validate_validation_lifecycle_path,
     validate_wandb_directory,
 )
+from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested
 from stock_forecasting.validation_benchmark import (
     ALL_VALIDATION_MODELS,
     ValidationBenchmark,
@@ -83,7 +84,11 @@ def main(argv: list[str] | None = None) -> int:
             os.environ.get("RUNPOD_TMUX_LOG_FILE") and os.environ.get("RUNPOD_LAUNCH_ID")
         ),
     )
-    payload = validator.run()
+    try:
+        payload = validator.run()
+    except RuntimeStopRequested as stop:
+        print(str(stop))
+        return 124
     if not args.disable_wandb:
         log_validation_to_wandb(config, payload, output)
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))

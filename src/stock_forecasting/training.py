@@ -57,6 +57,7 @@ from stock_forecasting.runtime_resources import (
     detect_available_memory,
     detect_visible_cpu_count,
 )
+from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested, stop_at_saved_boundary
 from stock_forecasting.scale_calibration import resolve_scale_feature_statistics
 from stock_forecasting.tracking import (
     TrackingRun,
@@ -3576,6 +3577,12 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     last_checkpoint_step = global_step
                     last_runtime_checkpoint_step = runtime_global_step
                     completed_epochs = completed_epochs_at_step
+                    if checkpoint is not None:
+                        stop_at_saved_boundary(
+                            section_kind="training-checkpoint",
+                            section_id=checkpoint.name,
+                            artifact=checkpoint,
+                        )
                     # Exclude full validation/checkpoint I/O from training throughput.
                     throughput_started = time.perf_counter()
                     throughput_start_samples = processed_train_samples
@@ -3719,6 +3726,18 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             robust_scales=robust_scales,
             validation_metrics=validation_metrics,
         )
+    except RuntimeStopRequested:
+        with suppress(BaseException):
+            tracking.update_summary(
+                {
+                    "runtime_stop_requested": True,
+                    "global_step": global_step,
+                    "runtime_global_step": runtime_global_step,
+                }
+            )
+        with suppress(BaseException):
+            tracking.finish(exit_code=124)
+        raise
     except BaseException:
         with suppress(BaseException):
             tracking.update_summary(

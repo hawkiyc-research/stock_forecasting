@@ -1477,13 +1477,14 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-`--maxRuntime` 是本機 guard 的預定截止時間。到達此時間且訓練尚未結束時，
-guard 驗證本次 Pod 啟動後產生的最新續訓 checkpoint，包括 manifest、檔案大小與必要內容；
-驗證通過便終止 Pod。若尚無完整 checkpoint，guard 每五分鐘重查，最多延長
-一小時，到硬上限仍未通過也會終止 Pod。Pod 端的訓練與 runner timeout 以
-硬上限為最長執行時間，讓額外時間可用於儲存 checkpoint；
-`RUNPOD_REQUESTED_RUNTIME_SECONDS` 記錄原始的 `--maxRuntime` 值。
-validation 與 baseline workflow 沿用原本的硬上限與 Pod 端逾時。
+`--maxRuntime` 是 GPU 訓練與 validation 的本機停止請求時間。到時本機 guard
+在 network volume 寫入停止請求；Pod 會完成目前的訓練 validation 與 checkpoint
+交易，或完成目前 validation 模型／seed 並原子寫入結果，才回報安全邊界並結束
+workflow。本機 guard 看到同一 Pod、同一 run 的終止 lifecycle 後才刪除 Pod。
+既有的舊 checkpoint 不會觸發停止。原本的一小時硬上限不會強制中斷這兩種
+workflow；若目前段落較久，Pod 會持續運行並計費至保存完成。這個時間是目標
+截止時間，無法保證費用上限。`RUNPOD_REQUESTED_RUNTIME_SECONDS` 記錄原始的
+`--maxRuntime` 值。baseline workflow 仍使用原本的硬上限與 Pod 端逾時。
 
 建立指令會在本機先配置唯一 run ID、掛載同一個 network volume、注入 W&B
 Secret reference，並啟動獨立 hard-limit guard。本機 guard 在 macOS 會自動以
@@ -3776,15 +3777,17 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-`--maxRuntime` is the local guard's target cutoff. If training is still active
-at that time, the guard verifies the latest resumable checkpoint created after
-this Pod's guard was armed, including its manifests, required contents, and file sizes. It
-terminates the Pod when verification succeeds. Otherwise it retries every five
-minutes for up to one additional hour, then terminates at the hard limit even
-if verification still fails. The training process and runner timeout use that
-hard limit so the extension can be used to save a checkpoint.
-`RUNPOD_REQUESTED_RUNTIME_SECONDS` records the original `--maxRuntime` value.
-Validation and baseline workflows keep their existing hard limit and Pod-side timeout.
+`--maxRuntime` is the local stop-request time for GPU training and validation.
+At that time, the local guard writes a request to the network volume. The Pod
+finishes the current training validation and checkpoint transaction, or the
+current validation model or seed and its atomic result publication, before
+acknowledging the saved section and ending the workflow. The local guard deletes
+the Pod only after a terminal lifecycle for the same Pod and run. An older
+checkpoint does not authorize stopping. The former additional one-hour hard
+limit does not force these workflows to stop; a long section continues running
+and billing until it is saved. This is a target cutoff, not a guaranteed cost
+ceiling. `RUNPOD_REQUESTED_RUNTIME_SECONDS` records the original `--maxRuntime`
+value. Baseline workflows retain their existing hard limit and Pod-side timeout.
 
 The creator first allocates one run ID locally, mounts the same network volume,
 injects a W&B Secret reference, and arms an independent hard-limit guard. On

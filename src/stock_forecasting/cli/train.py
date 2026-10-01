@@ -10,6 +10,7 @@ from pathlib import Path
 from stock_forecasting.checkpointing import validate_checkpoint_selection
 from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.run_contract import validate_training_resume_contract
+from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested
 from stock_forecasting.run_paths import (
     canonical_network_volume_root,
     validate_run_environment_ids,
@@ -71,7 +72,11 @@ def main() -> None:
     previous_source_config_sha256 = os.environ.get("RUNPOD_SOURCE_CONFIG_SHA256")
     os.environ["RUNPOD_SOURCE_CONFIG_SHA256"] = source_config_sha256
     try:
-        result = train(config)
+        try:
+            result = train(config)
+        except RuntimeStopRequested as stop:
+            print(str(stop))
+            raise SystemExit(124) from None
     finally:
         if previous_source_config_sha256 is None:
             os.environ.pop("RUNPOD_SOURCE_CONFIG_SHA256", None)

@@ -59,6 +59,7 @@ from stock_forecasting.run_paths import (
     validate_wandb_directory,
 )
 from stock_forecasting.runtime_resources import detect_available_memory
+from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested, stop_at_saved_boundary
 from stock_forecasting.training import (
     _loader_process_options,
     _requested_dataloader_workers,
@@ -713,6 +714,8 @@ class ValidationBenchmark:
                 payload["evaluation_contract"] = self.evaluation_contract
                 payload["resume_contract_normalized_at"] = _utc_now()
             payload.pop("error", None)
+            payload.pop("resume_required", None)
+            payload.pop("stopped_at_section_boundary", None)
             payload["state"] = "running"
             payload["resumed_at"] = _utc_now()
             return payload
@@ -802,6 +805,11 @@ class ValidationBenchmark:
             "completed_at": _utc_now(),
         }
         self._publish()
+        stop_at_saved_boundary(
+            section_kind="validation-model",
+            section_id=name,
+            artifact=self.output,
+        )
 
     def _record_seed(
         self,
@@ -817,6 +825,11 @@ class ValidationBenchmark:
         result["seed_results"][str(seed)] = metrics
         result["seed_durations_seconds"][str(seed)] = duration_seconds
         self._publish()
+        stop_at_saved_boundary(
+            section_kind="validation-seed",
+            section_id=f"{name}.{seed}",
+            artifact=self.output,
+        )
 
     def _run_learned_baseline(
         self,
@@ -1015,6 +1028,15 @@ class ValidationBenchmark:
             self._publish()
             self._publish_lifecycle("finalizing" if self.defer_terminal_lifecycle else "ready")
             return self.payload
+        except RuntimeStopRequested:
+            self.payload["state"] = "timed_out"
+            self.payload["resume_required"] = True
+            self.payload["stopped_at_section_boundary"] = True
+            self._publish()
+            self._publish_lifecycle(
+                "finalizing" if self.defer_terminal_lifecycle else "timed_out"
+            )
+            raise
         except BaseException as error:
             self.payload["state"] = "failed"
             self.payload["error"] = f"{type(error).__name__}: {error}"

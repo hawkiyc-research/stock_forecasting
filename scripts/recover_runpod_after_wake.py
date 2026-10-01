@@ -391,7 +391,12 @@ def rearm_guard(pod: dict[str, Any], remaining: int, guard_dir: Path) -> None:
         env.get("NETWORK_VOLUME_ROOT", env.get("RUNPOD_VOLUME_ROOT", "/runpod-volume"))
     )
     command_env["RUNPOD_GUARD_RUN_ID"] = run_id
-    if lifecycle_key == "lifecycle/stage1/training.json" and remaining > 1:
+    section_safe = isinstance(env, dict) and env.get("RUNPOD_SECTION_SAFE_STOP") == "1"
+    command_env["RUNPOD_GUARD_SECTION_SAFE"] = "1" if section_safe else "0"
+    if lifecycle_key in {
+        "lifecycle/stage1/training.json",
+        "lifecycle/stage1/validation.json",
+    } and remaining > 1:
         ready_path = guard_dir / f"{pod['id']}.ready.json"
         try:
             previous_ready = json.loads(ready_path.read_text(encoding="utf-8"))
@@ -399,8 +404,12 @@ def rearm_guard(pod: dict[str, Any], remaining: int, guard_dir: Path) -> None:
             previous_ready = {}
         armed_at = parse_timestamp(previous_ready.get("armed_at"))
         soft_limit = previous_ready.get("soft_limit_seconds")
-        if armed_at is not None and type(soft_limit) is int and soft_limit > 0:
-            soft_deadline = int(armed_at.timestamp()) + soft_limit
+        if section_safe or (armed_at is not None and type(soft_limit) is int and soft_limit > 0):
+            soft_deadline = (
+                int(armed_at.timestamp()) + soft_limit
+                if armed_at is not None and type(soft_limit) is int and soft_limit > 0
+                else int(time.time())
+            )
             soft_remaining = max(1, min(remaining - 1, soft_deadline - int(time.time())))
             command_env["RUNPOD_GUARD_SOFT_LIMIT_SECONDS"] = str(soft_remaining)
             config = env.get("RUNPOD_CONFIG", "") if isinstance(env, dict) else ""
@@ -454,12 +463,15 @@ def observe(
         else:
             action, reason = "keep", f"cannot_prove_idle; lifecycle={state}:{evidence}"
         deadline_info = guard_deadline(pod_id, guard_dir)
+        pod_env = pod.get("env", {})
+        section_safe = isinstance(pod_env, dict) and pod_env.get("RUNPOD_SECTION_SAFE_STOP") == "1"
         if action == "keep" and runtime == "running" and deadline_info is not None:
             deadline, _ = deadline_info
             remaining = deadline - int(time.time())
-            if remaining <= 0:
+            if remaining <= 0 and not section_safe:
                 action, reason = "terminate", "external_guard_deadline_expired"
             elif not guard_alive(pod_id, guard_dir):
+                remaining = max(2, remaining) if section_safe else remaining
                 reason += f"; guard_missing; guard_remaining_seconds={remaining}"
                 observations.append(
                     {
@@ -470,6 +482,15 @@ def observe(
                     }
                 )
                 continue
+        elif action == "keep" and runtime == "running" and section_safe:
+            reason += "; section_safe_guard_metadata_missing"
+            observations.append({
+                "pod": pod,
+                "action": action,
+                "reason": reason,
+                "rearm_remaining": 2,
+            })
+            continue
         observations.append({"pod": pod, "action": action, "reason": reason})
     return observations
 

@@ -196,6 +196,28 @@ def test_rearm_preserves_training_checkpoint_cutoff(
     )
 
 
+def test_expired_section_safe_guard_is_rearmed_without_pod_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pod = _pod()
+    pod["env"]["RUNPOD_SECTION_SAFE_STOP"] = "1"
+    (tmp_path / "recovery-pod.ready.json").write_text(json.dumps({
+        "state": "armed",
+        "pod_id": "recovery-pod",
+        "delay_seconds": 30,
+        "soft_limit_seconds": 10,
+        "armed_at": (datetime.now(UTC) - timedelta(minutes=2)).isoformat(),
+    }), encoding="utf-8")
+    monkeypatch.setattr(RECOVERY, "list_lifecycle_keys", lambda volume_id: set())
+    monkeypatch.setattr(RECOVERY, "pod_records", lambda volume_id, pod_id: [pod])
+    monkeypatch.setattr(RECOVERY, "lifecycle_state", lambda *args: ("active", "training"))
+    monkeypatch.setattr(RECOVERY, "guard_alive", lambda pod_id, guard_dir: False)
+
+    observation = RECOVERY.observe("volume-id", None, tmp_path, object())[0]
+    assert observation["action"] == "keep"
+    assert observation["rearm_remaining"] == 2
+
+
 def test_guard_pid_must_still_belong_to_the_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

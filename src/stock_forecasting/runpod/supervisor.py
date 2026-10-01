@@ -425,6 +425,7 @@ def supervise(
     layout = VolumeLayout.from_environment()
     layout.create()
     environment = dict(os.environ)
+    section_safe_stop = environment.get("RUNPOD_SECTION_SAFE_STOP") == "1"
     run_key = _make_run_key(environment)
     # The W&B display name is intentionally independent from the durable run ID.
     environment["WANDB_RUN_ID"] = run_key
@@ -536,7 +537,8 @@ def supervise(
                     status = "interrupted"
                     _terminate_process_group(process, termination_grace_seconds)
                     break
-                if time.monotonic() - start_monotonic >= max_runtime_seconds:
+                if (not section_safe_stop
+                        and time.monotonic() - start_monotonic >= max_runtime_seconds):
                     timed_out = True
                     status = "timed_out"
                     _terminate_process_group(process, termination_grace_seconds)
@@ -547,7 +549,11 @@ def supervise(
             stdout_tee.join(timeout=5.0)
             stderr_tee.join(timeout=5.0)
             if status == "running":
-                status = "succeeded" if child_exit_code == 0 else "failed"
+                if child_exit_code == 124:
+                    timed_out = True
+                    status = "timed_out"
+                else:
+                    status = "succeeded" if child_exit_code == 0 else "failed"
     except BaseException as exc:
         status = "supervisor_error"
         supervisor_error = f"{type(exc).__name__}: {exc}"

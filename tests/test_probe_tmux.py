@@ -473,6 +473,23 @@ class ProbeTmuxTests(unittest.TestCase):
                 self.assertIn("write-state", harness.read("lifecycle-calls"))
                 self.assertFalse((harness.root / "lease-calls").exists())
 
+    def test_section_safe_gpu_workflows_do_not_use_outer_timeout(self) -> None:
+        for workflow in ("stage1-train", "stage1-validate"):
+            with self.subTest(workflow=workflow):
+                harness = self.harness()
+                harness.environment.update({
+                    "WANDB_RUN_ID": "run-section",
+                    "RUNPOD_SECTION_SAFE_STOP": "1",
+                    "HARNESS_TIMEOUT": "1",
+                    "HARNESS_JOB_EXIT": "7",
+                })
+                result = harness.command("runpod_tmux_launch.sh", workflow)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runner = harness.run_worker()
+                self.assertEqual(runner.returncode, 7, runner.stdout + runner.stderr)
+                self.assertFalse((harness.root / "timeout-options").exists())
+                self.assertTrue((harness.root / "worker-args").exists())
+
     def test_existing_workflows_do_not_accept_probe_arguments(self) -> None:
         harness = self.harness()
         harness.environment["RUNPOD_TEST_MODE"] = "1"

@@ -31,6 +31,7 @@ REQUIRE_LIFECYCLE="${RUNPOD_GUARD_REQUIRE_LIFECYCLE:-0}"
 RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_GUARD_VOLUME_ROOT:-/runpod-volume}"
 RUNPOD_GUARD_RUN_ID="${RUNPOD_GUARD_RUN_ID:-}"
 RUNPOD_GUARD_SOFT_LIMIT_SECONDS="${RUNPOD_GUARD_SOFT_LIMIT_SECONDS:-0}"
+RUNPOD_GUARD_SECTION_SAFE="${RUNPOD_GUARD_SECTION_SAFE:-0}"
 RUNPOD_GUARD_CHECKPOINT_CONFIG="${RUNPOD_GUARD_CHECKPOINT_CONFIG:-}"
 RUNPOD_GUARD_DATASET_REQUEST_SHA256="${RUNPOD_GUARD_DATASET_REQUEST_SHA256:-}"
 RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE="${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE:-}"
@@ -62,6 +63,15 @@ if [[ ! "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" =~ ^[0-9]+$ \
 fi
 if [[ ! "${RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
     echo "Checkpoint retry interval must be positive" >&2
+    exit 2
+fi
+if [[ "${RUNPOD_GUARD_SECTION_SAFE}" != 0 && "${RUNPOD_GUARD_SECTION_SAFE}" != 1 ]]; then
+    echo "RUNPOD_GUARD_SECTION_SAFE must be 0 or 1" >&2
+    exit 2
+fi
+if [[ "${RUNPOD_GUARD_SECTION_SAFE}" == 1 \
+    && "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -eq 0 ]]; then
+    echo "Section-safe guard requires a stop-request deadline" >&2
     exit 2
 fi
 if [[ "${DELAY_SECONDS}" -eq 0 && "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
@@ -127,11 +137,12 @@ if [[ ( "${LIFECYCLE_KEY}" == "lifecycle/stage1/training.json" \
     exit 2
 fi
 if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 \
-    && ( "${LIFECYCLE_KEY}" != "lifecycle/stage1/training.json" \
+    && ( ( "${LIFECYCLE_KEY}" != "lifecycle/stage1/training.json" \
+            && "${LIFECYCLE_KEY}" != "lifecycle/stage1/validation.json" ) \
         || ! -r "${RUNPOD_GUARD_CHECKPOINT_CONFIG}" \
         || ! "${RUNPOD_GUARD_DATASET_REQUEST_SHA256}" =~ ^[0-9a-f]{64}$ \
         || ! -r "${CHECKPOINT_GUARD_HELPER}" ) ]]; then
-    echo "Training checkpoint verification prerequisites are unavailable" >&2
+    echo "Section-aware GPU guard prerequisites are unavailable" >&2
     exit 2
 fi
 if [[ -n "${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE}" \
@@ -161,9 +172,9 @@ publish_guard_ready() {
         return 0
     fi
     local ready_tmp="${READY_FILE}.tmp.$$"
-    printf '{"state":"armed","pid":%d,"pod_id":"%s","run_id":"%s","lifecycle_key":"%s","delay_seconds":%d,"soft_limit_seconds":%d,"checkpoint_not_before":"%s","host_boot_id":"%s","armed_at":"%s"}\n' \
+    printf '{"state":"armed","pid":%d,"pod_id":"%s","run_id":"%s","lifecycle_key":"%s","delay_seconds":%d,"soft_limit_seconds":%d,"section_safe":%d,"checkpoint_not_before":"%s","host_boot_id":"%s","armed_at":"%s"}\n' \
         "$$" "${POD_ID}" "${RUNPOD_GUARD_RUN_ID}" "${LIFECYCLE_KEY}" \
-        "${DELAY_SECONDS}" "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" \
+        "${DELAY_SECONDS}" "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" "${RUNPOD_GUARD_SECTION_SAFE}" \
         "${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE}" "${RUNPOD_GUARD_HOST_BOOT_ID}" \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         > "${ready_tmp}"
@@ -177,7 +188,8 @@ termination_reason="hard-limit"
 last_marker_json='{}'
 matching_run_lifecycle_observed=0
 diagnostic_workflow_observed=0
-next_checkpoint_check="${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}"
+next_stop_request_check="${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}"
+stop_request_sent=0
 pod_terminal_key=""
 case "${LIFECYCLE_KEY}" in
     lifecycle/stage1/training.json|lifecycle/stage1/validation.json|lifecycle/stage1/baseline.json)
@@ -205,7 +217,8 @@ if [[ -n "${LIFECYCLE_KEY}" ]]; then
         fi
         publish_guard_ready
         guard_started=${SECONDS}
-        while [[ $((SECONDS - guard_started)) -lt ${DELAY_SECONDS} ]]; do
+        while [[ $((SECONDS - guard_started)) -lt ${DELAY_SECONDS} \
+            || "${RUNPOD_GUARD_SECTION_SAFE}" == 1 ]]; do
             terminal_state=""
             terminal_key=""
             diagnostic_state=""
@@ -360,55 +373,48 @@ raise SystemExit(0 if valid else 2)' \
             fi
             elapsed=$((SECONDS - guard_started))
             if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 \
-                && "${elapsed}" -ge "${next_checkpoint_check}" \
-                && "${elapsed}" -lt "${DELAY_SECONDS}" ]]; then
-                checkpoint_timeout=$((DELAY_SECONDS - elapsed))
-                if [[ "${checkpoint_timeout}" -gt 120 ]]; then
-                    checkpoint_timeout=120
+                && "${stop_request_sent}" == 0 \
+                && "${elapsed}" -ge "${next_stop_request_check}" \
+                && ( "${elapsed}" -lt "${DELAY_SECONDS}" \
+                    || "${RUNPOD_GUARD_SECTION_SAFE}" == 1 ) ]]; then
+                stop_request_key="lifecycle/runs/${RUNPOD_GUARD_RUN_ID}/pods/${POD_ID}/stop-request.json"
+                stop_request_json="$(printf '{"schema_version":1,"kind":"runtime-stop-request","pod_id":"%s","run_id":"%s"}\n' \
+                    "${POD_ID}" "${RUNPOD_GUARD_RUN_ID}")"
+                if printf '%s\n' "${stop_request_json}" | runpod_guard_s3 s3 cp - \
+                    "s3://${volume_id}/${stop_request_key}" --only-show-errors \
+                    >>"${LOG_FILE}" 2>&1; then
+                    stop_request_sent=1
+                    printf '[%s] requested stop after the current durable workflow section\n' \
+                        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${LOG_FILE}"
+                else
+                    printf '[%s] unable to publish stop request; retrying\n' \
+                        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${LOG_FILE}"
+                    next_stop_request_check=$((SECONDS - guard_started + RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS))
                 fi
-                checkpoint_name=""
-                if checkpoint_name="$(RUNPOD_S3_CONNECT_TIMEOUT_OVERRIDE="${GUARD_S3_CONNECT_TIMEOUT}" \
-                    RUNPOD_S3_READ_TIMEOUT_OVERRIDE="${GUARD_S3_READ_TIMEOUT}" \
-                    RUNPOD_S3_MAX_ATTEMPTS_OVERRIDE="${GUARD_S3_MAX_ATTEMPTS}" \
-                    python3 "${CHECKPOINT_GUARD_HELPER}" \
-                        --s3-wrapper "${RUNPOD_S3_WRAPPER}" \
-                        --bucket "${volume_id}" \
-                        --run-id "${RUNPOD_GUARD_RUN_ID}" \
-                        --config "${RUNPOD_GUARD_CHECKPOINT_CONFIG}" \
-                        --dataset-request-sha256 "${RUNPOD_GUARD_DATASET_REQUEST_SHA256}" \
-                        --created-after "${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE}" \
-                        --timeout-seconds "${checkpoint_timeout}" \
-                        2>>"${LOG_FILE}")" \
-                    && [[ "${checkpoint_name}" =~ ^checkpoint-[0-9]{6,}$ ]]; then
-                    termination_reason="checkpoint-verified:${checkpoint_name}"
-                    printf '[%s] resumable checkpoint verified at local runtime limit: %s\n' \
-                        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${checkpoint_name}" >> "${LOG_FILE}"
-                    break
-                fi
-                printf '[%s] checkpoint verification pending; bounded extension continues\n' \
-                    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${LOG_FILE}"
-                next_checkpoint_check=$((SECONDS - guard_started + RUNPOD_GUARD_CHECKPOINT_RETRY_SECONDS))
             fi
             elapsed=$((SECONDS - guard_started))
             remaining=$((DELAY_SECONDS - elapsed))
-            if [[ ${remaining} -le 0 ]]; then
+            if [[ ${remaining} -le 0 \
+                && "${RUNPOD_GUARD_SECTION_SAFE}" != 1 ]]; then
                 break
             fi
             sleep_seconds=${POLL_SECONDS}
-            if [[ ${sleep_seconds} -gt ${remaining} ]]; then
+            if [[ ${remaining} -gt 0 && ${sleep_seconds} -gt ${remaining} ]]; then
                 sleep_seconds=${remaining}
             fi
             if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 \
-                && "${next_checkpoint_check}" -gt "${elapsed}" \
-                && "${sleep_seconds}" -gt "$((next_checkpoint_check - elapsed))" ]]; then
-                sleep_seconds=$((next_checkpoint_check - elapsed))
+                && "${stop_request_sent}" == 0 \
+                && "${next_stop_request_check}" -gt "${elapsed}" \
+                && "${sleep_seconds}" -gt "$((next_stop_request_check - elapsed))" ]]; then
+                sleep_seconds=$((next_stop_request_check - elapsed))
             fi
             sleep "${sleep_seconds}"
         done
     else
-        printf '[%s] lifecycle monitor unavailable; hard-limit protection remains active\n' \
+        printf '[%s] lifecycle monitor unavailable\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${LOG_FILE}"
-        if [[ "${REQUIRE_LIFECYCLE}" == "1" ]]; then
+        if [[ "${REQUIRE_LIFECYCLE}" == "1" \
+            || "${RUNPOD_GUARD_SECTION_SAFE}" == 1 ]]; then
             printf '[%s] required lifecycle monitor could not be armed\n' \
                 "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${LOG_FILE}"
             exit 4
@@ -422,6 +428,7 @@ else
 fi
 
 if [[ "${termination_reason}" == "hard-limit" \
+    && "${RUNPOD_GUARD_SECTION_SAFE}" != 1 \
     && "${diagnostic_workflow_observed}" != "1" \
     && ( "${LIFECYCLE_KEY}" == "lifecycle/stage1/training.json" \
         || "${LIFECYCLE_KEY}" == "lifecycle/stage1/validation.json" \
