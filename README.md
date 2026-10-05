@@ -4181,7 +4181,7 @@ split nor a full unique-window pass. Validation/test remain full sequential pass
 
 The q50 location is separated from positive lower/upper interval widths; ranking
 uses an independent dimensionless score head. Checkpoint selection and early
-stopping still use **raw** full-validation normalized pinball. After selecting a
+stopping still use **uncalibrated** full-validation normalized pinball. After selecting a
 checkpoint, market/horizon tail factors are fitted on full validation only. Test
 reports retain raw and `calibrated` metrics; test labels never fit these factors,
 and future 80% coverage is not guaranteed. Factors are saved to

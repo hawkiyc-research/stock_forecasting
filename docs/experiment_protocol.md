@@ -105,7 +105,7 @@ script smoke 當成額外訓練資料。
 
 主 objective 是 q10/q50/q90 pinball loss。每個 horizon 以 train-only robust scale
 正規化後等權平均；training 另加獨立 ranking head 的同日排序 loss（預設權重 0.05），
-不直接把 q50 當排序 score。validation selection 只使用未校準 pinball：
+不直接把 q50 當排序 score。validation selection 只使用未校準的 normalized pinball：
 
 ```text
 scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
@@ -115,6 +115,10 @@ selection_score = mean_h(normalized_pinball_h), h=h_start,...,14
 為保留既有 RunPod checkpoint monitor 路徑，aggregate score 同時寫在
 `primary_5d/selection_score`；它仍涵蓋全部 horizons，不是只有 5 日。checkpoint
 selection mode 固定為 `min`。沒有 classification loss 或 loss-weight search。
+
+A/B 的 robust scales 各自由其 training labels 估計，數值可能不同；normalized
+pinball 適合各 run 內的選模，不能只憑其跨組大小判定 A/B 優劣。跨組報告須同時
+比較共同 holdout 上的 raw pinball、raw MAE、correlation、方向一致率及 coverage。
 
 ### 8. Comparator suite
 
@@ -328,7 +332,7 @@ pretrained revisions so the Stage 1 smoke run is not hidden extra training.
 The primary objective is q10/q50/q90 pinball loss, equally averaged after
 train-only per-horizon normalization. Training adds same-day ranking loss through
 an independent score head (default weight 0.05), not directly through q50.
-Validation selection uses raw, uncalibrated pinball alone:
+Validation selection uses uncalibrated normalized pinball alone:
 
 ```text
 scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
@@ -338,6 +342,12 @@ selection_score = mean_h(normalized_pinball_h), h=h_start,...,14
 The aggregate is also exposed at `primary_5d/selection_score` to preserve the
 stable RunPod checkpoint-monitor path. It still covers every horizon.
 Checkpoint mode is `min`. There is no classification loss or loss-weight search.
+
+A/B estimate robust scales from their own training labels, so those scales may
+differ. Normalized pinball supports within-run checkpoint selection, but its
+cross-group magnitude alone cannot establish superiority. A/B reports must also
+compare raw pinball, raw MAE, correlation, direction accuracy, and coverage on
+the shared holdout population.
 
 ### 8. Comparator suite
 
