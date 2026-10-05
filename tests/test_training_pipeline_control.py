@@ -62,7 +62,7 @@ class TrainingPipelineControlTests(unittest.TestCase):
         })
         self.assertEqual(migration["from_files"].keys(), migration["to_files"].keys())
         stop_migration = next(
-            row for row in registry if row["id"] == "saved-boundary-runtime-stop-v1"
+            row for row in registry if row["id"] == "saved-boundary-runtime-stop-v2"
         )
         for name, digest in migration["to_files"].items():
             if name == "training.py":
@@ -121,7 +121,7 @@ class TrainingPipelineControlTests(unittest.TestCase):
         registry = runpy.run_path(str(
             ROOT / "src/stock_forecasting/checkpoint_resume_migrations.py"
         ))["CHECKPOINT_RETENTION_MIGRATIONS"]
-        migration = next(row for row in registry if row["id"] == "saved-boundary-runtime-stop-v1")
+        migration = next(row for row in registry if row["id"] == "saved-boundary-runtime-stop-v2")
         self.assertEqual(set(migration["from_files"]), {"training.py"})
         self.assertEqual(migration["from_files"].keys(), migration["to_files"].keys())
         self.assertEqual(migration["to_files"]["training.py"],
@@ -165,6 +165,19 @@ class TrainingPipelineControlTests(unittest.TestCase):
         manifest = {"training_resume_contract": stored,
                     "training_resume_contract_sha256": digest(stored)}
         self.assertEqual(compatible(None, manifest), digest(stored))
+        prior_stop = next(row for row in registry
+                          if row["id"] == "completion-before-runtime-stop-v1")
+        self.assertEqual(set(prior_stop["from_files"]), {"training.py"})
+        self.assertEqual(prior_stop["to_files"], migration["to_files"])
+        prior_stored = copy.deepcopy(stored)
+        prior_stored["training_implementation"]["files"].update(prior_stop["from_files"])
+        prior_stored["training_implementation"]["sha256"] = digest(
+            prior_stored["training_implementation"]["files"]
+        )
+        self.assertEqual(compatible(None, {
+            "training_resume_contract": prior_stored,
+            "training_resume_contract_sha256": digest(prior_stored),
+        }), digest(prior_stored))
         for key in ("data", "model", "optimizer", "training"):
             incompatible = copy.deepcopy(stored)
             incompatible[key] = "different"

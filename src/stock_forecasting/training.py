@@ -3577,7 +3577,13 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     last_checkpoint_step = global_step
                     last_runtime_checkpoint_step = runtime_global_step
                     completed_epochs = completed_epochs_at_step
-                    if checkpoint is not None:
+                    # Natural completion must publish its final result before a cutoff
+                    # can interrupt the workflow; unfinished runs still stop here.
+                    if (
+                        checkpoint is not None
+                        and not early_stopping.triggered
+                        and runtime_global_step < runtime_configured_steps
+                    ):
                         stop_at_saved_boundary(
                             section_kind="training-checkpoint",
                             section_id=checkpoint.name,

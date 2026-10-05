@@ -6,6 +6,36 @@ from typing import Final
 
 CHECKPOINT_RETENTION_MIGRATIONS: Final = (
     {
+        # Completion takes precedence over a saved-checkpoint runtime cutoff.
+        # Training values, state restoration and numerical sources are unchanged.
+        "id": "completion-before-runtime-stop-v1",
+        "from_files": {
+            "training.py": (
+                "65cf7aade6258e2e4ed58842bffc3010696c9f4551c8907efc5dbb91f555e06f"
+            ),
+        },
+        "to_files": {
+            "training.py": (
+                "790fd6ac56fe27544b246de938c6c9897aa39b6fc6167282f15142c47fd4f4ff"
+            ),
+        },
+    },
+    {
+        # Interrupted runs retain their original manifest, including runs resumed
+        # through v1. Allow the exact combined execution-only patch, not a bypass.
+        "id": "saved-boundary-runtime-stop-v2",
+        "from_files": {
+            "training.py": (
+                "c7d81ff32225908347a3b0450023b1cdbcc90b8aa7b1e589569b9f56cb98f448"
+            ),
+        },
+        "to_files": {
+            "training.py": (
+                "790fd6ac56fe27544b246de938c6c9897aa39b6fc6167282f15142c47fd4f4ff"
+            ),
+        },
+    },
+    {
         # Stop requests are handled only after a durable checkpoint is saved.
         # Model math, optimizer, sampler, RNG and persisted state are unchanged.
         "id": "saved-boundary-runtime-stop-v1",
