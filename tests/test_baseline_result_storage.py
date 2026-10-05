@@ -38,12 +38,20 @@ def fixture(root):
     metrics = {"samples": 2, "sample_membership": membership, "evaluation_robust_scales": [1.0]}
     payload = {
         "state": "complete",
-        "identity": {"baseline_id": root.name, "contract": {"parameters": {
-            "models": ["zero_return", "gru"], "seeds": [42],
-        }}},
+        "identity": {
+            "baseline_id": root.name,
+            "contract": {
+                "parameters": {
+                    "models": ["zero_return", "gru"],
+                    "seeds": [42],
+                }
+            },
+        },
         "sample_counts": {"train": 4, "validation": 2, "test": 2},
-        "evaluation_membership": membership, "validation_membership": membership,
-        "robust_scales": [1.0], "artifacts": {},
+        "evaluation_membership": membership,
+        "validation_membership": membership,
+        "robust_scales": [1.0],
+        "artifacts": {},
         "models": {
             "zero_return": {"state": "complete", "metrics": metrics},
             "gru": {"state": "complete", "seed_results": {"42": metrics}},
@@ -89,8 +97,11 @@ class BaselineStorageTests(unittest.TestCase):
             return storage.finalize_baseline_storage(self.root, workers=2, progress=None, **kwargs)
 
     def snapshot(self):
-        return {str(path.relative_to(self.root)): path.read_bytes()
-                for path in self.root.rglob("*") if path.is_file()}
+        return {
+            str(path.relative_to(self.root)): path.read_bytes()
+            for path in self.root.rglob("*")
+            if path.is_file()
+        }
 
     def test_dry_run_does_not_change_any_file(self):
         before = self.snapshot()
@@ -209,26 +220,36 @@ class StorageIdentityTests(unittest.TestCase):
         tree = ast.parse((ROOT / "src/stock_forecasting/run_contract.py").read_text())
         selected = []
         names = {
-            "_validated_implementation_files", "_canonical_payload_digest",
+            "_validated_implementation_files",
+            "_canonical_payload_digest",
             "_checkpoint_retention_migration_matches",
         }
         for node in tree.body:
             if getattr(node, "name", None) in names or (
-                isinstance(node, ast.Assign) and any(
+                isinstance(node, ast.Assign)
+                and any(
                     isinstance(target, ast.Name) and target.id == "TRAINING_IMPLEMENTATION_PATHS"
                     for target in node.targets
                 )
             ):
                 selected.append(node)
-        scope = {"hashlib": hashlib, "json": json, "Any": object,
-                 "CHECKPOINT_RETENTION_MIGRATIONS": ()}
+        scope = {
+            "hashlib": hashlib,
+            "json": json,
+            "Any": object,
+            "CHECKPOINT_RETENTION_MIGRATIONS": (),
+        }
         exec(compile(ast.Module(body=selected, type_ignores=[]), "resume", "exec"), scope)
         digest = scope["_canonical_payload_digest"]
         files = {name: "1" * 64 for name in scope["TRAINING_IMPLEMENTATION_PATHS"]}
         self.assertNotIn("baseline_contract.py", files)
         self.assertNotIn("run_contract.py", files)
-        current = {"data": "same", "model": "same", "training": "same",
-                   "training_implementation": {"files": files, "sha256": digest(files)}}
+        current = {
+            "data": "same",
+            "model": "same",
+            "training": "same",
+            "training_implementation": {"files": files, "sha256": digest(files)},
+        }
         stored = copy.deepcopy(current)
         old_files = stored["training_implementation"]["files"]
         old_files.update({"baseline_contract.py": "2" * 64, "run_contract.py": "3" * 64})
@@ -255,7 +276,7 @@ class StorageIdentityTests(unittest.TestCase):
         ):
             self.assertNotIn(path, contract["BASELINE_SOURCES"])
 
-    def test_downloaded_ab_baselines_keep_their_existing_numerical_identity(self):
+    def test_downloaded_ab_baselines_are_not_reused_under_new_cleaning_rules(self):
         contract = runpy.run_path(str(ROOT / "src/stock_forecasting/baseline_contract.py"))
         directory = ROOT / ".runpod/diagnostics/storage-20260923"
         for group in ("A", "B"):
@@ -263,11 +284,15 @@ class StorageIdentityTests(unittest.TestCase):
             if not path.is_file():
                 self.skipTest("Downloaded baseline records are optional verification artifacts")
             with self.subTest(group=group):
-                saved = json.loads(path.read_text())
+                original = path.read_bytes()
+                saved = json.loads(original)
                 selected = {"dataset_request": saved["identity"]["contract"]["data"]}
                 current = contract["baseline_contract"](ROOT, selected)
-                self.assertEqual(current, saved["identity"])
-                contract["validate_complete"](saved, current)
+                self.assertNotEqual(current, saved["identity"])
+                contract["validate_complete"](saved, saved["identity"])
+                with self.assertRaises(ValueError):
+                    contract["validate_complete"](saved, current)
+                self.assertEqual(path.read_bytes(), original)
 
 
 class BaselineStorageEntryTests(unittest.TestCase):
@@ -280,9 +305,31 @@ class BaselineStorageEntryTests(unittest.TestCase):
         parameters = json.loads((ROOT / "configs/baseline.json").read_text())
         parameters.update(self.payload["identity"]["contract"]["parameters"])
         self.payload["identity"]["contract"]["parameters"] = parameters
-        self.manifest = json.dumps({"split_counts": self.payload["sample_counts"]}).encode()
+        policy = runpy.run_path(str(ROOT / "src/stock_forecasting/data_policy.py"))[
+            "load_data_policy"
+        ]()
+        self.payload["identity"]["contract"]["data_cleaning"] = policy
+        self.manifest = json.dumps(
+            {"state": "ready", "split_counts": self.payload["sample_counts"]}
+        ).encode()
+        source_hash = hashlib.sha256(self.manifest).hexdigest()
+        self.universe = {
+            "state": "ready",
+            "identity": {
+                "policy": policy,
+                "source_manifest_sha256": source_hash,
+            },
+            "split_counts": self.payload["sample_counts"],
+        }
+        key = runpy.run_path(str(ROOT / "src/stock_forecasting/baseline_contract.py"))["digest"](
+            self.universe["identity"]
+        )
         self.payload["data_identity"] = {
-            "manifest_sha256": hashlib.sha256(self.manifest).hexdigest(),
+            "manifest_sha256": source_hash,
+            "split_sources": {
+                split: {"manifest_sha256": source_hash, "sample_universe": key, "samples": count}
+                for split, count in self.payload["sample_counts"].items()
+            },
         }
         (self.root / "complete.json").write_text(json.dumps(self.payload))
         self.cache = runpy.run_path(str(ROOT / "scripts/runpod_baseline_cache.py"))
@@ -300,15 +347,22 @@ class BaselineStorageEntryTests(unittest.TestCase):
             if self.fail_listing:
                 return SimpleNamespace(returncode=1, stdout="", stderr="AccessDenied")
             prefix = command[command.index("--prefix") + 1]
-            keys = sorted("baselines/baseline-fixture/" + str(path.relative_to(self.root))
-                          for path in self.root.rglob("*") if path.is_file()
-                          and str(path.relative_to(self.root)).startswith("jobs/"))
-            start = (int(command[command.index("--continuation-token") + 1])
-                     if "--continuation-token" in command else 0)
+            keys = sorted(
+                "baselines/baseline-fixture/" + str(path.relative_to(self.root))
+                for path in self.root.rglob("*")
+                if path.is_file() and str(path.relative_to(self.root)).startswith("jobs/")
+            )
+            start = (
+                int(command[command.index("--continuation-token") + 1])
+                if "--continuation-token" in command
+                else 0
+            )
             keys = [key for key in keys if key.startswith(prefix)]
             stop = start + self.page_size
-            page = {"Contents": [{"Key": key} for key in keys[start:stop]],
-                    "IsTruncated": stop < len(keys)}
+            page = {
+                "Contents": [{"Key": key} for key in keys[start:stop]],
+                "IsTruncated": stop < len(keys),
+            }
             if page["IsTruncated"]:
                 page["NextContinuationToken"] = str(stop)
             return SimpleNamespace(returncode=0, stdout=json.dumps(page))
@@ -316,36 +370,50 @@ class BaselineStorageEntryTests(unittest.TestCase):
             key = command[command.index("--key") + 1]
             relative = key.removeprefix("baselines/baseline-fixture/")
             path = self.root / relative
-            return SimpleNamespace(returncode=0 if path.is_file() else 1,
-                                   stdout=str(path.stat().st_size) if path.is_file() else "")
+            return SimpleNamespace(
+                returncode=0 if path.is_file() else 1,
+                stdout=str(path.stat().st_size) if path.is_file() else "",
+            )
         if "cp" in command:
             key = command[command.index("cp") + 1]
-            content = ((self.root / "complete.json").read_bytes()
-                       if key.endswith("/complete.json") else self.manifest)
-            return SimpleNamespace(returncode=0, stdout=content.decode() if kwargs.get("text")
-                                   else content)
+            content = (
+                (self.root / "complete.json").read_bytes()
+                if key.endswith("/complete.json")
+                else self.manifest
+            )
+            if key.endswith("/universe.json"):
+                content = json.dumps(self.universe).encode()
+            return SimpleNamespace(
+                returncode=0, stdout=content.decode() if kwargs.get("text") else content
+            )
         raise AssertionError(f"Unexpected write, training or Pod creation: {command}")
 
     def gate(self, command="check"):
         real_run_path = runpy.run_path
-        selected = {"dataset_request_sha256": "fixture-data", "dataset_request": {
-            "preparation": {"h_start": 1, "window_size": 128}}}
+        selected = {
+            "dataset_request_sha256": "fixture-data",
+            "dataset_request": {"preparation": {"h_start": 1, "window_size": 128}},
+        }
 
         def modules(path):
             if path.endswith("runpod_selection.py"):
                 return {"_resolve_selection_path": lambda *args, **kwargs: (None, selected)}
             if path.endswith("baseline_contract.py"):
                 return {
-                    **self.contract, "baseline_contract": lambda *args: self.payload["identity"],
+                    **self.contract,
+                    "baseline_contract": lambda *args: self.payload["identity"],
                 }
+            if path.endswith("data_policy.py"):
+                return {"evaluation_dataset_id": lambda *args: "fixture-data"}
             return real_run_path(path)
 
         output = io.StringIO()
         with (
             patch.object(runpy, "run_path", side_effect=modules),
             patch.object(subprocess, "run", side_effect=self.transport),
-            patch.dict(os.environ, {"RUNPOD_NETWORK_VOLUME_ID": "fixture-volume",
-                                    "RUNPOD_TEST_MODE": "1"}),
+            patch.dict(
+                os.environ, {"RUNPOD_NETWORK_VOLUME_ID": "fixture-volume", "RUNPOD_TEST_MODE": "1"}
+            ),
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(self.cache["main"]([command, "--project-root", str(ROOT)]), 0)
@@ -405,9 +473,17 @@ class BaselineStorageEntryTests(unittest.TestCase):
         self.assertTrue(self.gate("require")["complete"])
 
     def test_invalid_pagination_cannot_silently_skip_remaining_copies(self):
-        with patch.object(subprocess, "run", return_value=SimpleNamespace(
-            returncode=0, stdout='{"Contents": [], "IsTruncated": true}',
-        )), self.assertRaisesRegex(ValueError, "Incomplete"):
+        with (
+            patch.object(
+                subprocess,
+                "run",
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout='{"Contents": [], "IsTruncated": true}',
+                ),
+            ),
+            self.assertRaisesRegex(ValueError, "Incomplete"),
+        ):
             self.cache["_has_duplicate_arrays"]("wrapper", "bucket", "baselines/fixture/", [])
 
 

@@ -40,19 +40,22 @@ def training_fixture(selected):
     dataset["universe_sha256"] = "7" * 64
     # Real prepared manifests include row counts for the bar-store manifest artifact.
     dataset["artifacts"]["bar_store_manifest"]["row_count"] = 1
-    objects.update({
-        prefix + "raw/market.parquet": raw,
-        prefix + "manifests/api-request-log.jsonl": log,
-        prefix + "dataset-manifest.json": encode(dataset),
-    })
+    objects.update(
+        {
+            prefix + "raw/market.parquet": raw,
+            prefix + "manifests/api-request-log.jsonl": log,
+            prefix + "dataset-manifest.json": encode(dataset),
+        }
+    )
     return objects
 
 
 def model_fixture():
     values = GATE["model_contract"](ROOT / "configs/stage2_kronos_base_lora.yaml")
-    revisions = {values[name + "_id"]: values[name + "_revision"] for name in (
-        "time_series_model", "time_series_tokenizer"
-    )}
+    revisions = {
+        values[name + "_id"]: values[name + "_revision"]
+        for name in ("time_series_model", "time_series_tokenizer")
+    }
     repositories, objects = {}, {}
     for repo, revision in revisions.items():
         key = "cache/huggingface/hub/models--" + repo.replace("/", "--")
@@ -60,18 +63,28 @@ def model_fixture():
         repositories[repo] = "/runpod-volume/" + key
         objects[key + "/config.json"] = b'{"fixture":true}'
         objects[key + "/model.safetensors"] = b"fixture-weights"
-    objects["cache/hf-models.json"] = encode({
-        "repositories": repositories, "repository_revisions": revisions,
-        "local_files_only_verified": True,
-        "kronos_source_revision": values["kronos_source_revision"],
-        "time_series_smoke_test": {
-            "passed": True, "local_files_only": True, "backend": "kronos", "input_bars": 128,
-            **{name: values[name] for name in (
-                "kronos_source_revision", "time_series_model_revision",
-                "time_series_tokenizer_revision",
-            )},
-        },
-    })
+    objects["cache/hf-models.json"] = encode(
+        {
+            "repositories": repositories,
+            "repository_revisions": revisions,
+            "local_files_only_verified": True,
+            "kronos_source_revision": values["kronos_source_revision"],
+            "time_series_smoke_test": {
+                "passed": True,
+                "local_files_only": True,
+                "backend": "kronos",
+                "input_bars": 128,
+                **{
+                    name: values[name]
+                    for name in (
+                        "kronos_source_revision",
+                        "time_series_model_revision",
+                        "time_series_tokenizer_revision",
+                    )
+                },
+            },
+        }
+    )
     return objects
 
 
@@ -87,19 +100,35 @@ def load_tracking_functions():
     path = ROOT / "src/stock_forecasting/tracking.py"
     tree = ast.parse(path.read_text())
     nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
-    nodes += [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in {
-        "collect_selection_provenance", "collect_dataset_provenance", "_sha256",
-    }]
+    nodes += [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name
+        in {
+            "collect_selection_provenance",
+            "collect_dataset_provenance",
+            "_sha256",
+        }
+    ]
     scope = {
-        "__file__": str(path), "os": os, "Path": Path, "json": json,
-        "hashlib": hashlib, "runpy": runpy,
+        "__file__": str(path),
+        "os": os,
+        "Path": Path,
+        "json": json,
+        "hashlib": hashlib,
+        "runpy": runpy,
         "_SELECTION_ID_PATTERN": re.compile(r"selection-[0-9a-f]{16}"),
         "_SHA256_PATTERN": re.compile(r"[0-9a-f]{64}"),
         "canonical_network_volume_root": lambda: Path(os.environ["NETWORK_VOLUME_ROOT"]),
         "provenance_summary": lambda path: json.loads(path.read_text()),
     }
-    exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
-                 str(path), "exec"), scope)
+    exec(
+        compile(
+            ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(path), "exec"
+        ),
+        scope,
+    )
     return scope
 
 
@@ -121,9 +150,7 @@ class TrainingDatasetSwitchingTests(unittest.TestCase):
                 self.assertEqual(
                     result["dataset_request_sha256"], selected["dataset_request_sha256"]
                 )
-                GATE["verify_models"](
-                    ROOT / selected["stage"]["config_path"], reader, workers=2
-                )
+                GATE["verify_models"](ROOT / selected["stage"]["config_path"], reader, workers=2)
             self.assertNotIn("lifecycle/stage1/dataset.json", repr(reader.calls))
 
     def test_model_manifest_metadata_can_change_but_revisions_cannot(self):
@@ -181,8 +208,13 @@ class TrainingDatasetSwitchingTests(unittest.TestCase):
                 path = volume / (selected["selection_id"] + ".json")
                 path.write_bytes(encode(selected))
                 env = SELECTION["_selection_exports"](path, selected)
-                env.update({"RUNPOD_REMOTE_SELECTION_PATH": str(path),
-                            "NETWORK_VOLUME_ROOT": str(volume), "RUNPOD_POD_ID": "fixture-pod"})
+                env.update(
+                    {
+                        "RUNPOD_REMOTE_SELECTION_PATH": str(path),
+                        "NETWORK_VOLUME_ROOT": str(volume),
+                        "RUNPOD_POD_ID": "fixture-pod",
+                    }
+                )
                 with patch.dict(os.environ, env):
                     result = scope["collect_selection_provenance"]()
                     self.assertEqual(result["selection_id"], selected["selection_id"])
@@ -218,14 +250,15 @@ class TrainingDatasetSwitchingTests(unittest.TestCase):
             volume = Path(temporary).resolve() / "volume"
             project = volume / "stock_forecasting"
             for name in ("src", "scripts", "configs"):
-                shutil.copytree(ROOT / name, project / name,
-                                ignore=shutil.ignore_patterns("__pycache__"))
+                shutil.copytree(
+                    ROOT / name, project / name, ignore=shutil.ignore_patterns("__pycache__")
+                )
             write_objects(volume, self.objects)
             write_objects(volume, {"lifecycle/stage1/dataset.json": b"deliberately-unusable"})
             (project / ".env").write_text("RUNPOD_NETWORK_VOLUME_ID=fixture-volume\n")
             (project / ".env").chmod(0o600)
             transport = project / "scripts/fixture_transport.py"
-            transport.write_text('''import os, sys
+            transport.write_text("""import os, sys
 from pathlib import Path
 args = sys.argv[1:]
 root = Path(os.environ["FAKE_VOLUME"])
@@ -238,92 +271,145 @@ elif args[:2] == ["s3api", "head-object"]:
     print((root / args[args.index("--key") + 1]).stat().st_size)
 else:
     raise RuntimeError("Unexpected mutation or cloud action")
-''')
+""")
             (project / "scripts/runpod_s3_project.sh").write_text(
-                "#!/usr/bin/env bash\nexec " + shlex.quote(sys.executable) + " "
-                + shlex.quote(str(transport)) + ' "$@"\n'
+                "#!/usr/bin/env bash\nexec "
+                + shlex.quote(sys.executable)
+                + " "
+                + shlex.quote(str(transport))
+                + ' "$@"\n'
             )
             output = io.StringIO()
-            paths = sorted(str(path.relative_to(project)) for path in project.rglob("*")
-                           if path.is_file() and path.suffix in (".py", ".sh", ".yaml", ".json"))
+            paths = sorted(
+                str(path.relative_to(project))
+                for path in project.rglob("*")
+                if path.is_file() and path.suffix in (".py", ".sh", ".yaml", ".json")
+            )
             with contextlib.redirect_stdout(output):
-                DATA["READINESS"]["command_code_manifest"](SimpleNamespace(
-                    project_root=project, paths=paths, pipeline_path=[], state="ready",
-                    remote_project_dir=str(project),
-                ))
+                DATA["READINESS"]["command_code_manifest"](
+                    SimpleNamespace(
+                        project_root=project,
+                        paths=paths,
+                        pipeline_path=[],
+                        state="ready",
+                        remote_project_dir=str(project),
+                    )
+                )
             write_objects(volume, {"lifecycle/stage1/code.json": output.getvalue().encode()})
             binary = volume / "bin"
             binary.mkdir()
             (binary / "python3").symlink_to(sys.executable)
             (binary / "mountpoint").write_text("#!/usr/bin/env bash\nexit 0\n")
             (binary / "mountpoint").chmod(0o700)
-            base_env = {**os.environ, "PATH": f"{binary}:{os.defpath}", "FAKE_VOLUME": str(volume),
-                        "RUNPOD_ENV_FILE": str(project / ".env")}
+            base_env = {
+                **os.environ,
+                "PATH": f"{binary}:{os.defpath}",
+                "FAKE_VOLUME": str(volume),
+                "RUNPOD_ENV_FILE": str(project / ".env"),
+            }
             for selected in (self.a, self.b, self.a):
                 SELECTION["_activate_selection"](project, selected)
                 remote = volume / "lifecycle/selections" / (selected["selection_id"] + ".json")
                 remote.parent.mkdir(parents=True, exist_ok=True)
                 remote.write_bytes(encode(selected))
                 result = subprocess.run(
-                    ["/bin/bash", str(project / "scripts/verify_runpod_stage_readiness.sh"),
-                     "--gpu"],
-                    capture_output=True, text=True, env=base_env, timeout=60,
+                    [
+                        "/bin/bash",
+                        str(project / "scripts/verify_runpod_stage_readiness.sh"),
+                        "--gpu",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=base_env,
+                    timeout=60,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                env = {**base_env, **SELECTION["_selection_exports"](remote, selected),
-                       "NETWORK_VOLUME_ROOT": str(volume), "PROJECT_ROOT": str(project),
-                       "DATA_ROOT": str(volume / "datasets" / selected["dataset_request_sha256"]),
-                       "RUNPOD_REMOTE_SELECTION_PATH": str(remote),
-                       "RUNPOD_PYTHON_BIN": str(binary / "python3"), "RUNPOD_POD_ID": "fixture-pod",
-                       "RUNPOD_EXPECTED_VOLUME_ID": "fixture-volume",
-                       "RUNPOD_VOLUME_ID": "fixture-volume"}
+                env = {
+                    **base_env,
+                    **SELECTION["_selection_exports"](remote, selected),
+                    "NETWORK_VOLUME_ROOT": str(volume),
+                    "PROJECT_ROOT": str(project),
+                    "DATA_ROOT": str(volume / "datasets" / selected["dataset_request_sha256"]),
+                    "RUNPOD_REMOTE_SELECTION_PATH": str(remote),
+                    "RUNPOD_PYTHON_BIN": str(binary / "python3"),
+                    "RUNPOD_POD_ID": "fixture-pod",
+                    "RUNPOD_EXPECTED_VOLUME_ID": "fixture-volume",
+                    "RUNPOD_VOLUME_ID": "fixture-volume",
+                }
                 result = subprocess.run(
                     ["/bin/bash", str(project / "scripts/verify_runpod_mounted_readiness.sh")],
-                    capture_output=True, text=True, env=env, timeout=60,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=60,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('"verification": "checksums"', result.stdout)
-            self.assertEqual((volume / "lifecycle/stage1/dataset.json").read_bytes(),
-                             b"deliberately-unusable")
+            self.assertEqual(
+                (volume / "lifecycle/stage1/dataset.json").read_bytes(), b"deliberately-unusable"
+            )
 
     def test_remote_resume_and_validation_use_the_run_bound_dataset(self):
         selected, run_id, checkpoint = self.a, "run-fixture", "checkpoint-000010"
         key = "datasets/" + selected["dataset_request_sha256"] + "/dataset-manifest.json"
         payload = json.loads(self.objects[key])
-        contract = {"dataset_artifacts": CHECKPOINT["_dataset_contract"](
-            key, payload, hashlib.sha256(self.objects[key]).hexdigest()
-        )}
+        contract = {
+            "dataset_artifacts": CHECKPOINT["_dataset_contract"](
+                key, payload, hashlib.sha256(self.objects[key]).hexdigest()
+            )
+        }
         digest = DATA["digest"](contract)
         config = ROOT / selected["stage"]["config_path"]
         config_bytes = config.read_bytes()
-        identity = {"schema_version": "4.0", "run_id": run_id, "run_key": run_id,
-                    "training_resume_contract_sha256": digest}
-        manifest = {**identity, "training_resume_contract": contract,
-                    "source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
-                    "resolved_config_sha256": hashlib.sha256(config_bytes).hexdigest()}
+        identity = {
+            "schema_version": "4.0",
+            "run_id": run_id,
+            "run_key": run_id,
+            "training_resume_contract_sha256": digest,
+        }
+        manifest = {
+            **identity,
+            "training_resume_contract": contract,
+            "source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+            "resolved_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+        }
         monitor = "primary_5d/selection_score"
         policy = {"monitor": monitor, "mode": "min", "selection_source": "validation"}
         row = {"path": checkpoint, "global_step": 10, "value": 1.0, "rank": 1}
-        files = {name: b"checkpoint-artifact" for name in (
-            "adapter.safetensors", "optimizer.pt", "scheduler.pt"
-        )}
+        files = {
+            name: b"checkpoint-artifact"
+            for name in ("adapter.safetensors", "optimizer.pt", "scheduler.pt")
+        }
         files["resolved-config.yaml"] = config_bytes
         state = {
-            **identity, "global_step": 10, "epoch": 0, "batch_index": 10,
-            "training_stage": "stage2", "runtime_robust_scales": [1.0] * 14, "rng_state": {},
+            **identity,
+            "global_step": 10,
+            "epoch": 0,
+            "batch_index": 10,
+            "training_stage": "stage2",
+            "runtime_robust_scales": [1.0] * 14,
+            "rng_state": {},
             "selection": {"source": "validation", "metric": monitor, "mode": "min", "value": 1.0},
             "artifact_files": {name: metadata(name, value) for name, value in files.items()},
         }
         files["trainer-state.json"] = encode(state)
         prefix = "savedModel/" + run_id + "/"
-        objects = {**self.objects, **{prefix + checkpoint + "/" + k: v for k, v in files.items()},
-                   prefix + "run-manifest.json": encode(manifest),
-                   prefix + "resolved-config.yaml": config_bytes,
-                   prefix + "checkpoint-leaderboard.json": encode({
-                       **identity, **policy, "checkpoints": [row], "best_checkpoint": checkpoint,
-                       "save_top_k": 5,
-                   }),
-                   prefix + "best-checkpoint.json": encode({**identity, **policy, **row})}
+        objects = {
+            **self.objects,
+            **{prefix + checkpoint + "/" + k: v for k, v in files.items()},
+            prefix + "run-manifest.json": encode(manifest),
+            prefix + "resolved-config.yaml": config_bytes,
+            prefix + "checkpoint-leaderboard.json": encode(
+                {
+                    **identity,
+                    **policy,
+                    "checkpoints": [row],
+                    "best_checkpoint": checkpoint,
+                    "save_top_k": 5,
+                }
+            ),
+            prefix + "best-checkpoint.json": encode({**identity, **policy, **row}),
+        }
 
         class Reader:
             def __init__(self):
@@ -345,7 +431,11 @@ else:
         reader = Reader()
         for policy in ("latest", "best", "retained"):
             result = CHECKPOINT["validate_remote_checkpoint_run"](
-                reader, run_id, checkpoint if policy == "retained" else None, policy, config,
+                reader,
+                run_id,
+                checkpoint if policy == "retained" else None,
+                policy,
+                config,
                 selected["dataset_request_sha256"],
             )
             self.assertEqual(result, checkpoint)
@@ -364,30 +454,41 @@ else:
         path = ROOT / "src/stock_forecasting/run_contract.py"
         tree = ast.parse(path.read_text())
         names = {
-            "_canonical_payload_digest", "_validated_implementation_files",
-            "_checkpoint_retention_migration_matches", "compatible_training_resume_contract_digest",
+            "_canonical_payload_digest",
+            "_validated_implementation_files",
+            "_checkpoint_retention_migration_matches",
+            "compatible_training_resume_contract_digest",
         }
         nodes = [
             ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
         ]
         for node in tree.body:
             if (isinstance(node, ast.FunctionDef) and node.name in names) or (
-                isinstance(node, ast.Assign) and any(
+                isinstance(node, ast.Assign)
+                and any(
                     isinstance(target, ast.Name) and target.id == "TRAINING_IMPLEMENTATION_PATHS"
                     for target in node.targets
                 )
             ):
                 nodes.append(node)
-        migrations = runpy.run_path(str(
-            ROOT / "src/stock_forecasting/checkpoint_resume_migrations.py"
-        ))["CHECKPOINT_RETENTION_MIGRATIONS"]
+        migrations = runpy.run_path(
+            str(ROOT / "src/stock_forecasting/checkpoint_resume_migrations.py")
+        )["CHECKPOINT_RETENTION_MIGRATIONS"]
         scope = {"json": json, "hashlib": hashlib, "CHECKPOINT_RETENTION_MIGRATIONS": migrations}
-        exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
-                     str(path), "exec"), scope)
+        exec(
+            compile(
+                ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
+                str(path),
+                "exec",
+            ),
+            scope,
+        )
         migration = next(row for row in migrations if row["id"] == "dataset-scoped-provenance-v1")
         tracking_path = ROOT / "src/stock_forecasting/tracking.py"
         actual = hashlib.sha256(tracking_path.read_bytes()).hexdigest()
-        self.assertEqual(migration["to_files"]["tracking.py"], actual)
+        # Historical migration hashes must not be restamped after new numerical
+        # training changes. Test the migration's original pair independently.
+        self.assertRegex(migration["to_files"]["tracking.py"], r"^[0-9a-f]{64}$")
         old_files = {name: "0" * 64 for name in scope["TRAINING_IMPLEMENTATION_PATHS"]}
         old_files.update(migration["from_files"])
         new_files = {**old_files, **migration["to_files"]}
@@ -395,24 +496,46 @@ else:
         def implementation(files):
             return {"files": files, "sha256": DATA["digest"](files)}
 
-        stored = {"data": {"dataset": "a"}, "model": {"rank": 32},
-                  "training_implementation": implementation(old_files)}
+        stored = {
+            "data": {"dataset": "a"},
+            "model": {"rank": 32},
+            "training_implementation": implementation(old_files),
+        }
         current = {**stored, "training_implementation": implementation(new_files)}
         matcher = scope["_checkpoint_retention_migration_matches"]
         self.assertTrue(matcher(stored, current))
+        if actual != migration["to_files"]["tracking.py"]:
+            later = {
+                **current,
+                "training_implementation": implementation(
+                    {
+                        **new_files,
+                        "tracking.py": actual,
+                    }
+                ),
+            }
+            self.assertFalse(matcher(stored, later))
         for field in ("data", "model"):
             changed = copy.deepcopy(current)
             changed[field]["different"] = True
             self.assertFalse(matcher(stored, changed))
-        changed = {**current, "training_implementation": implementation({
-            **new_files, "training.py": "f" * 64
-        })}
+        changed = {
+            **current,
+            "training_implementation": implementation({**new_files, "training.py": "f" * 64}),
+        }
         self.assertFalse(matcher(stored, changed))
         digest = DATA["digest"](stored)
         scope["training_resume_contract"] = lambda config: current
-        self.assertEqual(scope["compatible_training_resume_contract_digest"](None, {
-            "training_resume_contract": stored, "training_resume_contract_sha256": digest,
-        }), digest)
+        self.assertEqual(
+            scope["compatible_training_resume_contract_digest"](
+                None,
+                {
+                    "training_resume_contract": stored,
+                    "training_resume_contract_sha256": digest,
+                },
+            ),
+            digest,
+        )
 
 
 if __name__ == "__main__":

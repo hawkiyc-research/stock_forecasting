@@ -153,13 +153,7 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
         "dlinear": lambda: DLinearBaseline(config.data.input_length, horizons=horizons),
         "patchtst": lambda: PatchTSTBaseline(horizons=horizons),
     }[name]().cuda()
-    from stock_forecasting.training_paths import resolve_bar_store_path
-
-    source_root = (
-        Path(plan["validated_bar_store_root"])
-        if plan.get("validated_bar_store_root")
-        else resolve_bar_store_path(config.data.bar_store_path)
-    )
+    source_root = plan.get("validated_bar_store_roots")
     source = lazy_dataset(config, "train", relative=True, validated_root=source_root)
     count = len(source)
     runtime = tune_baseline_runtime(
@@ -668,7 +662,7 @@ def run_job(config_payload, root_string, name, seed, parameters, scales, plan):
                     workers=plan["input_workers"],
                     batch_size=plan.get("input_batch_size", parameters["batch_size"]),
                     prefetch=plan["prefetch_factor"],
-                    validated_root=Path(plan["validated_bar_store_root"]),
+                    validated_root=plan["validated_bar_store_roots"],
                     checkpoint_seconds=parameters["resources"].get("checkpoint_seconds", 300),
                     progress_seconds=parameters["resources"].get("progress_seconds", 30),
                 )
@@ -922,12 +916,19 @@ def build_baselines(config):
         payload = json.loads(complete.read_text())
         validate_complete(payload, identity)
         return payload
-    train = lazy_dataset(config, "train")
+    from stock_forecasting.data.sample_universe import validated_split_roots
+
+    roots = {split: str(root) for split, root in validated_split_roots(config).items()}
+    train = lazy_dataset(config, "train", validated_root=roots)
     plan = resource_plan(
         parameters, len(train), config.data.alpha_horizons, config.data.input_length
     )
-    plan["validated_bar_store_root"] = str(train.root)
-    counts = json.loads((train.root / "bar-store.json").read_text())["split_counts"]
+    plan["validated_bar_store_roots"] = roots
+    counts = {"train": len(train)}
+    for split in ("validation", "test"):
+        source = lazy_dataset(config, split, validated_root=roots)
+        counts[split] = len(source)
+        source.close()
     horizon_count = len(config.data.alpha_horizons)
     evaluation_count = counts["validation"] + counts["test"]
     learned_count = 4 * len(parameters["seeds"])

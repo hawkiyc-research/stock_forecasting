@@ -95,10 +95,15 @@ def evaluation_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNa
         )
     )
     bundle = SimpleNamespace(model=Mock())
+    dataset = SimpleNamespace(sample_universe_identity="fixture-clean-universe")
     loaders = (
-        SimpleNamespace(sampler=range(10)),
-        SimpleNamespace(sampler=range(3)),
-        SimpleNamespace(sampler=range(5)),
+        SimpleNamespace(sampler=range(10), dataset=dataset),
+        SimpleNamespace(sampler=range(3), dataset=dataset),
+        SimpleNamespace(sampler=range(5), dataset=dataset),
+    )
+    monkeypatch.setattr(
+        "stock_forecasting.data.sample_universe.dataset_provenance",
+        Mock(return_value={"sample_universe": "fixture-clean-universe"}),
     )
     stubs = {
         "run_preflight": Mock(),
@@ -162,6 +167,7 @@ def test_evaluation_reads_saved_runtime_plan_without_rewriting_checkpoint(
         selected_loader,
         case.config,
         torch.device("cpu"),
+        interval_calibration=None,
     )
     case.stubs["load_checkpoint"].assert_called_once_with(
         case.checkpoint,
@@ -194,6 +200,34 @@ def test_current_progress_cannot_fall_back_to_a_legacy_batch_plan(
         evaluation_module.evaluate_checkpoint(case.config, case.checkpoint)
     case.stubs["build_evaluation_loader"].assert_not_called()
     case.stubs["evaluate_loader"].assert_not_called()
+
+
+def test_holdout_calibration_fits_only_validation_and_saves_checkpoint_binding(
+    evaluation_case: SimpleNamespace,
+    tmp_path: Path,
+) -> None:
+    case = evaluation_case
+    case.config.validation.calibrate_intervals = True
+    case.config.validation.output_root = tmp_path / "evaluations"
+    case.checkpoint.mkdir(parents=True)
+    (case.checkpoint / "adapter.safetensors").write_bytes(b"fixture weights")
+    factors = {"fit_split": "validation", "factors": {"__pooled__": {"lower": [1.2]}}}
+    case.stubs["evaluate_loader"].side_effect = [
+        {"interval_calibration": factors},
+        {"loss": 0.25, "calibrated": {"loss": 0.23}},
+    ]
+    result = evaluation_module.evaluate_checkpoint(case.config, case.checkpoint, split="test")
+    calls = case.stubs["evaluate_loader"].call_args_list
+    assert calls[0].args[1] is case.loaders[1]
+    assert calls[0].kwargs == {"fit_interval_calibration": True}
+    assert calls[1].args[1] is case.loaders[2]
+    assert calls[1].kwargs == {"interval_calibration": factors}
+    saved = case.config.validation.output_root / "run-evaluation-contract/interval-calibration.json"
+    payload = json.loads(saved.read_text())
+    assert payload["fit_split"] == "validation"
+    assert payload["sample_universe"] == "fixture-clean-universe"
+    assert len(payload["checkpoint_weights_sha256"]) == 64
+    assert result["metrics"]["calibrated"]["loss"] == 0.23
 
 
 @pytest.mark.parametrize("invalid_plan", [None, {}, {"evaluation_batch_size": 0}])

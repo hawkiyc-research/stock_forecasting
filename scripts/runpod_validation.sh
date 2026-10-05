@@ -104,6 +104,7 @@ if [[ ! -x "${PROJECT_VENV}/bin/python" ]]; then
     echo "Persistent project .venv is unavailable" >&2
     exit 127
 fi
+bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
 if ! "${PROJECT_VENV}/bin/python" -c \
     'import numpy as np; print(f"Verified project NumPy: {np.__version__}")'; then
     echo "Persistent Poetry environment is missing NumPy; rerun setup_runpod_environment.sh" >&2

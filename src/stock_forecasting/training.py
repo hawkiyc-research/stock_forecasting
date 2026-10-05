@@ -51,13 +51,13 @@ from stock_forecasting.metrics import (
     multi_horizon_alpha_metrics,
 )
 from stock_forecasting.preflight import run_preflight
+from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested, stop_at_saved_boundary
 from stock_forecasting.runtime_resources import (
     CGROUP_V1_UNLIMITED_THRESHOLD_BYTES,
     AvailableMemoryEstimate,
     detect_available_memory,
     detect_visible_cpu_count,
 )
-from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested, stop_at_saved_boundary
 from stock_forecasting.scale_calibration import resolve_scale_feature_statistics
 from stock_forecasting.tracking import (
     TrackingRun,
@@ -65,7 +65,6 @@ from stock_forecasting.tracking import (
     training_run_lease,
     validate_tracking_run_contract,
 )
-from stock_forecasting.training_paths import resolve_bar_store_path
 
 DATALOADER_AUTO_MAX_WORKERS = 128
 DATALOADER_CPU_RESERVE = 2
@@ -1047,26 +1046,26 @@ def build_lazy_datasets(
 ]:
     """Open only the compact lazy indexes used by training-time loaders."""
 
-    bar_store = resolve_bar_store_path(config.data.bar_store_path)
-    train_source = LazyFinancialWindowDataset(
-        bar_store,
-        split="train",
-        window_size=config.data.input_length,
-        h_start=config.data.h_start,
+    from stock_forecasting.data.sample_universe import open_clean_dataset, validated_split_roots
+
+    roots = validated_split_roots(config)
+
+    train_source = open_clean_dataset(
+        config,
+        "train",
+        validated_root=roots["train"],
         symbol_cache_size=worker_plan.symbol_cache_size_per_worker,
     )
-    validation_dataset = LazyFinancialWindowDataset(
-        bar_store,
-        split="validation",
-        window_size=config.data.input_length,
-        h_start=config.data.h_start,
+    validation_dataset = open_clean_dataset(
+        config,
+        "validation",
+        validated_root=roots["validation"],
         symbol_cache_size=worker_plan.symbol_cache_size_per_worker,
     )
-    test_dataset = LazyFinancialWindowDataset(
-        bar_store,
-        split="test",
-        window_size=config.data.input_length,
-        h_start=config.data.h_start,
+    test_dataset = open_clean_dataset(
+        config,
+        "test",
+        validated_root=roots["test"],
         symbol_cache_size=worker_plan.symbol_cache_size_per_worker,
     )
     return train_source, validation_dataset, test_dataset
@@ -1172,12 +1171,15 @@ def _training_sampler(config, train_source, worker_plan, ranking_sampling=True):
         seed=config.training.seed,
         block_size=DATALOADER_SELECTION_BLOCK_SIZE,
     )
-    if ranking_sampling and config.model.ranking_loss_weight:
+    if ranking_sampling and (
+        config.model.ranking_loss_weight or config.training.yearly_sampling_decay is not None
+    ):
         from stock_forecasting.date_market_sampler import DateMarketSampler
 
         train_sampler = DateMarketSampler(
             train_source,
             requested_workers=max(1, worker_plan.effective_workers),
+            yearly_decay=config.training.yearly_sampling_decay,
             fraction=config.data.train_fraction,
             max_samples=config.data.max_samples,
             seed=config.training.seed,
@@ -1251,6 +1253,7 @@ def _robust_scale_identity(
         "schema_version": ROBUST_SCALE_CACHE_SCHEMA_VERSION,
         "algorithm": ROBUST_SCALE_ALGORITHM,
         "bar_store_manifest_sha256": sha256_file(manifest_path),
+        "sample_universe": dataset.sample_universe_identity,
         "split": dataset.split,
         "horizons": list(dataset.horizons),
         "sample_count": min(sample_count, len(dataset)),
@@ -1452,8 +1455,10 @@ class ModelBatchCollator(FinancialBatchCollator):
             if not torch.equal(batch["asset_attention_mask"], batch["benchmark_attention_mask"]):
                 raise ValueError("Scale branch requires aligned asset and benchmark masks")
             validate_scale_feature_inputs(
-                batch["asset_series"], batch["benchmark_series"],
-                mask=batch["asset_attention_mask"], extended=self.extended_scales,
+                batch["asset_series"],
+                batch["benchmark_series"],
+                mask=batch["asset_attention_mask"],
+                extended=self.extended_scales,
             )
             batch["scale_inputs_validated"] = True
         batch["market_ids"] = market_ids(batch["markets"], "cpu")
@@ -1603,7 +1608,8 @@ def _cpu_pressure_snapshot():
         try:
             values = dict(line.split() for line in Path(stat_path).read_text().splitlines())
             seconds = (
-                int(values["usage_usec"]) / 1e6 if usage_path is None
+                int(values["usage_usec"]) / 1e6
+                if usage_path is None
                 else int(Path(usage_path).read_text()) / 1e9
             )
             return (seconds, int(values["nr_periods"]), int(values["nr_throttled"]))
@@ -1635,7 +1641,9 @@ def _io_worker_ceiling(plan):
         plan.active_persistent_pools * DATALOADER_MEMORY_BYTES_PER_WORKER
     )
     return min(
-        plan.requested_workers, host_cpus, memory_limit,
+        plan.requested_workers,
+        host_cpus,
+        memory_limit,
         plan.effective_workers * DATALOADER_MAX_IO_WORKER_MULTIPLIER,
     )
 
@@ -1718,13 +1726,17 @@ def _measure_cuda_batch(
     device_iterator = None
     try:
         accumulation = (
-            _automatic_gradient_accumulation_steps(
-                target_effective_batch_size=config.training.target_effective_batch_size,
-                training_batch_size=batch_size,
+            (
+                _automatic_gradient_accumulation_steps(
+                    target_effective_batch_size=config.training.target_effective_batch_size,
+                    training_batch_size=batch_size,
+                )
+                if config.training.gradient_accumulation_steps == "auto"
+                else config.training.gradient_accumulation_steps
             )
-            if config.training.gradient_accumulation_steps == "auto"
-            else config.training.gradient_accumulation_steps
-        ) if training else 1
+            if training
+            else 1
+        )
         provisional = RuntimeBatchPlan(
             source=CUDA_PIPELINE_PROBE_SOURCE,
             training_batch_size=batch_size,
@@ -1732,44 +1744,52 @@ def _measure_cuda_batch(
             gradient_accumulation_steps=accumulation,
             effective_batch_size=batch_size * accumulation,
             target_effective_batch_size=config.training.target_effective_batch_size,
-            device_name="probe", device_total_memory_bytes=0,
+            device_name="probe",
+            device_total_memory_bytes=0,
             optimizer_state_reserve_bytes=optimizer_state_reserve_bytes,
-            seconds_per_training_batch=None, training_probe=(), evaluation_probe=(),
+            seconds_per_training_batch=None,
+            training_probe=(),
+            evaluation_probe=(),
         )
         collator = ModelBatchCollator.for_model(config, training=training)
         # Bound OHLCV and quadratic pair metadata without allocating a giant batch.
         workers = plan_runtime_prefetch(
-            worker_plan, config=config, batch_plan=provisional,
+            worker_plan,
+            config=config,
+            batch_plan=provisional,
             largest_host_batch_bytes=collator.estimated_batch_bytes(sample, batch_size),
         )
         if workers.effective_workers and probe_prefetch_factor is not None:
             per_factor = workers.estimated_peak_prefetch_memory_bytes // workers.prefetch_factor
             factor = min(
-                probe_prefetch_factor, config.training.dataloader_max_prefetch_factor,
+                probe_prefetch_factor,
+                config.training.dataloader_max_prefetch_factor,
                 workers.prefetch_memory_budget_bytes // per_factor,
             )
             workers = replace(
-                workers, prefetch_factor=factor,
+                workers,
+                prefetch_factor=factor,
                 prefetched_batches_per_pool=workers.effective_workers * factor,
                 estimated_peak_prefetch_memory_bytes=per_factor * factor,
             )
         sampler = (
-            _training_sampler(config, dataset, workers)
-            if training else SequentialSampler(dataset)
+            _training_sampler(config, dataset, workers) if training else SequentialSampler(dataset)
         )
         # Time at least two optimizer updates and two queue turnovers, not a
         # two-batch cache hit. Startup/spawn is excluded by the warmup below.
         minimum = max(
-            CUDA_PIPELINE_MIN_PROBE_BATCHES, config.training.auto_batch_probe_steps,
-            2 * workers.prefetched_batches_per_pool, 2 * accumulation,
+            CUDA_PIPELINE_MIN_PROBE_BATCHES,
+            config.training.auto_batch_probe_steps,
+            2 * workers.prefetched_batches_per_pool,
+            2 * accumulation,
         )
         measured_batches = math.ceil(minimum / accumulation) * accumulation
         warmup_batches = math.ceil(max(16, 2 * accumulation) / accumulation) * accumulation
-        batch_sampler = _ProbeBatchSampler(
-            sampler, batch_size, warmup_batches + measured_batches
-        )
+        batch_sampler = _ProbeBatchSampler(sampler, batch_size, warmup_batches + measured_batches)
         loader = DataLoader(
-            dataset, batch_sampler=batch_sampler, collate_fn=collator,
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=collator,
             pin_memory=True,
             generator=torch.Generator().manual_seed(config.training.seed),
             **_loader_process_options(workers, persistent=False),
@@ -1779,8 +1799,10 @@ def _measure_cuda_batch(
             if training:
                 parameter_groups, trainable = _optimizer_parameter_groups(bundle, config)
                 optimizer = AdamW(
-                    parameter_groups, lr=config.training.learning_rate,
-                    weight_decay=config.training.weight_decay, fused=True,
+                    parameter_groups,
+                    lr=config.training.learning_rate,
+                    weight_decay=config.training.weight_decay,
+                    fused=True,
                 )
             torch.cuda.empty_cache()
             loader_iterator = iter(loader)
@@ -1832,20 +1854,37 @@ def _measure_cuda_batch(
             )
             memory_safe = projected_peak <= device_memory_limit_bytes
             accepted = memory_safe and cpu_safe
-            print(json.dumps({"cuda_pipeline_probe": {
-                "training": training, "batch_size": batch_size,
-                "workers": workers.effective_workers, "prefetch_factor": workers.prefetch_factor,
-                "measured_batches": measured_batches, "elapsed_seconds": elapsed,
-                "warmup_batches": warmup_batches,
-                "samples_per_second": batch_size / max(seconds_per_batch, 1e-12),
-                "host_fetch_enqueue_seconds": fetch_seconds,
-                "ranking_loss_mean": (
-                    None if ranking_sum is None else float(ranking_sum / measured_batches)
+            print(
+                json.dumps(
+                    {
+                        "cuda_pipeline_probe": {
+                            "training": training,
+                            "batch_size": batch_size,
+                            "workers": workers.effective_workers,
+                            "prefetch_factor": workers.prefetch_factor,
+                            "measured_batches": measured_batches,
+                            "elapsed_seconds": elapsed,
+                            "warmup_batches": warmup_batches,
+                            "samples_per_second": batch_size / max(seconds_per_batch, 1e-12),
+                            "host_fetch_enqueue_seconds": fetch_seconds,
+                            "ranking_loss_mean": (
+                                None
+                                if ranking_sum is None
+                                else float(ranking_sum / measured_batches)
+                            ),
+                            "optimizer_updates": measured_batches // accumulation
+                            if training
+                            else 0,
+                            "peak_allocated_bytes": peak_allocated,
+                            "accepted": accepted,
+                            "cpu_pressure": cpu_pressure,
+                            "requires_cpu_headroom": require_cpu_headroom,
+                        }
+                    },
+                    sort_keys=True,
                 ),
-                "optimizer_updates": measured_batches // accumulation if training else 0,
-                "peak_allocated_bytes": peak_allocated, "accepted": accepted,
-                "cpu_pressure": cpu_pressure, "requires_cpu_headroom": require_cpu_headroom,
-            }}, sort_keys=True), flush=True)
+                flush=True,
+            )
         return BatchProbeMeasurement(
             batch_size=batch_size,
             seconds_per_batch=seconds_per_batch,
@@ -2191,15 +2230,26 @@ def resolve_runtime_batch_plan(
 
 
 def _confirm_training_batch_plan(
-    config, *, bundle, dataset, sample, device, workers, batch_plan, memory_limit,
+    config,
+    *,
+    bundle,
+    dataset,
+    sample,
+    device,
+    workers,
+    batch_plan,
+    memory_limit,
 ):
     """Recheck batch finalists after tuning workers, with order-balanced repeats."""
-    if (getattr(config.training, "batch_size", None) != "auto"
-            or config.training.gradient_accumulation_steps != "auto"):
+    if (
+        getattr(config.training, "batch_size", None) != "auto"
+        or config.training.gradient_accumulation_steps != "auto"
+    ):
         return workers, batch_plan
     accepted = sorted(
         (row for row in batch_plan.training_probe if row.accepted),
-        key=lambda row: row.samples_per_second, reverse=True,
+        key=lambda row: row.samples_per_second,
+        reverse=True,
     )
     candidates = [batch_plan.training_batch_size]
     for row in accepted:
@@ -2214,8 +2264,14 @@ def _confirm_training_batch_plan(
             if repeated[size] and not repeated[size][-1].accepted:
                 continue
             measurement = _measure_cuda_batch(
-                bundle=bundle, sample=sample, batch_size=size, config=config, device=device,
-                training=True, dataset=dataset, worker_plan=workers,
+                bundle=bundle,
+                sample=sample,
+                batch_size=size,
+                config=config,
+                device=device,
+                training=True,
+                dataset=dataset,
+                worker_plan=workers,
                 probe_prefetch_factor=workers.prefetch_factor,
                 optimizer_state_reserve_bytes=batch_plan.optimizer_state_reserve_bytes,
                 device_memory_limit_bytes=memory_limit,
@@ -2226,23 +2282,31 @@ def _confirm_training_batch_plan(
         if len(rows) == CUDA_PIPELINE_BATCH_CONFIRMATIONS and all(row.accepted for row in rows):
             # Combine equal-size trials by elapsed time, not an optimistic best run.
             seconds = sum(row.seconds_per_batch for row in rows) / len(rows)
-            confirmed.append(replace(
-                rows[0], seconds_per_batch=seconds,
-                samples_per_second=rows[0].batch_size / seconds,
-                peak_allocated_bytes=max(row.peak_allocated_bytes for row in rows),
-                projected_peak_bytes=max(row.projected_peak_bytes for row in rows),
-            ))
+            confirmed.append(
+                replace(
+                    rows[0],
+                    seconds_per_batch=seconds,
+                    samples_per_second=rows[0].batch_size / seconds,
+                    peak_allocated_bytes=max(row.peak_allocated_bytes for row in rows),
+                    projected_peak_bytes=max(row.projected_peak_bytes for row in rows),
+                )
+            )
     if not confirmed:
         raise RuntimeError("No safe batch candidate passed sustained pipeline confirmation")
     best = max(row.samples_per_second for row in confirmed)
-    near = [row for row in confirmed
-            if row.samples_per_second >= best * (1 - AUTO_BATCH_THROUGHPUT_TOLERANCE)]
+    near = [
+        row
+        for row in confirmed
+        if row.samples_per_second >= best * (1 - AUTO_BATCH_THROUGHPUT_TOLERANCE)
+    ]
     # Amortize host dispatch when throughput is equivalent, without increasing
     # the canonical effective batch merely to occupy more VRAM.
-    equivalent = [row for row in near
-                  if row.batch_size <= batch_plan.effective_batch_size]
-    selected = (max(equivalent, key=lambda row: row.batch_size) if equivalent
-                else max(near, key=lambda row: row.samples_per_second))
+    equivalent = [row for row in near if row.batch_size <= batch_plan.effective_batch_size]
+    selected = (
+        max(equivalent, key=lambda row: row.batch_size)
+        if equivalent
+        else max(near, key=lambda row: row.samples_per_second)
+    )
     accumulation = _automatic_gradient_accumulation_steps(
         target_effective_batch_size=config.training.target_effective_batch_size,
         training_batch_size=selected.batch_size,
@@ -2250,7 +2314,8 @@ def _confirm_training_batch_plan(
     updated = {row.batch_size: row for row in batch_plan.training_probe}
     updated.update({row.batch_size: row for row in confirmed})
     batch_plan = replace(
-        batch_plan, training_batch_size=selected.batch_size,
+        batch_plan,
+        training_batch_size=selected.batch_size,
         gradient_accumulation_steps=accumulation,
         effective_batch_size=selected.batch_size * accumulation,
         seconds_per_training_batch=selected.seconds_per_batch,
@@ -2261,32 +2326,55 @@ def _confirm_training_batch_plan(
             sample, size
         )
         for is_training, size in (
-            (True, selected.batch_size), (False, batch_plan.evaluation_batch_size)
+            (True, selected.batch_size),
+            (False, batch_plan.evaluation_batch_size),
         )
     )
     safe_workers = plan_runtime_prefetch(
-        workers, config=config, batch_plan=batch_plan, largest_host_batch_bytes=largest,
+        workers,
+        config=config,
+        batch_plan=batch_plan,
+        largest_host_batch_bytes=largest,
     )
     factor = min(workers.prefetch_factor, safe_workers.prefetch_factor)
     safe_workers = replace(
-        safe_workers, prefetch_factor=factor,
+        safe_workers,
+        prefetch_factor=factor,
         prefetched_batches_per_pool=safe_workers.effective_workers * factor,
         estimated_peak_prefetch_memory_bytes=(
             safe_workers.estimated_peak_prefetch_memory_bytes
-            // safe_workers.prefetch_factor * factor
+            // safe_workers.prefetch_factor
+            * factor
         ),
     )
-    print(json.dumps({"training_batch_confirmation": {
-        "candidates": [row.as_dict() for row in confirmed],
-        "batch_size": selected.batch_size, "gradient_accumulation_steps": accumulation,
-        "workers": safe_workers.effective_workers, "prefetch_factor": factor,
-        "repetitions": CUDA_PIPELINE_BATCH_CONFIRMATIONS,
-    }}, sort_keys=True), flush=True)
+    print(
+        json.dumps(
+            {
+                "training_batch_confirmation": {
+                    "candidates": [row.as_dict() for row in confirmed],
+                    "batch_size": selected.batch_size,
+                    "gradient_accumulation_steps": accumulation,
+                    "workers": safe_workers.effective_workers,
+                    "prefetch_factor": factor,
+                    "repetitions": CUDA_PIPELINE_BATCH_CONFIRMATIONS,
+                }
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     return safe_workers, batch_plan
 
 
 def refine_training_pipeline_plan(
-    config, *, bundle, dataset, sample, device, worker_plan, batch_plan,
+    config,
+    *,
+    bundle,
+    dataset,
+    sample,
+    device,
+    worker_plan,
+    batch_plan,
 ):
     """Compare bounded worker/queue choices using the selected real training step."""
     if device.type != "cuda" or worker_plan.effective_workers < 1:
@@ -2308,12 +2396,16 @@ def refine_training_pipeline_plan(
     for count in counts:
         for factor in factors:
             candidate = replace(
-                worker_plan, source=CUDA_PIPELINE_PROBE_SOURCE,
-                effective_workers=count, prefetch_factor=factor,
+                worker_plan,
+                source=CUDA_PIPELINE_PROBE_SOURCE,
+                effective_workers=count,
+                prefetch_factor=factor,
                 prefetched_batches_per_pool=count * factor,
                 estimated_peak_prefetch_memory_bytes=(
                     worker_plan.estimated_peak_prefetch_memory_bytes
-                    // worker_plan.prefetched_batches_per_pool * count * factor
+                    // worker_plan.prefetched_batches_per_pool
+                    * count
+                    * factor
                 ),
             )
             if (
@@ -2322,9 +2414,15 @@ def refine_training_pipeline_plan(
             ):
                 continue
             measurement = _measure_cuda_batch(
-                bundle=bundle, sample=sample, batch_size=batch_plan.training_batch_size,
-                config=config, device=device, training=True, dataset=dataset,
-                worker_plan=candidate, probe_prefetch_factor=factor,
+                bundle=bundle,
+                sample=sample,
+                batch_size=batch_plan.training_batch_size,
+                config=config,
+                device=device,
+                training=True,
+                dataset=dataset,
+                worker_plan=candidate,
+                probe_prefetch_factor=factor,
                 require_cpu_headroom=count > maximum,
                 optimizer_state_reserve_bytes=batch_plan.optimizer_state_reserve_bytes,
                 device_memory_limit_bytes=limit,
@@ -2335,27 +2433,44 @@ def refine_training_pipeline_plan(
         raise RuntimeError("No safe end-to-end DataLoader configuration passed the probe")
     best = max(measurement.samples_per_second for _, measurement in results)
     near = [
-        row for row in results
+        row
+        for row in results
         if row[1].samples_per_second >= best * (1 - AUTO_BATCH_THROUGHPUT_TOLERANCE)
     ]
     workers, measurement = min(
         near, key=lambda row: (row[0].effective_workers, row[0].prefetch_factor)
     )
-    print(json.dumps({"training_pipeline_selection": {
-        "batch_size": measurement.batch_size, "workers": workers.effective_workers,
-        "prefetch_factor": workers.prefetch_factor,
-        "samples_per_second": measurement.samples_per_second,
-    }}, sort_keys=True), flush=True)
+    print(
+        json.dumps(
+            {
+                "training_pipeline_selection": {
+                    "batch_size": measurement.batch_size,
+                    "workers": workers.effective_workers,
+                    "prefetch_factor": workers.prefetch_factor,
+                    "samples_per_second": measurement.samples_per_second,
+                }
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     batch_plan = replace(
-        batch_plan, seconds_per_training_batch=measurement.seconds_per_batch,
+        batch_plan,
+        seconds_per_training_batch=measurement.seconds_per_batch,
         training_probe=tuple(
             measurement if row.batch_size == measurement.batch_size else row
             for row in batch_plan.training_probe
         ),
     )
     return _confirm_training_batch_plan(
-        config, bundle=bundle, dataset=dataset, sample=sample, device=device,
-        workers=workers, batch_plan=batch_plan, memory_limit=limit,
+        config,
+        bundle=bundle,
+        dataset=dataset,
+        sample=sample,
+        device=device,
+        workers=workers,
+        batch_plan=batch_plan,
+        memory_limit=limit,
     )
 
 
@@ -2372,11 +2487,11 @@ def build_evaluation_loader(
         raise ValueError("Evaluation split must be validation or test")
     requested, source = _requested_dataloader_workers(config)
     workers = replace(plan_dataloader_workers(requested, source=source), active_persistent_pools=1)
-    dataset = LazyFinancialWindowDataset(
-        resolve_bar_store_path(config.data.bar_store_path),
-        split=split,
-        window_size=config.data.input_length,
-        h_start=config.data.h_start,
+    from stock_forecasting.data.sample_universe import open_clean_dataset
+
+    dataset = open_clean_dataset(
+        config,
+        split,
         symbol_cache_size=workers.symbol_cache_size_per_worker,
     )
     sample = dataset[0]
@@ -2447,10 +2562,16 @@ def evaluate_loader(
     loader: DataLoader[Any],
     config: ExperimentConfig,
     device: torch.device,
+    *,
+    fit_interval_calibration: bool = False,
+    interval_calibration: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from tempfile import TemporaryDirectory
 
-    from stock_forecasting.evaluation_store import EvaluationStore
+    from stock_forecasting.forecast_evaluation import ForecastEvaluationStore
+
+    if fit_interval_calibration and getattr(loader.dataset, "split", None) != "validation":
+        raise ValueError("Interval calibration may only fit the validation split")
 
     if (
         not isinstance(loader.sampler, SequentialSampler)
@@ -2468,8 +2589,12 @@ def evaluate_loader(
     scratch.mkdir(parents=True, exist_ok=True)
     try:
         with TemporaryDirectory(prefix="full-", dir=scratch) as directory:
-            store = EvaluationStore(
-                Path(directory), len(loader.sampler), list(config.data.alpha_horizons), scales
+            store = ForecastEvaluationStore(
+                Path(directory),
+                len(loader.sampler),
+                list(config.data.alpha_horizons),
+                scales,
+                ranking=config.model.independent_ranking_head,
             )
             try:
                 completed, last_log = 0, started
@@ -2479,6 +2604,11 @@ def evaluate_loader(
                     store.append(
                         batch["target_alpha"].detach().float().cpu().numpy(),
                         output.alpha_quantiles.detach().float().cpu().numpy(),
+                        ranking_scores=(
+                            None
+                            if output.ranking_scores is None
+                            else output.ranking_scores.detach().float().cpu().numpy()
+                        ),
                         symbols=batch["symbols"],
                         dates=batch["cutoff_at"],
                         markets=batch["markets"],
@@ -2501,6 +2631,15 @@ def evaluate_loader(
                         last_log = now
                 inference_seconds = time.perf_counter() - started
                 metrics = store.finish(signal_threshold=config.model.postprocess_alpha_threshold)
+                if config.model.independent_ranking_head:
+                    metrics["independent_ranking"] = store.ranking_metrics()
+                if fit_interval_calibration:
+                    interval_calibration = store.fit_interval_calibration()
+                    interval_calibration["membership"] = metrics["sample_membership"]
+                    metrics["interval_calibration"] = interval_calibration
+                if interval_calibration is not None:
+                    metrics["calibrated"] = store.calibrated_metrics(interval_calibration)
+                    metrics["calibrated"]["in_sample_fit"] = fit_interval_calibration
                 metrics["execution"] = {
                     "full_population": True,
                     "expected_samples": len(loader.dataset),
@@ -2635,6 +2774,11 @@ def _optimizer_parameter_groups(
 ) -> tuple[list[dict[str, Any]], list[Tensor]]:
     task_parameters: list[Tensor] = []
     lora_parameters: list[Tensor] = []
+    unfrozen_parameters: list[Tensor] = []
+    unfrozen_names = {
+        "backbone.model." + name
+        for name in getattr(bundle.model.backbone, "unfrozen_parameter_names", ())
+    }
     trainable: list[Tensor] = []
     forbidden: list[str] = []
     for name, parameter in bundle.model.named_parameters():
@@ -2642,7 +2786,9 @@ def _optimizer_parameter_groups(
             continue
         trainable.append(parameter)
         is_lora = ".lora_a." in name or ".lora_b." in name
-        if name.startswith("backbone.tokenizer.") or (
+        if name in unfrozen_names and config.model.unfreeze_last_blocks:
+            unfrozen_parameters.append(parameter)
+        elif name.startswith("backbone.tokenizer.") or (
             name.startswith("backbone.model.") and not is_lora
         ):
             forbidden.append(name)
@@ -2674,6 +2820,16 @@ def _optimizer_parameter_groups(
                 "group_name": "kronos_lora",
             }
         )
+    if unfrozen_parameters:
+        groups.append(
+            {
+                "params": unfrozen_parameters,
+                "lr": config.training.unfrozen_learning_rate,
+                "group_name": "kronos_unfrozen",
+            }
+        )
+    if config.model.unfreeze_last_blocks and not unfrozen_parameters:
+        raise RuntimeError("Partial unfreezing produced no trainable backbone parameters")
     return groups, trainable
 
 
@@ -3153,7 +3309,8 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             probe_sample, size
         )
         for is_training, size in (
-            (True, batch_plan.training_batch_size), (False, batch_plan.evaluation_batch_size)
+            (True, batch_plan.training_batch_size),
+            (False, batch_plan.evaluation_batch_size),
         )
     )
     if not reuse_checkpoint_plan:
@@ -3164,8 +3321,13 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             largest_host_batch_bytes=largest_host_batch_bytes,
         )
         worker_plan, batch_plan = refine_training_pipeline_plan(
-            config, bundle=bundle, dataset=train_dataset, sample=probe_sample,
-            device=device, worker_plan=worker_plan, batch_plan=batch_plan,
+            config,
+            bundle=bundle,
+            dataset=train_dataset,
+            sample=probe_sample,
+            device=device,
+            worker_plan=worker_plan,
+            batch_plan=batch_plan,
         )
     train_loader, validation_loader, _test_loader = build_dataloaders(
         config,
@@ -3267,6 +3429,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
         flush=True,
     )
     runtime_warmup_steps = int(runtime_configured_steps * config.training.warmup_ratio)
+    if config.training.warmup_samples is not None:
+        runtime_warmup_steps = max(
+            1, math.ceil(config.training.warmup_samples / batch_plan.effective_batch_size)
+        )
     scheduler = _scheduler(
         optimizer,
         runtime_warmup_steps,
@@ -3274,6 +3440,22 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
         config=config,
     )
     tracking: TrackingRun = start_tracking(config)
+    tracking.log(
+        {
+            "event": "training_session_started",
+            "resume_checkpoint": (
+                str(config.training.resume_checkpoint)
+                if config.training.resume_checkpoint is not None
+                else None
+            ),
+            "loss_definition": (
+                "train=normalized_pinball+weighted_ranking; validation=normalized_pinball"
+            ),
+            "ranking_loss_weight": config.model.ranking_loss_weight,
+            "warmup_samples": config.training.warmup_samples,
+            "yearly_sampling_decay": config.training.yearly_sampling_decay,
+        }
+    )
     runtime_execution_plan_path = atomic_write_json(
         tracking.directory / "runtime-execution-plan.json",
         {
@@ -3473,6 +3655,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                                 (accumulated_ranking_sum / accumulated_loss_count).cpu()
                             ),
                             "train/epoch": float(epoch),
+                            "train/epoch_fraction": runtime_global_step / optimizer_steps_per_epoch,
+                            "train/processed_samples": processed_train_samples,
+                            "train/runtime_optimizer_step": runtime_global_step,
+                            "train/loss_window_microbatches": accumulated_loss_count,
                             "train/samples_per_second": (
                                 (processed_train_samples - throughput_start_samples)
                                 / max(throughput_seconds, 1e-9)
@@ -3482,10 +3668,21 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                             ),
                             "train/stage_fraction": config.data.train_fraction,
                             "train/task_learning_rate": float(optimizer.param_groups[0]["lr"]),
-                            "train/lora_learning_rate": float(
-                                optimizer.param_groups[-1]["lr"]
-                                if len(optimizer.param_groups) > 1
-                                else 0.0
+                            "train/lora_learning_rate": next(
+                                (
+                                    float(group["lr"])
+                                    for group in optimizer.param_groups
+                                    if group["group_name"] == "kronos_lora"
+                                ),
+                                0.0,
+                            ),
+                            "train/unfrozen_learning_rate": next(
+                                (
+                                    float(group["lr"])
+                                    for group in optimizer.param_groups
+                                    if group["group_name"] == "kronos_unfrozen"
+                                ),
+                                0.0,
                             ),
                         },
                         step=global_step,
@@ -3538,7 +3735,12 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                             ),
                             "validation/early_stopping/triggered": int(early_stopping.triggered),
                             "validation/evaluation_index": early_stopping.evaluation_count,
+                            "validation/loss": selection,
                             "validation/epoch_number": epoch + 1,
+                            "validation/epoch_fraction": runtime_global_step
+                            / optimizer_steps_per_epoch,
+                            "validation/processed_train_samples": processed_train_samples,
+                            "validation/runtime_optimizer_step": runtime_global_step,
                         },
                         step=global_step,
                     )
@@ -3650,6 +3852,17 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 "dataset_profile": config.data.dataset_profile,
                 "selected_datasets": config.data.selected_datasets,
                 "selected_train_samples_per_epoch": selected_train_samples,
+                "yearly_sampling": getattr(train_batch_sampler.sampler, "sampling_summary", None),
+                "sample_universes": {
+                    split: {
+                        "identity": dataset.sample_universe_identity,
+                        "source": str(dataset.root),
+                        "samples": len(dataset),
+                    }
+                    for split, dataset in zip(
+                        ("train", "validation", "test"), datasets, strict=True
+                    )
+                },
                 "planned_train_samples": planned_train_samples,
                 "processed_train_samples": processed_train_samples,
                 "configured_optimizer_steps": (canonical_schedule.configured_optimizer_steps),

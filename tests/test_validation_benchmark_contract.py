@@ -186,15 +186,17 @@ def test_runtime_plan_reader_fix_preserves_completed_baselines_on_resume(tmp_pat
     models = {"always_buy": {"state": "complete", "metrics": _validation_metrics()}}
     output = tmp_path / "validation-benchmark.json"
     output.write_text(
-        json.dumps({
-            "schema_version": VALIDATION_BENCHMARK_SCHEMA_VERSION,
-            "evaluation_contract": stored,
-            "state": "failed",
-            "error": "ValueError: Checkpoint runtime batch plan must be a mapping",
-            "run_id": current["inputs"]["run_id"],
-            "checkpoint": current["inputs"]["checkpoint"]["path"],
-            "models": models,
-        }),
+        json.dumps(
+            {
+                "schema_version": VALIDATION_BENCHMARK_SCHEMA_VERSION,
+                "evaluation_contract": stored,
+                "state": "failed",
+                "error": "ValueError: Checkpoint runtime batch plan must be a mapping",
+                "run_id": current["inputs"]["run_id"],
+                "checkpoint": current["inputs"]["checkpoint"]["path"],
+                "models": models,
+            }
+        ),
         encoding="utf-8",
     )
     benchmark = object.__new__(ValidationBenchmark)
@@ -217,7 +219,9 @@ def test_runtime_plan_reader_fix_preserves_completed_baselines_on_resume(tmp_pat
 @pytest.mark.parametrize("side", ["stored", "current"])
 @pytest.mark.parametrize("name", ["cli/evaluate.py", "metrics.py"])
 def test_runtime_plan_reader_migration_rejects_unapproved_code(
-    tmp_path: Path, side: str, name: str,
+    tmp_path: Path,
+    side: str,
+    name: str,
 ) -> None:
     stored, current = _runtime_plan_reader_contracts(tmp_path)
     target = stored if side == "stored" else current
@@ -228,13 +232,19 @@ def test_runtime_plan_reader_migration_rejects_unapproved_code(
 @pytest.mark.parametrize(
     "field",
     [
-        "dataset_artifacts", "checkpoint", "evaluation_protocol", "models", "seeds",
-        "model_architecture_sha256", "training_resume_contract_sha256",
+        "dataset_artifacts",
+        "checkpoint",
+        "evaluation_protocol",
+        "models",
+        "seeds",
+        "model_architecture_sha256",
+        "training_resume_contract_sha256",
         "validation_numerical_config",
     ],
 )
 def test_runtime_plan_reader_migration_rejects_changed_numerical_inputs(
-    tmp_path: Path, field: str,
+    tmp_path: Path,
+    field: str,
 ) -> None:
     stored, current = _runtime_plan_reader_contracts(tmp_path)
     stored["inputs"][field] = {"changed": True}
@@ -350,13 +360,15 @@ def test_resume_rejects_pre_holdout_contract_instead_of_relabelling_validation(
 
 
 def test_fixed_benchmark_scores_holdout_with_shared_scales_not_validation_snapshots(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
     config.data = config.data.model_copy(update=FIXED_EVALUATION_SPLIT)
     benchmark = object.__new__(ValidationBenchmark)
     benchmark.config = config
     benchmark.checkpoint = tmp_path
+    benchmark.output = tmp_path / "validation-benchmark.json"
     benchmark.evaluation_split = "test"
     benchmark.recompute_full_model = False
     benchmark.models = ["zero_return", "kronos_full"]
@@ -370,28 +382,43 @@ def test_fixed_benchmark_scores_holdout_with_shared_scales_not_validation_snapsh
     monkeypatch.setattr(benchmark, "_publish_lifecycle", lambda *_args, **_kwargs: None)
     scales = [0.125] * len(config.data.alpha_horizons)
     monkeypatch.setattr(
-        benchmark_module, "_read_json", lambda _path: {"runtime_robust_scales": scales},
-    )
-    monkeypatch.setattr(benchmark_module, "resolve_bar_store_path", lambda path: path)
-    monkeypatch.setattr(
-        benchmark_module, "LazyFinancialWindowDataset", lambda *_args, **_kwargs: object(),
+        benchmark_module,
+        "_read_json",
+        lambda _path: {"runtime_robust_scales": scales},
     )
     monkeypatch.setattr(
-        benchmark_module, "resolve_runtime_robust_scales",
+        "stock_forecasting.data.sample_universe.open_clean_dataset",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        benchmark_module,
+        "resolve_runtime_robust_scales",
         lambda *_args, **_kwargs: SimpleNamespace(
-            scales=scales, identity_sha256="a" * 64, sample_count=100,
+            scales=scales,
+            identity_sha256="a" * 64,
+            sample_count=100,
         ),
     )
     arrays = {
-        split: SimpleNamespace(symbols=["A"], dates=[day]) for split, day in (
-            ("train", "2025-05-01"), ("validation", "2025-09-01"), ("test", "2026-02-01"),
+        split: SimpleNamespace(symbols=["A"], dates=[day])
+        for split, day in (
+            ("train", "2025-05-01"),
+            ("validation", "2025-09-01"),
+            ("test", "2026-02-01"),
         )
     }
-    monkeypatch.setattr(benchmark_module, "_lazy_baseline_arrays", lambda _config, **kwargs: (
-        100, 1, arrays[kwargs["split"]] if kwargs["build_arrays"] else None,
-    ))
+    monkeypatch.setattr(
+        benchmark_module,
+        "_lazy_baseline_arrays",
+        lambda _config, **kwargs: (
+            100,
+            1,
+            arrays[kwargs["split"]] if kwargs["build_arrays"] else None,
+        ),
+    )
     metrics = {
-        **_validation_metrics(), "evaluation_robust_scales": scales,
+        **_validation_metrics(),
+        "evaluation_robust_scales": scales,
         "sample_membership": sample_membership(arrays["test"].symbols, arrays["test"].dates),
         "daily_normalized_pinball": {"2026-02-01": 0.2},
     }

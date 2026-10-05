@@ -33,7 +33,6 @@ from stock_forecasting.cli.evaluate import evaluate_checkpoint, resolve_checkpoi
 from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.data import (
     BlockwisePermutationSampler,
-    LazyFinancialWindowDataset,
 )
 from stock_forecasting.evaluation_protocol import (
     EVALUATION_PROTOCOL_VERSION,
@@ -58,15 +57,14 @@ from stock_forecasting.run_paths import (
     validate_validation_lifecycle_path,
     validate_wandb_directory,
 )
-from stock_forecasting.runtime_resources import detect_available_memory
 from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested, stop_at_saved_boundary
+from stock_forecasting.runtime_resources import detect_available_memory
 from stock_forecasting.training import (
     _loader_process_options,
     _requested_dataloader_workers,
     plan_dataloader_workers,
     resolve_runtime_robust_scales,
 )
-from stock_forecasting.training_paths import resolve_bar_store_path
 from stock_forecasting.wandb_status import update_wandb_status
 
 LEARNED_BASELINES = ("gbdt", "gru", "dlinear", "patchtst")
@@ -279,11 +277,13 @@ def _evaluation_contracts_are_resume_compatible(
     changed_files = {name for name in stored_files if stored_files[name] != current_files[name]}
     for migration in EVALUATION_RESUME_MIGRATIONS:
         before = {
-            name: value for name, value in migration["from_files"].items()
+            name: value
+            for name, value in migration["from_files"].items()
             if name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
         }
         after = {
-            name: value for name, value in migration["to_files"].items()
+            name: value
+            for name, value in migration["to_files"].items()
             if name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
         }
         if (
@@ -529,12 +529,9 @@ def _lazy_baseline_arrays(
 ) -> tuple[int, int, BaselineArrays | None]:
     """Stream a bounded lazy sample into numerical arrays, never window artifacts."""
 
-    dataset = LazyFinancialWindowDataset(
-        resolve_bar_store_path(config.data.bar_store_path),
-        split=split,
-        window_size=config.data.input_length,
-        h_start=config.data.h_start,
-    )
+    from stock_forecasting.data.sample_universe import open_clean_dataset
+
+    dataset = open_clean_dataset(config, split)
     maximum = config.validation.baseline_max_samples_per_split
     if split == "train" and config.data.max_samples is not None:
         maximum = min(maximum or len(dataset), config.data.max_samples)
@@ -915,12 +912,9 @@ class ValidationBenchmark:
                 return self._run_prebuilt()
             robust_scales = None
             if self.config.data.fixed_split:
-                calibration_dataset = LazyFinancialWindowDataset(
-                    resolve_bar_store_path(self.config.data.bar_store_path),
-                    split="train",
-                    window_size=self.config.data.input_length,
-                    h_start=self.config.data.h_start,
-                )
+                from stock_forecasting.data.sample_universe import open_clean_dataset
+
+                calibration_dataset = open_clean_dataset(self.config, "train")
                 calibration = resolve_runtime_robust_scales(
                     calibration_dataset,
                     sample_count=self.config.data.label_scale_calibration_samples,
@@ -1033,9 +1027,7 @@ class ValidationBenchmark:
             self.payload["resume_required"] = True
             self.payload["stopped_at_section_boundary"] = True
             self._publish()
-            self._publish_lifecycle(
-                "finalizing" if self.defer_terminal_lifecycle else "timed_out"
-            )
+            self._publish_lifecycle("finalizing" if self.defer_terminal_lifecycle else "timed_out")
             raise
         except BaseException as error:
             self.payload["state"] = "failed"

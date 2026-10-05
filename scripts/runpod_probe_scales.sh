@@ -134,6 +134,7 @@ if [[ "${RUNPOD_SCALE_PROBE_TMUX_WORKER:-0}" != "1" ]]; then
     exec bash "${SCRIPT_DIR}/runpod_tmux_launch.sh" probe-scales "$@"
 fi
 runpod_acquire_gpu_workflow_lease "${NETWORK_VOLUME_ROOT}"
+bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
 
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export TORCH_HOME="${CACHE_ROOT}/torch"

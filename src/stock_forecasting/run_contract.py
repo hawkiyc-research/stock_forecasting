@@ -22,6 +22,8 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "data/bar_store.py",
     "data/dataset.py",
     "data/horizons.py",
+    "data/sample_universe.py",
+    "data_policy.py",
     "data/manifest.py",
     "factory.py",
     "metrics.py",
@@ -44,6 +46,7 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "evaluation_store.py",
     "optimization_policy.py",
     "date_market_sampler.py",
+    "forecast_evaluation.py",
     "models/ranking.py",
 )
 
@@ -100,10 +103,13 @@ def training_resume_contract(config: ExperimentConfig) -> dict[str, Any]:
     payload = config.as_dict()
     training = dict(payload["training"])
     training.pop("resume_checkpoint", None)
+    from stock_forecasting.data_policy import load_data_policy
+
     return {
         "schema_version": TRAINING_RESUME_CONTRACT_VERSION,
         "model_output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
         "data": payload["data"],
+        "data_cleaning": load_data_policy(),
         "model": payload["model"],
         "model_architecture_sha256": config.model_architecture_digest(),
         "training": training,
@@ -139,7 +145,8 @@ def _validated_implementation_files(
     if (
         not isinstance(files, dict)
         or not set(TRAINING_IMPLEMENTATION_PATHS) <= set(files)
-        or set(files) - set(TRAINING_IMPLEMENTATION_PATHS)
+        or set(files)
+        - set(TRAINING_IMPLEMENTATION_PATHS)
         - {"baseline_contract.py", "run_contract.py"}
         or any(
             not isinstance(path, str)
@@ -184,11 +191,13 @@ def _checkpoint_retention_migration_matches(
         return True
     for migration in CHECKPOINT_RETENTION_MIGRATIONS:
         from_files = {
-            path: value for path, value in migration["from_files"].items()
+            path: value
+            for path, value in migration["from_files"].items()
             if path in TRAINING_IMPLEMENTATION_PATHS
         }
         to_files = {
-            path: value for path, value in migration["to_files"].items()
+            path: value
+            for path, value in migration["to_files"].items()
             if path in TRAINING_IMPLEMENTATION_PATHS
         }
         if (

@@ -16,9 +16,9 @@
 
 1. 模型只讀取 `t` 收盤前已知的商品與 benchmark 歷史。
 2. 訊號在 `t` 收盤後產生。
-3. 下一個共同交易日 `t+1` 的 raw regular-session open 進場。
+3. 下一個市場交易日 `t+1` 的 raw regular-session open 進場，不延後至個股下一筆資料。
 4. 進場日算第 1 個持有交易日。
-5. horizon `h` 在第 `h` 個共同交易日的 raw close 出場，
+5. horizon `h` 在第 `h` 個市場交易日的 raw close 出場，
    `h=h_start,...,14`，且 `h_start ∈ {1,2,3}`。
 
 令商品與 benchmark 在同一 entry/exit timestamp 的 total-return gross factors 分別為
@@ -31,9 +31,11 @@ alpha_h = log(G_asset(h)) - log(G_benchmark(h))
 這是 benchmark-relative adjusted execution log return。CAPM abnormal return 只保留
 為未來 diagnostic/ablation 欄位，不是目前的輸入或 loss target。
 
-Train、validation 與 test 依全域交易日期做 70%／15%／15% 時間順序切分。
-除 purge 與 embargo 外，每個 train／validation 樣本的最晚 `label.end_at` 都必須
-嚴格早於下一個 split boundary；跨界樣本會在 manifest audit 中計數並排除。
+正式訓練使用固定日期：train < 2025-06-01，validation 為
+[2025-06-01, 2025-12-01)，test 為 [2025-12-01, 2026-06-01)。每筆最晚
+`label.end_at` 必須嚴格早於 split 右界。三個 split 共同遵守 README「資料完整性、
+連續性與最低流動性」；以市場日曆檢查完整 128 + 14 sessions，不壓縮缺成交日。
+真實極端報酬保留，validation/test 全量循序遍歷共用來源。
 
 ### 3. Benchmark policy
 
@@ -73,7 +75,7 @@ TAIEX/TPEx benchmark 另以官方 price index OHLC 與 total-return index 對齊
 ```text
 asset adjusted OHLCV through close t ─────┐
                                           ├─ shared Kronos tokenizer/predictor
-benchmark adjusted OHLCV through close t ─┘       (frozen base + LoRA)
+benchmark adjusted OHLCV through close t ─┘       (LoRA / partial adaptation)
                                                          │
                                      per-bar causal hidden states
                                                          │
@@ -143,8 +145,10 @@ scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
 loss = mean(pinball(alpha_h / scale_h))
 ```
 
-模型輸出仍維持原始 log-return 單位；scale 只用於 loss normalization。沒有多 loss
-權重需要調整。
+模型輸出維持原始 log-return 單位。q50 location 與正值區間寬度分離；歷史尺度只控制
+上下寬度，不同步放大 q50。training total loss 為 normalized pinball 加上權重 0.05
+的獨立 ranking-head loss；checkpoint selection 只使用未校準的 validation pinball。
+最後選定的 checkpoint 以 validation 擬合上下尾校準，test 同時保留原始與校準結果。
 
 五級方向訊號完全是推論後處理。對門檻 `tau >= 0`：
 
@@ -160,11 +164,16 @@ loss = mean(pinball(alpha_h / scale_h))
 
 | 元件 | 狀態 |
 |---|---|
-| Kronos tokenizer/base predictor | frozen |
+| Kronos tokenizer | frozen |
+| Kronos base predictor | LoRA-32／64 實驗凍結；partial 實驗解凍最後 2 層與 final norm |
 | Kronos 指定 projection/MLP LoRA | trainable |
 | shared resampler | trainable |
 | benchmark conditioner | trainable |
 | multi-horizon alpha head | trainable |
+| 獨立 ranking head | trainable |
+
+partial 實驗不在已解凍層重複加入 LoRA；前面各層仍使用 LoRA-32。六份 A/B 實驗設定
+與 `train --experiment` 用法見 README。只有 training 採年度遞減動態抽樣。
 
 `adapter.safetensors` 僅保存上述可訓練參數。trainer state 必須包含
 `model_output_schema_version=5.0`、包含 `h_start` 的 architecture digest、
@@ -221,9 +230,9 @@ For each decision date `t`:
 
 1. The model reads only instrument and benchmark history known by close `t`.
 2. It emits a signal after close `t`.
-3. Entry is the next shared trading day's raw regular-session open.
+3. Entry is the next market session's raw regular-session open, never a later available asset row.
 4. The entry day counts as holding day one.
-5. Horizon `h` exits at the raw close of the `h`th shared trading day, for
+5. Horizon `h` exits at the raw close of the `h`th market session, for
    `h=h_start,...,14` and `h_start in {1,2,3}`.
 
 If the instrument and benchmark total-return gross factors over the identical
@@ -237,10 +246,12 @@ This is benchmark-relative adjusted execution log return. CAPM abnormal return
 is reserved for a future diagnostic/ablation and is not an input or current
 loss target.
 
-Train, validation, and test use global trading dates in chronological
-70%/15%/15% order. Beyond purge and embargo, the latest `label.end_at` of every
-train and validation sample must be strictly earlier than the next split
-boundary. Crossing samples are counted in the manifest audit and excluded.
+Production uses train < 2025-06-01, validation [2025-06-01, 2025-12-01), and
+test [2025-12-01, 2026-06-01). The latest `label.end_at` must precede its split's
+upper boundary. All splits follow the README completeness, continuity, and
+minimum-liquidity rules: exact 128 + 14 market sessions, no compressed missing
+days, and no removal of genuine extreme returns. Validation/test traverse the
+complete eligible population from one shared source.
 
 ### 3. Benchmark policy
 
@@ -284,7 +295,7 @@ semantics.
 ```text
 asset adjusted OHLCV through close t ─────┐
                                           ├─ shared Kronos tokenizer/predictor
-benchmark adjusted OHLCV through close t ─┘       (frozen base + LoRA)
+benchmark adjusted OHLCV through close t ─┘       (LoRA / partial adaptation)
                                                          │
                                      per-bar causal hidden states
                                                          │
@@ -347,8 +358,12 @@ scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
 loss = mean(pinball(alpha_h / scale_h))
 ```
 
-Predictions remain in original log-return units. No multiple-loss weighting is
-required. Five-level signals are deterministic inference post-processing:
+Predictions remain in original log-return units. The q50 location is separate from
+positive interval widths; historical scale controls the widths without jointly
+rescaling q50. Training adds an independent ranking-head loss with weight 0.05 to
+normalized pinball; checkpoint selection uses only uncalibrated validation pinball.
+The selected checkpoint fits tail calibration on validation, with both raw and
+calibrated test results retained. Five-level signals are deterministic post-processing:
 
 - `q90 < -tau`: strong bearish
 - otherwise `q50 < -tau`: bearish
@@ -363,11 +378,17 @@ checkpoint selection.
 
 | Component | State |
 |---|---|
-| Kronos tokenizer/base predictor | frozen |
+| Kronos tokenizer | frozen |
+| Kronos base predictor | Frozen for LoRA-32/64; final 2 blocks and final norm unfrozen for partial |
 | selected Kronos projection/MLP LoRA | trainable |
 | shared resampler | trainable |
 | benchmark conditioner | trainable |
 | multi-horizon alpha head | trainable |
+| independent ranking head | trainable |
+
+The partial experiment does not add redundant LoRA to unfrozen blocks; preceding
+blocks use LoRA-32. See README for the six A/B presets and `train --experiment`.
+Only training uses annual-decay dynamic sampling.
 
 `adapter.safetensors` stores only the trainable union. Trainer state binds
 `model_output_schema_version=5.0`, the `h_start`-aware architecture digest,

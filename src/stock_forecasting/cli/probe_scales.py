@@ -22,7 +22,6 @@ import torch
 from stock_forecasting.checkpointing import CHECKPOINT_TRANSACTION, load_checkpoint
 from stock_forecasting.cli.evaluate import resolve_checkpoint
 from stock_forecasting.config import ExperimentConfig
-from stock_forecasting.data.dataset import LazyFinancialWindowDataset
 from stock_forecasting.data.manifest import provenance_summary, sha256_file
 from stock_forecasting.factory import build_model_bundle
 from stock_forecasting.preflight import run_preflight
@@ -210,7 +209,10 @@ def run_probe(
     if config.model.time_series_backend != "kronos":
         raise ValueError("The production scale probe requires a Kronos checkpoint")
     run_preflight(
-        config, require_data=True, enforce_runtime_limit=False, allow_historical_inference=True,
+        config,
+        require_data=True,
+        enforce_runtime_limit=False,
+        allow_historical_inference=True,
     ).require_success()
     diagnostic_root = volume / "diagnostics" / "representation-scales"
     if diagnostic_root.resolve() != diagnostic_root:
@@ -234,21 +236,19 @@ def run_probe(
         device = torch.device("cuda")
         bundle = build_model_bundle(config, device)
         state = load_checkpoint(
-            checkpoint, bundle.model, config=config, allow_historical_inference=True,
+            checkpoint,
+            bundle.model,
+            config=config,
+            allow_historical_inference=True,
         )
         # Load the trainable-state union before disabling gradients on this private instance.
         bundle.model.requires_grad_(False)
         bundle.model.eval()
         extracted = {}
+        from stock_forecasting.data.sample_universe import open_clean_dataset
+
         for split in ("train", "validation"):
-            dataset = HistoricalScaleDataset(
-                LazyFinancialWindowDataset(
-                    config.data.bar_store_path,
-                    split=split,
-                    window_size=config.data.input_length,
-                    h_start=config.data.h_start,
-                )
-            )
+            dataset = HistoricalScaleDataset(open_clean_dataset(config, split))
             extracted[split] = extract_probe_split(
                 bundle.model,
                 dataset,

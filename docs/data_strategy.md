@@ -241,15 +241,16 @@ records。DataLoader 取得一個 `(symbol, cutoff_index)` 後，在記憶體中
 - `diagnostics.capm_abnormal_return=null`：預留 diagnostic，不是 target。
 - provider、market、benchmark policy、dataset profile 等 metadata。
 
-entry/exit label dates 不會被序列化到任一 context 或磁碟 label artifact。缺 benchmark
-日期、極端 adjusted transition、歷史不足或 benchmark mapping 不明確的 cutoff 會在
-preparation 時從 ranges 排除並寫入 quality/split audit。
+entry/exit label dates 不會被序列化到任一 context 或磁碟 label artifact。正式 runtime
+以 README 的完整市場交易日與流動性規則重新建立 compact ranges；缺日期、零成交量、
+歷史不足與不明確 benchmark mapping 排除，真實有限極端 adjusted returns 則保留。
+既有 preparation 的舊候選範圍不再作為 runtime membership 的最終依據。
 
 ### 10. Split、purge 與 robust scale
 
-先從全市場有效 cutoff dates 決定 chronological 70% train、15% validation、15% test
-邊界，再以向量化 bucket assignment 套用 purge 20 bars 與 effective embargo 14 bars。
-不建立 windows；sample stride 是 1。
+正式 train < 2025-06-01，validation [2025-06-01, 2025-12-01)，test
+[2025-12-01, 2026-06-01)。runtime 以向量化 bucket 檢查市場交易日序列，A/B 共用
+同一 evaluation snapshot；不建立完整 windows，sample stride 為 1。
 此外，train 與 validation 中每個樣本的最晚 `label.end_at` 必須嚴格早於下一個
 split boundary；任何跨界 ground truth 都會被排除並記入 split audit。
 RunPod 穩定 shell 仍傳入 legacy `stride=5`、`embargo=5` readiness sentinels；ready
@@ -557,17 +558,18 @@ DataLoader temporarily constructs the instrument and aligned benchmark contexts
 through `cutoff_at`, benchmark-relative alpha labels from `h_start` (1, 2, or 3)
 through fixed day 14, auditable asset/benchmark returns outside the input, a
 reserved null CAPM diagnostic, and provider/market/benchmark/profile metadata.
-Future entry/exit values are never serialized into a context or disk label
-artifact. Cutoffs with missing benchmark dates, extreme adjusted transitions,
-inadequate history, or ambiguous ETF mappings are excluded during preparation
-and counted in quality/split audits.
+Future entry/exit values never enter a context or disk label artifact. Production
+runtime rebuilds compact ranges using the README market-session and liquidity rules.
+Missing sessions, zero asset volume, inadequate history, and ambiguous mappings
+are excluded; genuine finite extreme adjusted returns remain. Old prepared
+candidate ranges no longer determine final runtime membership.
 
 ### 10. Split, purge, and robust scale
 
-Global valid cutoff dates determine chronological 70% train, 15% validation,
-and 15% test boundaries. Vectorized per-bucket assignment then applies a 20-bar
-purge and effective 14-bar embargo without creating windows. Effective sample
-stride is one. The latest `label.end_at` of every train and validation sample must also be
+Production train precedes 2025-06-01; validation is [2025-06-01, 2025-12-01) and
+test [2025-12-01, 2026-06-01). Runtime checks sessions by vectorized bucket scans;
+A/B share one evaluation snapshot. Full windows are never stored, and stride is one.
+The latest `label.end_at` of every train and validation sample must also be
 strictly earlier than the next split boundary; crossing ground truth is dropped
 and counted in the split audit. Stable RunPod shell passes legacy `stride=5` and `embargo=5` readiness
 sentinels; the manifest separately records effective values and validates both.

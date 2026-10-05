@@ -18,4 +18,6 @@ export RUNPOD_SELECTION_FILE="${RUNPOD_REMOTE_SELECTION_PATH:?Immutable remote s
 export TMPDIR="${NETWORK_VOLUME_ROOT}/tmp"
 mkdir -p "${TMPDIR}"
 cd "${PROJECT_ROOT}"
+export NETWORK_VOLUME_ROOT PROJECT_ROOT
+bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
 exec "${PROJECT_PYTHON}" -m stock_forecasting.cli.build_baselines

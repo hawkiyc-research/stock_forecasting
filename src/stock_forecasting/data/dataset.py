@@ -265,6 +265,7 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
         symbol_cache_size: int = 32,
         parquet_cache_bytes: int = 0,
         parquet_cache_files: int = 128,
+        sample_index_root: str | Path | None = None,
     ) -> None:
         if series_mode not in {"raw", "relative"}:
             raise ValueError("series_mode must be 'raw' or 'relative'")
@@ -302,7 +303,24 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
         self.series_mode = series_mode
         self.split = split
         self.symbol_cache_size = symbol_cache_size
-        ranges = pd.read_parquet(self.root / "cutoff-ranges.parquet")
+        self.sample_index_root = Path(sample_index_root) if sample_index_root is not None else None
+        self.sample_universe_identity = None
+        split_counts = manifest.get("split_counts")
+        range_root = self.root
+        if self.sample_index_root is not None:
+            from stock_forecasting.data.manifest import canonical_json_sha256, sha256_file
+
+            range_root = self.sample_index_root
+            universe = json.loads((range_root / "universe.json").read_text())
+            if (
+                universe.get("state") != "ready"
+                or universe["identity"]["source_manifest_sha256"] != sha256_file(manifest_path)
+                or universe["identity"]["window_size"] != requested_window_size
+            ):
+                raise ValueError("Cleaned sample index differs from the immutable source bars")
+            split_counts = universe["split_counts"]
+            self.sample_universe_identity = canonical_json_sha256(universe["identity"])
+        ranges = pd.read_parquet(range_root / "cutoff-ranges.parquet")
         self.ranges = ranges.loc[ranges["split"] == split].reset_index(drop=True)
         if self.ranges.empty:
             raise ValueError(f"No lazy cutoff ranges remain for split={split}")
@@ -323,7 +341,6 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             or (starts < self.window_size - 1).any()
         ):
             raise ValueError("Lazy cutoff ranges have invalid index bounds")
-        split_counts = manifest.get("split_counts")
         if not isinstance(split_counts, dict) or split_counts.get(split) != int(counts.sum()):
             raise ValueError("Lazy cutoff ranges disagree with the bar-store split count")
         self._range_ends = np.cumsum(counts, dtype=np.int64)
@@ -372,6 +389,7 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             "symbol_cache_size": self.symbol_cache_size,
             "parquet_cache_bytes": self.parquet_cache_bytes,
             "parquet_cache_files": self.parquet_cache_files,
+            "sample_index_root": str(self.sample_index_root) if self.sample_index_root else None,
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:

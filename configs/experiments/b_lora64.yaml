@@ -1,5 +1,5 @@
-experiment_name: kronos-base-lora-stage2
-description: Quant-only full-data fine-tuning initialized from the pretrained Kronos base.
+experiment_name: b-lora64
+description: B controlled lora64 experiment initialized from the pretrained Kronos base.
 
 data:
   raw_path: ${DATA_ROOT:-/runpod-volume/data}/raw/market.parquet
@@ -55,12 +55,13 @@ model:
   explicit_output_scale: true
   decoupled_output_scale: true
   independent_ranking_head: true
+  unfreeze_last_blocks: 0
   ranking_loss_weight: 0.05
   ranking_max_pairs: 256
   lora:
     enabled: true
-    rank: 32
-    alpha: 64.0
+    rank: 64
+    alpha: 128.0
     dropout: 0.05
     target_modules: [q_proj, k_proj, v_proj, out_proj, w1, w2, w3]
 
@@ -81,11 +82,11 @@ training:
   dataloader_max_prefetch_factor: 16
   learning_rate: 0.00003
   lora_learning_rate: 0.000005
-  unfrozen_learning_rate: 0.000001
-  warmup_samples: 256000
-  yearly_sampling_decay: 0.8
   weight_decay: 0.01
   warmup_ratio: 0.03
+  warmup_samples: 256000
+  unfrozen_learning_rate: 1.0e-6
+  yearly_sampling_decay: 0.8
   learning_rate_schedule: validation_plateau
   plateau_patience_evaluations: 2
   plateau_factor: 0.3

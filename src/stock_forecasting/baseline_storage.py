@@ -17,10 +17,8 @@ from stock_forecasting.baselines import (
     _relative_rule_signals,
     collate_baseline_batch,
 )
-from stock_forecasting.data.dataset import LazyFinancialWindowDataset
 from stock_forecasting.data.manifest import atomic_write_json, sha256_file
 from stock_forecasting.evaluation_store import META_DTYPE
-from stock_forecasting.training_paths import resolve_bar_store_path
 
 SIGNAL_NAMES = ("momentum_5d", "reversal_5d", "ma_crossover", "rsi", "macd", "volatility_scaled")
 
@@ -47,16 +45,15 @@ def loader_options(workers: int, prefetch: int = 2, *, persistent: bool = False)
 
 
 def lazy_dataset(config, split: str, *, relative: bool = False, validated_root: Path | None = None):
-    root = (
-        validated_root
-        if validated_root is not None
-        else resolve_bar_store_path(config.data.bar_store_path)
-    )
-    return LazyFinancialWindowDataset(
-        root,
-        split=split,
-        window_size=config.data.input_length,
-        h_start=config.data.h_start,
+    from stock_forecasting.data.sample_universe import open_clean_dataset
+
+    root = validated_root.get(split) if isinstance(validated_root, dict) else validated_root
+    if root is not None:
+        root = Path(root)
+    return open_clean_dataset(
+        config,
+        split,
+        validated_root=root,
         series_mode="relative" if relative else "raw",
         symbol_cache_size=4,
         parquet_cache_bytes=int(
@@ -78,16 +75,23 @@ def build_tabular_cache(
     progress_seconds: float = 30,
 ) -> dict:
     root.mkdir(parents=True, exist_ok=True)
-    source_root = (
-        validated_root
-        if validated_root is not None
-        else resolve_bar_store_path(config.data.bar_store_path)
-    )
-    manifest_sha = sha256_file(source_root / "bar-store.json")
+    sources = {
+        split: lazy_dataset(config, split, validated_root=validated_root)
+        for split in ("train", "validation", "test")
+    }
+    manifest_sha = sha256_file(sources["train"].root / "bar-store.json")
     identity = {
         "manifest_sha256": manifest_sha,
         "horizons": list(config.data.alpha_horizons),
-        "schema": 2,
+        "schema": 3,
+        "split_sources": {
+            split: {
+                "manifest_sha256": sha256_file(source.root / "bar-store.json"),
+                "sample_universe": source.sample_universe_identity,
+                "samples": len(source),
+            }
+            for split, source in sources.items()
+        },
     }
     done = root / "complete.json"
     if done.is_file():
@@ -99,7 +103,7 @@ def build_tabular_cache(
         return existing
     counts = {}
     for split in ("train", "validation", "test"):
-        source = lazy_dataset(config, split, validated_root=source_root)
+        source = sources[split]
         count = len(source)
         counts[split] = count
         directory = root / split

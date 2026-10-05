@@ -22,7 +22,7 @@ Usage:
   bash scripts/runpod_workflow.sh sync [--dry-run|--apply]
   bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline]
-  bash scripts/runpod_workflow.sh train [--maxRuntime DURATION] [--gpuId GPU_ID]
+  bash scripts/runpod_workflow.sh train [--experiment a-lora32|a-lora64|a-partial|b-lora32|b-lora64|b-partial] [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh baseline [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh resume [--maxRuntime DURATION] [--gpuId GPU_ID] [RUN_ID]
   bash scripts/runpod_workflow.sh validate [VALIDATION OPTIONS]
@@ -359,8 +359,17 @@ EOF
     train|baseline)
         train_max_runtime=12h
         train_gpu_id="NVIDIA GeForce RTX 5090"
+        train_experiment=""
         while [[ $# -gt 0 ]]; do
             case "$1" in
+                --experiment)
+                    [[ "${COMMAND}" == train && $# -ge 2 && -z "${train_experiment}" ]] || {
+                        echo "--experiment is a non-repeatable train option requiring a value" >&2
+                        exit 2
+                    }
+                    train_experiment="$2"
+                    shift 2
+                    ;;
                 --maxRuntime|--max-runtime)
                     [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
                     train_max_runtime="$2"
@@ -380,6 +389,11 @@ EOF
         done
         runpod_validate_gpu_id "${train_gpu_id}"
         train_max_seconds="$(runpod_duration_seconds "${train_max_runtime}" --maxRuntime)"
+        if [[ -n "${train_experiment}" ]]; then
+            python3 "${SCRIPT_DIR}/runpod_selection.py" select-experiment \
+                --project-root "${SCRIPT_DIR}/.." --experiment "${train_experiment}"
+            bash "${SCRIPT_DIR}/publish_runpod_selection.sh"
+        fi
         export RUNPOD_CLI_MAX_RUNTIME_SECONDS="${train_max_seconds}"
         export RUNPOD_CLI_HARD_LIMIT_SECONDS="$((train_max_seconds + 3600))"
         export RUNPOD_CLI_GPU_ID="${train_gpu_id}"

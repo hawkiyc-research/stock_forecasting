@@ -19,17 +19,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA runner")
 def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
-    tmp_path, market_frame, monkeypatch,
+    tmp_path,
+    market_frame,
+    monkeypatch,
 ):
     raw = tmp_path / "market.parquet"
     market_frame.to_parquet(raw, index=False)
     store = tmp_path / "bar-store"
     build_symbol_bar_store(
-        raw_path=raw, output_root=store, window_size=32, bucket_count=2,
-        batch_rows=512, purge_bars=20, embargo_bars=14,
-        download_manifest={"artifacts": {"raw": artifact_metadata(
-            raw, root=tmp_path, row_count=len(market_frame),
-        )}},
+        raw_path=raw,
+        output_root=store,
+        window_size=32,
+        bucket_count=2,
+        batch_rows=512,
+        purge_bars=20,
+        embargo_bars=14,
+        download_manifest={
+            "artifacts": {
+                "raw": artifact_metadata(
+                    raw,
+                    root=tmp_path,
+                    row_count=len(market_frame),
+                )
+            }
+        },
     )
     config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
     config.data.raw_path = raw
@@ -42,6 +55,7 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
     config.model.benchmark_conditioner_dropout = 0.1
     config.model.alpha_head_dropout = 0.1
     config.training.stage = "stage2"
+    config.training.yearly_sampling_decay = 0.8
     config.training.epochs = 2
     config.training.num_workers = 2
     config.training.batch_size = 8
@@ -88,7 +102,8 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
 
     # Force the public resume path to retune without rewriting checkpoint manifests.
     monkeypatch.setattr(
-        training, "runtime_resource_plan_reuse_reason",
+        training,
+        "runtime_resource_plan_reuse_reason",
         lambda *_args, **_kwargs: "pipeline_probe_version_changed",
     )
     monkeypatch.setattr(training, "_measure_cuda_batch", observe_probe)

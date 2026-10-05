@@ -414,6 +414,8 @@ if ! "${PROJECT_VENV}/bin/python" -c \
     exit 3
 fi
 
+bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
+
 # Invoke the installed modules with the persistent Poetry-managed interpreter.
 # This avoids an extra Poetry/Cleo option-parsing layer around supervisor flags.
 "${PROJECT_VENV}/bin/python" -m stock_forecasting.runpod.supervisor \

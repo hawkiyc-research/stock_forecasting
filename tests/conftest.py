@@ -50,7 +50,8 @@ def isolate_runpod_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def market_frame() -> pd.DataFrame:
     """Return deterministic assets plus exact US and Taiwan benchmarks."""
 
-    dates = pd.bdate_range("2022-01-03", periods=360, tz="UTC")
+    from stock_forecasting.data.sample_universe import market_sessions
+
     frames: list[pd.DataFrame] = []
     instruments = (
         ("AAPL.US", "stock", "US", "eodhd", 150.0, 0.00045),
@@ -59,6 +60,9 @@ def market_frame() -> pd.DataFrame:
         ("TAIEX.TW", "index", "TWSE", "twse_official", 15000.0, 0.00022),
     )
     for symbol, asset_type, market, provider, base_price, drift in instruments:
+        dates = market_sessions("XNYS" if market == "US" else "XTAI", "2022-01-03", "2023-12-31")[
+            :360
+        ]
         index = np.arange(len(dates), dtype=np.float64)
         close = base_price * np.exp(drift * index + 0.01 * np.sin(index / 13.0))
         total_return_factor = (

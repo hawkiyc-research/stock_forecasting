@@ -201,6 +201,9 @@ class ModelConfig(StrictModel):
     alpha_head_fp32: bool = False
     market_aware: bool = False
     explicit_output_scale: bool = False
+    decoupled_output_scale: bool = False
+    independent_ranking_head: bool = False
+    unfreeze_last_blocks: int = Field(default=0, ge=0, le=2)
     ranking_loss_weight: float = Field(default=0.0, ge=0.0, le=0.2)
     ranking_max_pairs: int = Field(default=256, ge=1, le=4096)
     lora: KronosLoRAConfig = Field(default_factory=KronosLoRAConfig)
@@ -215,6 +218,14 @@ class ModelConfig(StrictModel):
             raise ValueError("alpha_quantiles are fixed at [0.1, 0.5, 0.9]")
         if self.explicit_output_scale and self.feature_mode not in ("scales", "combined"):
             raise ValueError("explicit_output_scale requires feature_mode=scales or combined")
+        if self.decoupled_output_scale and not self.explicit_output_scale:
+            raise ValueError("decoupled_output_scale requires explicit_output_scale")
+        if self.unfreeze_last_blocks and self.time_series_backend != "kronos":
+            raise ValueError("Partial unfreezing requires the Kronos backbone")
+        if self.unfreeze_last_blocks and not self.lora.enabled:
+            raise ValueError("Partial unfreezing requires LoRA on the lower frozen blocks")
+        if self.independent_ranking_head and not self.ranking_loss_weight:
+            raise ValueError("The independent ranking head requires a ranking objective")
         if self.time_series_backend == "mock" and self.lora.enabled:
             raise ValueError("The mock backbone does not expose Kronos LoRA targets")
         if self.time_series_backend == "kronos":
@@ -258,6 +269,9 @@ class ModelConfig(StrictModel):
         for name, default in (
             ("market_aware", False),
             ("explicit_output_scale", False),
+            ("decoupled_output_scale", False),
+            ("independent_ranking_head", False),
+            ("unfreeze_last_blocks", 0),
             ("ranking_loss_weight", 0.0),
             ("ranking_max_pairs", 256),
         ):
@@ -292,6 +306,9 @@ class TrainingConfig(StrictModel):
     dataloader_max_prefetch_factor: int = Field(default=8, ge=2, le=16)
     learning_rate: float = Field(default=1e-4, gt=0.0)
     lora_learning_rate: float = Field(default=1e-5, gt=0.0)
+    unfrozen_learning_rate: float = Field(default=1e-6, gt=0.0)
+    warmup_samples: int | None = Field(default=None, ge=1)
+    yearly_sampling_decay: float | None = Field(default=None, gt=0.0, le=1.0)
     weight_decay: float = Field(default=0.01, ge=0.0)
     warmup_ratio: float = Field(default=0.03, ge=0.0, lt=1.0)
     max_grad_norm: float = Field(default=1.0, gt=0.0)
@@ -409,6 +426,7 @@ class WandbConfig(StrictModel):
 
 class ValidationConfig(StrictModel):
     enabled: bool = True
+    calibrate_intervals: bool = False
     auto_run_after_training: bool = True
     output_root: Path = Path("/runpod-volume/evaluations")
     models: list[
@@ -483,6 +501,11 @@ class ExperimentConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_stage_contract(self) -> ExperimentConfig:
+        if (
+            self.model.unfreeze_last_blocks
+            and self.training.unfrozen_learning_rate > self.training.lora_learning_rate
+        ):
+            raise ValueError("unfrozen_learning_rate cannot exceed lora_learning_rate")
         if self.model.feature_mode in ("scales", "combined") and self.data.input_length < 61:
             raise ValueError("The scale branch requires at least 61 observed bars")
         if self.data.fixed_split and (

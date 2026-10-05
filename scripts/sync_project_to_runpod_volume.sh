@@ -93,6 +93,7 @@ for root_file in README.md pyproject.toml LICENSE MODEL_LICENSE THIRD_PARTY_NOTI
     append_manifest_file "${root_file}"
 done
 append_manifest_file "configs/baseline.json"
+append_manifest_file "configs/data_cleaning.json"
 append_manifest_file "configs/baseline_execution_compatibility.json"
 append_manifest_file "src/stock_forecasting/_vendor/kronos/LICENSE"
 for relay_file in \

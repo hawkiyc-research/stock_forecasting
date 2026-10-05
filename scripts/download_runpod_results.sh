@@ -134,10 +134,40 @@ download_file() {
         --only-show-errors
 }
 
+download_legacy_log_if_present() {
+    local remote_key="$1"
+    local local_name="$2"
+    local metadata
+    if metadata="$(bash "${S3_WRAPPER}" s3api head-object \
+        --bucket "${RUNPOD_NETWORK_VOLUME_ID}" --key "${remote_key}" 2>&1)"; then
+        download_file "${remote_key}" "${local_name}"
+    elif [[ "${metadata}" == *"(404)"* || "${metadata}" == *"(NoSuchKey)"* ]]; then
+        printf 'Historical run has no %s artifact.\n' "${local_name}"
+    else
+        printf 'Unable to inspect historical log %s: %s\n' "${local_name}" "${metadata}" >&2
+        return 1
+    fi
+}
+
 download_file "savedModel/${RUN_ID}/run-manifest.json" run-manifest.json
 download_file "savedModel/${RUN_ID}/resolved-config.yaml" resolved-config.yaml
 download_file "savedModel/${RUN_ID}/checkpoint-leaderboard.json" checkpoint-leaderboard.json
 download_file "savedModel/${RUN_ID}/best-checkpoint.json" best-checkpoint.json
+REQUIRES_DURABLE_LOGS="$(python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    manifest = json.load(stream)
+print("1" if "data_cleaning" in manifest.get("training_resume_contract", {}) else "0")
+' "${RUN_DOWNLOAD_ROOT}/run-manifest.json")"
+if [[ "${REQUIRES_DURABLE_LOGS}" == "1" ]]; then
+    download_file "savedModel/${RUN_ID}/metrics.jsonl" metrics.jsonl
+    download_file "savedModel/${RUN_ID}/summary.json" summary.json
+else
+    download_legacy_log_if_present "savedModel/${RUN_ID}/metrics.jsonl" metrics.jsonl
+    download_legacy_log_if_present "savedModel/${RUN_ID}/summary.json" summary.json
+fi
 
 CHECKPOINT_NAMES="$(python3 "${SCRIPT_DIR}/runpod_readiness.py" \
     checkpoint-download-names \
@@ -192,6 +222,18 @@ if [[ "${REQUIRES_COMPLETION_RESULT}" != "1" && "${completion_missing}" -ne 0 ]]
 fi
 
 download_file "evaluations/${RUN_ID}/validation-benchmark.json" validation-benchmark.json
+REQUIRES_CALIBRATION="$(python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    report = json.load(stream)
+enabled = report.get("config", {}).get("validation", {}).get("calibrate_intervals", False)
+print("1" if enabled else "0")
+' "${RUN_DOWNLOAD_ROOT}/validation-benchmark.json")"
+if [[ "${REQUIRES_CALIBRATION}" == "1" ]]; then
+    download_file "evaluations/${RUN_ID}/interval-calibration.json" interval-calibration.json
+fi
 download_file \
     "lifecycle/runs/${RUN_ID}/training-completed.json" \
     training-completed.json

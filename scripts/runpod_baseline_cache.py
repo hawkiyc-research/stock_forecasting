@@ -22,9 +22,19 @@ def _has_duplicate_arrays(wrapper, bucket, prefix, relative_paths):
     # and pagination; the artifact suite is small and no array is downloaded.
     for _page in range(32):
         command = [
-            "bash", wrapper, "s3api", "list-objects-v2", "--bucket", bucket,
-            "--prefix", prefix + "jobs/", "--max-keys", "1000", "--no-paginate",
-            "--output", "json",
+            "bash",
+            wrapper,
+            "s3api",
+            "list-objects-v2",
+            "--bucket",
+            bucket,
+            "--prefix",
+            prefix + "jobs/",
+            "--max-keys",
+            "1000",
+            "--no-paginate",
+            "--output",
+            "json",
         ]
         if continuation is not None:
             command.extend(["--continuation-token", continuation])
@@ -72,6 +82,37 @@ def main(argv=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", bucket):
         raise ValueError("Network volume ID must be loaded from the project .env")
     wrapper = str(project / "scripts/runpod_s3_project.sh")
+    policy_tools = runpy.run_path(str(project / "src/stock_forecasting/data_policy.py"))
+    evaluation_id = policy_tools["evaluation_dataset_id"](
+        selection, identity["contract"]["data_cleaning"]
+    )
+    dataset_ids = {
+        "train": selection["dataset_request_sha256"],
+        "validation": evaluation_id,
+        "test": evaluation_id,
+    }
+
+    def read_json(key):
+        response = subprocess.run(
+            ["bash", wrapper, "s3", "cp", f"s3://{bucket}/{key}", "-", "--only-show-errors"],
+            capture_output=True,
+            timeout=180,
+        )
+        if response.returncode:
+            raise ValueError(
+                f"Required prepared evaluation data is unavailable: {key}; no Pod was created"
+            )
+        return response.stdout
+
+    # Resolve the common evaluation source BEFORE a paid baseline/train Pod,
+    # including when no matching baseline has been built yet.
+    manifests = {}
+    for dataset_id in sorted(set(dataset_ids.values())):
+        raw = read_json(f"datasets/{dataset_id}/prepared/bar-store/bar-store.json")
+        manifest = json.loads(raw)
+        if manifest.get("state") != "ready":
+            raise ValueError("Required prepared data is not ready; no Pod was created")
+        manifests[dataset_id] = raw
     prefix = "baselines/" + identity["baseline_id"] + "/"
     command = [
         "bash",
@@ -108,24 +149,30 @@ def main(argv=None):
         return 0
     contract_tools["validate_complete"](payload, identity, require_shared=True)
     # Verify the active immutable manifest locally as well, before any paid Pod.
-    manifest_key = (
-        f"datasets/{selection['dataset_request_sha256']}/prepared/bar-store/bar-store.json"
-    )
-    manifest_response = subprocess.run(
-        ["bash", wrapper, "s3", "cp", f"s3://{bucket}/{manifest_key}", "-", "--only-show-errors"],
-        capture_output=True,
-        timeout=180,
-    )
     import hashlib
 
-    if manifest_response.returncode or hashlib.sha256(
-        manifest_response.stdout
-    ).hexdigest() != payload.get("data_identity", {}).get("manifest_sha256"):
-        raise ValueError(
-            "The active prepared-data manifest differs from the saved baseline; no Pod was created"
+    sources = payload.get("data_identity", {}).get("split_sources", {})
+    for split, dataset_id in dataset_ids.items():
+        source = sources.get(split, {})
+        if hashlib.sha256(manifests[dataset_id]).hexdigest() != source.get("manifest_sha256"):
+            raise ValueError(f"Saved baseline {split} source differs from the prepared snapshot")
+        key = source.get("sample_universe", "")
+        if not re.fullmatch(r"[0-9a-f]{64}", key):
+            raise ValueError("Saved baseline has no valid cleaned sample universe")
+        universe = json.loads(
+            read_json(f"datasets/{dataset_id}/prepared/sample-universes/{key}/universe.json")
         )
-    if json.loads(manifest_response.stdout)["split_counts"] != payload["sample_counts"]:
-        raise ValueError("Saved baseline counts do not cover the complete prepared splits")
+        if (
+            universe.get("state") != "ready"
+            or contract_tools["digest"](universe["identity"]) != key
+            or universe["identity"]["policy"] != identity["contract"]["data_cleaning"]
+            or universe["identity"]["source_manifest_sha256"] != source["manifest_sha256"]
+            or universe["split_counts"][split] != payload["sample_counts"][split]
+            or source.get("samples") != payload["sample_counts"][split]
+        ):
+            raise ValueError(
+                f"Saved baseline {split} does not cover the complete cleaned population"
+            )
 
     def check_artifact(item):
         relative, metadata = item

@@ -17,7 +17,6 @@ from stock_forecasting.baselines import (
     rule_baseline_suite,
 )
 from stock_forecasting.config import ExperimentConfig
-from stock_forecasting.data import LazyFinancialWindowDataset
 from stock_forecasting.evaluation_paths import validate_standalone_baseline_output
 from stock_forecasting.evaluation_protocol import EVALUATION_PROTOCOL_VERSION
 from stock_forecasting.preflight import run_preflight
@@ -28,7 +27,6 @@ from stock_forecasting.training import (
     plan_dataloader_workers,
     resolve_runtime_robust_scales,
 )
-from stock_forecasting.training_paths import resolve_bar_store_path
 from stock_forecasting.validation_benchmark import _lazy_baseline_arrays
 
 
@@ -71,7 +69,8 @@ def benchmark_baselines(
     unlock_test: bool,
 ) -> dict[str, Any]:
     run_preflight(config, require_data=True).require_success()
-    bar_store = resolve_bar_store_path(config.data.bar_store_path)
+    from stock_forecasting.data.sample_universe import open_clean_dataset
+
     requested_workers, source = _requested_dataloader_workers(config)
     worker_plan = plan_dataloader_workers(requested_workers, source=source)
     loader_options = _loader_process_options(worker_plan, persistent=False)
@@ -80,12 +79,10 @@ def benchmark_baselines(
     scales = None
     if config.data.fixed_split:
         calibration = resolve_runtime_robust_scales(
-            LazyFinancialWindowDataset(
-                bar_store, split="train", window_size=config.data.input_length,
-                h_start=config.data.h_start,
-            ),
+            open_clean_dataset(config, "train"),
             sample_count=config.data.label_scale_calibration_samples,
-            seed=config.data.calibration_seed, worker_plan=worker_plan,
+            seed=config.data.calibration_seed,
+            worker_plan=worker_plan,
         )
         scales = np.asarray(calibration.scales, dtype=np.float32).tolist()
     arrays: dict[str, BaselineArrays] = {}
@@ -93,8 +90,11 @@ def benchmark_baselines(
     sample_counts: dict[str, int] = {}
     for position, split in enumerate(("train", "validation", "test")):
         raw_count, sample_count, split_arrays = _lazy_baseline_arrays(
-            config, split=split, seed=config.training.seed + position,
-            build_arrays=split != "test" or unlock_test, loader_options=loader_options,
+            config,
+            split=split,
+            seed=config.training.seed + position,
+            build_arrays=split != "test" or unlock_test,
+            loader_options=loader_options,
         )
         raw_counts[split] = raw_count
         sample_counts[split] = sample_count
@@ -103,7 +103,9 @@ def benchmark_baselines(
     results: dict[str, Any] = {}
     if "rule" in models:
         rule_results = rule_baseline_suite(
-            arrays["train"], arrays["validation"], robust_scales=scales,
+            arrays["train"],
+            arrays["validation"],
+            robust_scales=scales,
         )
         results["rule"] = {"validation": rule_results["momentum_5d"]}
         if unlock_test:
@@ -111,7 +113,9 @@ def benchmark_baselines(
             results["rule"]["test"] = test_rules["momentum_5d"]
     if "gbdt" in models:
         model = GradientBoostingBaseline.fit(
-            arrays["train"], seed=config.training.seed, robust_scales=scales,
+            arrays["train"],
+            seed=config.training.seed,
+            robust_scales=scales,
         )
         results["gbdt"] = {"validation": model.evaluate(arrays["validation"])}
         if unlock_test:
@@ -123,12 +127,15 @@ def benchmark_baselines(
             seed=config.training.seed,
             epochs=gru_epochs,
             patience=gru_patience,
-            robust_scales=scales, loader_options=loader_options,
+            robust_scales=scales,
+            loader_options=loader_options,
         )
         results["gru"] = {"validation": validation}
         if unlock_test:
             results["gru"]["test"] = evaluate_causal_gru(
-                model, arrays["test"], loader_options=loader_options,
+                model,
+                arrays["test"],
+                loader_options=loader_options,
             )
     return {
         "schema_version": "2.0",

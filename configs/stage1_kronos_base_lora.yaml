@@ -53,6 +53,8 @@ model:
   alpha_head_fp32: true
   market_aware: true
   explicit_output_scale: true
+  decoupled_output_scale: true
+  independent_ranking_head: true
   ranking_loss_weight: 0.05
   ranking_max_pairs: 256
   lora:
@@ -77,8 +79,11 @@ training:
   auto_batch_probe_steps: 2
   dataloader_prefetch_target_seconds: 2.0
   dataloader_max_prefetch_factor: 16
-  learning_rate: 0.0001
-  lora_learning_rate: 0.00001
+  learning_rate: 0.00003
+  lora_learning_rate: 0.000005
+  unfrozen_learning_rate: 0.000001
+  warmup_samples: 256000
+  yearly_sampling_decay: 0.8
   weight_decay: 0.01
   warmup_ratio: 0.03
   learning_rate_schedule: validation_plateau
@@ -115,6 +120,7 @@ wandb:
   log_model_artifact: true
 
 validation:
+  calibrate_intervals: true
   enabled: true
   auto_run_after_training: true
   output_root: ${RUNPOD_VOLUME_ROOT:-/runpod-volume}/evaluations

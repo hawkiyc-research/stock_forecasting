@@ -227,19 +227,43 @@ class KronosBackbone(nn.Module):
         rank: int,
         alpha: float,
         dropout: float,
+        unfreeze_last_blocks: int = 0,
     ) -> tuple[str, ...]:
         """Enable low-rank predictor updates while keeping base weights frozen."""
 
         if self._predictor_trainable:
             raise RuntimeError("Kronos predictor LoRA is already enabled")
+        blocks = getattr(self.model, "transformer", None)
+        if unfreeze_last_blocks and (
+            not isinstance(blocks, nn.ModuleList) or not 0 < unfreeze_last_blocks < len(blocks)
+        ):
+            raise ValueError("Partial unfreezing requires a verified Kronos block list")
+        allowed = (
+            tuple(f"transformer.{i}." for i in range(len(blocks) - unfreeze_last_blocks))
+            if unfreeze_last_blocks
+            else ("transformer.",)
+        )
         names = inject_lora(
             self.model,
             target_modules=target_modules,
             rank=rank,
             alpha=alpha,
             dropout=dropout,
-            allowed_prefixes=("transformer.",),
+            allowed_prefixes=allowed,
         )
+        self.unfrozen_parameter_names = ()
+        if unfreeze_last_blocks:
+            norm = getattr(self.model, "norm", None)
+            if not isinstance(norm, nn.Module):
+                raise ValueError("Kronos final norm is unavailable")
+            for block in blocks[-unfreeze_last_blocks:]:
+                block.requires_grad_(True)
+            norm.requires_grad_(True)
+            self.unfrozen_parameter_names = tuple(
+                name
+                for name, parameter in self.model.named_parameters()
+                if parameter.requires_grad and ".lora_a." not in name and ".lora_b." not in name
+            )
         self._predictor_trainable = True
         self.lora_module_names = names
         return names

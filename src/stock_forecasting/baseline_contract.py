@@ -21,6 +21,8 @@ BASELINE_SOURCES = (
     "src/stock_forecasting/data/dataset.py",
     "src/stock_forecasting/data/adjustments.py",
     "src/stock_forecasting/data/horizons.py",
+    "src/stock_forecasting/data/sample_universe.py",
+    "src/stock_forecasting/data_policy.py",
 )
 SHARED_TRAINING_DEFINITIONS = (
     "ResumableFixedSizeBatchSampler",
@@ -108,6 +110,10 @@ def execution_identity(project: Path) -> dict:
 
 
 def baseline_contract(project: Path, selection: dict) -> dict:
+    import runpy
+
+    policy_tools = runpy.run_path(str(project / "src/stock_forecasting/data_policy.py"))
+    policy = policy_tools["load_data_policy"](project)
     parameters = json.loads((project / "configs/baseline.json").read_text())
     # Scheduling/resource limits cannot change numerical identity or force a rebuild.
     parameters.pop("resources", None)
@@ -119,7 +125,9 @@ def baseline_contract(project: Path, selection: dict) -> dict:
         "parameters": parameters,
         "implementation": execution["canonical_implementation"],
         "shared_calibration_sampling": execution["shared_calibration_sampling"],
-        "evaluation": "full-canonical-stock-date-v2",
+        "evaluation": "full-clean-market-session-universe-v3",
+        "data_cleaning": policy,
+        "evaluation_request": policy_tools["evaluation_request"](selection, policy),
     }
     return {"baseline_id": "baseline-" + digest(core), "contract": core}
 
@@ -267,9 +275,14 @@ def validate_optimization_alignment(config, parameters):
 def validate_local_configuration(project: Path, selection: dict, parameters: dict) -> None:
     """Validate baseline-owned inputs only; never read a main-model YAML or cache."""
     for name in (
-        "epochs", "batch_size", "evaluations_per_epoch", "early_stopping_patience_evaluations",
-        "early_stopping_start_epoch", "plateau_patience_evaluations",
-        "plateau_min_low_lr_evaluations", "label_scale_calibration_samples",
+        "epochs",
+        "batch_size",
+        "evaluations_per_epoch",
+        "early_stopping_patience_evaluations",
+        "early_stopping_start_epoch",
+        "plateau_patience_evaluations",
+        "plateau_min_low_lr_evaluations",
+        "label_scale_calibration_samples",
     ):
         if type(parameters.get(name)) is not int or parameters[name] < 1:
             raise ValueError(f"Invalid baseline parameter: {name}")
@@ -303,10 +316,18 @@ def baseline_runtime_payload(selection: dict, parameters: dict, volume: Path) ->
     training = {
         name: parameters[name]
         for name in (
-            "epochs", "learning_rate", "weight_decay", "warmup_ratio", "evaluations_per_epoch",
-            "early_stopping_patience_evaluations", "early_stopping_min_delta",
-            "early_stopping_start_epoch", "plateau_patience_evaluations", "plateau_factor",
-            "plateau_min_ratio", "plateau_min_low_lr_evaluations",
+            "epochs",
+            "learning_rate",
+            "weight_decay",
+            "warmup_ratio",
+            "evaluations_per_epoch",
+            "early_stopping_patience_evaluations",
+            "early_stopping_min_delta",
+            "early_stopping_start_epoch",
+            "plateau_patience_evaluations",
+            "plateau_factor",
+            "plateau_min_ratio",
+            "plateau_min_low_lr_evaluations",
         )
     }
     return {
@@ -328,12 +349,15 @@ def baseline_runtime_payload(selection: dict, parameters: dict, volume: Path) ->
         },
         "model": {"time_series_backend": "mock", "lora": {"enabled": False}},
         "training": {
-            **training, "stage": "stage2", "evaluation_max_samples": None,
+            **training,
+            "stage": "stage2",
+            "evaluation_max_samples": None,
             "learning_rate_schedule": "validation_plateau",
             "lora_learning_rate": min(1e-5, parameters["learning_rate"]),
         },
         "validation": {
-            "models": parameters["models"], "seeds": parameters["seeds"],
+            "models": parameters["models"],
+            "seeds": parameters["seeds"],
             "baseline_max_samples_per_split": None,
         },
         "wandb": {"enabled": False},
@@ -360,13 +384,25 @@ def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
     payload = json.loads(path.read_text())
     validate_complete(payload, identity, require_shared=True)
     from stock_forecasting.data.manifest import sha256_file
-    from stock_forecasting.training_paths import resolve_bar_store_path
+    from stock_forecasting.data.sample_universe import open_clean_dataset, validated_split_roots
 
-    manifest = resolve_bar_store_path(config.data.bar_store_path) / "bar-store.json"
-    if payload.get("data_identity", {}).get("manifest_sha256") != sha256_file(manifest):
-        raise ValueError("Prepared data differs from the baseline's immutable bar store")
-    if payload["sample_counts"] != json.loads(manifest.read_text())["split_counts"]:
-        raise ValueError("Baseline population counts differ from the complete prepared splits")
+    expected_sources = payload.get("data_identity", {}).get("split_sources", {})
+    roots = validated_split_roots(config)
+    for split in ("train", "validation", "test"):
+        source = open_clean_dataset(config, split, validated_root=roots[split])
+        actual = {
+            "manifest_sha256": sha256_file(source.root / "bar-store.json"),
+            "sample_universe": source.sample_universe_identity,
+            "samples": len(source),
+        }
+        source.close()
+        if (
+            expected_sources.get(split) != actual
+            or payload["sample_counts"][split] != actual["samples"]
+        ):
+            raise ValueError(
+                f"Baseline {split} population differs from the cleaned sample universe"
+            )
     if verify_artifacts:
         for relative, metadata in payload["artifacts"].items():
             artifact = (root / relative).resolve()

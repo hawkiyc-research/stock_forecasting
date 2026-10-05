@@ -415,7 +415,15 @@ def test_complete_baseline_builder_and_cache_reuse(small_lazy_config, tmp_path, 
     project = tmp_path / "project"
     (project / "configs").mkdir(parents=True)
     (project / "configs/baseline.json").write_text(json.dumps(parameters))
-    identity = baseline_contract(ROOT, {"dataset_request": {"synthetic": True}})
+    identity = baseline_contract(
+        ROOT,
+        {
+            "dataset_request": {
+                "synthetic": True,
+                "date_range": {"start_inclusive": "2016-01-01", "end_exclusive": "2026-06-01"},
+            }
+        },
+    )
     identity["contract"]["parameters"] = {k: v for k, v in parameters.items() if k != "resources"}
     identity["baseline_id"] = "baseline-synthetic-integration"
     monkeypatch.setattr(build, "runtime_contract", lambda: (project, identity))
@@ -454,6 +462,7 @@ def test_main_testing_reuses_baseline_metrics_without_fit_or_inference(tmp_path,
     runner = benchmark.ValidationBenchmark.__new__(benchmark.ValidationBenchmark)
     runner.config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
     runner.checkpoint = tmp_path
+    runner.output = tmp_path / "validation-benchmark.json"
     runner.models = ["zero_return", "kronos_full"]
     runner.resume = True
     runner.recompute_full_model = True

@@ -88,6 +88,8 @@ class MultiHorizonAlphaHead(nn.Module):
         fp32_head: bool = False,
         market_aware: bool = False,
         explicit_output_scale: bool = False,
+        decoupled_output_scale: bool = False,
+        independent_ranking_head: bool = False,
     ) -> None:
         super().__init__()
         ordered_horizons = validate_alpha_horizons(horizons)
@@ -115,12 +117,20 @@ class MultiHorizonAlphaHead(nn.Module):
         )
         self.quantile_parameters = nn.Linear(hidden_dim, 3)
         self.explicit_output_scale = explicit_output_scale
+        self.decoupled_output_scale = decoupled_output_scale
+        if decoupled_output_scale and not explicit_output_scale:
+            raise ValueError("Decoupled widths require historical output scales")
+        self.ranking_head = nn.Linear(hidden_dim, 1) if independent_ranking_head else None
         if explicit_output_scale and feature_mode not in ("scales", "combined"):
             raise ValueError("Explicit output scale requires historical scale features")
         self.market_embedding = nn.Embedding(4, input_dim) if market_aware else None
         if self.market_embedding is not None:
             nn.init.zeros_(self.market_embedding.weight)
-        self.scale_gate = nn.Linear(hidden_dim, 1) if explicit_output_scale else None
+        self.scale_gate = (
+            nn.Linear(hidden_dim, 2 if decoupled_output_scale else 1)
+            if explicit_output_scale
+            else None
+        )
         if self.scale_gate is not None:
             nn.init.zeros_(self.scale_gate.weight)
             nn.init.zeros_(self.scale_gate.bias)
@@ -156,13 +166,20 @@ class MultiHorizonAlphaHead(nn.Module):
         scale_features: Tensor | None = None,
         benchmark_tokens: Tensor | None = None,
         market_ids: Tensor | None = None,
-    ) -> Tensor:
+        return_ranking: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor | None]:
         if self.fp32_head:
             with torch.autocast(device_type=conditioned_tokens.device.type, enabled=False):
                 return self._forward(
-                    conditioned_tokens.float(), scale_features, benchmark_tokens, market_ids
+                    conditioned_tokens.float(),
+                    scale_features,
+                    benchmark_tokens,
+                    market_ids,
+                    return_ranking,
                 )
-        return self._forward(conditioned_tokens, scale_features, benchmark_tokens, market_ids)
+        return self._forward(
+            conditioned_tokens, scale_features, benchmark_tokens, market_ids, return_ranking
+        )
 
     def _forward(
         self,
@@ -170,7 +187,8 @@ class MultiHorizonAlphaHead(nn.Module):
         scale_features: Tensor | None,
         benchmark_tokens: Tensor | None,
         market_ids: Tensor | None = None,
-    ) -> Tensor:
+        return_ranking: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor | None]:
         if conditioned_tokens.ndim != 3 or conditioned_tokens.shape[-1] != self.input_dim:
             raise ValueError(
                 f"conditioned_tokens must have shape [batch, tokens, {self.input_dim}]"
@@ -203,7 +221,17 @@ class MultiHorizonAlphaHead(nn.Module):
             floor = self.robust_scales[None, :] * 0.1
             anchor = torch.minimum(torch.maximum(anchor, floor), self.robust_scales[None, :] * 10)
             multiplier = (math.log(4) * torch.tanh(self.scale_gate(hidden))).exp()
-            quantiles = quantiles * anchor[..., None] * multiplier
+            if self.decoupled_output_scale:
+                # The median cannot collapse merely because interval widths shrink.
+                median = raw[..., 1] * self.robust_scales[None, :]
+                lower = median - F.softplus(raw[..., 0]) * anchor * multiplier[..., 0]
+                upper = median + F.softplus(raw[..., 2]) * anchor * multiplier[..., 1]
+                quantiles = torch.stack([lower, median, upper], dim=-1)
+            else:
+                quantiles = quantiles * anchor[..., None] * multiplier
+        if return_ranking:
+            scores = None if self.ranking_head is None else self.ranking_head(hidden).squeeze(-1)
+            return quantiles, scores
         return quantiles
 
     def pinball_loss(self, predictions: Tensor, target: Tensor) -> Tensor:

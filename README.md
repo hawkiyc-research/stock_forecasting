@@ -73,7 +73,7 @@ Asset + benchmark OHLCV through close t
 ```
 
 生產設定使用 `NeoQuasar/Kronos-base` 與
-`NeoQuasar/Kronos-Tokenizer-base`。Kronos predictor 的基礎權重凍結，只在
+`NeoQuasar/Kronos-Tokenizer-base`。預設 LoRA 實驗凍結 Kronos predictor 基礎權重，只在
 `q_proj`、`k_proj`、`v_proj`、`out_proj`、`w1`、`w2`、`w3`
 注入 LoRA；resampler、benchmark conditioner 與 alpha head 可訓練。官方 source 固定為 commit
 `67b630e67f6a18c9e9be918d9b4337c960db1e9a`，必要的 source snapshot 與 MIT license
@@ -124,8 +124,10 @@ calibration sample 的 median／IQR 標準化；IQR 下限 `1e-3`，標準化值
 加在原 head 的三個 raw quantile parameters 上，位置在原 head LayerNorm **之後**。
 head 另接入 US／TWSE／TPEx／unknown 的市場 embedding。輸出不再只有加法 residual：
 以歷史相對報酬 20 日波動乘 `sqrt(horizon)` 作為正尺度，限制於各 horizon train robust
-scale 的 0.1–10 倍，再乘上可學習的 0.25–4 倍正值 gate；q10／q50／q90 同步縮放，
-因此始終保持分位數順序。市場 embedding、residual 輸出層與 scale gate 零初始化；
+scale 的 0.1–10 倍，再乘上可學習的 0.25–4 倍正值 gate。`decoupled_output_scale`
+讓上下區間寬度各自使用正值 gate；q50 location 使用 train robust scale，不跟著
+歷史波動同步縮放。q10／q90 由 q50 減去／加上正值寬度，因此保持分位數順序。
+市場 embedding、residual 輸出層與 scale gate 零初始化；
 gate 的初始倍率為 1，但新版的初始輸出尺度與 v0.1.0 不同。head、特徵轉換與 pinball loss 使用 FP32，
 Kronos 計算仍沿用 BF16 mixed precision。
 
@@ -134,10 +136,11 @@ Kronos 計算仍沿用 BF16 mixed precision。
 必須同步關閉明確尺度控制。切換 mode 不改變 dataset namespace，但必須建立新的 training run。
 是否改善預測必須由新訓練的評估結果證明，加入尺度資訊本身不等於已提升 alpha 能力。
 
-訓練目標為原 normalized pinball 加上權重 `0.05` 的 pairwise logistic ranking loss。
+訓練目標為 normalized pinball 加上權重 `0.05` 的 pairwise logistic ranking loss；
+ranking 使用獨立 score head，不直接把 q50 當排序分數。
 排序只比較同一截止日、同一市場的不同股票，排除重複 padding 與近乎相同的標籤；
 每個 microbatch 最多 256 對，loss 仍涵蓋所有 forecast horizons。runtime-only date/market
-索引改善同組股票在 batch 中相遇的機會，保留 Stage 2 全部 train windows；不改 bar-store。
+索引改善同組股票在 batch 中相遇的機會，對清理後 train windows 做年度衰減動態抽樣；不改 bar-store。
 checkpoint 選擇與 early stopping 仍只看完整 validation 的 normalized pinball，不使用
 ranking loss 或 holdout 來選模。本版本不做 prediction／parameter ensemble。
 
@@ -185,10 +188,62 @@ EODHD 是 PoC 資料，不應被描述成交易所級真實行情。跨 provider
 
 ### 交易時間、benchmark 與調整資料契約
 
-每筆樣本在交易日 `t` 收盤後產生訊號；下一個共同交易日的 regular-session raw
-open 進場，該日算第 1 個持有交易日，持有 `h` 日時在第 `h` 個共同交易日的
+每筆樣本在交易日 `t` 收盤後產生訊號；下一個**市場交易日**的 regular-session raw
+open 進場，該日算第 1 個持有交易日，持有 `h` 日時在第 `h` 個市場交易日的
 raw close 出場。label 是商品與 benchmark 在完全相同 entry/exit timestamps 的
 total-return log return 差，`h ∈ {h_start,…,14}`，其中 `h_start ∈ {1,2,3}`。
+個股缺 bar 或零成交量時不能將 entry／exit 延後到下一個有資料的日期。
+
+### 資料完整性、連續性與最低流動性
+
+主模型與 baseline 的 train、validation、test 使用同一份
+`configs/data_cleaning.json` 規則，推論沿用其中所有只需歷史資料的檢查：
+
+- **日曆**：使用離線 `exchange-calendars==4.13.2`，US 對應 XNYS，TWSE／TPEx
+  對應 XTAI。不把週一至週五一律當交易日，也不把個股與 benchmark 同時缺資料
+  誤當休市。日曆版本固定；臨時休市等差異須核對交易所公告，不自行補價格。
+  `calendar_overrides` 已補列 2016–2018 年八個週六交易日，並排除套件漏列的
+  2022-02-04、2023-01-18、2024-10-31 休市日。依據包括
+  [櫃買中心 2016 年日曆](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_105.htm)、
+  [2017 年日曆](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_106.htm)、
+  [證交所 2018 年日曆](https://www.twse.com.tw/staticFiles/product/publication/0001002657.pdf)、
+  [2022 年春節公告](https://www.twse.com.tw/staticFiles/news/news/tsecnews/ff8080817d22b9cb017e3336c4e203e3.pdf)、
+  [櫃買中心 2023 年日曆副本](https://www.honsec.com.tw/uploads/images/112%E5%B9%B4%E6%9C%89%E5%83%B9%E8%AD%89%E5%88%B8%E6%AB%83%E6%AA%AF%E8%B2%B7%E8%B3%A3%E5%B8%82%E5%A0%B4%E9%96%8B%EF%BC%88%E4%BC%91%EF%BC%89%E5%B8%82%E6%97%A5%E6%9C%9F%E8%A1%A8.pdf)，
+  及 [2024-10-31 休市公告](https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69236c2e30192dd5179bc0327.pdf)。
+- **完整序列**：128 個 input bars 必須恰好是截至 `t` 的 128 個連續市場交易日；
+  output 必須包含接續的 14 個市場交易日，即使 `h_start` 為 2 或 3 也相同。
+  個股與 benchmark 都須完整對齊。缺一天就排除該 window；不 forward-fill、
+  不用更早月份／年份湊滿 128 筆、不壓縮停牌日、不改 label horizon。
+- **有效行情**：整段 input／output 的 OHLC 與 adjusted close 必須有限且大於零，
+  high／low 須符合 OHLC 邊界。個股每日 volume 必須有限且大於零；交易型 ETF
+  benchmark 亦同。非交易型指數 benchmark 允許零 volume，但價格不能缺漏。
+- **最低流動性**：截至 `t` 的最近 60 個市場交易日，以當時 raw close × raw volume
+  估計每日成交金額，其中位數須達 USD 1,000,000（美股）或 TWD 10,000,000（台股）。
+  不用未來成交量決定當日流動性，不做外匯 API 查詢。開發用 input 少於 60 bars
+  時使用整個 input 長度；正式 128-bar 設定固定使用 60 日。
+  這是可調整的工程門檻，不是已證明最佳的投資門檻；須一起檢視排除率。
+- **保留極端報酬**：真實、有限且通過上述檢查的大漲跌不刪除、不截尾；
+  絕對 adjusted log return 超過 0.5 只計入診斷。既有 prepared ranges 的舊極端值
+  排除旗標不再決定 runtime 樣本。資料不足或無效數值與真實市場極端值分開處理。
+- **時間邊界**：train cutoff 在 2025-06-01 之前；validation 為
+  `[2025-06-01, 2025-12-01)`；test 為 `[2025-12-01, 2026-06-01)`。
+  每筆最晚 label 日期必須嚴格早於所屬 split 的右界，不能使用下一 split 的 ground truth。
+- **共同評估來源**：A/B 的 training 各讀其設定的歷史跨度；validation／test 均讀
+  同 profile、universe、revision、結束日之 **2016-01-01 起點的既有 bar-store**。
+  相同日期不足以保證不同下載快照相同，因此不各自讀 A/B 快照，也不取兩者交集。
+  共用來源不存在時明確停止，不自動下載或回退到另一份資料。
+
+執行時從不可變 bar-store 平行建立小型 `prepared/sample-universes/` cutoff-range
+索引；依 CPU quota、可用記憶體與每 worker 預算限制並行度與 pending tasks。
+`FIN_TS_CLEANING_WORKERS` 可設定 worker 上限（預設 8），中斷後重用完成的 bucket。
+不複製完整 windows／labels，不改 raw、CPU prepare 的 manifest 或既有結果。
+`universe.json` 保存每 split／market 的候選數、有效數、各排除原因與保留極端值數；
+逐商品稽核保存在 `parts/*.json`。未來無法成交的樣本是「無有效 ground truth」，
+不能將其排除後的評分解讀成無停牌／下市風險的可交易回測。
+
+改動清理規則會改變實際訓練樣本，必須各重建一次對應的 A/B baseline；舊模型與
+結果保留，但不能當成新集合的公平基準。單純切換 LoRA／解凍容量不重建 baseline。
+此流程重用既有行情，不要求重跑 CPU prepare 或重新下載資料。
 
 預設 benchmark policy：
 
@@ -232,14 +287,14 @@ raw OHLCV 以不可變的壓縮 Parquet 分批寫入。CPU preparation 不再展
 raw row group、segment 或 bucket 接續，已完成項目直接跳過。只有 `_SUCCESS.json`
 發布後才回收 `.work` 暫存分區。
 
-訓練 DataLoader 以 O(1) sampler 狀態從有效 cutoff ranges 取樣，按需讀取一個 symbol
+訓練 DataLoader 以 bounded sampler 狀態從有效 cutoff ranges 動態取樣，按需讀取一個 symbol
 row group、建立 128-bar asset/benchmark context，並在記憶體中計算從 `h_start` 到第
 14 個持有交易日的 alpha label。磁碟上不會出現逐-window 或逐-label 資料集；Stage 1
-使用固定且可重現的 `min(valid train cutoffs × 5%, 500,000)` target set，每個 epoch
-僅改變遍歷順序；Stage 2
-使用全部 valid train cutoffs，兩者都用固定大小 batch。最後不足一個 batch 時，只從同一個
-target set 開頭確定性補齊，補齊
-數量會寫入 training summary；不會因此配置全量 index。這個 out-of-core 設計可直接處理
+每 epoch 呈現 `min(valid train cutoffs × 5%, 500,000)` 個樣本；Stage 2 的呈現次數
+等於全部 valid train cutoffs 數。年度衰減會使較新的 windows 重複呈現、較舊 windows
+未必在同一 epoch 出現；seed 與 epoch 決定可重現的順序與接續位置。兩者都用固定
+大小 batch，最後不足一個 batch 時確定性補齊並記錄數量。年度／市場分組索引採 mmap，
+不在 RAM 展開所有 windows。這個 out-of-core 設計可直接處理
 完整長歷史資料，不需要把全部 bars 或所有可能 window 載入 RAM。
 
 ### 離線資料管線
@@ -345,8 +400,9 @@ artifacts；不手動編輯 `.env`、YAML 或 JSON 設定。
 
 RunPod workflow 會在 approved image 內使用 Python `>=3.12,<3.13`，建立 persistent
 Poetry environment、重新產生 canonical `poetry.lock`，再執行 lint、完整 pytest 與後續
-工作。修改 `pyproject.toml` 後只需重新同步 source，讓下一次遠端 CPU preparation 重新
-解析 lock；不要在本機嘗試對齊 RunPod 的 Python/PyTorch/CUDA 環境。
+工作。修改 `pyproject.toml` 後須重新同步 source；GPU workflow 若缺少本版要求的
+離線日曆依賴，會在取得 workflow lease 後更新專案自己的雲端環境，不執行 CPU prepare
+或下載行情。不要在本機嘗試對齊 RunPod 的 Python/PyTorch/CUDA 環境。
 
 ### 下載資料並建立 bar store
 
@@ -1497,6 +1553,44 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 
 ##### 建立訓練 Pod
 
+Stage 2 的 A/B 容量實驗可直接使用 `--experiment` 選擇。A 的資料起點是
+2021-01-01，B 是 2016-01-01；兩者結束日皆為 2026-06-01（不含）。
+此選項保留 configure 的 profile、universe、revision 與 h_start，僅切換資料起點及
+對應的模型設定，不呼叫行情 API 或 CPU prepare。相應資料與 baseline 必須已完成。
+
+| `--experiment` | 設定檔 | Kronos 調整 |
+|---|---|---|
+| `a-lora32` / `b-lora32` | `configs/experiments/a_lora32.yaml` / `b_lora32.yaml` | LoRA rank 32、alpha 64 |
+| `a-lora64` / `b-lora64` | `configs/experiments/a_lora64.yaml` / `b_lora64.yaml` | LoRA rank 64、alpha 128 |
+| `a-partial` / `b-partial` | `configs/experiments/a_partial.yaml` / `b_partial.yaml` | 前 10 層 LoRA-32；最後 2 層與 final norm 解凍，解凍層不重複套 LoRA |
+
+首次部署一次上傳所有設定；之後切換實驗只發布小型 selection JSON，不必重傳程式：
+
+```bash
+bash scripts/runpod_workflow.sh sync --apply
+bash scripts/runpod_workflow.sh train --experiment a-lora32 --maxRuntime 12h --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+下一次將 `a-lora32` 換成表中其他名稱即可；不要同時啟動正式實驗。
+省略 `--experiment` 會使用目前 active selection；`resume` 仍接續原實驗，不切換架構。
+若修改 YAML 內容或程式本身，仍須重新 sync，不能只重發布 selection。
+六個容量實驗皆從同一個預訓練 Kronos-base 開始；不能接續舊架構或其他容量實驗的 checkpoint。
+
+六組共同使用：task／LoRA／解凍層 LR 分別為 `3e-5`／`5e-6`／`1e-6`；warmup
+固定 256,000 次樣本呈現，避免 B 因 epoch 較長而有更長 warmup。A/B 動態 training
+sampling 均採 `yearly_sampling_decay: 0.8`；每筆 window 權重為
+`0.8 ** (最新訓練年份 − cutoff 年份)`。2025、2024、2021、2016 年的相對權重分別
+為 1、0.8、0.4096、約 0.1342；年度抽樣質量等於該年有效 window 數乘此權重。
+每年配額、處理樣本數與 loss 都記錄在訓練結果；不是分成兩塊，也不是每 epoch 全量不重複遍歷。
+validation/test 不使用這個 sampler，仍完整循序遍歷。
+
+q50 location 與正值上下區間寬度分離，ranking 使用獨立無量綱 score head。
+checkpoint/early stop 仍由**未校準**的完整 validation normalized pinball 決定。
+最後選定 checkpoint 才以完整 validation 擬合 market/horizon 上下尾校準，test 同時
+保留 raw 與 `calibrated` 指標；不以 test labels 擬合，不保證未來 coverage 恆為 80%。
+校準係數保存於該 run 的 `evaluations/<RUN_ID>/interval-calibration.json`。
+`FORECAST_METRIC_WORKERS` 可限制診斷／校準 thread 數（預設上限 4，並受 CPU／記憶體限制）。
+
 檢視 active selection 並通過 GPU gate；gate 會在租用 GPU 前比對本機 selection、
 S3 selection、CPU marker、code release、config SHA 與 namespaced artifacts：
 
@@ -1597,9 +1691,9 @@ Pod 一律使用 terminate，而不是 stop。Guard 依 marker 類型驗證版�
 
 W&B run config 會保存完整的 resolved YAML／Pydantic 設定、system metadata、
 dataset provenance 與 immutable selection identity。`train/loss` 與
-`train/pinball_loss` 在**每一個 optimizer step** 以 `trainer/global_step` custom
-axis 記錄；使用 gradient accumulation 時記錄該 optimizer step 所含 microbatch
-loss 的平均值。loss 與 validation 即使位於相同 optimizer step，也會各自保留
+`train/pinball_loss` 依 `loss_log_points_per_epoch`（預設 250）及 validation 邊界
+記錄分段 microbatch 平均值，並以 `trainer/global_step` custom axis 標示。
+loss 與 validation 即使位於相同 optimizer step，也會各自保留
 history row，不會因重複使用 W&B internal step 而遺失。訓練期間的 validation
 固定在每個 epoch 的 20%／40%／60%／80%／100% 上傳所有有限數值指標與
 early-stopping 狀態；訓練後
@@ -1807,9 +1901,21 @@ checkpoint 內的 validation metrics 才是訓練選模分數；
 
 ### 訓練與推論產物
 
+`download` 會一併下載 `metrics.jsonl` 與 `summary.json`；啟用區間校準的 run 亦下載
+`interval-calibration.json`。新訓練缺少必需檔案時會明確報錯；歷史 run 未曾產生的
+日誌或未啟用的校準檔不會被要求存在。每筆 loss 紀錄包含
+run/session ID、時間、optimizer step、累計呈現樣本數與 epoch fraction；接續訓練會
+append 新 session，不覆寫舊曲線。`train/loss` 是 normalized pinball 加上加權 ranking，
+另列 `train/pinball_loss`、`train/ranking_loss` 與各參數組 LR；`validation/loss` 是完整
+validation 的 normalized pinball，不含 ranking。判斷 train/validation gap 時應比較
+`train/pinball_loss` 與 `validation/loss`，不能把 training total loss 直接拿來比較。
+loss 日誌依 `loss_log_points_per_epoch` 分段平均記錄（預設每 epoch 250 點），並涵蓋
+每次 validation 邊界；每次寫入都 flush/fsync，W&B 停用時仍保留在 network volume。
+
 每個 run 至少保存：
 
-- `adapter.safetensors`：LoRA、resampler、benchmark conditioner 與 alpha head 的可訓練權重。
+- `adapter.safetensors`：LoRA、resampler、benchmark conditioner、alpha/ranking head
+  與該實驗解凍的 Kronos 權重。
 - `resolved-config.yaml`
 - `trainer-state.json`
 - optimizer / scheduler state
@@ -2079,7 +2185,7 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
 | `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
 | `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 只核對 baseline 所需資料與程式，不要求主模型 HF cache |
-| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。baseline 完成快取會在本機建立 Pod 前檢查，命中即跳過。兩者皆無 run ID 位置參數 |
+| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。僅 `train` 接受 `--experiment`（上表六種名稱；省略保留 active selection）。baseline 完成快取會在本機建立 Pod 前檢查，命中即跳過。兩者皆無 run ID 位置參數 |
 | `resume [RUN_ID]` | 接續未完成訓練；省略 ID 時由最近 training lifecycle 找到可續訓 run，**不是新建另一輪訓練**。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是改用 best checkpoint |
 | `validate [RUN_ID]` | 省略 ID 使用最近訓練 lifecycle，指定 ID 可評估歷史已完成訓練；`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設重用已完成評估；`--no-resume` 不接續評估進度；`--force` 強制重新計算主模型評估並停用 resume。三種策略擇一；預建 baseline 結果仍重用，不會重訓 baseline |
 | `status`、`cpu-logs` | 無參數；前者查詢狀態，後者下載 CPU 工作紀錄 |
@@ -2311,7 +2417,7 @@ Asset + benchmark OHLCV through close t
 ```
 
 Production configs use `NeoQuasar/Kronos-base` and
-`NeoQuasar/Kronos-Tokenizer-base`. Kronos base weights are frozen. LoRA is
+`NeoQuasar/Kronos-Tokenizer-base`. Standard LoRA experiments freeze the base weights. LoRA is
 injected into `q_proj`, `k_proj`, `v_proj`, `out_proj`, `w1`, `w2`, and `w3`;
 the resampler, benchmark conditioner, and alpha head remain trainable. The official source is pinned to
 commit `67b630e67f6a18c9e9be918d9b4337c960db1e9a`; the required source snapshot
@@ -2374,7 +2480,9 @@ ordered q10/q50/q90 transformation. A US/TWSE/TPEx/unknown market embedding
 conditions the head. Historical relative 20-day volatility times `sqrt(horizon)`
 explicitly controls output scale, bounded to 0.1–10 times each horizon's train
 robust scale, with an additional learned positive multiplier bounded to 0.25–4.
-All three quantiles share the multiplier, preserving their ordering. The market
+With `decoupled_output_scale`, lower and upper widths use separate positive gates;
+the q50 location uses the train robust scale instead of inheriting historical
+volatility. Subtracting/adding positive widths to q50 preserves quantile ordering. The market
 embedding, residual output layer, and scale gate start at zero; the gate initially
 multiplies by one, but initial output scales differ from v0.1.0. The head, feature
 transforms and pinball loss use FP32; Kronos retains BF16 mixed precision.
@@ -2387,11 +2495,12 @@ Predictive improvement must be demonstrated by new evaluation results; adding
 scale information alone is not evidence of improved alpha forecasting.
 
 Training adds pairwise logistic ranking loss with weight `0.05` to normalized
-pinball. Pairs must share the cutoff date and market and represent different
+pinball. An independent score head handles ranking instead of treating q50 as its
+score. Pairs must share the cutoff date and market and represent different
 securities; duplicate padding and nearly tied labels are excluded. Each microbatch
 uses at most 256 pairs across all forecast horizons. A runtime-only date/market
-index improves within-group batch membership while retaining every Stage 2 train
-window; it does not modify the prepared bar store. Checkpoint selection remains
+index improves within-group batch membership, with annual-decay dynamic sampling
+over cleaned train windows; it does not modify the prepared bar store. Checkpoint selection remains
 pure full-validation normalized pinball. No prediction ensemble is used.
 
 ### Why Kronos-base
@@ -2456,11 +2565,72 @@ is required before formal comparisons.
 ### Execution timing, benchmark, and adjusted-data contract
 
 Each sample emits a signal after trading-day `t` closes. Entry occurs at the
-next shared trading day's raw regular-session open, which counts as holding day
-one. A horizon `h` exits at the raw close of the `h`th shared trading day. The
+next **market session's** raw regular-session open, which counts as holding day
+one. A horizon `h` exits at the raw close of the `h`th market session. The
 label is the difference between instrument and benchmark total-return log
 returns over identical entry and exit timestamps, for
 `h ∈ {h_start,...,14}` and `h_start ∈ {1,2,3}`.
+Missing or zero-volume asset bars never postpone entry or exit to the next available row.
+
+### Data completeness, continuity, and minimum liquidity
+
+Main-model and baseline train/validation/test share `configs/data_cleaning.json`.
+Inference applies the same checks that depend only on past observations:
+
+- **Calendar:** pinned offline `exchange-calendars==4.13.2`, XNYS for US and XTAI
+  for TWSE/TPEx. Weekdays are not automatically sessions. Simultaneous gaps in
+  asset and benchmark are not automatically holidays. Exceptional closures need
+  exchange-announcement verification; prices are never fabricated.
+  `calendar_overrides` includes eight Saturday sessions in 2016–2018 and removes
+  the missing closures on 2022-02-04, 2023-01-18, and 2024-10-31. Sources are
+  [TPEx 2016](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_105.htm),
+  [TPEx 2017](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_106.htm),
+  [TWSE 2018](https://www.twse.com.tw/staticFiles/product/publication/0001002657.pdf),
+  [TWSE 2022 Lunar New Year](https://www.twse.com.tw/staticFiles/news/news/tsecnews/ff8080817d22b9cb017e3336c4e203e3.pdf),
+  [TPEx 2023 calendar copy](https://www.honsec.com.tw/uploads/images/112%E5%B9%B4%E6%9C%89%E5%83%B9%E8%AD%89%E5%88%B8%E6%AB%83%E6%AA%AF%E8%B2%B7%E8%B3%A3%E5%B8%82%E5%A0%B4%E9%96%8B%EF%BC%88%E4%BC%91%EF%BC%89%E5%B8%82%E6%97%A5%E6%9C%9F%E8%A1%A8.pdf),
+  and the [2024-10-31 closure](https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69236c2e30192dd5179bc0327.pdf).
+- **Complete sequences:** inputs must be the exact 128 consecutive market sessions
+  through `t`; outputs must cover the next 14 sessions even when `h_start` is 2 or 3.
+  Both streams must align. A missing session excludes the window: no forward fill,
+  reaching farther back to collect 128 rows, compressed suspensions, or shifted horizons.
+- **Valid observations:** OHLC and adjusted close must be finite and positive with
+  consistent high/low bounds throughout input and output. Asset volume and traded
+  ETF benchmark volume must be finite and positive. Non-traded index benchmarks may
+  have zero volume, but must still provide complete valid prices.
+- **Minimum liquidity:** the trailing 60-session median of raw close × raw volume
+  through `t` must reach USD 1,000,000 or TWD 10,000,000. Future volume is never used
+  for this decision, and no FX API is needed. Development inputs shorter than 60 bars
+  use their full input length; production 128-bar inputs use 60 sessions. These are
+  configurable engineering defaults, not proven optimal investment thresholds;
+  always review exclusion rates alongside results.
+- **Real extremes remain:** valid finite extreme returns are neither removed nor
+  winsorized. Absolute adjusted log returns above 0.5 are diagnostic counts only.
+  Old extreme-transition flags in prepared candidate ranges no longer determine
+  runtime membership. Invalid numbers and inadequate history are distinct from
+  genuine market extremes.
+- **Boundaries:** train cutoffs precede 2025-06-01; validation is
+  `[2025-06-01, 2025-12-01)` and test `[2025-12-01, 2026-06-01)`. Every last label date
+  must be strictly earlier than its split's upper boundary.
+- **Shared evaluation source:** A/B retain separate training histories, but both
+  validation/test use the existing **2016-01-01-start bar store** with the same
+  profile, universe, revision, and end date. Identical date ranges do not make two
+  downloaded snapshots identical. There is no A/B intersection or fallback to a
+  different snapshot. Missing shared data stops the workflow without downloading it.
+
+Runtime builds a compact `prepared/sample-universes/` range index in bounded
+parallel workers over immutable prepared bars. CPU quota, available memory, and
+per-worker estimates bound workers and pending tasks. `FIN_TS_CLEANING_WORKERS`
+sets the worker cap (default 8); completed buckets resume after interruption.
+No full windows/labels are copied and no raw data, CPU-preparation manifests, or
+completed results are rewritten. `universe.json` records candidates, accepted
+windows, exclusion reasons, and retained extremes per split/market; `parts/*.json`
+contains per-symbol audits. Excluding unexecutable future labels does not make the
+result a tradable backtest free from halt or delisting risk.
+
+Changing these rules changes training membership and requires one new baseline
+build per A/B history. Old weights/results remain but are not fair references for
+the new population. Changing only LoRA/unfreezing capacity reuses that baseline.
+Existing market data is reused without rerunning CPU preparation or downloading data.
 
 Default benchmark policy:
 
@@ -2519,16 +2689,16 @@ bucket has an atomic checkpoint. At max runtime the Pod exits as
 completed scan partitions and buckets. `.work` partitions are reclaimed only
 after `_SUCCESS.json` is published.
 
-The training DataLoader uses an O(1)-state sampler over valid cutoff ranges. It
+The training DataLoader uses a bounded-state dynamic sampler over valid cutoff ranges. It
 loads one symbol row group on demand, constructs aligned 128-bar asset and
 benchmark contexts, and computes alpha labels from `h_start` through holding
-day 14 in memory. No per-window or per-label dataset is written. Stage 1 uses one
-fixed, reproducible target set containing 5% of valid train cutoffs, capped at
-500,000 samples, and changes only its traversal order between epochs. Stage 2
-uses all valid train cutoffs,
-and both use fixed-size batches. If the final batch is short, it is deterministically
-filled from the beginning of the same target set and the padding count is written
-to the training summary; no full index array is allocated. This out-of-core design
+day 14 in memory. No per-window or per-label dataset is written. Stage 1 presents
+5% of the valid-train count per epoch, capped at 500,000; Stage 2 presents the full
+valid-train count. Annual decay means newer windows can repeat and older windows
+need not appear in the same epoch. Seed and epoch determine reproducible order and
+resume position. Both use fixed-size batches and record deterministic final-batch
+padding. The compact date/market index is memory-mapped, not an in-memory expansion
+of every window. This out-of-core design
 handles long full-market history without loading all bars or all potential windows
 into RAM.
 
@@ -2655,9 +2825,10 @@ it is not runtime evidence for this project.
 The RunPod workflow uses Python `>=3.12,<3.13` inside the approved image,
 creates the persistent Poetry environment, regenerates the canonical
 `poetry.lock`, and then runs lint, the complete pytest suite, and subsequent
-work. After changing `pyproject.toml`, resync the source and let the next remote
-CPU-preparation run resolve the lock. Do not try to reproduce the RunPod
-Python/PyTorch/CUDA environment locally.
+work. After changing `pyproject.toml`, resync the source. If the required offline
+calendar dependency is missing, GPU workflows update the project-owned cloud
+environment after acquiring their workflow lease, without CPU prepare or market
+downloads. Do not reproduce the RunPod Python/PyTorch/CUDA environment locally.
 
 ### Download data and build the bar store
 
@@ -3973,6 +4144,50 @@ the volume attachable across regions nor creates a replacement volume. Pass the 
 
 ##### Create a training Pod
 
+Select a controlled Stage 2 A/B experiment with `--experiment`. A starts on
+2021-01-01 and B on 2016-01-01; both end on 2026-06-01 (exclusive). This preserves
+the configured profile, universe, revision and h_start, changes the start date
+and model config, and never calls market-data APIs or CPU prepare. The matching
+prepared dataset and baseline must already exist.
+
+| `--experiment` | Config files | Kronos adaptation |
+|---|---|---|
+| `a-lora32` / `b-lora32` | `configs/experiments/a_lora32.yaml` / `b_lora32.yaml` | LoRA rank 32, alpha 64 |
+| `a-lora64` / `b-lora64` | `configs/experiments/a_lora64.yaml` / `b_lora64.yaml` | LoRA rank 64, alpha 128 |
+| `a-partial` / `b-partial` | `configs/experiments/a_partial.yaml` / `b_partial.yaml` | LoRA-32 on the first 10 blocks; unfreeze the final 2 blocks and final norm without redundant adapters |
+
+Upload all configs once. Later experiment switches publish only a small selection
+JSON, without uploading the source again:
+
+```bash
+bash scripts/runpod_workflow.sh sync --apply
+bash scripts/runpod_workflow.sh train --experiment a-lora32 --maxRuntime 12h --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+For the next run, replace `a-lora32` with another listed name. Do not launch
+concurrent production experiments. Omitting `--experiment` keeps the active
+selection. `resume` continues the original experiment, not another architecture.
+Actual YAML/source edits still require sync; publishing a selection is not a code update.
+All six capacity experiments start from the same pretrained Kronos-base. Do not
+resume a checkpoint from an older architecture or another capacity experiment.
+
+All six use task/LoRA/unfrozen learning rates of `3e-5`/`5e-6`/`1e-6`, with a fixed
+256,000 sample-presentation warmup. A/B both use `yearly_sampling_decay: 0.8`:
+each window has relative weight `0.8 ** (latest_training_year - cutoff_year)`.
+Weights for 2025, 2024, 2021, and 2016 are 1, 0.8, 0.4096, and approximately 0.1342.
+Each year's sampling mass is its eligible window count times that weight. Annual
+quotas, processed samples, and losses are recorded. This is neither a two-block
+split nor a full unique-window pass. Validation/test remain full sequential passes.
+
+The q50 location is separated from positive lower/upper interval widths; ranking
+uses an independent dimensionless score head. Checkpoint selection and early
+stopping still use **raw** full-validation normalized pinball. After selecting a
+checkpoint, market/horizon tail factors are fitted on full validation only. Test
+reports retain raw and `calibrated` metrics; test labels never fit these factors,
+and future 80% coverage is not guaranteed. Factors are saved to
+`evaluations/<RUN_ID>/interval-calibration.json`. `FORECAST_METRIC_WORKERS` caps
+diagnostic/calibration threads (default cap 4, further bounded by CPU and memory).
+
 Inspect the active selection and pass the GPU gate. Before renting the GPU, the
 gate compares the local selection, S3 selection, CPU marker, code release,
 config SHA, and namespaced artifacts:
@@ -4085,9 +4300,9 @@ Pod ID, run ID, or state/schema combination never triggers termination.
 
 The W&B run config contains the full resolved YAML/Pydantic configuration,
 system metadata, dataset provenance, and immutable selection identity.
-`train/loss` and `train/pinball_loss` are logged at **every optimizer step**
-against the `trainer/global_step` custom axis. With gradient accumulation, the
-value is the mean of the microbatch losses contributing to that optimizer step.
+`train/loss` and `train/pinball_loss` record segment-averaged microbatch losses at
+`loss_log_points_per_epoch` points (default 250), including validation boundaries,
+against the `trainer/global_step` custom axis.
 Loss and validation retain separate history rows even when they share an
 optimizer step instead of colliding on W&B's internal step. In-training
 validation runs at 20%/40%/60%/80%/100% of every epoch and sends every finite
@@ -4320,9 +4535,24 @@ lifecycle paths do not override that selection.
 
 ### Training and inference artifacts
 
+`download` includes `metrics.jsonl` and `summary.json`, plus `interval-calibration.json`
+for runs with interval calibration enabled. Missing required artifacts fail clearly
+for new runs; historical logs that were never produced and calibration files for
+uncalibrated runs are not required. Loss records contain run
+and session IDs, timestamps, optimizer steps, cumulative sample presentations and
+epoch fractions. Resume appends a new session without overwriting old curves.
+`train/loss` is normalized pinball plus weighted ranking; `train/pinball_loss`,
+`train/ranking_loss` and per-group learning rates are logged separately.
+`validation/loss` is full-validation normalized pinball without ranking. Compare
+training pinball against validation loss when diagnosing a generalization gap,
+not training total loss. Losses are averaged between the configured
+`loss_log_points_per_epoch` points (default 250), including validation boundaries.
+Every local record is flushed/fsynced and remains on the network volume even with W&B disabled.
+
 Each run stores at least:
 
-- `adapter.safetensors`: trainable LoRA, resampler, benchmark-conditioner, and alpha-head weights.
+- `adapter.safetensors`: trainable LoRA, resampler, benchmark-conditioner, alpha/ranking-head,
+  and any Kronos weights unfrozen by the selected experiment.
 - `resolved-config.yaml`
 - `trainer-state.json`
 - Optimizer and scheduler state
@@ -4635,7 +4865,7 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
 | `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
 | `readiness` | Choose exactly one: `--code-only` verifies uploaded code; `--gpu` verifies main-model training dependencies; `--baseline` checks baseline data/code without requiring the main model's HF cache |
-| `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Baseline completion is checked locally before creating a Pod, and a cache hit skips creation. Neither command accepts a positional run ID |
+| `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Only `train` accepts `--experiment` (the six names above; omitted means the active selection). Baseline completion is checked locally before creating a Pod, and a cache hit skips creation. Neither command accepts a positional run ID |
 | `resume [RUN_ID]` | Continue unfinished training; without an ID, resolve the resumable run from the latest training lifecycle, **not a new training run**. `--maxRuntime D` defaults to `12h` and `--gpuId ID` as above. Resume the latest available checkpoint, not the best checkpoint |
 | `validate [RUN_ID]` | Without an ID, use the latest training lifecycle; an explicit ID selects a completed historical training run. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above. `--resume` reuses completed evaluation work by default; `--no-resume` disables evaluation continuation; `--force` recomputes the main-model evaluation and disables resume. Choose one policy; prebuilt baseline results remain reused, without baseline retraining |
 | `status`, `cpu-logs` | No options; respectively inspect status or download CPU workflow logs |

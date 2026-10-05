@@ -33,35 +33,69 @@ def production_scope():
     completion decisions, and the run/prebuilt routing execute real code.
     """
     scope = runpy.run_path(str(ROOT / "src/stock_forecasting/run_paths.py"))
-    scope.update(runpy.run_path(str(
-        ROOT / "src/stock_forecasting/evaluation_resume_migrations.py"
-    )))
+    scope.update(
+        runpy.run_path(str(ROOT / "src/stock_forecasting/evaluation_resume_migrations.py"))
+    )
+    runtime_stop = runpy.run_path(str(ROOT / "src/stock_forecasting/runpod/runtime_stop.py"))
+    scope["RuntimeStopRequested"] = runtime_stop["RuntimeStopRequested"]
+    scope["stop_at_saved_boundary"] = Mock()
     baselines = ast.parse((ROOT / "src/stock_forecasting/baselines.py").read_text())
-    rules = next(node.value for node in baselines.body if isinstance(node, ast.Assign)
-                 and any(isinstance(target, ast.Name) and target.id == "RULE_BASELINE_NAMES"
-                         for target in node.targets))
+    rules = next(
+        node.value
+        for node in baselines.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "RULE_BASELINE_NAMES"
+            for target in node.targets
+        )
+    )
     protocol = ast.parse((ROOT / "src/stock_forecasting/evaluation_protocol.py").read_text())
     version = next(
-        node.value for node in protocol.body if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "EVALUATION_PROTOCOL_VERSION"
-                for target in node.targets)
+        node.value
+        for node in protocol.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "EVALUATION_PROTOCOL_VERSION"
+            for target in node.targets
+        )
     )
-    scope.update({
-        "__file__": str(SOURCE), "hashlib": hashlib, "json": json, "math": math,
-        "os": os, "time": time, "uuid": uuid, "datetime": datetime, "UTC": UTC, "Path": Path,
-        "RULE_BASELINE_NAMES": ast.literal_eval(rules),
-        "EVALUATION_PROTOCOL_VERSION": ast.literal_eval(version),
-        "np": SimpleNamespace(median=statistics.median),
-        "_requested_dataloader_workers": lambda _config: (2, "fixture"),
-        "plan_dataloader_workers": lambda *args, **kwargs: SimpleNamespace(effective_workers=2),
-        "_loader_process_options": lambda *args, **kwargs: {"num_workers": 2},
-        "paired_block_comparison": Mock(return_value={"fixture": "paired"}),
-    })
-    definitions = [node for node in ast.parse(SOURCE.read_text()).body
-                   if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign))]
-    module = ast.Module(body=[ast.ImportFrom(
-        module="__future__", names=[ast.alias(name="annotations")], level=0,
-    ), *definitions], type_ignores=[])
+    scope.update(
+        {
+            "__file__": str(SOURCE),
+            "hashlib": hashlib,
+            "json": json,
+            "math": math,
+            "os": os,
+            "time": time,
+            "uuid": uuid,
+            "datetime": datetime,
+            "UTC": UTC,
+            "Path": Path,
+            "RULE_BASELINE_NAMES": ast.literal_eval(rules),
+            "EVALUATION_PROTOCOL_VERSION": ast.literal_eval(version),
+            "np": SimpleNamespace(median=statistics.median),
+            "_requested_dataloader_workers": lambda _config: (2, "fixture"),
+            "plan_dataloader_workers": lambda *args, **kwargs: SimpleNamespace(effective_workers=2),
+            "_loader_process_options": lambda *args, **kwargs: {"num_workers": 2},
+            "paired_block_comparison": Mock(return_value={"fixture": "paired"}),
+        }
+    )
+    definitions = [
+        node
+        for node in ast.parse(SOURCE.read_text()).body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign))
+    ]
+    module = ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__",
+                names=[ast.alias(name="annotations")],
+                level=0,
+            ),
+            *definitions,
+        ],
+        type_ignores=[],
+    )
     exec(compile(ast.fix_missing_locations(module), str(SOURCE), "exec"), scope)
     return scope
 
@@ -78,22 +112,34 @@ class EvaluationStorageControlTests(unittest.TestCase):
         self.scales = [0.03]
         for name in ("adapter.safetensors", "resolved-config.yaml"):
             (self.checkpoint / name).write_bytes(b"fixture-checkpoint")
-        (self.checkpoint / "trainer-state.json").write_text(json.dumps({
-            "runtime_robust_scales": self.scales,
-        }))
+        (self.checkpoint / "trainer-state.json").write_text(
+            json.dumps(
+                {
+                    "runtime_robust_scales": self.scales,
+                }
+            )
+        )
         self.numeric_config = {"baseline_max_samples_per_split": None, "neural_epochs": 2}
         self.config = SimpleNamespace(
             training=SimpleNamespace(
-                output_root=self.root / "savedModel", evaluation_max_samples=None,
+                output_root=self.root / "savedModel",
+                evaluation_max_samples=None,
             ),
             validation=SimpleNamespace(
-                output_root=self.root / "evaluations", require_prebuilt_baselines=True,
+                output_root=self.root / "evaluations",
+                require_prebuilt_baselines=True,
                 model_dump=lambda **kwargs: dict(self.numeric_config),
             ),
-            data=SimpleNamespace(fixed_split=True, h_start=1, max_horizon=14,
-                                 dataset_profile="fixture", selected_datasets=["fixture"]),
+            data=SimpleNamespace(
+                fixed_split=True,
+                h_start=1,
+                max_horizon=14,
+                dataset_profile="fixture",
+                selected_datasets=["fixture"],
+            ),
             model=SimpleNamespace(time_series_backend="kronos"),
-            model_architecture_digest=lambda: "architecture-fixture", as_dict=lambda: {},
+            model_architecture_digest=lambda: "architecture-fixture",
+            as_dict=lambda: {},
         )
         self.scope["validate_training_resume_contract"] = lambda *args, **kwargs: "training-fixture"
         self.scope["training_resume_contract"] = lambda config: {
@@ -104,10 +150,12 @@ class EvaluationStorageControlTests(unittest.TestCase):
             "sample_membership": {"samples": 2, "ordered_symbol_dates_sha256": "rows"},
             "evaluation_robust_scales": self.scales,
             "daily_normalized_pinball": {"2026-01-02": 0.4},
-            "aggregate": {"normalized_pinball": 0.4}, "primary_5d": {"selection_score": 0.4},
+            "aggregate": {"normalized_pinball": 0.4},
+            "primary_5d": {"selection_score": 0.4},
         }
         self.cached = {
-            "identity": {"baseline_id": "fixture"}, "robust_scales": self.scales,
+            "identity": {"baseline_id": "fixture"},
+            "robust_scales": self.scales,
             "sample_counts": {"train": 4, "validation": 2, "test": 2},
             "evaluation_membership": self.metrics["sample_membership"],
             "models": {"zero_return": {"state": "complete", "metrics": self.metrics}},
@@ -118,20 +166,31 @@ class EvaluationStorageControlTests(unittest.TestCase):
 
     def runner(self):
         return self.scope["ValidationBenchmark"](
-            self.config, run_id=self.run_id, checkpoint=self.checkpoint, output=self.output,
+            self.config,
+            run_id=self.run_id,
+            checkpoint=self.checkpoint,
+            output=self.output,
             lifecycle=self.root / "lifecycle/stage1/validation.json",
-            models=["zero_return", "kronos_full"], seeds=[42], resume=True,
+            models=["zero_return", "kronos_full"],
+            seeds=[42],
+            resume=True,
             recompute_full_model=True,
         )
 
     def saved_output(self):
         first = self.runner()
         payload = copy.deepcopy(first.payload)
-        payload.update(state="ready", models={
-            **self.cached["models"], "kronos_full": {
-                "state": "complete", "source": "checkpoint_recomputed", "metrics": self.metrics,
+        payload.update(
+            state="ready",
+            models={
+                **self.cached["models"],
+                "kronos_full": {
+                    "state": "complete",
+                    "source": "checkpoint_recomputed",
+                    "metrics": self.metrics,
+                },
             },
-        })
+        )
         implementation = payload["evaluation_contract"]["inputs"]["evaluation_implementation"]
         for name in self.scope["EVALUATION_CONTROL_IMPLEMENTATION_PATHS"]:
             implementation[name] = {"sha256": "old-reader-provenance", "size_bytes": 123}
@@ -150,7 +209,8 @@ class EvaluationStorageControlTests(unittest.TestCase):
         runner._run_learned_baseline = forbidden
         self.scope.update(evaluate_checkpoint=forbidden, _lazy_baseline_arrays=forbidden)
         with patch(
-            "stock_forecasting.baseline_contract.require_baselines", return_value=self.cached,
+            "stock_forecasting.baseline_contract.require_baselines",
+            return_value=self.cached,
         ):
             result = runner.run()
         self.assertEqual(result["state"], "ready")
@@ -163,11 +223,17 @@ class EvaluationStorageControlTests(unittest.TestCase):
         forbidden = Mock(side_effect=AssertionError("Baseline training or preparation ran"))
         self.scope.update(evaluate_checkpoint=evaluate, _lazy_baseline_arrays=forbidden)
         with patch(
-            "stock_forecasting.baseline_contract.require_baselines", return_value=self.cached,
+            "stock_forecasting.baseline_contract.require_baselines",
+            return_value=self.cached,
         ):
             self.assertEqual(self.runner().run()["state"], "ready")
             self.assertEqual(self.runner().run()["state"], "ready")
         evaluate.assert_called_once_with(self.config, self.checkpoint, split="test")
+        self.scope["stop_at_saved_boundary"].assert_called_once_with(
+            section_kind="validation-model",
+            section_id="kronos_full",
+            artifact=self.output,
+        )
         forbidden.assert_not_called()
 
     def test_numerical_source_changes_missing_sources_and_unknown_sources_are_rejected(self):
@@ -194,9 +260,16 @@ class EvaluationStorageControlTests(unittest.TestCase):
     def test_actual_constructor_still_rejects_changed_numerical_inputs(self):
         original = self.saved_output()
         for name in (
-            "run_id", "training_resume_contract_sha256", "dataset_artifacts", "checkpoint",
-            "evaluation_protocol", "evaluation_schema", "models", "seeds",
-            "model_architecture_sha256", "validation_numerical_config",
+            "run_id",
+            "training_resume_contract_sha256",
+            "dataset_artifacts",
+            "checkpoint",
+            "evaluation_protocol",
+            "evaluation_schema",
+            "models",
+            "seeds",
+            "model_architecture_sha256",
+            "validation_numerical_config",
         ):
             with self.subTest(input=name):
                 changed = copy.deepcopy(original)
@@ -212,7 +285,7 @@ class EvaluationStorageControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match"):
             self.runner()
 
-    def test_downloaded_completed_report_passes_real_constructor_without_modifying_artifact(self):
+    def test_downloaded_report_is_preserved_but_not_reused_after_numerical_changes(self):
         report = ROOT / "artifacts/runpod/run-20260922T182053Z-1388222581/validation-benchmark.json"
         if not report.is_file():
             self.skipTest("Downloaded report is optional local verification evidence")
@@ -226,26 +299,32 @@ class EvaluationStorageControlTests(unittest.TestCase):
         self.config.training.evaluation_max_samples = inputs["evaluation_protocol"]["max_samples"]
         self.config.model_architecture_digest = lambda: inputs["model_architecture_sha256"]
         self.numeric_config = inputs["validation_numerical_config"]
-        self.scope["validate_training_resume_contract"] = (
-            lambda *args, **kwargs: inputs["training_resume_contract_sha256"]
-        )
+        self.scope["validate_training_resume_contract"] = lambda *args, **kwargs: inputs[
+            "training_resume_contract_sha256"
+        ]
         self.scope["training_resume_contract"] = lambda config: {
             "dataset_artifacts": inputs["dataset_artifacts"],
         }
         fingerprint = self.scope["_file_fingerprint"]
         self.scope["_file_fingerprint"] = lambda path: (
             inputs["checkpoint"]["files"][path.name]
-            if path.parent == self.checkpoint else fingerprint(path)
+            if path.parent == self.checkpoint
+            else fingerprint(path)
         )
         self.write(payload)
-        runner = self.scope["ValidationBenchmark"](
-            self.config, run_id=self.run_id, checkpoint=self.checkpoint, output=self.output,
-            lifecycle=self.root / "lifecycle/stage1/validation.json", models=inputs["models"],
-            seeds=inputs["seeds"], resume=True, recompute_full_model=True,
-        )
-        self.assertEqual(runner.payload["models"], payload["models"])
+        with self.assertRaisesRegex(ValueError, "does not match this run contract"):
+            self.scope["ValidationBenchmark"](
+                self.config,
+                run_id=self.run_id,
+                checkpoint=self.checkpoint,
+                output=self.output,
+                lifecycle=self.root / "lifecycle/stage1/validation.json",
+                models=inputs["models"],
+                seeds=inputs["seeds"],
+                resume=True,
+                recompute_full_model=True,
+            )
         self.assertEqual(report.read_bytes(), original)
-        self.assertTrue(runner._completed("kronos_full"))
 
 
 if __name__ == "__main__":

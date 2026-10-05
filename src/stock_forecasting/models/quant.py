@@ -78,8 +78,10 @@ class QuantForecastModel(nn.Module):
         if branch is not None and branch.scale_projection is not None:
             if (asset_attention_mask is None) != (benchmark_attention_mask is None):
                 raise ValueError("Scale branch requires aligned asset and benchmark masks")
-            if not scale_inputs_validated and asset_attention_mask is not None and not torch.equal(
-                asset_attention_mask, benchmark_attention_mask
+            if (
+                not scale_inputs_validated
+                and asset_attention_mask is not None
+                and not torch.equal(asset_attention_mask, benchmark_attention_mask)
             ):
                 raise ValueError("Scale branch requires aligned asset and benchmark masks")
             with torch.autocast(device_type=asset_ohlcv.device.type, enabled=False):
@@ -143,12 +145,14 @@ class QuantForecastModel(nn.Module):
             asset_encoded.latent_tokens,
             benchmark_encoded.latent_tokens,
         )
-        alpha_quantiles = self.alpha_head(
+        alpha_quantiles, ranking_scores = self.alpha_head(
             conditioned,
             scale_features=scales,
             benchmark_tokens=benchmark_encoded.latent_tokens,
             market_ids=market_ids,
-        ).float()
+            return_ranking=True,
+        )
+        alpha_quantiles = alpha_quantiles.float()
         pinball_loss = (
             None
             if target_alpha is None
@@ -161,7 +165,7 @@ class QuantForecastModel(nn.Module):
                     "Ranking training requires same-date/market and security identities"
                 )
             ranking_loss = same_date_ranking_loss(
-                alpha_quantiles,
+                alpha_quantiles if ranking_scores is None else ranking_scores,
                 target_alpha,
                 self.alpha_head.robust_scales,
                 ranking_group_ids,
@@ -187,4 +191,5 @@ class QuantForecastModel(nn.Module):
             conditioned_latent_tokens=conditioned,
             conditioning_gate=gate,
             ranking_loss=ranking_loss,
+            ranking_scores=ranking_scores,
         )

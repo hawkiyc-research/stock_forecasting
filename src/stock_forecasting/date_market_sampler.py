@@ -47,6 +47,7 @@ def date_market_index(source, *, requested_workers: int) -> Path:
     identity = {
         "version": 1,
         "manifest": sha256_file(source.root / "bar-store.json"),
+        "sample_universe": source.sample_universe_identity,
         "split": source.split,
         "count": len(source),
         "window": source.window_size,
@@ -127,13 +128,98 @@ def date_market_index(source, *, requested_workers: int) -> Path:
 
 
 class DateMarketSampler(BlockwisePermutationSampler):
-    def __init__(self, source, *, requested_workers: int, **kwargs):
+    def __init__(
+        self,
+        source,
+        *,
+        requested_workers: int,
+        yearly_decay: float | None = None,
+        **kwargs,
+    ):
         self.index_path = date_market_index(source, requested_workers=requested_workers)
+        if yearly_decay is not None and not 0 < yearly_decay <= 1:
+            raise ValueError("yearly_decay must be in (0, 1]")
+        self.yearly_decay = yearly_decay
         super().__init__(len(source), **kwargs)
+        self.sampling_summary = None
+        if yearly_decay is not None:
+            index = np.load(self.index_path, mmap_mode="r")
+            try:
+                self.sampling_summary = self.year_quotas(index)
+            finally:
+                index._mmap.close()
+            import json
+
+            print("Annual training sampling: " + json.dumps(self.sampling_summary), flush=True)
+
+    def year_quotas(self, index):
+        from datetime import date, timedelta
+
+        epoch = date(1970, 1, 1)
+        first = (epoch + timedelta(days=int(index["group"][0]) // 256)).year
+        last = (epoch + timedelta(days=int(index["group"][-1]) // 256)).year
+        strata = []
+        for year in range(first, last + 1):
+            lower = (date(year, 1, 1) - epoch).days * 256
+            upper = (date(year + 1, 1, 1) - epoch).days * 256
+            start, stop = np.searchsorted(index["group"], [lower, upper])
+            if stop > start:
+                weight = self.yearly_decay ** (last - year)
+                strata.append(
+                    {
+                        "year": year,
+                        "start": int(start),
+                        "count": int(stop - start),
+                        "per_window_weight": weight,
+                    }
+                )
+        mass = np.array([s["count"] * s["per_window_weight"] for s in strata])
+        exact = len(self) * mass / mass.sum()
+        quotas = np.floor(exact).astype(np.int64)
+        # Largest-remainder rounding gives an exact epoch budget without a full
+        # per-window probability vector. Ties have deterministic year order.
+        remainder = len(self) - int(quotas.sum())
+        order = np.argsort(-(exact - quotas), kind="stable")
+        quotas[order[:remainder]] += 1
+        for row, quota in zip(strata, quotas, strict=True):
+            row["samples"] = int(quota)
+        return strata
 
     def __iter__(self):
         index = np.load(self.index_path, mmap_mode="r")
         try:
+            if self.yearly_decay is not None:
+                import random
+
+                strata = self.year_quotas(index)
+                rng = random.Random(self.seed + self.epoch * 1_000_003)
+                remaining = [row["samples"] for row in strata]
+
+                def stream(row):
+                    cycle = 0
+                    while True:
+                        sampler = BlockwisePermutationSampler(
+                            row["count"],
+                            seed=self.seed + row["year"] * 19 + cycle * 99991,
+                            block_size=self.block_size,
+                        )
+                        sampler.set_epoch(self.epoch)
+                        for position in sampler:
+                            yield int(index["ordinal"][row["start"] + position])
+                        cycle += 1
+
+                streams = [stream(row) for row in strata]
+                while sum(remaining):
+                    draw = rng.randrange(sum(remaining))
+                    chosen = 0
+                    while draw >= remaining[chosen]:
+                        draw -= remaining[chosen]
+                        chosen += 1
+                    take = min(self.block_size, remaining[chosen])
+                    for _ in range(take):
+                        yield next(streams[chosen])
+                    remaining[chosen] -= take
+                return
             for position in super().__iter__():
                 yield int(index["ordinal"][position])
         finally:

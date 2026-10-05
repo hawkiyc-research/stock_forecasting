@@ -198,6 +198,36 @@ def prepare_causal_observation(
     if len(benchmark_raw_window) != input_length:
         raise ValueError("Benchmark timestamps must be unique and exactly aligned")
 
+    from stock_forecasting.data.sample_universe import eligible_cutoffs, market_sessions
+    from stock_forecasting.data_policy import load_data_policy
+
+    policy = load_data_policy()
+    end = (
+        _utc_timestamp(as_of) if as_of is not None else pd.Timestamp(selected["timestamp"].iloc[-1])
+    )
+    sessions = market_sessions(
+        policy["calendars"][markets[0]],
+        pd.Timestamp(selected["timestamp"].iloc[0]).date().isoformat(),
+        end.date().isoformat(),
+    )
+    if sessions.empty or pd.Timestamp(selected["timestamp"].iloc[-1]) != sessions[-1]:
+        raise ValueError("Asset has no executable observation on the requested last market session")
+    candidates, reasons, _ = eligible_cutoffs(
+        selected.reset_index(drop=True),
+        benchmark,
+        sessions,
+        window_size=input_length,
+        max_horizon=0,
+        policy=policy,
+        currency=_metadata(raw_window).get("currency", ""),
+        benchmark_is_index=str(benchmark["asset_type"].iloc[0]) == "index",
+    )
+    if len(candidates) == 0 or reasons[-1]:
+        raise ValueError(
+            "Inference window violates data cleaning: "
+            + (str(reasons[-1]) if len(reasons) else "insufficient_history")
+        )
+
     asset_window = asof_adjusted_window(raw_window)
     benchmark_window = asof_adjusted_window(benchmark_raw_window)
     start_at = pd.Timestamp(cast(Any, raw_window.loc[0, "timestamp"])).isoformat()
@@ -293,6 +323,39 @@ def infer_observation(
             market_ids=market_ids([observation.metadata.get("market", "")], device),
         )
     training_data = provenance_summary(config.data.resolved_manifest_path)
+    calibrated_forecast = None
+    calibration_status = "not_available"
+    if config.validation.calibrate_intervals:
+        from stock_forecasting.data.manifest import sha256_file
+        from stock_forecasting.forecast_evaluation import (
+            calibrate_predictions,
+            validate_calibration,
+        )
+
+        path = (
+            config.validation.output_root
+            / resolved_checkpoint.parent.name
+            / "interval-calibration.json"
+        )
+        if path.is_file():
+            calibration = json.loads(path.read_text())
+            validate_calibration(calibration, config.data.alpha_horizons)
+            if calibration.get("checkpoint_weights_sha256") != sha256_file(
+                resolved_checkpoint / "adapter.safetensors"
+            ):
+                raise ValueError("Interval calibration belongs to a different checkpoint")
+            values = calibrate_predictions(
+                output.alpha_quantiles.detach().float().cpu().numpy(),
+                [observation.metadata["market"]],
+                calibration,
+            )
+            calibrated_forecast = _forecast_payload(
+                torch.from_numpy(values),
+                horizons=config.data.alpha_horizons,
+                quantile_levels=config.model.alpha_quantiles,
+                signal_threshold=config.model.postprocess_alpha_threshold,
+            )
+            calibration_status = "validation_fitted"
     return {
         "model_output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
         "symbol": observation.symbol,
@@ -311,6 +374,19 @@ def infer_observation(
             horizons=config.data.alpha_horizons,
             quantile_levels=config.model.alpha_quantiles,
             signal_threshold=config.model.postprocess_alpha_threshold,
+        ),
+        "calibrated_forecast": calibrated_forecast,
+        "interval_calibration_status": calibration_status,
+        "ranking_scores": (
+            None
+            if output.ranking_scores is None
+            else dict(
+                zip(
+                    (f"{h}d" for h in config.data.alpha_horizons),
+                    output.ranking_scores.detach().float().cpu()[0].tolist(),
+                    strict=True,
+                )
+            )
         ),
         "data_provenance": {
             "training_dataset": training_data,

@@ -38,6 +38,7 @@ def resolve_scale_feature_statistics(
     identity = {
         "version": EXTENDED_FEATURE_VERSION if extended else SCALE_FEATURE_VERSION,
         "bar_store_manifest_sha256": sha256_file(dataset.root / "bar-store.json"),
+        "sample_universe": dataset.sample_universe_identity,
         "window_size": dataset.window_size,
         "split": "train",
         "sample_count": count,

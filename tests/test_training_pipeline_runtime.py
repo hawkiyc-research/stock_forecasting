@@ -32,35 +32,54 @@ class ProbeDataset(Dataset):
         series = torch.arange(80, dtype=torch.float32).reshape(16, 5) / 100 + index / 500
         timestamps = torch.zeros(16, 5, dtype=torch.long)
         return {
-            "asset_series": series, "benchmark_series": series + 1,
-            "asset_timestamp_features": timestamps, "benchmark_timestamp_features": timestamps,
+            "asset_series": series,
+            "benchmark_series": series + 1,
+            "asset_timestamp_features": timestamps,
+            "benchmark_timestamp_features": timestamps,
             # Adjacent securities must exceed the ranking loss's 0.01 dead zone.
             "target_alpha": torch.arange(14, dtype=torch.float32) / 100 + (index % 64) / 50,
-            "sample_id": str(index), "symbol": f"S{index % 64}", "benchmark_symbol": "INDEX",
-            "asset_type": "stock", "market": "US", "provider": "fixture",
-            "dataset_profile": "fixture", "cutoff_at": "2025-01-03", "diagnostics": {},
+            "sample_id": str(index),
+            "symbol": f"S{index % 64}",
+            "benchmark_symbol": "INDEX",
+            "asset_type": "stock",
+            "market": "US",
+            "provider": "fixture",
+            "dataset_profile": "fixture",
+            "cutoff_at": "2025-01-03",
+            "diagnostics": {},
         }
 
 
 class ProbeModel(nn.Module):
     def __init__(self):
         super().__init__()
+        self.backbone = nn.Identity()
         self.head = nn.Linear(5, 42)
         self.register_buffer("calls", torch.tensor(0))
-        self.dropout = nn.Dropout(.1)
+        self.dropout = nn.Dropout(0.1)
 
     def forward(self, asset, benchmark, *, target_alpha, ranking_group_ids, security_ids, **_kw):
         predictions = self.head(self.dropout(asset.mean(1))).reshape(-1, 14, 3)
         pinball = (predictions[:, :, 1] - target_alpha).square().mean()
-        ranking = same_date_ranking_loss(
-            predictions, target_alpha, predictions.new_ones(14),
-            ranking_group_ids, security_ids, 16,
-        ) if self.training else None
+        ranking = (
+            same_date_ranking_loss(
+                predictions,
+                target_alpha,
+                predictions.new_ones(14),
+                ranking_group_ids,
+                security_ids,
+                16,
+            )
+            if self.training
+            else None
+        )
         if self.training:
             self.calls.add_(1)
         return SimpleNamespace(
-            loss=pinball if ranking is None else pinball + .05 * ranking,
-            pinball_loss=pinball, ranking_loss=ranking, alpha_quantiles=predictions,
+            loss=pinball if ranking is None else pinball + 0.05 * ranking,
+            pinball_loss=pinball,
+            ranking_loss=ranking,
+            alpha_quantiles=predictions,
         )
 
 
@@ -83,8 +102,10 @@ def test_worker_metadata_preserves_inputs_predictions_and_gradients():
         torch.manual_seed(5)
         model.zero_grad(set_to_none=True)
         output = training.forward_batch(
-            bundle, training._move_batch_to_device(batch, torch.device("cpu")),
-            config, torch.device("cpu"),
+            bundle,
+            training._move_batch_to_device(batch, torch.device("cpu")),
+            config,
+            torch.device("cpu"),
         )
         output.loss.backward()
         outputs.append(output.loss.detach())
@@ -108,7 +129,8 @@ def test_probe_rolls_back_parameters_buffers_modes_and_rng_even_on_failure(fail)
         output = training.forward_batch(
             SimpleNamespace(model=model),
             training._move_batch_to_device(batch, torch.device("cpu")),
-            None, torch.device("cpu"),
+            None,
+            torch.device("cpu"),
         )
         output.loss.backward()
         optimizer.step()
@@ -129,7 +151,10 @@ def test_probe_rolls_back_parameters_buffers_modes_and_rng_even_on_failure(fail)
 @pytest.mark.parametrize("training_mode", [True, False])
 @pytest.mark.parametrize("cpu_guard", [True, False])
 def test_cuda_pipeline_probe_has_real_ranking_and_optimizer_work_without_state_changes(
-    monkeypatch, capsys, training_mode, cpu_guard,
+    monkeypatch,
+    capsys,
+    training_mode,
+    cpu_guard,
 ):
     device = torch.device("cuda")
     config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
@@ -140,23 +165,39 @@ def test_cuda_pipeline_probe_has_real_ranking_and_optimizer_work_without_state_c
     model = ProbeModel().to(device)
     model.dropout.eval()
     source = ProbeDataset()
-    monkeypatch.setattr(training, "_training_sampler", lambda *_args: BlockwisePermutationSampler(
-        len(source), seed=77, block_size=128
-    ))
+    monkeypatch.setattr(
+        training,
+        "_training_sampler",
+        lambda *_args: BlockwisePermutationSampler(len(source), seed=77, block_size=128),
+    )
     if cpu_guard:
-        monkeypatch.setattr(training, "_probe_cpu_pressure", lambda *_args: {
-            "cpu_fraction": .99, "throttled_period_fraction": .20,
-        })
+        monkeypatch.setattr(
+            training,
+            "_probe_cpu_pressure",
+            lambda *_args: {
+                "cpu_fraction": 0.99,
+                "throttled_period_fraction": 0.20,
+            },
+        )
     before = {name: value.clone() for name, value in model.state_dict().items()}
     cpu_rng, gpu_rng = torch.get_rng_state(), torch.cuda.get_rng_state_all()
     workers = training.plan_dataloader_workers(
-        2, visible_cpu_count=4, available_memory_bytes=16 * 1024**3,
+        2,
+        visible_cpu_count=4,
+        available_memory_bytes=16 * 1024**3,
     )
     result = training._measure_cuda_batch(
-        bundle=SimpleNamespace(model=model), sample=source[0], batch_size=4,
-        config=config, device=device, training=training_mode,
-        optimizer_state_reserve_bytes=0, device_memory_limit_bytes=1024**3,
-        dataset=source, worker_plan=workers, require_cpu_headroom=cpu_guard,
+        bundle=SimpleNamespace(model=model),
+        sample=source[0],
+        batch_size=4,
+        config=config,
+        device=device,
+        training=training_mode,
+        optimizer_state_reserve_bytes=0,
+        device_memory_limit_bytes=1024**3,
+        dataset=source,
+        worker_plan=workers,
+        require_cpu_headroom=cpu_guard,
     )
     assert result.accepted == (not cpu_guard) and result.samples_per_second > 0
     if cpu_guard:
@@ -176,18 +217,25 @@ def test_cuda_pipeline_probe_has_real_ranking_and_optimizer_work_without_state_c
         torch.testing.assert_close(value, before[name], rtol=0, atol=0)
     assert not model.dropout.training
     assert torch.equal(torch.get_rng_state(), cpu_rng)
-    assert all(torch.equal(left, right) for left, right in zip(
-        torch.cuda.get_rng_state_all(), gpu_rng, strict=True
-    ))
+    assert all(
+        torch.equal(left, right)
+        for left, right in zip(torch.cuda.get_rng_state_all(), gpu_rng, strict=True)
+    )
     assert all(parameter.grad is None for parameter in model.parameters())
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA runner")
 def test_cuda_complete_input_order():
     source = ProbeDataset()
-    loader = DataLoader(source, batch_size=7, num_workers=2, prefetch_factor=2,
-                        multiprocessing_context="spawn", pin_memory=True,
-                        collate_fn=training.ModelBatchCollator())
+    loader = DataLoader(
+        source,
+        batch_size=7,
+        num_workers=2,
+        prefetch_factor=2,
+        multiprocessing_context="spawn",
+        pin_memory=True,
+        collate_fn=training.ModelBatchCollator(),
+    )
     completed = []
     for batch in training.iter_device_batches(loader, torch.device("cuda")):
         assert batch["market_ids"].device.type == "cuda"
@@ -206,9 +254,11 @@ def test_cuda_probe_failure_restores_state_and_stops_workers(monkeypatch, oom):
     config.model.lora.enabled = False
     model = ProbeModel().cuda()
     source = ProbeDataset()
-    monkeypatch.setattr(training, "_training_sampler", lambda *_args: BlockwisePermutationSampler(
-        len(source), seed=77, block_size=128
-    ))
+    monkeypatch.setattr(
+        training,
+        "_training_sampler",
+        lambda *_args: BlockwisePermutationSampler(len(source), seed=77, block_size=128),
+    )
     original_forward = training.forward_batch
     calls = 0
 
@@ -227,11 +277,19 @@ def test_cuda_probe_failure_restores_state_and_stops_workers(monkeypatch, oom):
     context = nullcontext() if oom else pytest.raises(RuntimeError, match="injected")
     with context:
         result = training._measure_cuda_batch(
-            bundle=SimpleNamespace(model=model), sample=source[0], batch_size=4,
-            config=config, device=torch.device("cuda"), training=True,
-            optimizer_state_reserve_bytes=0, device_memory_limit_bytes=1024**3,
-            dataset=source, worker_plan=training.plan_dataloader_workers(
-                2, visible_cpu_count=4, available_memory_bytes=16 * 1024**3,
+            bundle=SimpleNamespace(model=model),
+            sample=source[0],
+            batch_size=4,
+            config=config,
+            device=torch.device("cuda"),
+            training=True,
+            optimizer_state_reserve_bytes=0,
+            device_memory_limit_bytes=1024**3,
+            dataset=source,
+            worker_plan=training.plan_dataloader_workers(
+                2,
+                visible_cpu_count=4,
+                available_memory_bytes=16 * 1024**3,
             ),
         )
         assert not result.accepted and result.outcome == "cuda_out_of_memory"

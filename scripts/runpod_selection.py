@@ -45,6 +45,15 @@ STAGE_CONFIGS = {
     "stage1": "configs/stage1_kronos_base_lora.yaml",
     "stage2": "configs/stage2_kronos_base_lora.yaml",
 }
+EXPERIMENT_CONFIGS = {
+    f"{group}-{variant}": {
+        "config_path": f"configs/experiments/{group}_{variant.replace('-', '_')}.yaml",
+        "start": "2021-01-01" if group == "a" else "2016-01-01",
+        "end": "2026-06-01",
+    }
+    for group in ("a", "b")
+    for variant in ("lora32", "lora64", "partial")
+}
 STAGE_RUNTIME = {
     # Keep terminate_after in immutable selection hashes created before REST v2 migration.
     # Pod creation does not send this legacy field to RunPod.
@@ -345,6 +354,11 @@ def _validate_selection(
     if not isinstance(stage, dict) or stage.get("name") not in STAGE_CONFIGS:
         _fail("Training selection stage is unsupported")
     expected_config_path = STAGE_CONFIGS[stage["name"]]
+    experiment = stage.get("experiment")
+    if experiment is not None:
+        if experiment not in EXPERIMENT_CONFIGS or stage["name"] != "stage2":
+            _fail("Unknown Stage 2 experiment")
+        expected_config_path = EXPERIMENT_CONFIGS[experiment]["config_path"]
     if stage.get("config_path") != expected_config_path:
         _fail("Training stage does not map to the approved config")
     if stage.get("feature_mode") not in ("baseline", "scales", "benchmark", "combined"):
@@ -397,6 +411,12 @@ def _validate_selection(
     end = _parse_date(str(date_range.get("end_exclusive", "")), "end_exclusive")
     if start >= end:
         _fail("Dataset start date must precede its exclusive end date")
+    if experiment is not None and (
+        start != EXPERIMENT_CONFIGS[experiment]["start"]
+        or end != EXPERIMENT_CONFIGS[experiment]["end"]
+        or stage["feature_mode"] != "combined"
+    ):
+        _fail("Experiment configuration and selected dataset dates disagree")
     if start >= FIXED_EVALUATION_SPLIT["train_end"] or end < FIXED_EVALUATION_SPLIT["test_end"]:
         _fail("Production data must start before 2025-06-01 and extend through 2026-06-01")
 
@@ -857,7 +877,10 @@ def _verify_environment(
     expected["RUNPOD_REMOTE_SELECTION_PATH"] = str(selection_path)
     if data_only:
         for key in (
-            "RUNPOD_STAGE", "RUNPOD_CONFIG", "RUNPOD_STAGE_CONFIG_SHA256", "FIN_TS_FEATURE_MODE"
+            "RUNPOD_STAGE",
+            "RUNPOD_CONFIG",
+            "RUNPOD_STAGE_CONFIG_SHA256",
+            "FIN_TS_FEATURE_MODE",
         ):
             expected.pop(key)
     for key, expected_value in expected.items():
@@ -894,6 +917,8 @@ def command_create(arguments: argparse.Namespace) -> int:
     if missing:
         _fail(f"Missing required selection options: {', '.join(missing)}")
     payload = _build_selection(arguments, project_root)
+    if getattr(arguments, "reuse_current", False) and previous["stage"].get("experiment"):
+        payload = _with_experiment(payload, previous["stage"]["experiment"], project_root)
     if (
         previous_request_sha is not None
         and payload["dataset_request_sha256"] != previous_request_sha
@@ -915,6 +940,48 @@ def command_create(arguments: argparse.Namespace) -> int:
     print("Fixed splits: train < 2025-06-01; validation < 2025-12-01; holdout < 2026-06-01")
     print(f"Dataset request SHA-256: {payload['dataset_request_sha256']}")
     print(f"Selection file: {path}")
+    return 0
+
+
+def _with_experiment(payload: dict, experiment: str, project_root: Path) -> dict:
+    """Choose runtime model settings without changing the preparation contract."""
+    import copy
+
+    if experiment not in EXPERIMENT_CONFIGS:
+        _fail("Unknown experiment: " + experiment)
+    payload = copy.deepcopy(payload)
+    preset = EXPERIMENT_CONFIGS[experiment]
+    payload["dataset_request"]["date_range"] = {
+        "start_inclusive": preset["start"],
+        "end_exclusive": preset["end"],
+    }
+    path = project_root / preset["config_path"]
+    if not path.is_file() or path.is_symlink():
+        _fail("Experiment config is missing: " + str(path))
+    payload["stage"] = {
+        "name": "stage2",
+        "config_path": preset["config_path"],
+        "config_sha256": _file_sha256(path),
+        "feature_mode": "combined",
+        "experiment": experiment,
+    }
+    payload["runtime"] = STAGE_RUNTIME["stage2"]
+    payload["created_at"] = datetime.now(timezone.utc).isoformat()
+    payload["dataset_request_sha256"] = _payload_sha256(
+        _dataset_request_core(payload["dataset_request"])
+    )
+    payload["selection_sha256"] = _payload_sha256(_selection_core(payload))
+    payload["selection_id"] = f"selection-{payload['selection_sha256'][:16]}"
+    return _validate_selection(payload, project_root=project_root)
+
+
+def command_experiment(arguments: argparse.Namespace) -> int:
+    project_root = _validate_project_root(arguments.project_root)
+    _, previous = _resolve_selection_path(project_root, None, validate_local_config=False)
+    payload = _with_experiment(previous, arguments.experiment, project_root)
+    _activate_selection(project_root, payload)
+    print(f"Experiment: {arguments.experiment} ({payload['stage']['config_path']})")
+    print(f"Dataset request SHA-256: {payload['dataset_request_sha256']}")
     return 0
 
 
@@ -1071,6 +1138,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create.set_defaults(handler=command_create)
 
+    experiment = subparsers.add_parser("select-experiment")
+    experiment.add_argument("--project-root", required=True)
+    experiment.add_argument("--experiment", required=True, choices=tuple(EXPERIMENT_CONFIGS))
+    experiment.set_defaults(handler=command_experiment)
+
     show = subparsers.add_parser("show")
     show.add_argument("--project-root", required=True)
     show.add_argument("--selection")
@@ -1081,7 +1153,8 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--selection")
     export.add_argument("--null", action="store_true")
     export.add_argument(
-        "--data-only", action="store_true",
+        "--data-only",
+        action="store_true",
         help="Baseline data selection; no main-model config dependency.",
     )
     export.set_defaults(handler=command_export)

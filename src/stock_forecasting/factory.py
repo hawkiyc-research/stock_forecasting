@@ -124,6 +124,7 @@ def build_model_bundle(
                 rank=config.model.lora.rank,
                 alpha=config.model.lora.alpha,
                 dropout=config.model.lora.dropout,
+                unfreeze_last_blocks=config.model.unfreeze_last_blocks,
             )
         if config.model.gradient_checkpointing:
             checkpointing_enable = getattr(kronos.model, "gradient_checkpointing_enable", None)
@@ -167,6 +168,8 @@ def build_model_bundle(
         fp32_head=config.model.alpha_head_fp32,
         market_aware=config.model.market_aware,
         explicit_output_scale=config.model.explicit_output_scale,
+        decoupled_output_scale=config.model.decoupled_output_scale,
+        independent_ranking_head=config.model.independent_ranking_head,
     )
     model = QuantForecastModel(
         backbone,

@@ -499,8 +499,7 @@ def test_loss_logging_resolves_requested_points_from_epoch_length() -> None:
         )
     )
     assert {
-        runtime_step: loss_alignment[runtime_step]
-        for runtime_step in validation_alignment
+        runtime_step: loss_alignment[runtime_step] for runtime_step in validation_alignment
     } == validation_alignment
 
 
@@ -687,6 +686,7 @@ def test_quant_model_preserves_head_and_reusable_encoder_shapes(h_start: int) ->
         "loss",
         "pinball_loss",
         "ranking_loss",
+        "ranking_scores",
         "alpha_quantiles",
         "asset_last_hidden_state",
         "benchmark_last_hidden_state",
@@ -727,8 +727,7 @@ def test_mock_checkpoint_contains_only_reusable_numeric_and_alpha_modules() -> N
 
     assert state
     assert all(
-        name.startswith(("resampler.", "benchmark_conditioner.", "alpha_head."))
-        for name in state
+        name.startswith(("resampler.", "benchmark_conditioner.", "alpha_head.")) for name in state
     )
     assert not any(name.startswith("backbone.") for name in state)
 
@@ -793,10 +792,7 @@ def test_checkpoint_runtime_robust_scales_restore_exact_horizon_contract(
     with pytest.raises(ValueError, match="do not match model horizons"):
         _restore_runtime_robust_scales(
             model,
-            {
-                "runtime_robust_scales": [1.0]
-                * (13 if len(expected) == 12 else 12)
-            },
+            {"runtime_robust_scales": [1.0] * (13 if len(expected) == 12 else 12)},
             require_match=False,
         )
 
@@ -1026,9 +1022,7 @@ def test_evaluation_restores_training_mode(
     assert bundle.model.training
     assert metrics["samples"] == len(dataset)
     assert "aggregate" in metrics
-    assert set(metrics["per_horizon"]) == {
-        f"{horizon}d" for horizon in config.data.alpha_horizons
-    }
+    assert set(metrics["per_horizon"]) == {f"{horizon}d" for horizon in config.data.alpha_horizons}
     assert "selection_score" in metrics["primary_5d"]
     assert metrics["primary_5d"]["selection_score"] == pytest.approx(
         metrics["aggregate"]["selection_score"]

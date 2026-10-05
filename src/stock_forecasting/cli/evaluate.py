@@ -147,12 +147,48 @@ def evaluate_checkpoint(
         split=split,
     )
     bundle.model.eval()
+    calibration = None
+    if config.validation.calibrate_intervals and split == "test":
+        validation_loader = build_evaluation_loader(
+            config,
+            bundle=bundle,
+            device=device,
+            split="validation",
+        )
+        calibration_metrics = evaluate_loader(
+            bundle,
+            validation_loader,
+            config,
+            device,
+            fit_interval_calibration=True,
+        )
+        calibration = calibration_metrics["interval_calibration"]
+        calibration["checkpoint"] = _checkpoint_summary(resolved_checkpoint, checkpoint_state)
+        from stock_forecasting.data.manifest import atomic_write_json, sha256_file
+
+        calibration["checkpoint_weights_sha256"] = sha256_file(
+            resolved_checkpoint / "adapter.safetensors"
+        )
+        calibration["sample_universe"] = validation_loader.dataset.sample_universe_identity
+
+        atomic_write_json(
+            config.validation.output_root
+            / checkpoint_run_id(resolved_checkpoint)
+            / "interval-calibration.json",
+            calibration,
+        )
+        del validation_loader
     metrics = evaluate_loader(
         bundle,
         loader,
         config,
         device,
+        interval_calibration=calibration,
     )
+    if calibration is not None:
+        metrics["interval_calibration"] = calibration
+    from stock_forecasting.data.sample_universe import dataset_provenance
+
     return {
         "run_id": checkpoint_run_id(resolved_checkpoint),
         "split": split,
@@ -160,6 +196,7 @@ def evaluate_checkpoint(
         "device": str(device),
         "checkpoint": _checkpoint_summary(resolved_checkpoint, checkpoint_state),
         "data_provenance": provenance_summary(config.data.resolved_manifest_path),
+        "evaluation_data_provenance": dataset_provenance(loader.dataset),
         "model_architecture_sha256": config.model_architecture_digest(),
         "metrics": metrics,
     }

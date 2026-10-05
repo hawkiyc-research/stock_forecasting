@@ -67,8 +67,10 @@ def same_date_ranking_loss(
     else:
         if (
             len(targets) > MAX_RANKING_CANDIDATES
-            or eligible_pairs.ndim != 2 or eligible_pairs.shape[0] != 2
-            or eligible_pairs.device != targets.device or eligible_pairs.dtype != torch.long
+            or eligible_pairs.ndim != 2
+            or eligible_pairs.shape[0] != 2
+            or eligible_pairs.device != targets.device
+            or eligible_pairs.dtype != torch.long
         ):
             raise ValueError("Prepared ranking pairs are incompatible with this batch")
         pairs = eligible_pairs
@@ -78,7 +80,11 @@ def same_date_ranking_loss(
         pairs = pairs[:, torch.randperm(pairs.shape[1], device=pairs.device)[:max_pairs]]
     left, right = pairs
     delta = (targets[left].float() - targets[right].float()) / scales
-    gap = (predictions[left, :, 1].float() - predictions[right, :, 1].float()) / scales
+    if predictions.ndim == 2:
+        # Independent ranking scores are dimensionless, not return forecasts.
+        gap = predictions[left].float() - predictions[right].float()
+    else:
+        gap = (predictions[left, :, 1].float() - predictions[right, :, 1].float()) / scales
     valid = torch.isfinite(delta) & (delta.abs() > 0.01)
     losses = F.softplus(-delta.nan_to_num().sign() * gap)
     return losses.masked_fill(~valid, 0).sum() / valid.sum().clamp_min(1)

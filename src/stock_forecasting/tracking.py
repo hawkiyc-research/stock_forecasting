@@ -14,7 +14,7 @@ import socket
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -352,6 +352,7 @@ class TrackingRun:
     wandb_directory: Path
     delivery_pending: bool = False
     delivery_failed: bool = False
+    session_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     @property
     def key(self) -> str:
@@ -361,10 +362,18 @@ class TrackingRun:
 
     def log(self, payload: dict[str, Any], step: int | None = None) -> None:
         local_log = self.directory / "metrics.jsonl"
-        record = {"step": step, "time": datetime.now(UTC).isoformat(), **payload}
+        record = {
+            "step": step,
+            "time": datetime.now(UTC).isoformat(),
+            "run_id": self.id,
+            "session_id": self.session_id,
+            **payload,
+        }
         try:
             with local_log.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
         except BaseException as error:
             self._record_status("failed", error=error)
             raise
@@ -619,9 +628,7 @@ def start_tracking(config: ExperimentConfig) -> TrackingRun:
         directory=config.training.output_root,
         backend=backend,
         mode=selected_mode,
-        tracking_enabled=bool(
-            config.wandb.enabled and config.wandb.mode != "disabled"
-        ),
+        tracking_enabled=bool(config.wandb.enabled and config.wandb.mode != "disabled"),
         project=config.wandb.project,
         entity=config.wandb.entity,
         wandb_directory=config.wandb.directory,

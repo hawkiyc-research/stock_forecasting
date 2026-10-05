@@ -27,6 +27,7 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         for relative in (
             *CONTRACT["BASELINE_SOURCES"],
             "configs/baseline.json",
+            "configs/data_cleaning.json",
             "configs/baseline_execution_compatibility.json",
             "src/stock_forecasting/training.py",
         ):
@@ -88,17 +89,17 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
         path.write_text(json.dumps(parameters))
         self.assertNotEqual(before, self.identity())
 
-    def test_execution_bridge_is_exact_and_fails_closed_for_unknown_changes(self):
+    def test_historical_execution_bridge_does_not_bypass_new_cleaning(self):
         self.assertIn(
             'append_manifest_file "configs/baseline_execution_compatibility.json"',
             (ROOT / "scripts/sync_project_to_runpod_volume.sh").read_text(),
         )
         execution = CONTRACT["execution_identity"](self.root)
-        self.assertEqual(execution["compatibility"], "v0.2.1-tensor-pipeline")
+        self.assertIsNone(execution["compatibility"])
         before = self.identity()
         registry = self.root / "configs/baseline_execution_compatibility.json"
         payload = json.loads(registry.read_text())
-        self.assertEqual(
+        self.assertNotEqual(
             before["contract"]["implementation"], payload["entries"][0]["canonical_implementation"]
         )
         path = self.root / "src/stock_forecasting/baseline_input.py"
@@ -176,7 +177,7 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
                 "stage": {
                     "config_path": f"configs/missing-{stage}.yaml",
                     "feature_mode": "combined",
-                }
+                },
             }
             CONTRACT["validate_local_configuration"](ROOT, selection, parameters)
             selection["stage"]["feature_mode"] = "baseline"

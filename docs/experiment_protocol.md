@@ -19,12 +19,12 @@ model input 或 quant head。
 - 商品層級預測，不是投資組合預測。
 - 日線 OHLCV only。
 - 美國與台灣股票、ETF；期貨與選擇權不在本 PoC。
-- 收盤 `t` 後產生訊號，下一共同交易日 raw open 進場。
+- 收盤 `t` 後產生訊號，下一市場交易日 raw open 進場，不跳過缺成交日。
 - 進場日算第 1 個持有交易日。
 - `h_start` 可設定為 1、2 或 3；horizons 是 `h_start` 到固定第 14 日。
 - label 固定為 benchmark-relative adjusted execution log return。
 - CAPM abnormal return 只作未來 diagnostic/ablation。
-- 連續 quantile 預測是唯一訓練 target；方向訊號只作後處理。
+- quantile 預測用 pinball；獨立 ranking score head 用同日排序輔助 loss。方向訊號只作後處理。
 
 ### 3. 模型假說
 
@@ -57,7 +57,7 @@ median correlation 或 calibration，而不是只在單一五日方向分類上�
 對 cutoff `t` 與 horizon `h`：
 
 ```text
-entry = next shared trading day's raw regular-session open
+entry = next market session's raw regular-session open; never postpone a missing entry
 exit  = h-th shared holding day's raw close
 alpha_h = log(asset adjusted gross return) - log(benchmark adjusted gross return)
 ```
@@ -76,25 +76,26 @@ asset return、CAPM diagnostic 與任何 future label 都不得出現在 input t
 
 ### 6. Split 與 Stage 設計
 
-先從壓縮 symbol bar store 計算連續有效 cutoff ranges，再依全域市場日期作
-chronological 70/15/15 train/validation/test split；邊界使用 purge 20 bars 與 effective
-embargo 14 bars。磁碟上不建立 causal windows 或 labels，也不得讓同一 future label
-interval 跨越 split 邊界。
+從既有壓縮 bar-store 建立連續市場交易日與最低流動性檢查的 compact runtime ranges。
+正式 train < 2025-06-01、validation [2025-06-01, 2025-12-01)、test
+[2025-12-01, 2026-06-01)；最晚 label 日期嚴格早於該 split 右界。A/B 共用同一
+validation/test 來源，完整循序評估。詳細清理門檻及年度衰減以 README 與
+`configs/data_cleaning.json` 為準；不建立完整 windows／labels，不刪除真實極端報酬。
 
 | 項目 | Stage 1 | Stage 2 |
 |---|---|---|
 | 目的 | 驗證完整腳本、資料、GPU、loss、checkpoint 與 validation | 完整 train split 的 PoC 結果 |
-| train 樣本 | O(1) blockwise permutation 固定選取精確 3%，每個 epoch 只改變順序 | 100% train split |
+| train 樣本 | 動態年度加權取樣；每 epoch 呈現有效數的 5%，上限 500,000 | 動態年度加權取樣；每 epoch 呈現次數等於有效 train 數 |
 | epoch 上限 | 2；第 2 epoch 開始前不得 early stop | 5 |
 | validation cadence | 每個 epoch 的 20%／40%／60%／80%／100% | 同左 |
 | early stopping | normalized pinball validation loss 連續 5 次未改善，第 2 epoch 起生效 | 同一 loss 與 patience，第 1 epoch 起生效 |
 | retention | validation 最佳 5 個完整 checkpoints，加上 completion result | 同左 |
-| validation/test | 完整 ranges 保留；例行評估依 config 確定性限量 | 同左 |
+| validation/test | 完整有效 windows，不抽樣 | 同左 |
 | 模型架構 | Kronos-base + LoRA + shared resampler + conditioner + alpha head | 完全相同 |
 | 初始化 | 原始 pretrained base | 原始 pretrained base |
 | 接續 Stage 1 checkpoint | 否 | 否 |
 
-Stage 1 不是「最早 3% 時間」，也不是縮短 validation/test。兩個 config 的
+Stage 1 不是「最早 5% 時間」，也不是縮短 validation/test。兩個預設 config 的
 `config.model_architecture_digest()` 必須相同；此 digest 包含 `h_start`／輸出維度，
 最後不足一個 training batch 的 target set 會從同一集合開頭確定性補齊，且將補齊數量
 寫入 training summary。Stage 2 重新從相同 pretrained revision 開始，以免把 Stage 1
@@ -102,8 +103,9 @@ script smoke 當成額外訓練資料。
 
 ### 7. Objective
 
-唯一 objective 是 q10/q50/q90 pinball loss。每個 horizon 以 train-only robust scale
-正規化後等權平均：
+主 objective 是 q10/q50/q90 pinball loss。每個 horizon 以 train-only robust scale
+正規化後等權平均；training 另加獨立 ranking head 的同日排序 loss（預設權重 0.05），
+不直接把 q50 當排序 score。validation selection 只使用未校準 pinball：
 
 ```text
 scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
@@ -184,8 +186,8 @@ state 與 raw validation JSON 交叉確認，不能只看 W&B chart 或 README�
 
 Stage 1：
 
-- train subset 固定且可重現，精確為完整 train split 的 3%；每個 epoch 只改變遍歷
-  順序，最多 2 epochs，且 early stopping 不得在進入第 2 epoch 前生效。
+- 年度加權動態取樣，呈現次數為有效 train 數的 5%（上限 500,000）；seed／epoch
+  決定可重現序列，最多 2 epochs，early stopping 不得在第 2 epoch 前生效。
 - 完成 remote ruff/pytest、forward/backward、validation-ranked checkpoint save/reload、
   inference schema smoke 與自動 lifecycle termination。
 - 輸出 `[B,15-h_start,3]` ordered alpha quantiles，`h_start ∈ {1,2,3}`；
@@ -245,12 +247,12 @@ incremental model value; they do not enter production inputs or the alpha head.
 - Instrument-level, not portfolio-level, forecasting.
 - Daily OHLCV only.
 - US and Taiwan stocks/ETFs; no futures or options in this PoC.
-- Signal after close `t`; entry at the next shared trading day's raw open.
+- Signal after close `t`; entry at the next market session's raw open, without skipping missing bars.
 - Entry day counts as holding day one.
 - `h_start` is configurable as 1, 2, or 3; horizons run through fixed day 14.
 - Label fixed to benchmark-relative adjusted execution log return.
 - CAPM abnormal return reserved for a diagnostic/ablation.
-- Continuous quantiles are the sole training target; direction is post-processing.
+- Pinball trains quantiles; an independent score head receives same-day ranking loss. Direction is post-processing.
 
 ### 3. Model hypothesis
 
@@ -280,7 +282,7 @@ Taiwan source differences must be disclosed.
 For cutoff `t` and horizon `h`:
 
 ```text
-entry = next shared trading day's raw regular-session open
+entry = next market session's raw regular-session open; never postpone a missing entry
 exit  = h-th shared holding day's raw close
 alpha_h = log(asset adjusted gross return) - log(benchmark adjusted gross return)
 ```
@@ -295,34 +297,38 @@ fail-closed benchmark calendar gaps.
 
 ### 6. Splits and stages
 
-Derive contiguous valid-cutoff ranges from the compressed symbol bar store, then
-assign chronological 70/15/15 train/validation/test splits on global market
-dates with a 20-bar purge and effective 14-bar embargo. No causal window or label
-is stored, and no future label interval may cross a split boundary.
+Build compact runtime ranges over existing bars using complete market sessions
+and minimum liquidity. Production train precedes 2025-06-01; validation is
+[2025-06-01, 2025-12-01), test [2025-12-01, 2026-06-01). Last label dates must
+precede each upper boundary. A/B fully traverse the same validation/test source.
+See README and `configs/data_cleaning.json` for cleaning and annual weighting;
+no full windows/labels are stored and genuine extreme returns remain.
 
 | Item | Stage 1 | Stage 2 |
 |---|---|---|
 | Purpose | Validate the complete script/data/GPU/loss/checkpoint/validation path | Full-train PoC result |
-| Train samples | One fixed exact 3% set; only traversal order changes between epochs | 100% of train |
+| Train samples | Dynamic annual weighting; 5% of eligible count per epoch, capped at 500,000 | Dynamic annual weighting; presentations equal the full eligible count |
 | Epoch limit | 2; early stopping cannot activate before epoch 2 | 5 |
 | Validation cadence | 20%/40%/60%/80%/100% of every epoch | Same |
 | Early stopping | Five consecutive non-improving normalized-pinball validations, active from epoch 2 | Same loss and patience, active from epoch 1 |
 | Retention | Best five full validation-ranked checkpoints plus completion result | Same |
-| Validation/test | Full ranges retained; routine evaluation deterministically capped by config | Same |
+| Validation/test | Every eligible window, without subsampling | Same |
 | Architecture | Kronos-base + LoRA + shared resampler + conditioner + alpha head | Identical |
 | Initialization | Original pretrained base | Original pretrained base |
 | Continue Stage 1 checkpoint | No | No |
 
-Stage 1 is not the earliest 3% of time and does not shrink validation/test.
-Both configs require the same architecture digest. A short final training batch
+Stage 1 is not the earliest 5% of time and does not shrink validation/test.
+Both default configs require the same architecture digest. A short final training batch
 is deterministically filled from the beginning of the same target set, and the
 padding count is written to the training summary. Stage 2 restarts from the same
 pretrained revisions so the Stage 1 smoke run is not hidden extra training.
 
 ### 7. Objective
 
-The sole objective is q10/q50/q90 pinball loss, equally averaged after
-train-only per-horizon normalization:
+The primary objective is q10/q50/q90 pinball loss, equally averaged after
+train-only per-horizon normalization. Training adds same-day ranking loss through
+an independent score head (default weight 0.05), not directly through q50.
+Validation selection uses raw, uncalibrated pinball alone:
 
 ```text
 scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
@@ -389,8 +395,8 @@ counts, and validation metrics, without duplicating optimizer/scheduler state.
 
 ### 12. Minimum acceptance
 
-Stage 1 uses one fixed, reproducible set containing exactly 3% of train for up
-to two epochs and changes only its traversal order. Early stopping cannot
+Stage 1 uses reproducible annual-weighted dynamic sampling, presenting 5% of the
+eligible train count (capped at 500,000) per epoch for up to two epochs. Early stopping cannot
 activate before epoch 2 begins. Stage 1 passes remote ruff/pytest,
 forward/backward, validation-ranked save/reload, inference-schema smoke, and
 lifecycle termination. It outputs ordered `[B,15-h_start,3]` alpha quantiles for
