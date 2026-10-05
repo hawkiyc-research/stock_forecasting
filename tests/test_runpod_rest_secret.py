@@ -10,7 +10,6 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/create_runpod_tpex_proxy_secret.py"
 SPEC = importlib.util.spec_from_file_location("runpod_rest_secret", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -62,9 +61,11 @@ class RunpodRestSecretTests(unittest.TestCase):
             self.assertTrue(body["name"].startswith("tpex_relay_token_"))
             return Response(201, {"id": "secret-id", "name": body["name"]})
 
-        with patch.dict(secret_helper.os.environ, {"TPEX_PROXY_SHARED_SECRET": shared_secret}):
-            with patch.object(secret_helper.urllib.request, "urlopen", side_effect=respond):
-                name = secret_helper._create_secret("sample-key")
+        with (
+            patch.dict(secret_helper.os.environ, {"TPEX_PROXY_SHARED_SECRET": shared_secret}),
+            patch.object(secret_helper.urllib.request, "urlopen", side_effect=respond),
+        ):
+            name = secret_helper._create_secret("sample-key")
         self.assertTrue(name.startswith("tpex_relay_token_"))
 
     def test_http_error_redacts_api_key_and_secret(self) -> None:
@@ -82,27 +83,31 @@ class RunpodRestSecretTests(unittest.TestCase):
                 io.BytesIO(json.dumps(error).encode("utf-8")),
             )
 
-        with patch.dict(secret_helper.os.environ, {"TPEX_PROXY_SHARED_SECRET": shared_secret}):
-            with patch.object(secret_helper.urllib.request, "urlopen", side_effect=reject):
-                with self.assertRaisesRegex(RuntimeError, "HTTP 409") as caught:
-                    secret_helper._create_secret("sample-key")
+        with (
+            patch.dict(secret_helper.os.environ, {"TPEX_PROXY_SHARED_SECRET": shared_secret}),
+            patch.object(secret_helper.urllib.request, "urlopen", side_effect=reject),
+            self.assertRaisesRegex(RuntimeError, "HTTP 409") as caught,
+        ):
+            secret_helper._create_secret("sample-key")
         self.assertNotIn(shared_secret, str(caught.exception))
         self.assertNotIn("sample-key", str(caught.exception))
 
     def test_unexpected_success_status_is_rejected(self) -> None:
-        with patch.object(
-            secret_helper.urllib.request,
-            "urlopen",
-            return_value=Response(200, {"id": "secret-id", "name": "name"}),
+        with (
+            patch.object(
+                secret_helper.urllib.request,
+                "urlopen",
+                return_value=Response(200, {"id": "secret-id", "name": "name"}),
+            ),
+            self.assertRaisesRegex(RuntimeError, "unexpected HTTP 200"),
         ):
-            with self.assertRaisesRegex(RuntimeError, "unexpected HTTP 200"):
-                secret_helper._rest_request(
-                    api_key="sample-key",
-                    method="POST",
-                    path="/account/secrets",
-                    expected_status=201,
-                    body={"name": "name", "value": "sample-value"},
-                )
+            secret_helper._rest_request(
+                api_key="sample-key",
+                method="POST",
+                path="/account/secrets",
+                expected_status=201,
+                body={"name": "name", "value": "sample-value"},
+            )
 
 
 if __name__ == "__main__":

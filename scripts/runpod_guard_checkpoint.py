@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -43,10 +44,8 @@ def main() -> int:
     try:
         output, errors = process.communicate(timeout=arguments.timeout_seconds)
     except subprocess.TimeoutExpired:
-        try:
+        with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
         process.communicate()
         print("Remote checkpoint verification timed out", file=sys.stderr)
         return 3

@@ -9,7 +9,6 @@ import shlex
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 OPTION = re.compile(r"(?<![\w-])--?[A-Za-z][A-Za-z0-9-]*")
 

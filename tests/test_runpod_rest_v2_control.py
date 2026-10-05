@@ -15,7 +15,6 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-
 CONTROL = runpy.run_path(
     str(Path(__file__).resolve().parents[1] / "scripts/runpod_rest_v2_control.py")
 )
@@ -24,18 +23,27 @@ CONTROL = runpy.run_path(
 class GpuCatalogTests(unittest.TestCase):
     def setUp(self) -> None:
         self.gpus = [
-            {"id": "NVIDIA GeForce RTX 5090", "name": "RTX 5090", "memory": 32,
-             "price": {"secure": 0.99, "community": 0.69, "serverless": 3.0},
-             "availability": "LOW", "dataCenters": [
-                 {"id": "EU-RO-1", "availability": "NONE"},
-                 {"id": "EUR-IS-1", "availability": "LOW"},
-             ]},
-            {"id": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
-             "name": "RTX PRO 4500 SE", "memory": 32,
-             "price": {"secure": None, "community": 0.0},
-             "availability": "MEDIUM", "dataCenters": [
-                 {"id": "EU-RO-1", "availability": "LOW"},
-             ]},
+            {
+                "id": "NVIDIA GeForce RTX 5090",
+                "name": "RTX 5090",
+                "memory": 32,
+                "price": {"secure": 0.99, "community": 0.69, "serverless": 3.0},
+                "availability": "LOW",
+                "dataCenters": [
+                    {"id": "EU-RO-1", "availability": "NONE"},
+                    {"id": "EUR-IS-1", "availability": "LOW"},
+                ],
+            },
+            {
+                "id": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+                "name": "RTX PRO 4500 SE",
+                "memory": 32,
+                "price": {"secure": None, "community": 0.0},
+                "availability": "MEDIUM",
+                "dataCenters": [
+                    {"id": "EU-RO-1", "availability": "LOW"},
+                ],
+            },
         ]
 
     def invoke(self, *arguments, response=None):
@@ -46,21 +54,31 @@ class GpuCatalogTests(unittest.TestCase):
             return {"gpus": self.gpus} if response is None else response
 
         output = io.StringIO()
-        with patch.dict(CONTROL["main"].__globals__, {"_request": fake_request}), \
-                patch.object(sys, "argv", ["control", "gpu", "list", *arguments]), \
-                redirect_stdout(output):
+        with (
+            patch.dict(CONTROL["main"].__globals__, {"_request": fake_request}),
+            patch.object(sys, "argv", ["control", "gpu", "list", *arguments]),
+            redirect_stdout(output),
+        ):
             self.assertEqual(CONTROL["main"](), 0)
-        self.assertEqual(calls, [
-            ("GET", "/catalog/gpus?include=AVAILABILITY&product=POD", {})
-        ])
+        self.assertEqual(calls, [("GET", "/catalog/gpus?include=AVAILABILITY&product=POD", {})])
         return output.getvalue()
 
     def test_default_table_shows_prices_ids_and_data_centers(self) -> None:
         output = self.invoke()
-        for text in ("GPU catalog: 2 matches", "USD/hour", "Stock scope: global",
-                     "VRAM/GB", "SECURE", "COMMUNITY", "0.99", "0.69",
-                     "gpuId: NVIDIA GeForce RTX 5090", "EU-RO-1:NONE",
-                     "EUR-IS-1:LOW", "stock is not a capacity reservation"):
+        for text in (
+            "GPU catalog: 2 matches",
+            "USD/hour",
+            "Stock scope: global",
+            "VRAM/GB",
+            "SECURE",
+            "COMMUNITY",
+            "0.99",
+            "0.69",
+            "gpuId: NVIDIA GeForce RTX 5090",
+            "EU-RO-1:NONE",
+            "EUR-IS-1:LOW",
+            "stock is not a capacity reservation",
+        ):
             self.assertIn(text, output)
         self.assertNotIn('"serverless"', output)
         self.assertIn("--", output)
@@ -84,15 +102,13 @@ class GpuCatalogTests(unittest.TestCase):
         self.assertNotIn("EUR-IS-1", output)
 
     def test_filters_combine_and_json_keeps_original_entry(self) -> None:
-        output = self.invoke("--search", "4500", "--data-center", "EU-RO-1",
-                             "--output", "json")
+        output = self.invoke("--search", "4500", "--data-center", "EU-RO-1", "--output", "json")
         self.assertEqual(json.loads(output), [self.gpus[1]])
         output = self.invoke("--data-center", "EUR-IS-1", "--output", "json")
         self.assertEqual(json.loads(output), [self.gpus[0]])
 
     def test_empty_and_no_match_catalogs_are_clear(self) -> None:
-        for arguments in (("--search", "no-such-gpu"),
-                          ("--data-center", "no-such-center")):
+        for arguments in (("--search", "no-such-gpu"), ("--data-center", "no-such-center")):
             with self.subTest(arguments=arguments):
                 self.assertIn("No matching GPUs.", self.invoke(*arguments))
                 self.assertEqual(json.loads(self.invoke(*arguments, "--output", "json")), [])
@@ -104,13 +120,18 @@ class GpuCatalogTests(unittest.TestCase):
         self.assertIn("-- (not reported)", output)
 
     def test_malformed_entries_fail_before_table_or_json_is_printed(self) -> None:
-        for entry in (None, {}, {"id": "fixture", "name": ""},
-                      {"id": "bad\nidentifier", "name": "Fixture"}):
+        for entry in (
+            None,
+            {},
+            {"id": "fixture", "name": ""},
+            {"id": "bad\nidentifier", "name": "Fixture"},
+        ):
             for output_format in ("table", "json"):
-                with self.subTest(entry=entry, output=output_format):
-                    with self.assertRaises(CONTROL["ApiError"]):
-                        self.invoke("--output", output_format,
-                                    response={"gpus": [self.gpus[0], entry]})
+                with (
+                    self.subTest(entry=entry, output=output_format),
+                    self.assertRaises(CONTROL["ApiError"]),
+                ):
+                    self.invoke("--output", output_format, response={"gpus": [self.gpus[0], entry]})
 
     def test_long_ids_remain_complete_and_locations_wrap(self) -> None:
         self.gpus[0]["id"] = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
@@ -121,10 +142,20 @@ class GpuCatalogTests(unittest.TestCase):
 
     def test_pod_query_output_remains_json(self) -> None:
         output = io.StringIO()
-        with patch.dict(CONTROL["main"].__globals__, {"_request": lambda *args: {
-            "id": "pod_fixture", "status": "RUNNING", "runtime": {"uptime": 10},
-        }}), patch.object(sys, "argv", ["control", "pod", "get", "pod_fixture"]), \
-                redirect_stdout(output):
+        with (
+            patch.dict(
+                CONTROL["main"].__globals__,
+                {
+                    "_request": lambda *args: {
+                        "id": "pod_fixture",
+                        "status": "RUNNING",
+                        "runtime": {"uptime": 10},
+                    }
+                },
+            ),
+            patch.object(sys, "argv", ["control", "pod", "get", "pod_fixture"]),
+            redirect_stdout(output),
+        ):
             self.assertEqual(CONTROL["main"](), 0)
         self.assertEqual(json.loads(output.getvalue())["id"], "pod_fixture")
 
@@ -143,9 +174,9 @@ class RestV2ControlTests(unittest.TestCase):
                 curl = bin_dir / "curl"
                 curl.write_text(
                     "#!/usr/bin/env bash\n"
-                    "printf '%s\\n' \"$@\" > \"${CAPTURE_PATH}\"\n"
+                    'printf \'%s\\n\' "$@" > "${CAPTURE_PATH}"\n'
                     "cat >/dev/null\n"
-                    "if [[ \"${RUNPOD_SHUTDOWN_ACTION}\" == terminate ]]; then "
+                    'if [[ "${RUNPOD_SHUTDOWN_ACTION}" == terminate ]]; then '
                     "printf '204'; else printf '200'; fi\n",
                     encoding="utf-8",
                 )
@@ -153,8 +184,10 @@ class RestV2ControlTests(unittest.TestCase):
                 volume = root / "volume"
                 volume.mkdir()
                 result = subprocess.run(
-                    ["bash", str(Path(__file__).resolve().parents[1]
-                                 / "scripts/stop_runpod_pod.sh")],
+                    [
+                        "bash",
+                        str(Path(__file__).resolve().parents[1] / "scripts/stop_runpod_pod.sh"),
+                    ],
                     env={
                         **os.environ,
                         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -176,8 +209,7 @@ class RestV2ControlTests(unittest.TestCase):
                     f"https://api.runpod.io/v2/pods/pod_fixture{suffix}",
                 )
                 if action == "stop":
-                    self.assertEqual(arguments[arguments.index("--data") + 1],
-                                     '{"action":"stop"}')
+                    self.assertEqual(arguments[arguments.index("--data") + 1], '{"action":"stop"}')
                 marker = json.loads((volume / "logs/bootstrap/shutdown.json").read_text())
                 self.assertTrue(marker["success"])
 
@@ -188,12 +220,16 @@ class RestV2ControlTests(unittest.TestCase):
             calls.append((method, path, kwargs))
             if "cursor=" not in path:
                 return {
-                    "pods": [{
-                        "id": "pod_one", "status": "RUNNING", "runtime": {"uptime": 12},
-                        "mounts": {"network": [
-                            {"volumeId": "volume_one", "path": "/runpod-volume"}
-                        ]},
-                    }],
+                    "pods": [
+                        {
+                            "id": "pod_one",
+                            "status": "RUNNING",
+                            "runtime": {"uptime": 12},
+                            "mounts": {
+                                "network": [{"volumeId": "volume_one", "path": "/runpod-volume"}]
+                            },
+                        }
+                    ],
                     "pagination": {"hasNextPage": True, "nextCursor": "page/2"},
                 }
             return {
@@ -217,21 +253,29 @@ class RestV2ControlTests(unittest.TestCase):
             return {"id": "cpu_pod", "status": "PROVISIONING", "runtime": None}
 
         source = {
-            "name": "cpu-prepare", "imageName": "runpod/pytorch:example",
-            "cloudType": "SECURE", "containerDiskInGb": 30,
-            "cpuFlavorIds": ["cpu3g"], "vcpuCount": 8,
-            "dataCenterIds": ["EU-RO-1"], "env": {"RUNPOD_ROLE": "cpu-prepare"},
-            "networkVolumeId": "volume_one", "volumeMountPath": "/runpod-volume",
+            "name": "cpu-prepare",
+            "imageName": "runpod/pytorch:example",
+            "cloudType": "SECURE",
+            "containerDiskInGb": 30,
+            "cpuFlavorIds": ["cpu3g"],
+            "vcpuCount": 8,
+            "dataCenterIds": ["EU-RO-1"],
+            "env": {"RUNPOD_ROLE": "cpu-prepare"},
+            "networkVolumeId": "volume_one",
+            "volumeMountPath": "/runpod-volume",
         }
-        with patch.dict(CONTROL["_create_cpu_pod"].__globals__, {"_request": fake_request}), \
-                patch.object(sys, "stdin", io.StringIO(json.dumps(source))):
+        with (
+            patch.dict(CONTROL["_create_cpu_pod"].__globals__, {"_request": fake_request}),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(source))),
+        ):
             created = CONTROL["_create_cpu_pod"]()
         self.assertEqual(captured["path"], "/pods")
         self.assertEqual(captured["expected_status"], 201)
         self.assertEqual(captured["body"]["cpu"], {"id": "cpu3g", "vcpuCount": 8})
-        self.assertEqual(captured["body"]["mounts"], {
-            "network": [{"volumeId": "volume_one", "path": "/runpod-volume"}]
-        })
+        self.assertEqual(
+            captured["body"]["mounts"],
+            {"network": [{"volumeId": "volume_one", "path": "/runpod-volume"}]},
+        )
         self.assertEqual(captured["body"]["ports"], ["22/tcp"])
         self.assertTrue(captured["body"]["startSsh"])
         self.assertEqual(created["id"], "cpu_pod")
@@ -256,43 +300,67 @@ class RestV2ControlTests(unittest.TestCase):
             "networkVolumeId": "volume_one",
             "volumeMountPath": "/runpod-volume",
         }
-        with patch.dict(CONTROL["_create_gpu_pod"].__globals__, {"_request": fake_request}), \
-                patch.object(sys, "stdin", io.StringIO(json.dumps(source))):
+        with (
+            patch.dict(CONTROL["_create_gpu_pod"].__globals__, {"_request": fake_request}),
+            patch.object(sys, "stdin", io.StringIO(json.dumps(source))),
+        ):
             created = CONTROL["_create_gpu_pod"]()
         self.assertEqual((captured["method"], captured["path"]), ("POST", "/pods"))
         self.assertEqual(captured["expected_status"], 201)
-        self.assertEqual(captured["body"]["gpu"], {
-            "id": "NVIDIA GeForce RTX 5090",
-            "count": 1,
-            "minCudaVersion": "12.8",
-        })
-        self.assertEqual(captured["body"]["mounts"], {
-            "network": [{"volumeId": "volume_one", "path": "/runpod-volume"}]
-        })
+        self.assertEqual(
+            captured["body"]["gpu"],
+            {
+                "id": "NVIDIA GeForce RTX 5090",
+                "count": 1,
+                "minCudaVersion": "12.8",
+            },
+        )
+        self.assertEqual(
+            captured["body"]["mounts"],
+            {"network": [{"volumeId": "volume_one", "path": "/runpod-volume"}]},
+        )
         self.assertTrue(captured["body"]["startSsh"])
         self.assertEqual(captured["body"]["ports"], ["22/tcp"])
         self.assertEqual(created["id"], "gpu_pod")
 
     def test_unsupported_cpu_counts_are_rejected_by_v2_adapter(self) -> None:
         for count in (1, 3, 6, 33):
-            with self.subTest(count=count), patch.object(sys, "stdin", io.StringIO(json.dumps({
-                "cpuFlavorIds": ["cpu3g"], "vcpuCount": count,
-                "dataCenterIds": ["EU-RO-1"], "networkVolumeId": "volume_one",
-                "volumeMountPath": "/runpod-volume",
-            }))):
-                with self.assertRaises(CONTROL["ApiError"]) as caught:
-                    CONTROL["_create_cpu_pod"]()
+            with (
+                self.subTest(count=count),
+                patch.object(
+                    sys,
+                    "stdin",
+                    io.StringIO(
+                        json.dumps(
+                            {
+                                "cpuFlavorIds": ["cpu3g"],
+                                "vcpuCount": count,
+                                "dataCenterIds": ["EU-RO-1"],
+                                "networkVolumeId": "volume_one",
+                                "volumeMountPath": "/runpod-volume",
+                            }
+                        )
+                    ),
+                ),
+                self.assertRaises(CONTROL["ApiError"]) as caught,
+            ):
+                CONTROL["_create_cpu_pod"]()
             self.assertEqual(caught.exception.code, "usage_error")
 
     def test_http_404_keeps_not_found_code_for_orphan_reconciliation(self) -> None:
         error = urllib.error.HTTPError(
-            "https://api.runpod.io/v2/pods/missing", 404, "Not Found", {},
+            "https://api.runpod.io/v2/pods/missing",
+            404,
+            "Not Found",
+            {},
             io.BytesIO(b'{"title":"Pod not found"}'),
         )
-        with patch.dict("os.environ", {"RUNPOD_API_KEY": "test-only"}), \
-                patch("urllib.request.urlopen", side_effect=error):
-            with self.assertRaises(CONTROL["ApiError"]) as caught:
-                CONTROL["_request"]("GET", "/pods/missing")
+        with (
+            patch.dict("os.environ", {"RUNPOD_API_KEY": "test-only"}),
+            patch("urllib.request.urlopen", side_effect=error),
+            self.assertRaises(CONTROL["ApiError"]) as caught,
+        ):
+            CONTROL["_request"]("GET", "/pods/missing")
         self.assertEqual((caught.exception.status, caught.exception.code), (404, "not_found"))
 
 

@@ -8,7 +8,6 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
 SAFE_SECTION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")

@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "src/stock_forecasting/runpod/runtime_stop.py"
 SPEC = importlib.util.spec_from_file_location("runpod_runtime_stop", MODULE_PATH)

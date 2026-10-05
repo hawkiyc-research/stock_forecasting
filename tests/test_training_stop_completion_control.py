@@ -13,7 +13,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-
 ROOT = Path(__file__).resolve().parents[1]
 TRAINING = ROOT / "src/stock_forecasting/training.py"
 spec = importlib.util.spec_from_file_location(
@@ -42,23 +41,33 @@ def production_flow(*, resume):
         decisions = body[start:completion_start]
     else:
         batches = next(node for node in loop.body if isinstance(node, ast.For))
-        validation = next(node for node in batches.body if isinstance(node, ast.If)
-                          and ast.unparse(node.test) == "runtime_global_step in evaluation_alignment")
+        validation = next(
+            node
+            for node in batches.body
+            if isinstance(node, ast.If)
+            and ast.unparse(node.test) == "runtime_global_step in evaluation_alignment"
+        )
         start = next(i for i, node in enumerate(validation.body) if assigned(node, "best_path"))
         # The checkpoint has already been saved. Execute its real boundary decisions
         # inside one loop iteration, including the original break statements.
-        decisions = [ast.For(
-            target=ast.Name(id="_fixture_iteration", ctx=ast.Store()),
-            iter=ast.Tuple(elts=[ast.Constant(value=0)], ctx=ast.Load()),
-            body=validation.body[start:] + batches.body[-2:], orelse=[],
-        )]
-    nodes = decisions + body[completion_start:completion_end + 1]
-    nodes.append(ast.Assign(
-        targets=[ast.Name(id="result", ctx=ast.Store())],
-        value=ast.Name(id="completion_result", ctx=ast.Load()),
-    ))
-    return compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
-                   str(TRAINING), "exec")
+        decisions = [
+            ast.For(
+                target=ast.Name(id="_fixture_iteration", ctx=ast.Store()),
+                iter=ast.Tuple(elts=[ast.Constant(value=0)], ctx=ast.Load()),
+                body=validation.body[start:] + batches.body[-2:],
+                orelse=[],
+            )
+        ]
+    nodes = decisions + body[completion_start : completion_end + 1]
+    nodes.append(
+        ast.Assign(
+            targets=[ast.Name(id="result", ctx=ast.Store())],
+            value=ast.Name(id="completion_result", ctx=ast.Load()),
+        )
+    )
+    return compile(
+        ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(TRAINING), "exec"
+    )
 
 
 class TrainingStopCompletionControlTests(unittest.TestCase):
@@ -72,10 +81,16 @@ class TrainingStopCompletionControlTests(unittest.TestCase):
             signal = volume / "lifecycle/runs/run-fixture/pods/pod-fixture"
             signal.mkdir(parents=True)
             if request:
-                (signal / "stop-request.json").write_text(json.dumps({
-                    "schema_version": 1, "kind": "runtime-stop-request",
-                    "pod_id": "pod-fixture", "run_id": "run-fixture",
-                }))
+                (signal / "stop-request.json").write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "kind": "runtime-stop-request",
+                            "pod_id": "pod-fixture",
+                            "run_id": "run-fixture",
+                        }
+                    )
+                )
             calls = []
 
             def save_completion(**kwargs):
@@ -86,31 +101,51 @@ class TrainingStopCompletionControlTests(unittest.TestCase):
                 raise AssertionError("A terminal checkpoint must not run training or validation")
 
             scope = {
-                "Path": Path, "time": time, "checkpoint": checkpoint,
+                "Path": Path,
+                "time": time,
+                "checkpoint": checkpoint,
                 "last_ranking": {"best_checkpoint": str(checkpoint)},
-                "best_checkpoint": checkpoint, "global_step": step, "runtime_global_step": step,
-                "last_evaluation_step": step, "last_checkpoint_step": step,
-                "last_runtime_evaluation_step": step, "last_runtime_checkpoint_step": step,
-                "runtime_configured_steps": 590320, "completed_epochs_at_step": 5 if final else 1,
-                "completed_epochs": 5 if final else 1, "starting_epoch": 5 if final else 1,
-                "stop_training": False, "stop_reason": "epochs_completed",
+                "best_checkpoint": checkpoint,
+                "global_step": step,
+                "runtime_global_step": step,
+                "last_evaluation_step": step,
+                "last_checkpoint_step": step,
+                "last_runtime_evaluation_step": step,
+                "last_runtime_checkpoint_step": step,
+                "runtime_configured_steps": 590320,
+                "completed_epochs_at_step": 5 if final else 1,
+                "completed_epochs": 5 if final else 1,
+                "starting_epoch": 5 if final else 1,
+                "stop_training": False,
+                "stop_reason": "epochs_completed",
                 "early_stopping": SimpleNamespace(
-                    triggered=early, evaluation_count=7, as_dict=lambda: {"triggered": early},
+                    triggered=early,
+                    evaluation_count=7,
+                    as_dict=lambda: {"triggered": early},
                 ),
                 "canonical_schedule": SimpleNamespace(configured_optimizer_steps=590320),
-                "config": SimpleNamespace(training=SimpleNamespace(epochs=5),
-                                          model_architecture_digest=lambda: "unchanged"),
+                "config": SimpleNamespace(
+                    training=SimpleNamespace(epochs=5),
+                    model_architecture_digest=lambda: "unchanged",
+                ),
                 "tracking": SimpleNamespace(directory=checkpoint.parent),
-                "bundle": SimpleNamespace(model=object()), "selected_train_samples": 30224384,
+                "bundle": SimpleNamespace(model=object()),
+                "selected_train_samples": 30224384,
                 "processed_train_samples": 42314112,
-                "last_validation_flat_metrics": {"samples": 1232972, "loss": .30386137377579187},
-                "pipeline_timings": {}, "stop_at_saved_boundary": STOP.stop_at_saved_boundary,
+                "last_validation_flat_metrics": {"samples": 1232972, "loss": 0.30386137377579187},
+                "pipeline_timings": {},
+                "stop_at_saved_boundary": STOP.stop_at_saved_boundary,
                 "save_training_completion_result": save_completion,
-                "iter_device_batches": unexpected_training, "evaluate_loader": unexpected_training,
-                "forward_batch": unexpected_training, "optimizer": SimpleNamespace(step=unexpected_training),
+                "iter_device_batches": unexpected_training,
+                "evaluate_loader": unexpected_training,
+                "forward_batch": unexpected_training,
+                "optimizer": SimpleNamespace(step=unexpected_training),
             }
-            environment = {"NETWORK_VOLUME_ROOT": str(volume),
-                           "RUNPOD_RUN_KEY": "run-fixture", "RUNPOD_POD_ID": "pod-fixture"}
+            environment = {
+                "NETWORK_VOLUME_ROOT": str(volume),
+                "RUNPOD_RUN_KEY": "run-fixture",
+                "RUNPOD_POD_ID": "pod-fixture",
+            }
             with patch.dict(os.environ, environment):
                 if not early and not final:
                     with self.assertRaises(STOP.RuntimeStopRequested):
@@ -120,8 +155,9 @@ class TrainingStopCompletionControlTests(unittest.TestCase):
                     return
                 exec(production_flow(resume=resume), scope)
             self.assertEqual(len(calls), 1)
-            self.assertEqual(scope["result"]["stop_reason"],
-                             "early_stopping" if early else "epochs_completed")
+            self.assertEqual(
+                scope["result"]["stop_reason"], "early_stopping" if early else "epochs_completed"
+            )
             self.assertEqual(scope["result"]["global_step"], step)
             self.assertEqual(scope["result"]["metrics"]["samples"], 1232972)
             # A cutoff acknowledgement must not precede formal completion.
