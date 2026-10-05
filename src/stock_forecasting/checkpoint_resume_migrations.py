@@ -6,6 +6,21 @@ from typing import Final
 
 CHECKPOINT_RETENTION_MIGRATIONS: Final = (
     {
+        # Stop requests are handled only after a durable checkpoint is saved.
+        # Model math, optimizer, sampler, RNG and persisted state are unchanged.
+        "id": "saved-boundary-runtime-stop-v1",
+        "from_files": {
+            "training.py": (
+                "c7d81ff32225908347a3b0450023b1cdbcc90b8aa7b1e589569b9f56cb98f448"
+            ),
+        },
+        "to_files": {
+            "training.py": (
+                "65cf7aade6258e2e4ed58842bffc3010696c9f4551c8907efc5dbb91f555e06f"
+            ),
+        },
+    },
+    {
         # Prevalidated worker metadata and device constants preserve values, gradients,
         # and device RNG order. Nonpersistent buffers add no checkpoint state keys.
         "id": "asynchronous-model-hotpath-v1",

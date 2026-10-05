@@ -61,7 +61,14 @@ class TrainingPipelineControlTests(unittest.TestCase):
             "models/scale_features.py",
         })
         self.assertEqual(migration["from_files"].keys(), migration["to_files"].keys())
+        stop_migration = next(
+            row for row in registry if row["id"] == "saved-boundary-runtime-stop-v1"
+        )
         for name, digest in migration["to_files"].items():
+            if name == "training.py":
+                # The historical execution patch precedes the saved-boundary stop patch.
+                self.assertEqual(digest, stop_migration["from_files"][name])
+                digest = stop_migration["to_files"][name]
             self.assertEqual(digest, hashlib.sha256(
                 (ROOT / "src/stock_forecasting" / name).read_bytes()
             ).hexdigest(), name)
@@ -114,7 +121,9 @@ class TrainingPipelineControlTests(unittest.TestCase):
         registry = runpy.run_path(str(
             ROOT / "src/stock_forecasting/checkpoint_resume_migrations.py"
         ))["CHECKPOINT_RETENTION_MIGRATIONS"]
-        migration = next(row for row in registry if row["id"] == "end-to-end-pipeline-probe-v2")
+        migration = next(row for row in registry if row["id"] == "saved-boundary-runtime-stop-v1")
+        self.assertEqual(set(migration["from_files"]), {"training.py"})
+        self.assertEqual(migration["from_files"].keys(), migration["to_files"].keys())
         self.assertEqual(migration["to_files"]["training.py"],
                          hashlib.sha256(TRAINING.read_bytes()).hexdigest())
         scope = {"json": json, "hashlib": hashlib, "CHECKPOINT_RETENTION_MIGRATIONS": registry}
@@ -127,7 +136,7 @@ class TrainingPipelineControlTests(unittest.TestCase):
         ))
         definitions(contract_path, {
             "_canonical_payload_digest", "_validated_implementation_files",
-            "_checkpoint_retention_migration_matches",
+            "_checkpoint_retention_migration_matches", "compatible_training_resume_contract_digest",
         }, scope)
         digest = scope["_canonical_payload_digest"]
         files = {name: hashlib.sha256(
@@ -151,6 +160,30 @@ class TrainingPipelineControlTests(unittest.TestCase):
             changed["training_implementation"]["files"]
         )
         self.assertFalse(matches(stored, changed))
+        scope["training_resume_contract"] = lambda _config: current
+        compatible = scope["compatible_training_resume_contract_digest"]
+        manifest = {"training_resume_contract": stored,
+                    "training_resume_contract_sha256": digest(stored)}
+        self.assertEqual(compatible(None, manifest), digest(stored))
+        for key in ("data", "model", "optimizer", "training"):
+            incompatible = copy.deepcopy(stored)
+            incompatible[key] = "different"
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                compatible(None, {"training_resume_contract": incompatible,
+                                  "training_resume_contract_sha256": digest(incompatible)})
+        self.assertFalse(matches(current, stored))
+        arbitrary = copy.deepcopy(stored)
+        arbitrary["training_implementation"]["files"]["training.py"] = "0" * 64
+        arbitrary["training_implementation"]["sha256"] = digest(
+            arbitrary["training_implementation"]["files"]
+        )
+        self.assertFalse(matches(arbitrary, current))
+        with self.assertRaises(ValueError):
+            compatible(None, {**manifest, "training_resume_contract_sha256": "0" * 64})
+        corrupt = copy.deepcopy(stored)
+        corrupt["training_implementation"]["sha256"] = "0" * 64
+        with self.assertRaises(ValueError):
+            matches(corrupt, current)
 
     def test_old_two_iteration_plan_is_reprobed_without_resetting_training(self):
         hardware = SimpleNamespace(
