@@ -487,6 +487,9 @@ accumulation 與 epoch 數推導；每次 epoch-relative validation 都參與最
 
 ### RunPod 完整操作手冊
 
+本節命令的完整參數、預設值與執行位置見[CLI 參數速查](#cli-reference-zh)。
+GPU 機房篩選見[GPU 資源查詢](#gpu-catalog-zh)；查詢不會建立 Pod 或搬移資料。
+
 RunPod 操作流程涵蓋 Pod 建立、S3 同步、network volume、readiness marker、
 supervisor、checkpoint、驗證與自動終止。資料準備、訓練與驗證都使用
 quant-only 設定。
@@ -717,6 +720,7 @@ mapping 也不能繞過此限制。這不保證涵蓋 provider 未回傳或帳�
 | `--etfs` | 逗號或空白分隔的美國 ticker；可重複提供 | `explicit` 模式中的非槓桿股票型 ETF，例如 `"SPY,QQQ"`；必須在經稽核白名單內，不影響台股 |
 | `--symbol-limit` | 正整數 N | **小規模容量／流程驗證用，不是完整美國市場模式。**只適用於含美國資料的 `all` 模式。discovery 後把白名單內的非槓桿股票型 ETF 與普通股／ADR 分開，各自依 active → delisted、ticker 字母順序取最多 N 檔；若某一類少於 N 就全取。這不是隨機或代表性抽樣。接著確認必要的 `VTI.US` benchmark：已在 N 檔 ETF 內就不重複，否則額外補入，所以 raw universe 最多 `2N+1` 檔。要完整美國目標證券範圍就不要提供此選項 |
 | `--interactive` | 無值 flag | 明確開啟互動式選單；直接執行 `configure` 而不帶選項時會自動使用此模式 |
+| `--reuse-current` | 無值 flag | 保留 active selection 的 stage、feature mode、日期、horizon 與 universe，只刷新目前 config；資料 identity 若將改變則拒絕。不可搭配 `--interactive`；不要搭配其他設定選項，因為它們會被既有 selection 值取代 |
 
 互動模式的預設值是 `stage1`、`us_tw_eodhd`、dataset revision `v1`、起始日
 `2016-01-01`、`h_start=1`、`feature_mode=combined` 與 US universe `all`。`--end` 刻意沒有預設值，提示時若留白會繼續
@@ -1464,12 +1468,34 @@ rules 從尚未完成的 rule 接續。中斷中的原生 GBDT fit、完整 vali
 
 #### 4. 建立 GPU Pod 並訓練
 
-先列出目前可用的完整 `gpuId`；預設是
-`NVIDIA GeForce RTX 5090`：
+<a id="gpu-catalog-zh"></a>
+
+##### GPU 資源查詢
+
+先查詢 GPU 型號與庫存目錄，取得完整 `gpuId`；訓練預設型號是
+`NVIDIA GeForce RTX 5090`。不帶參數會列出所有機房，不會自動以 `.env` 的機房篩選：
 
 ```bash
 bash scripts/runpodctl_project.sh gpu list
+bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1
+bash scripts/runpodctl_project.sh gpu list --data-center EU-SE-1 --search "5090"
+bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 ```
+
+| 參數 | 預設／格式 | 說明 |
+| --- | --- | --- |
+| `--data-center ID` | 預設不篩選；例如 `EU-RO-1`、`EU-SE-1` | 依完整機房 ID 篩選，不區分大小寫；不是 `EU` 等區域前綴。不會改變 `.env` 或 Pod 建立位置 |
+| `--search TEXT` | 預設不篩選 | 在 GPU 顯示名稱或完整 `gpuId` 中作不區分大小寫的子字串搜尋，可和機房篩選合用 |
+| `--output table`、`--output json` | `table` | 表格提供 VRAM、Secure／Community 每小時美元價格、完整 `gpuId` 與機房庫存；JSON 保留符合條件 GPU 的 API 欄位，包含其他機房資料 |
+| `-h`、`--help` | 無值 flag | 顯示 GPU 查詢的參數說明 |
+
+`--` 表示 API 未回報資訊；`NONE` 表示該機房回報無庫存，這些 GPU **仍會出現在結果**。
+查詢結果不是可建立 Pod 的保證或容量預約；篩選後的表格庫存欄才是指定機房的庫存。
+掛載既有 network volume 的 Pod 必須使用該 volume 所在機房；查詢其他機房不會讓
+既有 volume 跨區掛載，也不會重新建立 volume。請把完整 `gpuId` 傳給下列建立命令，
+不要把表格中可能被截短的 GPU 顯示名稱當成 ID。
+
+##### 建立訓練 Pod
 
 檢視 active selection 並通過 GPU gate；gate 會在租用 GPU 前比對本機 selection、
 S3 selection、CPU marker、code release、config SHA 與 namespaced artifacts：
@@ -2028,6 +2054,134 @@ validation 自身平均值，兩者不能混為一談。常數目標的 R²、�
 cd /runpod-volume/stock_forecasting
 .venv/bin/python -m pytest tests/test_representation_scale_probe.py
 ```
+
+<a id="cli-reference-zh"></a>
+
+### CLI 參數速查
+
+以下涵蓋本 README 使用的專案命令。`[ARG]` 表示可省略，`<ARG>` 表示須替換的值，
+不要把方括號或角括號原樣輸入。除明確列出的旗標外，不要把底層 helper 的參數加到
+workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出入口；
+不是每個 shell 子命令都支援自己的 `--help`。
+一般 workflow 自動讀取專案 `.env` 的 volume／credential 設定，不需額外傳 volume ID 或資料路徑。
+
+#### 本機控制命令
+
+下表「命令」均接在 `bash scripts/runpod_workflow.sh` 後面；這些命令不在本機執行模型計算。
+
+| 命令 | 參數、預設值與行為 |
+| --- | --- |
+| `credentials` | 無 CLI 參數；互動式隱藏輸入憑證 |
+| `tpex-relay configure`、`deploy`、`verify`、`status` | 不接受額外 CLI 參數；`configure` 互動設定，`deploy` 部署，`verify` 驗證，`status` 唯讀查詢；`tpex-proxy` 是同一入口的別名 |
+| `volume deploy` | `--name NAME` 預設 `stock-forecasting`（1–63 個英數、`.`、`_`、`-`，首字須英數）；`--size-gb N` 預設 `100`，範圍 10–4000；`--datacenter ID` 預設 `EU-RO-1`；`--force-new` 明確建立另一個計費 volume 並改登記它，**不搬移舊資料**。已登記 volume 時預設直接跳過 |
+| `configure` | 完整選項與限制見前文「configure 參數與資料範圍」；無參數為互動模式。`-h`／`--help` 顯示底層 parser 說明；`--project-root` 由 workflow 注入，不需使用者提供 |
+| `selection show` | 無額外參數；顯示 active selection |
+| `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
+| `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
+| `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 只核對 baseline 所需資料與程式，不要求主模型 HF cache |
+| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。baseline 完成快取會在本機建立 Pod 前檢查，命中即跳過。兩者皆無 run ID 位置參數 |
+| `resume [RUN_ID]` | 接續未完成訓練；省略 ID 時由最近 training lifecycle 找到可續訓 run，**不是新建另一輪訓練**。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是改用 best checkpoint |
+| `validate [RUN_ID]` | 省略 ID 使用最近訓練 lifecycle，指定 ID 可評估歷史已完成訓練；`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設重用已完成評估；`--no-resume` 不接續評估進度；`--force` 強制重新計算主模型評估並停用 resume。三種策略擇一；預建 baseline 結果仍重用，不會重訓 baseline |
+| `status`、`cpu-logs` | 無參數；前者查詢狀態，後者下載 CPU 工作紀錄 |
+| `recover` | 預設僅診斷；`--apply` 才恢復 guard／終止已確認可終止的 Pod；`--pod-id ID` 限定一個 Pod；`--confirmations N` 預設 `2`，至少 2；`--confirmation-delay-seconds N` 預設 `5`，不可負數；`--guard-dir PATH` 為進階控制端紀錄位置，預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help` 顯示說明 |
+| `download [RUN_ID]` | 不帶 ID 使用最近 ready training lifecycle；`--checkpointScope all` 預設下載全部 retained checkpoints，`best` 只下載 validation 選出的最佳 checkpoint；`--resume` 補齊／更新已存在的本機下載目錄，**不是接續訓練**；`-h`／`--help` 顯示說明 |
+| `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
+
+時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
+可用的同義旗標：`--max-runtime` = `--maxRuntime`、`--gpu-id` = `--gpuId`、
+`--checkpoint-scope` = `--checkpointScope`；CPU prepare 另接受 `--maxApiCalls`、
+`--eodhdQps`、`--taiwanQps`，以及 `--prepare-reserve`、`--max-backoff`、
+`--cpu-number`、`--cpu-flavor`。文件範例使用同一組主要拼法。
+GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不是費用硬上限**；baseline／CPU
+的期限行為見各自操作章節。GPU 查詢的 `--data-center` 不是 train／baseline 的選項。
+
+`bash scripts/verify_runpod_s3_access.sh` 不接受使用者 CLI 選項；它從 `.env` 讀取 volume
+與 S3 設定。`bash scripts/runpodctl_project.sh gpu list` 的全部選項見[GPU 資源查詢](#gpu-catalog-zh)。
+
+#### Pod 內工作與診斷
+
+`bash scripts/runpod_tmux_launch.sh WORKFLOW` 的一般 `WORKFLOW` 為 `cpu-prepare`、
+`cpu-finalize`、`stage1-train`、`stage1-validate`、`baseline`；這些名稱後面不接受額外參數，
+設定由建立 Pod 時的 selection／環境傳入。只有 `probe-scales` 轉交下列診斷參數：
+
+| 參數 | 預設值／限制 | 說明 |
+| --- | --- | --- |
+| `--checkpoint RUN_ID` | 最新完成訓練的 run | 使用其 validation-selected best checkpoint；一般操作只填 run ID |
+| `--train-samples N` | `16384`，至少 2 | train 表徵抽樣上限，不會重新訓練 forecast 模型 |
+| `--validation-samples N` | `4096`，至少 2 | validation 表徵抽樣上限，不使用 holdout |
+| `--batch-size N` | `16`，正整數 | GPU 表徵提取 batch；OOM 時降低 |
+| `--num-workers N` | `0`，範圍 0–16 | 診斷 DataLoader 的 worker 數，與 train／test loader 自動調校不同 |
+| `--ridge-alpha X` | `10`，有限正數 | ridge 正則化係數 |
+| `--seed N` | `42`，整數 0–4294967293 | 固定抽樣與 shuffled-label 對照 |
+| `--selection-workers N` | auto，範圍 1–8 | 掃描完成訓練 metadata 的 I/O 上限，另受 CPU／可用記憶體限制 |
+| `-h`、`--help` | 無值 flag | 顯示診斷參數，不啟動診斷 |
+
+`bash scripts/runpod_wandb_sync.sh [RUN_ID]` 省略 ID 時掃描所有 run 的待補傳 training／validation
+W&B 紀錄，指定 ID 則只補傳該 run；`-h`／`--help` 由內層 parser 處理。
+此腳本會載入 Pod 環境、驗證掛載，且退出時呼叫既有終止流程（包括 help 路徑），
+**只在沒有其他工作的專用補傳 Pod 執行**，不可在訓練中的 Pod 查 help 或補傳。
+
+#### 遠端低階資料與推論 CLI
+
+以下為前文 `poetry run stock-forecasting-*` 的完整選項，只供已準備好環境的雲端 Pod
+除錯，不取代本機 workflow；正常流程不要求手填資料路徑或 identity。
+這四個 Python CLI 均接受 `-h`／`--help`，但仍須在雲端既有環境執行。
+
+`poetry run stock-forecasting-download`：
+
+| 參數 | 預設值／用途 |
+| --- | --- |
+| `--profile NAME` | `FIN_TS_DATASET_PROFILE`，否則 `us_tw_eodhd`；可用 `tw_only`、`us_only_eodhd`、`us_tw_eodhd`；parser 另保留尚未實作的 `us_tw_massive`，不可用於正式取得資料 |
+| `--start DATE`、`--end DATE` | 必填 `YYYY-MM-DD`，前者 inclusive、後者 exclusive |
+| `--symbols SYMBOL ...`、`--etf-symbols SYMBOL ...` | 美股 explicit 清單，以空白分隔；皆省略時 discovery；不篩選台股 |
+| `--symbol-limit N` | 預設不限；各取最多 N 檔美股與白名單 ETF，再補 VTI；只作有界驗證 |
+| `--interval 1d` | 只接受 `1d` |
+| `--output PATH` | 必填，canonical Parquet 目的地，不允許靜默覆寫 |
+| `--manifest-root PATH` | 預設由 output 推導 dataset 根目錄（output 位於 `raw/` 時用其上一層），保存下載 manifest |
+| `--raw-cache-root PATH` | 預設 `<manifest-root>/api-cache` |
+| `--provider-checkpoint-root PATH` | 預設 raw cache 同層的 `provider-checkpoints`；儲存可續傳 provider Parquet |
+| `--progress-path PATH` | 預設 `<manifest-root>/download-progress.json` |
+| `--cache-revision LABEL` | `RUNPOD_DATASET_REVISION`，否則 `v1`；隔離 provider cache 修訂 |
+| `--dataset-request-sha256 HASH`、`--selection-id ID`、`--selection-sha256 HASH`、`--launch-id ID` | workflow provenance；分別預設來自 `RUNPOD_DATASET_REQUEST_SHA256`、`RUNPOD_SELECTION_ID`、`RUNPOD_SELECTION_SHA256`、`RUNPOD_LAUNCH_ID`，未設定則無值；不要自行編造 |
+| `--max-api-calls N` | 此低階 CLI 預設 `100000`；只限制 EODHD 單次取得資料的 network attempts，含 retry |
+| `--eodhd-qps Q`、`--taiwan-qps Q` | 預設 `16`、`0.5`；每個 provider 的請求節流 |
+| `--max-backoff-seconds S` | `RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS`，否則 `60`；注意此處單位為秒，不是 workflow 的 `1m` |
+| `--workers N` | `FIN_TS_CPU_WORKERS`，未設定時低階預設 `1`；正式 CPU workflow 會按硬體資源配置，不以此 fallback 作正式並行設定 |
+| `--acquisition-deadline-epoch-seconds T`、`--preparation-reserve-seconds S` | 預設無值；Unix 絕對截止時間與保留給資料準備的秒數，由 workflow 配置 |
+| `--exclude-delisted` | 預設包含下市股；此旗標排除 EODHD 下市商品 |
+
+`poetry run stock-forecasting-prepare`：
+
+| 參數 | 預設值／用途 |
+| --- | --- |
+| `--input PATH`、`--output DIR` | 必填，已下載 raw Parquet 與可續傳 bar-store 目錄；不下載行情 |
+| `--download-manifest PATH`、`--dataset-manifest PATH` | 預設 dataset 根目錄的 `download-manifest.json`、`dataset-manifest.json`；後者必須直接位於該根目錄且不得覆寫已 ready manifest |
+| `--benchmark-mapping PATH` | 選填 JSON mapping；未指定使用預設 benchmark policy，不放寬 ETF 白名單 |
+| `--fixed-evaluation` | 無值 flag；啟用 production 的 2025-06／2025-12／2026-06 exclusive 切分；省略為歷史比例模式 |
+| `--window-size N` | `128` 個 bars |
+| `--h-start N` | `1`；可選 1／2／3，最大 horizon 固定 14 |
+| `--max-abs-log-return X` | `0.5`，資料品質門檻 |
+| `--train-fraction X`、`--validation-fraction X` | `0.70`、`0.15`，僅比例模式使用 |
+| `--purge-bars N` | `20`，比例模式的 purge；固定日期模式改用 label end 邊界 |
+| `--stride N`、`--sample-stride N` | 相容欄位只接受 `5`、`1`；不是可任意修改的抽樣步距 |
+| `--target-horizon N`、`--diagnostic-horizons N ...` | 相容欄位必須為 `5`、`1 20`；實際輸出仍為 h-start 至 14 日 |
+| `--embargo-bars N`、`--effective-embargo-bars N` | 相容欄位必須為 `5`、`14`；固定日期模式不疊加比例切分的 embargo |
+| `--flat-volatility-multiplier X` | `0.25`，保留於 preparation provenance 的相容欄位，不是分類訓練目標 |
+| `--bucket-count N`、`--batch-rows N` | `128`、`1000000`，bar-store 分桶數與讀取分塊上限 |
+| `--deadline-epoch-seconds T` | 選填 Unix 絕對時間，於安全邊界暫停以便續傳 |
+| `--workers N` | 正整數；`FIN_TS_CPU_WORKERS`，未設定時低階預設 `1`；實際各 phase 依 CPU／記憶體下調上限 |
+
+`poetry run stock-forecasting-infer`：`--config PATH`、`--checkpoint PATH`、`--input PATH`
+必填，分別為 resolved config、checkpoint／run 目錄與含商品及 benchmark 的行情檔；
+`--symbol SYMBOL` 在多商品輸入時必填；`--as-of TIMESTAMP` 是選填的 inclusive UTC
+截止時間，未提供則使用可用資料的最新共同日期；`--output PATH` 選填保存 JSON，省略只輸出至 stdout。
+`probe-scales` 的 Python CLI 使用上述相同診斷參數；操作時使用 tmux 入口。
+
+外部工具的範例旗標：`tmux -L SOCKET attach -t SESSION` 中 `-L` 選專用 socket、
+`-t` 選 session；不要換成其他工作的 socket。`gcloud auth login` 使用互動登入；
+額外選項見 [gcloud auth login 官方參考](https://cloud.google.com/sdk/gcloud/reference/auth/login)。
+`.venv/bin/python -m pytest TEST_FILE` 的 `-m` 是 Python 模組執行，`TEST_FILE` 限定測試範圍；
+pytest 的 `-k EXPR` 篩選測試、`-q` 簡潔輸出、`-h` 顯示全部第三方選項，只在雲端 Pod 使用。
 
 ### 驗收原則
 
@@ -2665,6 +2819,10 @@ duplicating optimizer/scheduler state that is no longer needed for resume.
 
 ### Complete RunPod operations guide
 
+See the [CLI parameter reference](#cli-reference-en) for supported arguments, defaults,
+and execution locations. [GPU resource queries](#gpu-catalog-en) explain data-center
+filtering; queries do not create Pods or move data.
+
 The RunPod workflow covers Pod creation, S3 synchronization, network volumes,
 readiness markers, supervision, checkpoints, validation, and automatic
 termination. Data preparation, training, and validation use quant-only configs.
@@ -2924,6 +3082,7 @@ All user-facing `configure` options are:
 | `--etfs` | Comma- or space-separated US tickers; repeatable | Unleveraged US equity ETFs in `explicit` mode, such as `"SPY,QQQ"`; each ticker must be in the audited allowlist and does not affect Taiwan data |
 | `--symbol-limit` | Positive integer N | **A bounded capacity/workflow check, not a complete-US-market mode.** Only valid for a US-containing `all` profile. After discovery, split allowlisted unleveraged equity ETFs from common stocks/ADRs, then keep up to N of each by active → delisted and ticker order; take all when a type has fewer than N. This is neither random nor representative sampling. Then ensure the required `VTI.US` benchmark is present: do not duplicate it if it is among the N ETFs, otherwise add it, so the raw universe is at most `2N+1`. Omit this option for the complete US target-security scope |
 | `--interactive` | Flag with no value | Explicitly open the interactive prompts; invoking `configure` with no options enables this mode automatically |
+| `--reuse-current` | Flag with no value | Refresh the config snapshot using the existing active selection, preserving its dataset scope, stage, horizon and feature mode. Cannot be combined with `--interactive`; previous selection values take precedence over other selection options. It fails if refreshing would change dataset identity |
 
 Interactive defaults are `stage1`, `us_tw_eodhd`, dataset revision `v1`, start
 date `2016-01-01`, `h_start=1`, `feature_mode=combined`, and US universe `all`. `--end` intentionally has no default:
@@ -3782,12 +3941,37 @@ by default; only `complete.json` denotes a complete baseline result.
 
 #### 4. Create a GPU Pod and train
 
-List the currently available complete `gpuId` values. The default is
-`NVIDIA GeForce RTX 5090`:
+<a id="gpu-catalog-en"></a>
+
+##### Query GPU resources
+
+Query the GPU model and stock catalog to obtain a complete `gpuId`. Training defaults
+to `NVIDIA GeForce RTX 5090`. With no options, the query covers all data centers;
+it does not implicitly filter using the data center in `.env`:
 
 ```bash
 bash scripts/runpodctl_project.sh gpu list
+bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1
+bash scripts/runpodctl_project.sh gpu list --data-center EU-SE-1 --search "5090"
+bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 ```
+
+| Option | Default or format | Behavior |
+| --- | --- | --- |
+| `--data-center ID` | No filter; e.g. `EU-RO-1`, `EU-SE-1` | Case-insensitive exact data-center ID, not a region prefix such as `EU`. Does not change `.env` or the Pod deployment location |
+| `--search TEXT` | No filter | Case-insensitive substring of the GPU display name or complete `gpuId`; can be combined with the data-center filter |
+| `--output table`, `--output json` | `table` | Tables show VRAM, Secure/Community USD hourly prices, complete `gpuId` and data-center stock. JSON retains matching GPUs' API fields, including other data centers |
+| `-h`, `--help` | Flag with no value | Show GPU query options |
+
+`--` means the API did not report a value; `NONE` means that data center reports no
+stock, and these GPUs **remain in the results**. A catalog query is neither a capacity
+reservation nor a guarantee that Pod creation will succeed. For a filtered table, read
+the stock column for the selected data center. A Pod using an existing network volume
+must be created in that volume's data center: querying another location neither makes
+the volume attachable across regions nor creates a replacement volume. Pass the complete
+`gpuId` to creation commands, not a potentially truncated GPU display name.
+
+##### Create a training Pod
 
 Inspect the active selection and pass the GPU gate. Before renting the GPU, the
 gate compares the local selection, S3 selection, CPU marker, code release,
@@ -4425,6 +4609,143 @@ synthetic-data/mock-checkpoint contract tests:
 cd /runpod-volume/stock_forecasting
 .venv/bin/python -m pytest tests/test_representation_scale_probe.py
 ```
+
+<a id="cli-reference-en"></a>
+
+### CLI parameter reference
+
+This reference covers project commands used in this README. `[ARG]` is optional;
+`<ARG>` is a value to replace. Do not type the brackets literally. Do not pass lower-level
+helper options to the workflow unless listed here. `bash scripts/runpod_workflow.sh --help`
+(also `-h` or `help`) lists entry points; not every shell subcommand has its own `--help`.
+Normal workflows read volume/credential settings from the project's `.env`; no extra
+volume ID or data path is needed.
+
+#### Local control commands
+
+Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run models locally.
+
+| Command | Options, defaults and behavior |
+| --- | --- |
+| `credentials` | No CLI options; interactive hidden credential entry |
+| `tpex-relay configure`, `deploy`, `verify`, `status` | No extra CLI options; respectively configure interactively, deploy, verify, or read status. `tpex-proxy` is an alias for this entry point |
+| `volume deploy` | `--name NAME` defaults to `stock-forecasting` (1–63 alphanumeric, `.`, `_`, `-` characters, starting with an alphanumeric); `--size-gb N` defaults to `100`, range 10–4000; `--datacenter ID` defaults to `EU-RO-1`; `--force-new` creates and registers another billable volume and **does not migrate existing data**. An already registered volume is reused by default |
+| `configure` | All options and restrictions are listed under “Configure parameters and dataset scope” above. No options opens interactive mode. `-h`/`--help` shows the underlying parser help; the workflow injects `--project-root`, which users need not supply |
+| `selection show` | No extra options; display the active selection |
+| `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
+| `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
+| `readiness` | Choose exactly one: `--code-only` verifies uploaded code; `--gpu` verifies main-model training dependencies; `--baseline` checks baseline data/code without requiring the main model's HF cache |
+| `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Baseline completion is checked locally before creating a Pod, and a cache hit skips creation. Neither command accepts a positional run ID |
+| `resume [RUN_ID]` | Continue unfinished training; without an ID, resolve the resumable run from the latest training lifecycle, **not a new training run**. `--maxRuntime D` defaults to `12h` and `--gpuId ID` as above. Resume the latest available checkpoint, not the best checkpoint |
+| `validate [RUN_ID]` | Without an ID, use the latest training lifecycle; an explicit ID selects a completed historical training run. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above. `--resume` reuses completed evaluation work by default; `--no-resume` disables evaluation continuation; `--force` recomputes the main-model evaluation and disables resume. Choose one policy; prebuilt baseline results remain reused, without baseline retraining |
+| `status`, `cpu-logs` | No options; respectively inspect status or download CPU workflow logs |
+| `recover` | Diagnostic-only by default; `--apply` restores guards/terminates Pods confirmed safe to terminate; `--pod-id ID` restricts scope; `--confirmations N` defaults to `2`, minimum 2; `--confirmation-delay-seconds N` defaults to `5`, nonnegative; `--guard-dir PATH` is an advanced control-host log location, defaulting to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help` shows help |
+| `download [RUN_ID]` | Without an ID, use the latest ready training lifecycle; `--checkpointScope all` downloads all retained checkpoints by default, while `best` downloads only the validation-selected checkpoint; `--resume` fills/updates an existing local download, **not training continuation**; `-h`/`--help` shows help |
+| `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
+
+Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,
+`12h`, `2d`), not `1.5h`. Supported aliases are `--max-runtime` = `--maxRuntime`,
+`--gpu-id` = `--gpuId`, and `--checkpoint-scope` = `--checkpointScope`. CPU prepare
+also accepts `--maxApiCalls`, `--eodhdQps`, `--taiwanQps`, `--prepare-reserve`,
+`--max-backoff`, `--cpu-number` and `--cpu-flavor`. Examples use consistent primary spellings.
+GPU train/validate runtime is a **request to stop after safely saving, not a hard cost cap**;
+baseline/CPU deadline behavior is described in their operation sections. GPU catalog
+`--data-center` is not a train/baseline option.
+
+`bash scripts/verify_runpod_s3_access.sh` takes no user CLI options and reads volume/S3
+settings from `.env`. All `bash scripts/runpodctl_project.sh gpu list` options are covered
+under [Query GPU resources](#gpu-catalog-en).
+
+#### In-Pod workflows and diagnostics
+
+Normal `WORKFLOW` values for `bash scripts/runpod_tmux_launch.sh WORKFLOW` are
+`cpu-prepare`, `cpu-finalize`, `stage1-train`, `stage1-validate` and `baseline`. They take
+no extra arguments: selection/environment values are passed when the Pod is created.
+Only `probe-scales` forwards the following diagnostic options:
+
+| Option | Default or limit | Behavior |
+| --- | --- | --- |
+| `--checkpoint RUN_ID` | Latest completed training run | Use its validation-selected best checkpoint; normal operation only needs a run ID |
+| `--train-samples N` | `16384`, minimum 2 | Train representation sample cap; does not retrain the forecast model |
+| `--validation-samples N` | `4096`, minimum 2 | Validation representation sample cap; does not use holdout |
+| `--batch-size N` | `16`, positive integer | GPU representation-extraction batch size; reduce on OOM |
+| `--num-workers N` | `0`, range 0–16 | Diagnostic DataLoader workers, separate from train/test loader auto-tuning |
+| `--ridge-alpha X` | `10`, finite positive number | Ridge regularization strength |
+| `--seed N` | `42`, integer 0–4294967293 | Reproducible sampling and shuffled-label control |
+| `--selection-workers N` | Auto, range 1–8 | I/O concurrency cap for scanning completed-training metadata, also limited by CPU/available memory |
+| `-h`, `--help` | Flag with no value | Show diagnostic options without launching a diagnostic |
+
+`bash scripts/runpod_wandb_sync.sh [RUN_ID]` scans all runs for pending training/validation
+W&B uploads when no ID is supplied; an ID restricts the upload to that run. The inner
+parser handles `-h`/`--help`. This wrapper loads Pod environment, verifies the mount and
+invokes its existing termination flow on exit, **including help**. Use only a dedicated,
+otherwise-idle upload Pod; do not run it or request its help on a training Pod.
+
+#### Remote low-level data and inference CLIs
+
+These are the full options for the `poetry run stock-forecasting-*` examples above.
+They are for debugging on a cloud Pod with an existing environment, not replacements
+for local workflows. Normal operation does not require manual data paths or identities.
+All four Python CLIs accept `-h`/`--help`, still within the existing cloud environment.
+
+`poetry run stock-forecasting-download`:
+
+| Option | Default or purpose |
+| --- | --- |
+| `--profile NAME` | `FIN_TS_DATASET_PROFILE`, otherwise `us_tw_eodhd`; implemented choices are `tw_only`, `us_only_eodhd`, `us_tw_eodhd`. The parser also reserves unimplemented `us_tw_massive`; do not use it for production acquisition |
+| `--start DATE`, `--end DATE` | Required `YYYY-MM-DD`, inclusive start and exclusive end |
+| `--symbols SYMBOL ...`, `--etf-symbols SYMBOL ...` | Space-separated explicit US lists; omitting both enables discovery. Does not filter Taiwan instruments |
+| `--symbol-limit N` | Unlimited by default; cap US stocks and allowlisted ETFs separately at N, then ensure VTI is included. For bounded verification only |
+| `--interval 1d` | Only `1d` is supported |
+| `--output PATH` | Required canonical Parquet destination; no silent overwrite |
+| `--manifest-root PATH` | Derive the dataset root from output by default (use the parent of `raw/` when output is in `raw/`); stores the download manifest |
+| `--raw-cache-root PATH` | Defaults to `<manifest-root>/api-cache` |
+| `--provider-checkpoint-root PATH` | Defaults to `provider-checkpoints` beside the raw cache; stores resumable provider Parquet |
+| `--progress-path PATH` | Defaults to `<manifest-root>/download-progress.json` |
+| `--cache-revision LABEL` | `RUNPOD_DATASET_REVISION`, otherwise `v1`; isolates provider-cache revisions |
+| `--dataset-request-sha256 HASH`, `--selection-id ID`, `--selection-sha256 HASH`, `--launch-id ID` | Workflow provenance, respectively from `RUNPOD_DATASET_REQUEST_SHA256`, `RUNPOD_SELECTION_ID`, `RUNPOD_SELECTION_SHA256`, `RUNPOD_LAUNCH_ID`, or unset. Do not invent values |
+| `--max-api-calls N` | This low-level CLI defaults to `100000`; limits EODHD network attempts per acquisition, including retries |
+| `--eodhd-qps Q`, `--taiwan-qps Q` | `16`, `0.5`; provider request throttles |
+| `--max-backoff-seconds S` | `RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS`, otherwise `60`; seconds, unlike workflow `1m` |
+| `--workers N` | `FIN_TS_CPU_WORKERS`, otherwise the low-level fallback `1`; production CPU workflows configure hardware-aware concurrency rather than using this fallback as the production setting |
+| `--acquisition-deadline-epoch-seconds T`, `--preparation-reserve-seconds S` | Unset by default; absolute Unix deadline and reserved preparation seconds, configured by the workflow |
+| `--exclude-delisted` | Delisted instruments are included by default; this flag excludes EODHD delisted instruments |
+
+`poetry run stock-forecasting-prepare`:
+
+| Option | Default or purpose |
+| --- | --- |
+| `--input PATH`, `--output DIR` | Required downloaded raw Parquet and resumable bar-store directory; does not download market data |
+| `--download-manifest PATH`, `--dataset-manifest PATH` | Default to `download-manifest.json` and `dataset-manifest.json` in the dataset root. The latter must reside directly in that root and cannot overwrite a ready manifest |
+| `--benchmark-mapping PATH` | Optional JSON mapping; otherwise use the default benchmark policy. Does not relax the ETF allowlist |
+| `--fixed-evaluation` | Flag enabling production exclusive split boundaries at 2025-06/2025-12/2026-06; omitting it uses legacy proportional splits |
+| `--window-size N` | `128` bars |
+| `--h-start N` | `1`, choices 1/2/3; maximum horizon is fixed at 14 |
+| `--max-abs-log-return X` | `0.5`, data-quality threshold |
+| `--train-fraction X`, `--validation-fraction X` | `0.70`, `0.15`, used only by proportional splitting |
+| `--purge-bars N` | `20`, proportional-split purge; fixed-date mode uses label-end boundaries instead |
+| `--stride N`, `--sample-stride N` | Compatibility fields accept only `5`, `1`, not arbitrary sampling strides |
+| `--target-horizon N`, `--diagnostic-horizons N ...` | Compatibility fields must be `5`, `1 20`; actual output still covers h-start through day 14 |
+| `--embargo-bars N`, `--effective-embargo-bars N` | Compatibility fields must be `5`, `14`; fixed-date mode does not additionally apply proportional-split embargo |
+| `--flat-volatility-multiplier X` | `0.25`, a compatibility field retained in preparation provenance, not a classification objective |
+| `--bucket-count N`, `--batch-rows N` | `128`, `1000000`; bar-store bucket count and input chunk limit |
+| `--deadline-epoch-seconds T` | Optional absolute Unix deadline; pause at a safe boundary for continuation |
+| `--workers N` | Positive integer; `FIN_TS_CPU_WORKERS`, otherwise low-level fallback `1`. Individual phases lower actual concurrency according to CPU/memory limits |
+
+`poetry run stock-forecasting-infer` requires `--config PATH`, `--checkpoint PATH` and
+`--input PATH`: resolved config, checkpoint/run directory, and market data containing
+both instrument and benchmark. `--symbol SYMBOL` is required for multiple target symbols;
+optional `--as-of TIMESTAMP` is an inclusive UTC cutoff, otherwise use the latest available
+common date. Optional `--output PATH` saves JSON; without it, output goes only to stdout.
+The `probe-scales` Python CLI uses the diagnostic options above; operate it through tmux.
+
+External-tool example options: in `tmux -L SOCKET attach -t SESSION`, `-L` selects the
+dedicated socket and `-t` selects the session; do not substitute another workflow's socket.
+`gcloud auth login` logs in interactively; additional options are documented in the
+[official gcloud auth login reference](https://cloud.google.com/sdk/gcloud/reference/auth/login).
+In `.venv/bin/python -m pytest TEST_FILE`, `-m` runs a Python module and `TEST_FILE` limits
+the test scope. Pytest `-k EXPR` selects tests, `-q` reduces output and `-h` lists third-party
+options. Run these only on the cloud Pod.
 
 ### Acceptance principles
 
