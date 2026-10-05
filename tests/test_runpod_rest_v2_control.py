@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,114 @@ from unittest.mock import patch
 CONTROL = runpy.run_path(
     str(Path(__file__).resolve().parents[1] / "scripts/runpod_rest_v2_control.py")
 )
+
+
+class GpuCatalogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.gpus = [
+            {"id": "NVIDIA GeForce RTX 5090", "name": "RTX 5090", "memory": 32,
+             "price": {"secure": 0.99, "community": 0.69, "serverless": 3.0},
+             "availability": "LOW", "dataCenters": [
+                 {"id": "EU-RO-1", "availability": "NONE"},
+                 {"id": "EUR-IS-1", "availability": "LOW"},
+             ]},
+            {"id": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+             "name": "RTX PRO 4500 SE", "memory": 32,
+             "price": {"secure": None, "community": 0.0},
+             "availability": "MEDIUM", "dataCenters": [
+                 {"id": "EU-RO-1", "availability": "LOW"},
+             ]},
+        ]
+
+    def invoke(self, *arguments, response=None):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return {"gpus": self.gpus} if response is None else response
+
+        output = io.StringIO()
+        with patch.dict(CONTROL["main"].__globals__, {"_request": fake_request}), \
+                patch.object(sys, "argv", ["control", "gpu", "list", *arguments]), \
+                redirect_stdout(output):
+            self.assertEqual(CONTROL["main"](), 0)
+        self.assertEqual(calls, [
+            ("GET", "/catalog/gpus?include=AVAILABILITY&product=POD", {})
+        ])
+        return output.getvalue()
+
+    def test_default_table_shows_prices_ids_and_data_centers(self) -> None:
+        output = self.invoke()
+        for text in ("GPU catalog: 2 matches", "USD/hour", "Stock scope: global",
+                     "VRAM/GB", "SECURE", "COMMUNITY", "0.99", "0.69",
+                     "gpuId: NVIDIA GeForce RTX 5090", "EU-RO-1:NONE",
+                     "EUR-IS-1:LOW", "stock is not a capacity reservation"):
+            self.assertIn(text, output)
+        self.assertNotIn('"serverless"', output)
+        self.assertIn("--", output)
+        self.assertIn("0.00", output)
+
+    def test_json_preserves_complete_provider_entries(self) -> None:
+        self.assertEqual(json.loads(self.invoke("--output", "json")), self.gpus)
+
+    def test_search_matches_display_name_and_full_id_case_insensitively(self) -> None:
+        for query in ("5090", "nvidia geforce", "rTx 5090"):
+            with self.subTest(query=query):
+                output = self.invoke("--search", query)
+                self.assertIn("RTX 5090", output)
+                self.assertNotIn("4500", output)
+
+    def test_data_center_stock_does_not_use_global_stock(self) -> None:
+        output = self.invoke("--search", "5090", "--data-center", "eu-ro-1")
+        self.assertIn("Stock scope: eu-ro-1", output)
+        self.assertIn("NONE", output)
+        self.assertNotIn("LOW", output)
+        self.assertNotIn("EUR-IS-1", output)
+
+    def test_filters_combine_and_json_keeps_original_entry(self) -> None:
+        output = self.invoke("--search", "4500", "--data-center", "EU-RO-1",
+                             "--output", "json")
+        self.assertEqual(json.loads(output), [self.gpus[1]])
+        output = self.invoke("--data-center", "EUR-IS-1", "--output", "json")
+        self.assertEqual(json.loads(output), [self.gpus[0]])
+
+    def test_empty_and_no_match_catalogs_are_clear(self) -> None:
+        for arguments in (("--search", "no-such-gpu"),
+                          ("--data-center", "no-such-center")):
+            with self.subTest(arguments=arguments):
+                self.assertIn("No matching GPUs.", self.invoke(*arguments))
+                self.assertEqual(json.loads(self.invoke(*arguments, "--output", "json")), [])
+        self.assertIn("No matching GPUs.", self.invoke(response={"gpus": []}))
+
+    def test_missing_optional_fields_and_unknown_stock_do_not_fail(self) -> None:
+        output = self.invoke(response={"gpus": [{"id": "fixture", "name": "Fixture"}]})
+        self.assertIn("gpuId: fixture", output)
+        self.assertIn("-- (not reported)", output)
+
+    def test_malformed_entries_fail_before_table_or_json_is_printed(self) -> None:
+        for entry in (None, {}, {"id": "fixture", "name": ""},
+                      {"id": "bad\nidentifier", "name": "Fixture"}):
+            for output_format in ("table", "json"):
+                with self.subTest(entry=entry, output=output_format):
+                    with self.assertRaises(CONTROL["ApiError"]):
+                        self.invoke("--output", output_format,
+                                    response={"gpus": [self.gpus[0], entry]})
+
+    def test_long_ids_remain_complete_and_locations_wrap(self) -> None:
+        self.gpus[0]["id"] = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+        self.gpus[0]["dataCenters"] *= 10
+        output = self.invoke("--search", "6000")
+        self.assertIn("gpuId: " + self.gpus[0]["id"], output)
+        self.assertTrue(all(len(line) <= 96 for line in output.splitlines()))
+
+    def test_pod_query_output_remains_json(self) -> None:
+        output = io.StringIO()
+        with patch.dict(CONTROL["main"].__globals__, {"_request": lambda *args: {
+            "id": "pod_fixture", "status": "RUNNING", "runtime": {"uptime": 10},
+        }}), patch.object(sys, "argv", ["control", "pod", "get", "pod_fixture"]), \
+                redirect_stdout(output):
+            self.assertEqual(CONTROL["main"](), 0)
+        self.assertEqual(json.loads(output.getvalue())["id"], "pod_fixture")
 
 
 class RestV2ControlTests(unittest.TestCase):

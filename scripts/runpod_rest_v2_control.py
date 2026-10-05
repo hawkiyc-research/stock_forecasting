@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
+import textwrap
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -273,6 +275,73 @@ def _print(value: object) -> None:
     print(json.dumps(value, separators=(",", ":"), ensure_ascii=False))
 
 
+def _gpu_entries(value: list[object]) -> list[dict[str, object]]:
+    # Validate before rendering so malformed entries cannot produce partial tables.
+    for entry in value:
+        if not isinstance(entry, dict) or any(
+            not isinstance(entry.get(key), str) or not entry[key].strip()
+            or not all(character.isprintable() for character in entry[key])
+            for key in ("id", "name")
+        ):
+            raise ApiError(None, "api_error", "Runpod REST v2 GPU entry is invalid")
+    return value
+
+
+def _gpu_data_centers(gpu: dict[str, object]) -> list[dict[str, object]]:
+    centers = gpu.get("dataCenters")
+    if not isinstance(centers, list):
+        return []
+    return [center for center in centers if isinstance(center, dict)
+            and isinstance(center.get("id"), str)]
+
+
+def _gpu_number(value: object, *, price: bool = False) -> str:
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        return "--"
+    return f"{value:.2f}" if price else f"{value:g}"
+
+
+def _gpu_text(value: object) -> str:
+    # Keep provider text from injecting terminal controls into human-readable output.
+    return "".join(character if character.isprintable() else "?"
+                   for character in str(value)) if value is not None else "--"
+
+
+def _print_gpu_table(gpus: list[dict[str, object]], data_center: str | None) -> None:
+    print(f"GPU catalog: {len(gpus)} matches | prices: USD/hour")
+    print(f"Stock scope: {data_center}" if data_center else "Stock scope: global catalog")
+    if not gpus:
+        print("No matching GPUs.")
+        return
+    row = "{:<32} {:>7} {:>10} {:>12}  {}"
+    print(row.format("GPU", "VRAM/GB", "SECURE", "COMMUNITY", "STOCK"))
+    print("-" * 80)
+    for gpu in gpus:
+        price = gpu.get("price")
+        price = price if isinstance(price, dict) else {}
+        centers = _gpu_data_centers(gpu)
+        if data_center:
+            centers = [center for center in centers
+                       if center["id"].casefold() == data_center.casefold()]
+        stock = centers[0].get("availability") if data_center else gpu.get("availability")
+        name = textwrap.shorten(gpu["name"], width=32, placeholder="...")
+        print(row.format(name, _gpu_number(gpu.get("memory")),
+                         _gpu_number(price.get("secure"), price=True),
+                         _gpu_number(price.get("community"), price=True),
+                         _gpu_text(stock)))
+        # Never truncate the identifier users need to pass to --gpuId.
+        print(f"  gpuId: {gpu['id']}")
+        locations = ", ".join(
+            f"{_gpu_text(center['id'])}:{_gpu_text(center.get('availability'))}"
+            for center in centers
+        ) or "-- (not reported)"
+        print(textwrap.fill("Data centers: " + locations, width=96,
+                            initial_indent="  ", subsequent_indent="    ",
+                            break_long_words=False, break_on_hyphens=False))
+        print()
+    print("Use the full gpuId above for --gpuId; stock is not a capacity reservation.")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     resources = parser.add_subparsers(dest="resource", required=True)
@@ -299,7 +368,11 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--output", choices=("json",), default="json")
     gpu = resources.add_parser("gpu")
     gpu_actions = gpu.add_subparsers(dest="action", required=True)
-    gpu_actions.add_parser("list")
+    gpu_list = gpu_actions.add_parser("list", help="Show GPU models, prices, and stock")
+    gpu_list.add_argument("--output", choices=("table", "json"), default="table",
+                          help="Output format (default: table; use json for scripts)")
+    gpu_list.add_argument("--search", help="Case-insensitive GPU name or gpuId substring")
+    gpu_list.add_argument("--data-center", help="Only show GPUs listed in this data center")
     return parser
 
 
@@ -349,7 +422,20 @@ def main() -> int:
         result = _request("GET", "/catalog/gpus?include=AVAILABILITY&product=POD")
         if not isinstance(result, dict) or not isinstance(result.get("gpus"), list):
             raise ApiError(None, "api_error", "Runpod REST v2 GPU list is invalid")
-        _print(result["gpus"])
+        gpus = _gpu_entries(result["gpus"])
+        if args.search:
+            term = args.search.casefold()
+            gpus = [gpu for gpu in gpus
+                    if term in gpu["name"].casefold() or term in gpu["id"].casefold()]
+        if args.data_center:
+            gpus = [gpu for gpu in gpus if any(
+                center["id"].casefold() == args.data_center.casefold()
+                for center in _gpu_data_centers(gpu)
+            )]
+        if args.output == "json":
+            _print(gpus)
+        else:
+            _print_gpu_table(gpus, args.data_center)
     return 0
 
 

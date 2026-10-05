@@ -1273,8 +1273,8 @@ Stage 2 會從相同 pretrained base 開始，不接續 Stage 1 checkpoint。切
    共用 CPU 摘要暫時仍顯示舊 Stage 1 selection ID 是正常的；`status` 的 dataset 列
    顯示目前所選資料集的 manifest 摘要，不等於完整 artifact readiness 驗證。
 
-7. **本機控制端：先完成下節「獨立 baseline 與既有資料升級」的 baseline 流程，再列出 GPU 並建立 Stage 2 training Pod。** `gpuId` 必須使用清單中的
-   完整名稱；`--maxRuntime` 同時涵蓋訓練與自動 validation：
+7. **本機控制端：先完成下節「獨立 baseline 與既有資料升級」的 baseline 流程，再列出 GPU 並建立 Stage 2 training Pod。** `--gpuId` 必須使用清單中的
+   完整 `gpuId`，不是表格中的簡稱；`--maxRuntime` 同時涵蓋訓練與自動 validation：
 
    ```bash
    bash scripts/runpodctl_project.sh gpu list
@@ -1282,6 +1282,22 @@ Stage 2 會從相同 pretrained base 開始，不接續 Stage 1 checkpoint。切
    bash scripts/runpod_workflow.sh train \
      --maxRuntime 24h \
      --gpuId "NVIDIA GeForce RTX 5090"
+   ```
+
+   `gpu list` 預設顯示表格，包括 GPU 型號、VRAM、Secure／Community 每小時美元價格、
+   全域庫存，以及每張卡的完整 `gpuId` 與機房庫存。`--` 表示 API 未提供資訊，不表示免費或有貨。
+   可用以下命令搜尋型號或篩選機房；機房篩選後，表格庫存欄顯示該機房的庫存，
+   仍會列出該機房標示為 `NONE` 的 GPU。庫存資訊不代表已保留容量：
+
+   ```bash
+   bash scripts/runpodctl_project.sh gpu list --search "5090"
+   bash scripts/runpodctl_project.sh gpu list --search "4500" --data-center EU-RO-1
+   ```
+
+   腳本需要解析原始 GPU 資料時，明確指定 JSON 輸出；搜尋與機房篩選也可搭配 JSON：
+
+   ```bash
+   bash scripts/runpodctl_project.sh gpu list --output json
    ```
 
 8. **GPU Pod：啟動 Stage 2 訓練。** 由 RunPod Console SSH 登入剛建立的 GPU Pod，
@@ -3546,7 +3562,7 @@ Follow this sequence and do not skip the dataset request SHA comparison:
    own manifest; it does not replace the full artifact readiness check.
 
 7. **Local control machine: complete the independent baseline workflow below, then list GPUs and create the Stage 2 training Pod.** Use
-   one complete `gpuId` from the current list. `--maxRuntime` covers training and
+   one complete `gpuId` from the current list, not the abbreviated table name. `--maxRuntime` covers training and
    the automatic validation workflow together:
 
    ```bash
@@ -3555,6 +3571,25 @@ Follow this sequence and do not skip the dataset request SHA comparison:
    bash scripts/runpod_workflow.sh train \
      --maxRuntime 24h \
      --gpuId "NVIDIA GeForce RTX 5090"
+   ```
+
+   `gpu list` defaults to a table showing GPU names, VRAM, Secure/Community prices
+   in USD/hour, global stock, and each GPU's full `gpuId` and data-center stock.
+   `--` means the API did not report a value, not free pricing or available stock.
+   Search by model or filter by data center with the commands below. When filtered,
+   the stock column shows that data center's stock; GPUs marked `NONE` there remain
+   listed. Stock information is not a capacity reservation:
+
+   ```bash
+   bash scripts/runpodctl_project.sh gpu list --search "5090"
+   bash scripts/runpodctl_project.sh gpu list --search "4500" --data-center EU-RO-1
+   ```
+
+   Scripts parsing raw GPU entries must explicitly request JSON. Search and
+   data-center filters also work with JSON output:
+
+   ```bash
+   bash scripts/runpodctl_project.sh gpu list --output json
    ```
 
 8. **GPU Pod: start Stage 2 training.** Connect through the RunPod Console SSH
