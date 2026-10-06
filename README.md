@@ -1,20 +1,39 @@
-# 金融 OHLCV 時序基礎模型微調
+# stock_forecasting：金融 OHLCV 時序預測
+
+[繁體中文](#中文) · [English](#english)
 
 ## 中文
 
-`v0.2.2` baseline tensor 資料管線已完成限定範圍的工程驗收：完整雲端回歸
-590 passed、97 subtests passed；另 1 項 Git-dependent 檢查在本機通過。
-完整 baseline 建置／快取重用、CUDA 並行與中途接續均通過；實測與限制見
-[tensor 資料管線驗證紀錄](docs/baseline_tensor_pipeline_validation.md)。
+### 閱讀導覽
 
-`v0.2.1` 全量評估／可重用 baseline 架構已完成限定範圍的工程驗收；
-training 保留動態 sampling，validation／testing 完整列舉所有合法 windows。
-Baseline 支援硬體自動 batch／prefetch 調整、向量化有界資料讀取與中途接續訓練；
-實測與限制見 [baseline 執行效率驗收](docs/baseline_runtime_validation.md)。
-新架構尚未完成正式 A／B 訓練與預測效能評估；驗收證據、容量實測及範圍見
-[驗收紀錄](docs/performance_workflow_validation.md)，歷史版本見 [版本紀錄](RELEASES.md)。
+- [專案定位與授權](#overview-zh)、[模型架構與輸出](#model-zh)
+- [資料來源、連續性與流動性](#data-zh)、[固定時間切分](#splits-zh)
+- [離線管線](#pipeline-zh)、[訓練、loss 與全量評估](#training-zh)
+- [RunPod 操作手冊](#operations-zh)：[帳號與儲存](#setup-zh) → [設定與同步](#configure-zh)
+  → [CPU prepare](#cpu-zh) → [baseline](#baseline-zh) → [容量實驗／多 Pod 訓練](#train-zh)
+  → [下載結果](#download-zh)
+- [產物與推論](#artifacts-zh)、[歷史尺度表徵診斷](#probes-zh)、[CLI 參數速查](#cli-reference-zh)
+- [驗收與結果解讀](#acceptance-zh)、[資料與模型參考](#references-zh)
 
-### 授權與版本
+已有資料與 baseline 的使用者，直接從「容量實驗／多 Pod 訓練」開始。
+只有程式或 YAML 有修改才需要先同步；有 Pod 使用同一 volume 時不可覆寫共用程式。
+
+<a id="overview-zh"></a>
+
+### 專案定位與授權
+
+本專案以美國與台灣普通股、ADR／TDR，以及經稽核且可映射的非槓桿股票型 ETF
+日線 OHLCV 資料，微調金融領域預訓練的時序基礎模型。系統只處理數值時序：
+
+- 輸入與輸出都是數值張量，不提供自然語言生成或事實重建功能。
+- 不把外部 API 放進訓練迴圈。
+- 預測從可設定的 `h_start`（1、2 或 3）到固定第 14 個持有交易日的連續
+  alpha 條件分布，並以獨立 score head 學習同日同市場的股票排序。
+- 提供可供下游系統重用的數值 encoder 介面。
+
+這是研究與能力驗證用的 PoC，不是投資建議、交易系統或可保證獲利的模型。
+
+#### 授權與版本
 
 本專案自有程式碼及明示發布的模型新增部分，僅限自然人免費研究、學習、實驗、
 非商業 hobby project，以及使用本人資金進行個人交易。**公司、法人、基金、量化
@@ -26,28 +45,19 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 授予的權利。詳見 [第三方聲明](THIRD_PARTY_NOTICES.md)。GitHub 可能將自訂授權顯示
 為 Other；以授權全文為準。架構與報告快照見 [版本紀錄](RELEASES.md)。
 
-### 專案定位
+<a id="model-zh"></a>
 
-本專案以美國與台灣普通股、ADR／TDR，以及經稽核且可映射的非槓桿股票型 ETF
-日線 OHLCV 資料，微調金融領域預訓練的時序基礎模型。系統只處理數值時序：
+### 模型架構與數值輸出
 
-- 輸入與輸出都是數值張量，不提供自然語言生成或事實重建功能。
-- 不把外部 API 放進訓練迴圈。
-- 只輸出從可設定的 `h_start`（1、2 或 3）到固定第 14 個持有交易日的連續
-  alpha 條件分布。
-- 提供可供下游系統重用的數值 encoder 介面。
-
-這是研究與能力驗證用的 PoC，不是投資建議、交易系統或可保證獲利的模型。
-
-### 數值輸出契約
-
-`MultiHorizonAlphaHead` 的唯一預測輸出是：
+#### 輸出契約
 
 - `alpha_quantiles`: `[batch, 15-h_start, 3]`。
 - 第二維依序是持有 `h_start`、`h_start+1`、…、14 個交易日；`h_start`
   只能是 1、2 或 3，生產設定預設為 1。舊 resolved config 保留原 horizon。
 - 第三維固定為 q10、q50、q90。
 - 單位是商品相對其 benchmark 的 adjusted execution log return。
+- `ranking_scores`：啟用獨立 ranking head 時為 `[batch, 15-h_start]`；是無量綱排序分數，
+  不是報酬、機率，也不能當成 q50。
 
 模型沒有 `forecast_logits`、分類 head、分類 loss 或方向機率。推論時可由每個
 horizon 的 q10/q50/q90，使用固定閾值後處理成 `strong_bearish`、`bearish`、
@@ -55,21 +65,22 @@ horizon 的 q10/q50/q90，使用固定閾值後處理成 `strong_bearish`、`bea
 loss 權重。Checkpoint 必須符合 `model_output_schema_version=5.0`；不相容的
 output schema 會被拒絕載入。
 
-### 模型架構
-
 ```text
-Asset + benchmark OHLCV through close t
-  ├─ window normalization → shared Kronos-base + LoRA → resampler
-  │                                                      ├─ benchmark latents ───────┐
-  │                                                      └─ gated conditioning     │
-  │                                                           ↓                    │
-  │                                                    head trunk + horizon        │
-  │                                                           ├──────────────┐     │
-  └─ 20 past-only scale/market statistics → calibrated MLP ────┼─ residual fusion ←─┘
-                                                              ↓            │
-                                                     base head + residual ←┘
-                                                              ↓
-                                                     1–14d q10 / q50 / q90
+OHLCV through close t (asset + benchmark)
+  ├─ normalized windows → Kronos → resampler → benchmark conditioning → head trunk
+  │                                └─ benchmark latent ────┐               │
+  └─ 20 historical numerical features ──────────────────────┤               │
+                                                           ▼               │
+                                                    numerical residual ←───┤
+                                                           │               ├─ ranking head → scores
+                                                           ▼               ▼
+                                                  residual + base quantile parameters
+                                                           │
+                           q50 (train scale) + positive tail widths (past volatility × gates)
+                                                           │
+                                                   raw q10 / q50 / q90
+                                                           │
+                                 validation-fitted tail calibration (q50 unchanged)
 ```
 
 生產設定使用 `NeoQuasar/Kronos-base` 與
@@ -89,7 +100,7 @@ checkpoint 都會綁定 revisions。
 - `attention_mask`
 - `latent_tokens`
 
-下游系統可以在這些數值表示之後接入額外的數值模組或跨模態對齊模組，而不改變目前的 alpha 輸出契約。
+下游系統可重用這些數值表示，接入其他預測、排序或風險分析模組，而不改變目前的 alpha 輸出契約。
 
 模型直接學習條件 alpha 分布；不是先預測 raw-return q50 再減 benchmark q50。
 benchmark 的歷史同時透過動態 gated cross-attention 與 resampler latent 直接分支
@@ -98,8 +109,8 @@ benchmark 的歷史同時透過動態 gated cross-attention 與 resampler latent
 
 #### 小型數值特徵分支
 
-生產預設 `combined`，保留 Kronos-base 與 conditioner，不增加 backbone 大小；LoRA
-使用 rank 32、alpha 64（縮放比例仍為 2），target modules 不變。新版有 20 個數值特徵：
+生產預設 `combined`，保留 Kronos-base 與 conditioner。數值分支與 LoRA rank／部分解凍
+選項分開設定；20 個特徵的順序固定如下：
 
 | 位置 | 特徵 | 定義 |
 | --- | --- | --- |
@@ -128,51 +139,42 @@ scale 的 0.1–10 倍，再乘上可學習的 0.25–4 倍正值 gate。`decoup
 讓上下區間寬度各自使用正值 gate；q50 location 使用 train robust scale，不跟著
 歷史波動同步縮放。q10／q90 由 q50 減去／加上正值寬度，因此保持分位數順序。
 市場 embedding、residual 輸出層與 scale gate 零初始化；
-gate 的初始倍率為 1，但新版的初始輸出尺度與 v0.1.0 不同。head、特徵轉換與 pinball loss 使用 FP32，
+gate 的初始倍率為 1。Head、特徵轉換與 pinball loss 使用 FP32，
 Kronos 計算仍沿用 BF16 mixed precision。
 
-新版 production config 啟用 `explicit_output_scale`，因此 feature mode 必須為 `scales`
-或 `combined`。舊版四種 feature-mode 實驗可在 `v0.1.0` 重現；新版如需移除尺度路徑，
+Production config 啟用 `explicit_output_scale`，因此 feature mode 必須為 `scales`
+或 `combined`。自訂實驗如需移除尺度路徑，
 必須同步關閉明確尺度控制。切換 mode 不改變 dataset namespace，但必須建立新的 training run。
 是否改善預測必須由新訓練的評估結果證明，加入尺度資訊本身不等於已提升 alpha 能力。
 
-訓練目標為 normalized pinball 加上權重 `0.05` 的 pairwise logistic ranking loss；
-ranking 使用獨立 score head，不直接把 q50 當排序分數。
-排序只比較同一截止日、同一市場的不同股票，排除重複 padding 與近乎相同的標籤；
-每個 microbatch 最多 256 對，loss 仍涵蓋所有 forecast horizons。runtime-only date/market
-索引改善同組股票在 batch 中相遇的機會，對清理後 train windows 做年度衰減動態抽樣；不改 bar-store。
-checkpoint 選擇與 early stopping 仍只看完整 validation 的 normalized pinball，不使用
-ranking loss 或 holdout 來選模。本版本不做 prediction／parameter ensemble。
+#### Backbone 選擇
 
-### 為什麼選 Kronos-base
+目前整合的是金融 OHLCV 預訓練的 Kronos-base，原因是輸入領域相符、已有可固定 revision
+的公開權重與 tokenizer，並可在單 GPU 上進行 LoRA／部分解凍實驗。來源見
+[Kronos 官方程式庫](https://github.com/shiyu-coder/Kronos) 與
+[論文](https://arxiv.org/abs/2508.02739)。這不是它優於所有時序模型的結論；
+更換 backbone 必須控制資料、context、head 與評估集合，不能只比不同專案的總分。
 
-| 候選模型                         | 與金融 OHLCV 的證據                                                   | 本專案優勢                                                                    | 本專案主要限制                                                         | 決策                |
-| -------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------- |
-| Kronos-base                      | 論文報告以超過 120 億筆、來自 45 個交易所的金融 K-line 記錄預訓練     | 領域與 OHLCV 高度吻合；公開權重；官方程式含微調流程；約 102M 參數適合單卡 PoC | 論文中的資料組成與比較主要由作者報告；context 上限 512                 | 採用                |
-| TimesFM 2.5                      | 原始 TimesFM 語料以 Google Trends、Wikipedia pageviews 等通用序列為主 | 200M 參數、最長 16k context、成熟的 point/quantile forecasting 與 LoRA 範例   | 沒有足夠證據顯示預訓練以金融 K-line 為核心；OHLCV 多變量適配需額外設計 | 不作第一版 backbone |
-| Chronos-Bolt / Chronos-2         | 通用公開與合成時序語料；不是金融專用語料的明確證據                    | Bolt 推論快、記憶體需求低；Chronos-2 支援多變量與 covariates；工具鏈成熟      | 領域吻合度低於 Kronos；換 backbone 不能只比較吞吐量                    | 保留為受控 baseline |
-| MOIRAI-1.1-R / Moirai 2          | LOTSA 涵蓋九類領域、約 270 億 observations，但不是以金融 OHLCV 為主   | 原生多變量、不同頻率與任意 horizon；有完整微調工具                            | 領域專用性較弱；部分 checkpoint 授權限制需逐一確認                     | 不作第一版 backbone |
-| PLUTUS / DELPHYNE 等金融時序模型 | 研究方向與金融相符                                                    | 可作後續研究參考                                                              | 公開權重、可重現微調鏈或與現有 head 的整合成熟度不足                   | 暫不採用            |
+<a id="data-zh"></a>
 
-選擇 Kronos 不是因為它在所有時序任務都必然最好，而是因為本 PoC 的首要條件是「預訓練確實接觸大量金融 K-line」，同時還要能公開重現、在 RunPod 單卡微調，並保留數值 encoder。後續比較必須在相同資料切分、輸入長度、quant head 與評估指標下進行，避免同時改變多個變因。
+### 資料來源與樣本規則
 
-### 資料來源與可選資料集
+#### 資料來源與可選資料集
 
 正常 RunPod workflow 透過 `bash scripts/runpod_workflow.sh configure` 選擇
 profile；`FIN_TS_DATASET_PROFILE` 是腳本驗證 selection 後傳入 Pod 的內部值：
 
-| profile           | 實際來源              | 狀態             | 適用情境                  |
-| ----------------- | --------------------- | ---------------- | ------------------------- |
-| `tw_only`       | TWSE 官方 + TPEx 官方 | 可用             | 零美股 API 費用的研究路徑 |
-| `us_only_eodhd` | EODHD 美國股票/ETF    | 可用             | 先驗證美股能力            |
-| `us_tw_eodhd`   | EODHD + TWSE + TPEx   | 預設 PoC         | 美台跨市場完整 PoC        |
-| `us_tw_massive` | Massive + TWSE + TPEx | 僅保留型別化介面 | 取得適合授權後再實作      |
+| profile | 實際來源 | 狀態 | 適用情境 |
+| --- | --- | --- | --- |
+| `tw_only` | TWSE 官方 + TPEx 官方 | 可用 | 零美股 API 費用的研究路徑 |
+| `us_only_eodhd` | EODHD 美國股票/ETF | 可用 | 先驗證美股能力 |
+| `us_tw_eodhd` | EODHD + TWSE + TPEx | 預設 PoC | 美台跨市場完整 PoC |
+| `us_tw_massive` | Massive + TWSE + TPEx | 僅保留型別化介面 | 取得適合授權後再實作 |
 
 EODHD 路徑預設可發現 active 與 delisted 美國股票/ETF，減少只保留存活標的造成的 survivorship bias。若費用或呼叫額度有限，可在 `configure` 使用 `--universe explicit` 搭配 `--stocks`、`--etfs`，或在 all 模式使用 `--symbol-limit` 縮小 universe。輸出 manifest 會列出 profile、實際 provider、market、symbol、asset type、日期範圍與每個 split 的樣本數。
 
 `--universe all` 的 discovery 是準備當下 EODHD 回傳的 active/delisted 清單，並非
-每個歷史交易日各自重建的 point-in-time constituents。以 `--start 2016-01-01
---end 2026-06-01` 為例，日期契約是 `[2016-01-01, 2026-06-01)`：區間中途上市的
+每個歷史交易日各自重建的 point-in-time constituents。以 `--start 2016-01-01 --end 2026-06-01` 為例，日期契約是 `[2016-01-01, 2026-06-01)`：區間中途上市的
 商品只會從 provider 可取得的第一個交易日開始，區間中途下市的商品只會保留到最後
 可取得日；同時在區間內上市又下市的商品，只要 EODHD delisted discovery 有回傳且
 帳戶有權限，就會納入。`explicit` 只處理明列的 ticker；使用 `--symbol-limit` 時則只
@@ -186,7 +188,7 @@ manifest 會列出 `delisted_pre_2018_auxiliary_coverage_warning` 的數量與 s
 
 EODHD 是 PoC 資料，不應被描述成交易所級真實行情。跨 provider 的 adjusted price、公司行動、delisted history、時區與資料修訂可能不同；正式比較前必須先做重疊標的抽樣對帳。
 
-### 交易時間、benchmark 與調整資料契約
+#### 交易時間、benchmark 與調整資料
 
 每筆樣本在交易日 `t` 收盤後產生訊號；下一個**市場交易日**的 regular-session raw
 open 進場，該日算第 1 個持有交易日，持有 `h` 日時在第 `h` 個市場交易日的
@@ -194,7 +196,40 @@ raw close 出場。label 是商品與 benchmark 在完全相同 entry/exit times
 total-return log return 差，`h ∈ {h_start,…,14}`，其中 `h_start ∈ {1,2,3}`。
 個股缺 bar 或零成交量時不能將 entry／exit 延後到下一個有資料的日期。
 
-### 資料完整性、連續性與最低流動性
+預設 benchmark policy：
+
+- 美國普通股、ADR 與白名單股票型 ETF：`VTI.US`。
+- TWSE 普通股、TDR 與白名單股票型 ETF：`TAIEX.TW`，其 adjusted anchor 使用官方發行量加權股價報酬指數。
+- TPEx 普通股：`TPEX.TWO`，其 adjusted anchor 使用櫃買報酬指數。
+- 只有經稽核白名單內、可映射到既定 benchmark 的非槓桿股票型 ETF 才進入訓練；
+  槓桿、反向、債券、商品、波動率與未稽核 ETF 一律 fail closed。
+  `benchmark_mapping_path` 只能改變白名單 ETF 的 benchmark，不能擴張訓練 universe。
+
+`VTI.US` 是美國商品建立 benchmark-relative label 與 benchmark context 的必要資料
+依賴，不是 `--symbol-limit` 的一般候選商品，也不會成為自己的訓練 target
+（`self_benchmark` 會排除它）。因此限制是在 ETF 與 stock 各自選完 N 檔後才確認
+VTI：若已選到便不重複，否則額外補入。這讓 N 個 ETF target candidates 不會被
+benchmark 占掉一席；raw universe 最多是 `N ETF + N stock + 1 VTI`，但實際可訓練
+target 數仍可能因資料長度、benchmark mapping 或品質 gate 而更少。
+
+raw O/H/L/C 永久保留；台灣 `volume` 也是官方 raw field。EODHD 官方定義的
+`volume` 已做 split adjustment，因此管線用完整 Historical Splits response 反推出
+當時的未調整 `volume`，並把 vendor 值保留為 `split_adjusted_volume`，不會再乘一次
+split factor。模型視窗把 vendor/官方 total-return factor 正規化到
+`cutoff_at`，再套用到歷史 O/H/L/C，因此收盤後推論不會因未來公司行動而回寫輸入；
+volume 只依 split/share change 調整，不用現金股利調整。EODHD 保留
+`adjusted_close`；所有日期範圍都對每個 symbol 使用 Historical Splits API。官方將
+這個 endpoint 列入 EOD Historical Data — All World 且每個 request 為 1 API call；
+管線不使用另屬 Calendar 產品的 `calendar/splits`。每個 symbol 因此需要一個 EOD
+history request 加一個 split-history request，兩者都可 cache／續傳，也會列入資訊性
+request 估算；估算值不會阻止完整資料集執行。provider 對 2018 年前下市商品的上述
+輔助覆蓋例外則依前述 warning 顯式保留。台股使用 TWSE/TPEx 官方除權息資料與官方
+報酬指數，並從既有月度官方 benchmark rows 取得實際交易日，不會把一般週一至週五
+一律當成開市日。
+這可避免股票分割或除權息造成的人為跳空，同時維持下一日 raw open 的可交易 entry
+語意。
+
+#### 資料完整性、連續性與最低流動性
 
 主模型與 baseline 的 train、validation、test 使用同一份
 `configs/data_cleaning.json` 規則，推論沿用其中所有只需歷史資料的檢查：
@@ -245,83 +280,9 @@ total-return log return 差，`h ∈ {h_start,…,14}`，其中 `h_start ∈ {1,
 結果保留，但不能當成新集合的公平基準。單純切換 LoRA／解凍容量不重建 baseline。
 此流程重用既有行情，不要求重跑 CPU prepare 或重新下載資料。
 
-預設 benchmark policy：
+<a id="splits-zh"></a>
 
-- 美國普通股、ADR 與白名單股票型 ETF：`VTI.US`。
-- TWSE 普通股、TDR 與白名單股票型 ETF：`TAIEX.TW`，其 adjusted anchor 使用官方發行量加權股價報酬指數。
-- TPEx 普通股：`TPEX.TWO`，其 adjusted anchor 使用櫃買報酬指數。
-- 只有經稽核白名單內、可映射到既定 benchmark 的非槓桿股票型 ETF 才進入訓練；
-  槓桿、反向、債券、商品、波動率與未稽核 ETF 一律 fail closed。
-  `benchmark_mapping_path` 只能改變白名單 ETF 的 benchmark，不能擴張訓練 universe。
-
-`VTI.US` 是美國商品建立 benchmark-relative label 與 benchmark context 的必要資料
-依賴，不是 `--symbol-limit` 的一般候選商品，也不會成為自己的訓練 target
-（`self_benchmark` 會排除它）。因此限制是在 ETF 與 stock 各自選完 N 檔後才確認
-VTI：若已選到便不重複，否則額外補入。這讓 N 個 ETF target candidates 不會被
-benchmark 占掉一席；raw universe 最多是 `N ETF + N stock + 1 VTI`，但實際可訓練
-target 數仍可能因資料長度、benchmark mapping 或品質 gate 而更少。
-
-raw O/H/L/C 永久保留；台灣 `volume` 也是官方 raw field。EODHD 官方定義的
-`volume` 已做 split adjustment，因此管線用完整 Historical Splits response 反推出
-當時的未調整 `volume`，並把 vendor 值保留為 `split_adjusted_volume`，不會再乘一次
-split factor。模型視窗把 vendor/官方 total-return factor 正規化到
-`cutoff_at`，再套用到歷史 O/H/L/C，因此收盤後推論不會因未來公司行動而回寫輸入；
-volume 只依 split/share change 調整，不用現金股利調整。EODHD 保留
-`adjusted_close`；所有日期範圍都對每個 symbol 使用 Historical Splits API。官方將
-這個 endpoint 列入 EOD Historical Data — All World 且每個 request 為 1 API call；
-管線不使用另屬 Calendar 產品的 `calendar/splits`。每個 symbol 因此需要一個 EOD
-history request 加一個 split-history request，兩者都可 cache／續傳，也會列入資訊性
-request 估算；估算值不會阻止完整資料集執行。provider 對 2018 年前下市商品的上述
-輔助覆蓋例外則依前述 warning 顯式保留。台股使用 TWSE/TPEx 官方除權息資料與官方
-報酬指數，並從既有月度官方 benchmark rows 取得實際交易日，不會把一般週一至週五
-一律當成開市日。
-這可避免股票分割或除權息造成的人為跳空，同時維持下一日 raw open 的可交易 entry
-語意。
-
-raw OHLCV 以不可變的壓縮 Parquet 分批寫入。CPU preparation 不再展開每一個
-128-bar window，也不預先落地 label；它以 128 個 hash buckets 建立按 symbol
-排列、每個 symbol 一個 Parquet row group 的壓縮 bar store，並只保存小型
-`symbol-index.parquet` 與連續有效 cutoff ranges。每個 scan、compaction、quality
-與 split bucket 都有原子 checkpoint；Pod 到達 max runtime 時會以
-`waiting_for_preparation` 結束，下一個相同 dataset namespace 的 CPU Pod 從尚未完成的
-raw row group、segment 或 bucket 接續，已完成項目直接跳過。只有 `_SUCCESS.json`
-發布後才回收 `.work` 暫存分區。
-
-訓練 DataLoader 以 bounded sampler 狀態從有效 cutoff ranges 動態取樣，按需讀取一個 symbol
-row group、建立 128-bar asset/benchmark context，並在記憶體中計算從 `h_start` 到第
-14 個持有交易日的 alpha label。磁碟上不會出現逐-window 或逐-label 資料集；Stage 1
-每 epoch 呈現 `min(valid train cutoffs × 5%, 500,000)` 個樣本；Stage 2 的呈現次數
-等於全部 valid train cutoffs 數。年度衰減會使較新的 windows 重複呈現、較舊 windows
-未必在同一 epoch 出現；seed 與 epoch 決定可重現的順序與接續位置。兩者都用固定
-大小 batch，最後不足一個 batch 時確定性補齊並記錄數量。年度／市場分組索引採 mmap，
-不在 RAM 展開所有 windows。這個 out-of-core 設計可直接處理
-完整長歷史資料，不需要把全部 bars 或所有可能 window 載入 RAM。
-
-### 離線資料管線
-
-資料取得與模型訓練是兩個互斥階段：
-
-```text
-外部 API
-  │
-  ▼
-不可變 raw JSON cache
-  │
-  ▼
-canonical daily OHLCV Parquet + download-manifest.json
-  │
-  ▼
-可續傳 symbol bar store + 品質有效 cutoff ranges
-  │
-  ▼
-bar-store/index/ranges + dataset-manifest.json
-  │
-  ▼
-Lazy DataLoader 動態建立 context/label（完全離線）
-  │
-  ▼
-Stage 1 / Stage 2 訓練
-```
+#### 固定 Train／Validation／Holdout 時間切分
 
 生產 Stage 1／2 固定採用以下 exclusive 日期切分，不依資料量或最早日期重新算比例：
 
@@ -337,15 +298,62 @@ holdout 的 `2026-06-01`。因此每段末端約 14 個交易日不會成為完�
 輸入可以向前跨過其起點，因為預測時已可取得那些歷史資料；未來 label 不可跨界。
 `2026-06-01` 之後的日期不會加入這三個 split，6–8 月保留作後續回測。
 
-CPU preparation、readiness 與訓練 preflight 會核對日期契約與每個市場實際保留的日期；
-validation、holdout 各至少須有 **80 個不同預測日期**，不足時在租用 GPU 前拒絕放行。
-`split_audit.dates_by_market` 保存實際日期與數量。80 日是資料覆蓋的工程門檻，不是統計
+CPU preparation 與本機 readiness 會核對 prepared manifest 的日期契約：每個市場的
+validation、holdout 各至少須有 **80 個不同預測日期**，記錄在
+`split_audit.dates_by_market`。這是 prepared 資料的檢查；runtime 清理後的有效集合
+另以 `sample-universes` 稽核和實際評估結果為準，不能把 prepare 的筆數當成清理後筆數。80 日是資料覆蓋的工程門檻，不是統計
 顯著性或跨所有行情的保證；大量股票樣本也不能當成同樣多的獨立時間樣本。
 
-日期契約會進入 immutable dataset identity。升級需重新 `configure` 並執行既有 CPU
-prepare 流程建立新 namespace；可重用相同 request 的 raw cache，但不能把舊比例切分的
-ready marker 直接改標成固定日期資料。舊 resolved config、mock fixture 保留其比例切分
-與 purge／embargo 語意，舊報告不會自動變成新 holdout 結果。
+日期與持久化 preparation 契約屬於 dataset identity；若仍使用歷史比例切分，必須建立
+符合固定日期的新 namespace，不能只修改 ready marker。已完成本表日期切分的資料，
+切換 Stage、A/B 或容量實驗不需重跑 CPU prepare。Runtime 清理規則改變時，重建的是
+小型樣本索引及對應 baseline，不是行情或 bar store。
+
+<a id="pipeline-zh"></a>
+
+### 離線資料管線
+
+資料取得與模型訓練是兩個互斥階段：
+
+```text
+外部 API
+  │
+  ▼
+不可變 raw JSON cache
+  │
+  ▼
+canonical daily OHLCV Parquet + download-manifest.json
+  │
+  ▼
+可續傳 symbol bar store + prepared 候選 cutoff ranges
+  │
+  ▼
+bar-store/index/ranges + dataset-manifest.json
+  │
+  ▼
+runtime 連續性／流動性清理索引
+  │
+  ▼
+Lazy DataLoader 動態建立 context/label（完全離線）
+  │
+  ▼
+Stage 1 / Stage 2 訓練
+```
+
+raw OHLCV 以不可變的壓縮 Parquet 分批寫入。CPU preparation 不再展開每一個
+128-bar window，也不預先落地 label；它以 128 個 hash buckets 建立按 symbol
+排列、每個 symbol 一個 Parquet row group 的壓縮 bar store，並只保存小型
+`symbol-index.parquet` 與連續有效 cutoff ranges。每個 scan、compaction、quality
+與 split bucket 都有原子 checkpoint；Pod 到達 max runtime 時會以
+`waiting_for_preparation` 結束，下一個相同 dataset namespace 的 CPU Pod 從尚未完成的
+scan partition 或 bucket 接續，已完成項目直接跳過。只有 `_SUCCESS.json`
+發布後才回收 `.work` 暫存分區。
+
+資料以 dataset request 自動映射到 `/runpod-volume/datasets/<dataset-request-sha256>/`，
+不由使用者手填 DATA_ROOT。CPU prepare 不展開完整 windows；runtime 再依清理規則建立有效索引。
+
+<details>
+<summary>下載快取、配額與準備流程的完整性規則</summary>
 
 資料下載器具備：
 
@@ -387,82 +395,91 @@ ready marker 直接改標成固定日期資料。舊 resolved config、mock fixt
 manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-256，而不是只驗證
 小型 index。模型訓練、評估及推論程式不呼叫 EODHD、TWSE、TPEx 或 Massive。
 
-### 遠端執行環境與本機邊界
+</details>
 
-本專案的 Python dependency resolution、Poetry environment、lint、pytest、資料準備、
-模型 cache smoke test、訓練與驗證都在 RunPod 執行。本機只作為 control plane：編輯
-source，並透過 workflow script 管理 credentials、selection、上傳、Pod lifecycle 與
-artifacts；不手動編輯 `.env`、YAML 或 JSON 設定。
+<a id="training-zh"></a>
 
-不得在本機為本專案執行 `poetry install`、`poetry lock`、pytest、Python preflight 或模型
-載入，也不得建立或檢查本機 `.venv`。本機若殘留其他環境產生的 `poetry.lock`，它已被
-`.gitignore` 與 source upload allowlist 排除，不是此專案的 runtime 證據。
+### 訓練與評估協定
 
-RunPod workflow 會在 approved image 內使用 Python `>=3.12,<3.13`，建立 persistent
-Poetry environment、重新產生 canonical `poetry.lock`，再執行 lint、完整 pytest 與後續
-工作。修改 `pyproject.toml` 後須重新同步 source；GPU workflow 若缺少本版要求的
-離線日曆依賴，會在取得 workflow lease 後更新專案自己的雲端環境，不執行 CPU prepare
-或下載行情。不要在本機嘗試對齊 RunPod 的 Python/PyTorch/CUDA 環境。
+#### Stage 1／Stage 2 與動態 sampling
 
-### 下載資料並建立 bar store
+| 項目 | Stage 1 | Stage 2 |
+| --- | --- | --- |
+| 用途 | 有界流程與模型 smoke run | 全訓練歷史的正式實驗 |
+| 每 epoch 樣本呈現預算 | 有效 train 數的 5%，最多 500,000 | 有效 train 總數 |
+| Training sampling | 年度衰減動態取樣；不是固定 5% 商品—日期集合 | 年度衰減動態取樣；不保證每個 window 恰好一次 |
+| Epoch 上限 | 2 | 5 |
+| Validation cadence | 每 epoch 的 20%／40%／60%／80%／100%，共 5 次完整 validation | 同左 |
+| Early stopping | normalized pinball 連續 5 次未改善，且完成最低 LR 的兩個間隔；第 1 epoch 起生效 | 同左 |
+| 保存結果 | validation 最佳 5 個完整 checkpoints，加上完成時的精簡權重 | 同左 |
+| Validation / test | 完整有效集合，不抽樣、不 padding、不 drop_last | 同左 |
+| 標準設定 | `configs/stage1_kronos_base_lora.yaml` | `configs/stage2_kronos_base_lora.yaml` |
+| 初始化 | 原始 pretrained base | 原始 pretrained base；不接續 Stage 1 權重 |
 
-標準流程是依後文操作 RunPod CPU preparation Pod；不要在本機直接執行資料 CLI。以下
-命令只是已完成遠端環境設定後，在 RunPod CPU Pod 內除錯資料管線時使用的低階參考。
-日期 `--end` 是 exclusive；EODHD token 應由 RunPod Secret 注入，不要在 shell history
-手動 export 明文 token。
+訓練 DataLoader 以 bounded sampler 狀態從有效 cutoff ranges 動態取樣，按需讀取一個 symbol
+row group、建立 128-bar asset/benchmark context，並在記憶體中計算從 `h_start` 到第
+14 個持有交易日的 alpha label。磁碟上不會出現逐-window 或逐-label 資料集；Stage 1
+每 epoch 呈現 `min(valid train cutoffs × 5%, 500,000)` 個樣本；Stage 2 的呈現次數
+等於全部 valid train cutoffs 數。年度衰減會使較新的 windows 重複呈現、較舊 windows
+未必在同一 epoch 出現；seed 與 epoch 決定可重現的順序與接續位置。兩者都用固定
+大小 batch，最後不足一個 batch 時確定性補齊並記錄數量。年度／市場分組索引採 mmap，
+不在 RAM 展開所有 windows。這個 out-of-core 設計可直接處理
+完整長歷史資料，不需要把全部 bars 或所有可能 window 載入 RAM。
 
-只使用台股官方資料：
+兩份標準 stage config 的 `model_architecture_digest()` 相同；容量實驗則使用獨立 YAML，
+詳見[容量實驗](#train-zh)。同一 run 的中斷恢復見[接續訓練](#resume-zh)，不是從 Stage 1 微調到 Stage 2。
 
-```bash
-poetry run stock-forecasting-download \
-  --profile tw_only \
-  --start 2010-01-01 \
-  --end 2026-07-28 \
-  --output data/raw/market.parquet
-```
+Production Stage 1/2 不接受 `max_steps`、固定 step validation cadence 或獨立的固定
+step checkpoint cadence。optimizer budget 由每 epoch 的呈現次數、batch size、gradient
+accumulation 與 epoch 數推導；每次 epoch-relative validation 都參與最佳 5 個 checkpoint
+排名。正常跑完或 early stopping 都會另外原子發布唯一的 `completion-result/`，其中保存
+當下的可訓練權重、resolved config、停止原因、實際步數／樣本數與最後 validation metrics，
+但不重複保存已無續傳需求的 optimizer/scheduler state。
 
-以小型美股 universe 驗證 EODHD：
+#### 訓練目標、學習率與校準
 
-```bash
-poetry run stock-forecasting-download \
-  --profile us_only_eodhd \
-  --symbols AAPL MSFT \
-  --etf-symbols SPY QQQ \
-  --start 2010-01-01 \
-  --end 2026-07-28 \
-  --output data/raw/market.parquet
-```
+Normalized pinball 是把每個 horizon 的分位數誤差除以該 horizon 的 **train-only robust
+scale** 後計算 pinball，再對有效樣本、horizons 與 q10／q50／q90 平均；越低越好。
+它不是百分比、方向準確率或 correlation，也不保證 80% coverage。
+`primary_5d/selection_score` 是保留的監控鍵名，實際選模分數涵蓋全部 horizons，
+不是只看第 5 日。
 
-建立或接續 lazy symbol bar store（不建立 window/label 檔）：
-
-```bash
-poetry run stock-forecasting-prepare \
-  --fixed-evaluation --h-start 1 \
-  --input data/raw/market.parquet \
-  --output data/prepared/bar-store
-```
-
-每個 dataset request 會自動映射到
-`/runpod-volume/datasets/<dataset-request-sha256>/`。profile、日期、universe、
-symbol limit 或處理契約變動時會使用新的根目錄，不需要手動指定 `DATA_ROOT`，也不會
-把不同範圍的資料誤當成同一份 dataset。
-
-### 兩階段訓練
+對誤差 `u = (真實 alpha − 預測分位數) / train_scale[h]`，單一分位數的 loss 為
+`max(q × u, (q − 1) × u)`。
 
 Stage 1／2 的 label robust scales 都從完整 **train partition** 的同一個確定性最多
 50,000 筆樣本校準，seed 固定為 59，不隨 Stage 1 的 5% 訓練抽樣縮小。
 尺度特徵的 median／IQR 也使用相同 sample-count／seed 契約，統計快取與 dataset
 manifest SHA 綁定；兩種校準都不讀 validation／holdout。
 
+訓練目標為 normalized pinball 加上權重 `0.05` 的 pairwise logistic ranking loss；
+ranking 使用獨立 score head，不直接把 q50 當排序分數。
+排序只比較同一截止日、同一市場的不同股票，排除重複 padding 與近乎相同的標籤；
+每個 microbatch 最多 256 對，loss 仍涵蓋所有 forecast horizons。runtime-only date/market
+索引改善同組股票在 batch 中相遇的機會，對清理後 train windows 做年度衰減動態抽樣；不改 bar-store。
+checkpoint 選擇與 early stopping 仍只看完整 validation 的 normalized pinball，不使用
+ranking loss 或 holdout 來選模。本版本不做 prediction／parameter ensemble。
+
+神經訓練採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
+初始 LR 的 0.09；到達最低 LR 後，必須再完成兩次 validation 間隔的訓練，才允許 early stop。
+checkpoint 保存 plateau 狀態，resume／更換 batch plan 不會把已降低的 LR 重設。
+
+選定 checkpoint 後才用完整 validation 擬合 market/horizon 上下尾區間校準；不改 q50，
+也不使用 test labels fitting。最終 test 保留 raw 與 calibrated 兩組結果；校準不保證未來 coverage。
+
+#### 全量 validation／test 與比較方式
+
 最終 `validation stage` 是既有工作流程名稱；新固定日期模式實際評估 **holdout/test**。
 完整模型必須重新推論，不能沿用 checkpoint validation snapshot。所有例行 validation
 與最終 test 都使用完整 split，`evaluation_max_samples` 與 `baseline_max_samples_per_split`
 固定為 `null`；沒有 20,000 筆上限。指標按完整資料的樣本數加權，預測分批移出 GPU 並使用
-磁碟暫存，逐塊彙總。所有模型使用相同 train-calibrated label scales，並驗證完整有序
-symbol/date SHA-256 相同。不同資料來源或 universe 仍必須比對這個指紋，不能只比日期。
+磁碟暫存，逐塊彙總。同一資料組別的主模型與 baseline 使用相同 train-calibrated label scales，並驗證完整有序
+symbol/date SHA-256 相同。A/B 的 train-only scales 可能不同，跨組比較 normalized pinball
+須同時核對尺度；評估集合則必須完全相同，不能只比日期。
 
-完整評估依 `symbol → cutoff` 的固定順序逐檔列舉所有有效 windows；既有
-`cutoff-ranges.parquet` 儲存的是精確可用區間，不是估計筆數。Dataset 只保存這些
+完整評估依 `symbol → cutoff` 的固定順序逐檔列舉所有有效 windows；runtime 清理後的
+`prepared/sample-universes/<identity>/cutoff-ranges.parquet` 儲存精確可用區間，不是估計筆數；
+不能以 CPU prepare 舊候選範圍的筆數代替實際評估集合。Dataset 只保存這些
 小型索引與有上限的商品快取，在 DataLoader 取 batch 時才產生 context／label，
 不會預先展開巨大的 window 資料集。最後不足一個 batch 的資料照常評估，不重複補齊。
 舊設定中的 `evaluation_max_samples` 若仍有數值，會明確警告並忽略，不能切回抽樣。
@@ -475,6 +492,13 @@ RAM、容器 shared memory、同時存活的 worker pools 與 pinned-memory 複�
 使用多 worker、pinned memory 與非同步 GPU transfer。結果的 `execution` 記錄實際筆數、
 batch、worker、prefetch、吞吐量與 GPU 峰值記憶體。這些是執行效能資料，不是預測效能。
 
+報告包含逐月、逐市場及各 horizon 指標，以及完整模型減去各 baseline 的逐日平均
+normalized pinball 差。95% 區間以預測日期為單位，使用 14 日 circular moving-block
+bootstrap（1,000 次、seed 42），不把同日股票各自當獨立樣本；此區間未作多重比較校正。
+Holdout 排名僅描述結果，不可再用來挑 checkpoint、反覆調參或宣稱已涵蓋所有未來行情。
+
+#### Baseline 前置建置與快取
+
 baseline 是主模型之前的獨立流程，所有 rule、GBDT、GRU、DLinear、PatchTST 使用完整
 train／validation／test。神經模型每 epoch 做五次完整 validation，以相同 normalized pinball
 與五次未改善 patience 選擇 checkpoint；最多五個 epochs。GBDT 每八輪新增樹後，評估完整
@@ -482,9 +506,8 @@ validation 的跨 horizon／quantile 平均 normalized pinball，最多 200 輪�
 validation 抽樣。固定規則沒有可 early-stop 的 optimizer，其 residual quantiles 以完整 train
 校準。完整資料相同不代表不同架構的 FLOPs 或訓練時間相同。
 
-神經訓練採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
-初始 LR 的 0.09；到達最低 LR 後，必須再完成兩次 validation 間隔的訓練，才允許 early stop。
-checkpoint 保存 plateau 狀態，resume／更換 batch plan 不會把已降低的 LR 重設。
+Baseline 的神經模型維持全 train 動態排列；目前不套主模型的年度衰減權重。
+比較時應同時揭露候選資料範圍、sampling policy、樣本呈現次數與訓練成本。
 
 完成的 baseline 權重、規則參數、最佳 validation 指標、完整 test 預測與指標保存在
 `/runpod-volume/baselines/<baseline-id>/`，最後才發布 `complete.json`。主模型 training 有前置
@@ -501,61 +524,39 @@ baseline 建置收尾會共用既有 `inputs/<split>/metadata.npy`（樣本 memb
 結果 schema 為 `6.0`，明列 `selection_split=validation`、`evaluation_split=test`；只有
 完成配對檢查後才發布 `test_unlocked=true`。舊 schema 的完成結果不能直接續用。
 
-報告包含逐月、逐市場及各 horizon 指標，以及完整模型減去各 baseline 的逐日平均
-normalized pinball 差。95% 區間以預測日期為單位，使用 14 日 circular moving-block
-bootstrap（1,000 次、seed 42），不把同日股票各自當獨立樣本；此區間未作多重比較校正。
-Holdout 排名僅描述結果，不可再用來挑 checkpoint、反覆調參或宣稱已涵蓋所有未來行情。
-
-| 項目                        | Stage 1                                                          | Stage 2                |
-| --------------------------- | ---------------------------------------------------------------- | ---------------------- |
-| 目的                        | 驗證資料、模型、loss、checkpoint、評估與 RunPod 腳本             | 完整資料微調與正式評估 |
-| train 樣本                  | O(1) blockwise sampler 固定取 5%，最多 500,000 個；每個 epoch 僅改變順序 | 100% valid train cutoffs |
-| epoch 上限                  | 2                                                               | 5                        |
-| validation cadence         | 每個 epoch 的 20%／40%／60%／80%／100%，共 5 次                  | 同左                     |
-| early stopping             | normalized pinball 連續 5 次未改善，且完成最低 LR 的兩個間隔；第 1 epoch 起生效 | 同左 |
-| 保存結果                    | validation 最佳 5 個完整 checkpoints，加上訓練完成時的精簡權重結果 | 同左                     |
-| validation / test           | 每次均使用完整 split，不抽樣、不 padding、不 drop_last           | 同左                   |
-| 架構                        | Kronos-base + 同一組 LoRA + resampler + conditioner + alpha head | 完全相同               |
-| 初始化                      | 原始 pretrained base                                             | 原始 pretrained base   |
-| 是否接續 Stage 1 checkpoint | 否                                                               | 否                     |
-
-表中的「不接續 Stage 1 checkpoint」是指 Stage 2 不以 Stage 1 權重初始化；
-同一個 Stage 的未完成 run 仍可從完整 checkpoint 繼續。實際操作請參閱
-「中斷後接續同一個 Stage 的訓練」。
-
-設定檔：
-
-- `configs/stage1_kronos_base_lora.yaml`
-- `configs/stage2_kronos_base_lora.yaml`
-
-兩份設定的 `config.model_architecture_digest()` 必須一致；此 digest 同時綁定模型參數與
-`h_start`／輸出 horizon 契約。Stage 1 先由 O(1) blockwise permutation 選出 5%，
-再將 target set 限制為最多 500,000 個，因此每個 epoch 的樣本數固定為
-`min(valid train cutoffs × 5%, 500,000)`；它不是最早 5%，不會縮小
-validation/test，也不會配置全部 window indices。
-
-Production Stage 1/2 不接受 `max_steps`、固定 step validation cadence 或獨立的固定
-step checkpoint cadence。optimizer budget 完全由 target set、batch size、gradient
-accumulation 與 epoch 數推導；每次 epoch-relative validation 都參與最佳 5 個 checkpoint
-排名。正常跑完或 early stopping 都會另外原子發布唯一的 `completion-result/`，其中保存
-當下的可訓練權重、resolved config、停止原因、實際步數／樣本數與最後 validation metrics，
-但不重複保存已無續傳需求的 optimizer/scheduler state。
+<a id="operations-zh"></a>
 
 ### RunPod 完整操作手冊
 
-本節命令的完整參數、預設值與執行位置見[CLI 參數速查](#cli-reference-zh)。
-GPU 機房篩選見[GPU 資源查詢](#gpu-catalog-zh)；查詢不會建立 Pod 或搬移資料。
+#### 執行位置與安全邊界
 
-RunPod 操作流程涵蓋 Pod 建立、S3 同步、network volume、readiness marker、
-supervisor、checkpoint、驗證與自動終止。資料準備、訓練與驗證都使用
-quant-only 設定。
+本機需要 Bash、系統 Python 3、AWS CLI 與 curl；台灣 relay 部署另需 Google Cloud CLI。
+本機只編輯程式、操作 credentials／selection、上下載產物與監控 Pod，不載入模型。
+系統 Python 的 stdlib 控制／契約測試、shell 語法與獨立靜態檢查，不需要本機 ML 環境。
 
-本專案目前**沒有部署 PostgreSQL、SQLite、向量資料庫或其他資料庫服務**。
-下文的「遠端資料層」是 RunPod persistent network volume 上的 Parquet、
-API raw cache、manifest 與模型 cache。CPU preparation Pod 負責建立這個
-離線資料層；GPU Pod 只讀已準備完成的 bar store，不會在訓練迴圈呼叫外部 API。
+Python 套件管理沿用 Poetry，環境固定在雲端專案根目錄
+`/runpod-volume/stock_forecasting/.venv`。Dependency resolution、canonical lockfile、
+完整 pytest、模型／CUDA smoke test、資料準備及訓練均在 RunPod 執行。
+不在本機建立或檢查 ML environment，也不執行 `poetry install`、`poetry lock`、
+`uv sync` 或 `uv lock`；本機殘留 lockfile 不作為遠端環境依據。
 
-#### 1. 建立 RunPod 帳號資源與本機設定
+一般操作以 configure 和實驗名稱選設定，不手動改 `.env` 或生成的 selection／manifest。
+開發者可修改 YAML 以建立新的受控設定，但需刷新 selection、在無 Pod 使用 volume 時同步，
+並以新 run 執行；不能把數值契約變更當成舊 run 的 resume。
+遠端 Python 為 `>=3.12,<3.13`；需要套件更新時由 workflow 取得排他環境寫入 lease，
+不會為安裝依賴重新下載行情或執行 CPU prepare。
+
+`bash scripts/runpod_workflow.sh` 是**本機控制入口**；
+`bash scripts/runpod_tmux_launch.sh` 是 **SSH 進 Pod 後的工作入口**。
+建立 Pod 不代表訓練已開始；tmux 可讓 SSH 斷線後繼續工作。
+本機 guard 仍需維持開機、連網，並負責終止指定 Pod。
+
+`<RUN_ID>`／`<POD_ID>` 是需替換的值；不要原樣輸入。
+所有可選參數、預設值與 alias 集中在 [CLI 參考](#cli-reference-zh)。
+
+<a id="setup-zh"></a>
+
+#### 1. 建立帳號資源、憑證與儲存
 
 本機控制端需要 `bash`、Python 3、AWS CLI 與 `curl`。GPU Pod、CPU Pod、
 network volume 的建立與 Pod 查詢、啟停、終止都使用 RunPod REST API v2。
@@ -573,11 +574,11 @@ On-demand Pod 沒有供應商端的執行時間上限；本專案以本機 guard
 在 RunPod Console 建立 project-scoped RunPod API key 與另一組 S3 API key，
 再建立下列固定名稱的 RunPod Secrets：
 
-   - `huggingface_token`：必要，用來預抓固定 revision 的 Kronos model 與
-     tokenizer。
-   - `wandb_api_key`：必要，用於訓練與 validation tracking。
-   - `eodhd_api_token`：只有 `us_only_eodhd` 或 `us_tw_eodhd` profile
-     需要；`tw_only` 不需要。
+- `huggingface_token`：必要，用來預抓固定 revision 的 Kronos model 與
+  tokenizer。
+- `wandb_api_key`：必要，用於訓練與 validation tracking。
+- `eodhd_api_token`：只有 `us_only_eodhd` 或 `us_tw_eodhd` profile
+  需要；`tw_only` 不需要。
 
 包含台灣市場的 profile 另需位於 GCP `asia-east1`（台灣）的 TPEx Cloud Run relay。
 relay 部署腳本會為每次通過驗證的部署建立唯一名稱的
@@ -591,7 +592,21 @@ secret 名稱寫回本機 `.env`；不要手動建立固定名稱的 TPEx secret
 bash scripts/runpod_workflow.sh credentials
 ```
 
-##### TPEx Cloud Run relay
+接著由腳本建立 network volume。成功回傳的 volume ID、datacenter、S3 region
+與 endpoint 會自動寫回同一個 `.env`，不需要複製 ID：
+
+```bash
+bash scripts/runpod_workflow.sh volume deploy \
+  --name stock-forecasting \
+  --size-gb 100 \
+  --datacenter EU-RO-1
+```
+
+若 `.env` 已登記 volume，volume script 預設不會再建立另一個可能計費的
+volume；只有刻意使用 `--force-new` 才會建立並改登記新 volume。
+
+<details>
+<summary>台灣市場必需：TPEx Cloud Run relay 部署與驗證</summary>
 
 RunPod 機房若被 TPEx data endpoint 以 HTTP 403 拒絕，台灣市場 profile 必須先部署
 受限的 Cloud Run relay。建立已啟用 billing 的獨立 GCP project，安裝 Google Cloud
@@ -712,25 +727,13 @@ pytest 與 Hugging Face prefetch 期間 relay 又 scale to zero。若完整 raw 
 - [Cloud Run 定價](https://cloud.google.com/run/pricing)
 - [RunPod REST API v2 OpenAPI 規格](https://api.runpod.io/v2/openapi.json)
 
-接著由腳本建立 network volume。成功回傳的 volume ID、datacenter、S3 region
-與 endpoint 會自動寫回同一個 `.env`，不需要複製 ID：
+</details>
 
-```bash
-bash scripts/runpod_workflow.sh volume deploy \
-  --name stock-forecasting \
-  --size-gb 100 \
-  --datacenter EU-RO-1
-```
+<a id="configure-zh"></a>
 
-若 `.env` 已登記 volume，volume script 預設不會再建立另一個可能計費的
-volume；只有刻意使用 `--force-new` 才會建立並改登記新 volume。
+#### 2. 選擇資料與設定，然後同步
 
-在 CPU Pod 建立前，必須先由腳本選定 stage、資料來源、日期與 universe。
-不帶參數會進入互動式選單：
-
-```bash
-bash scripts/runpod_workflow.sh configure
-```
+在本機專案目錄執行。不帶參數的 `configure` 是互動模式；下列為選項與固定範例。
 
 ##### `configure` 參數與資料範圍
 
@@ -786,12 +789,14 @@ mapping 也不能繞過此限制。這不保證涵蓋 provider 未回傳或帳�
 底層 helper 的 `--project-root` 由 `runpod_workflow.sh` 自動注入，不是使用者
 設定資料範圍的選項，不要自行提供。
 
-固定日期、完整美台市場、Stage 2 的標準設定命令：
+首次準備某份資料時用 `stage1` 建立資料與模型快取；這不要求先訓練 Stage 1。
+已準備好的資料可選 `stage2`，不需再開 CPU Pod。完整美台市場的 B 組資料設定：
 
 ```bash
 bash scripts/runpod_workflow.sh configure \
-  --stage stage2 \
+  --stage stage1 \
   --data-profile us_tw_eodhd \
+  --dataset-revision v1 \
   --start 2016-01-01 \
   --end 2026-06-01 \
   --h-start 1 \
@@ -799,104 +804,43 @@ bash scripts/runpod_workflow.sh configure \
   --universe all
 ```
 
-之後沿用本章 `sync`、`cpu prepare`、GPU 建立與 tmux 流程。從舊比例切分升級時，必須
-先完成新 dataset namespace 的 CPU prepare；`cpu-finalize` 不能把舊資料切分轉成新日期。
+A 組把 `--start` 改成 `2021-01-01`，其他資料參數保持一致；**A 的評估仍需共用 B
+資料來源，所以兩份資料都要已完成 prepare。** `--experiment a-lora32` 等容量選項在
+後面的 train 命令選擇，不是 configure 的參數。
 
-下列範例的實際資料範圍是：
-
-- 美國：`AAPL.US`、`MSFT.US`、`SPY.US`、`QQQ.US`，以及系統自動補入的
-  `VTI.US` benchmark。
-- 台灣：不是只有四個美國 ticker，也不是沒有台股；會包含相同日期範圍內
-  TWSE／TPEx 普通股、TDR、白名單內非槓桿股票型 ETF 與官方 benchmark。
-- 日期：兩個市場都從 `2015-01-01` 開始，並在 `2026-07-27` 之前結束；
-  `2026-07-27` 本身不包含在資料內。
-
-非互動式「美國 explicit universe + 完整台灣市場」範例：
-
-```bash
-bash scripts/runpod_workflow.sh configure \
-  --stage stage1 \
-  --data-profile us_tw_eodhd \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
-  --h-start 3 \
-  --universe explicit \
-  --stocks "AAPL,MSFT" \
-  --etfs "SPY,QQQ"
-```
-
-Provider acquisition policy 會在建立 CPU Pod 時另外設定。`--max-api-calls 10000`
-只限制該次 acquisition attempt 的 EODHD network attempts，不會把台股或美股截成
-10,000 筆資料，也不要求整份資料能在 10,000 次 requests 內完成。EODHD 達到上限後
-會退出自己的迴圈，但平行執行中的 TWSE／TPEx 仍會繼續。三個 provider 迴圈都退出後，
-CPU preparation 才保存 cache 與 `waiting_for_budget` 進度並結束。
-
-供應商額度是另一層限制。EODHD 官方價格頁目前列出 `EOD Historical Data — All
-World` 個人方案月繳 USD 19.99；官方限制文件指出付費方案預設每日 100,000 API
-calls、每分鐘 1,000 HTTP requests，且訂閱方案的每日額度在午夜 GMT 重置。兩種
-單位彼此獨立，不同 endpoint 也可能消耗不同數量的計費 calls；實際訂閱、帳戶已用
-額度與 provider 回傳 headers 才是執行時依據。本專案把預設 pacing 向下取整為每秒
-16 requests（每分鐘 960 requests），但若同一帳戶還有其他 client 同時使用，仍須再
-降低 `--eodhd-qps`。可參考
-[EODHD Pricing](https://eodhd.com/pricing)、
-[EODHD API Limits](https://eodhd.com/financial-apis/api-limits) 與
-[EODHD User API](https://eodhd.com/financial-apis/user-api)。完整美國目標證券範圍的
-request 計畫可以大於 `--max-api-calls`；專案與供應商額度邊界都由後述的 CPU Pod
-續傳流程跨多次執行處理。
-
-完整 EODHD／台灣目標證券範圍的設定不提供 `--stocks`、`--etfs` 或
-`--symbol-limit`：
-
-```bash
-bash scripts/runpod_workflow.sh configure \
-  --stage stage1 \
-  --data-profile us_tw_eodhd \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
-  --universe all
-```
-
-discovery 後的完整 HTTP request 計畫即使超過該次 CPU Pod 的 `--max-api-calls`，
-也只會記錄為資訊，不會阻止 Pod 建立或縮小資料範圍。EODHD 每個 CPU attempt 最多
-送出設定的 network attempts，
-達上限後由下一個 Pod 使用 cache 續傳；可依成本與使用情況調高或調低
-`cpu prepare --max-api-calls`，但它不會繞過 provider quota。
-
-如果要使用相同的美國 explicit universe、但**完全不下載台股**，必須把 profile
-改成 `us_only_eodhd`：
+只下載指定美股、不含台灣市場的設定範例：
 
 ```bash
 bash scripts/runpod_workflow.sh configure \
   --stage stage1 \
   --data-profile us_only_eodhd \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
+  --start 2016-01-01 \
+  --end 2026-06-01 \
   --universe explicit \
   --stocks "AAPL,MSFT" \
   --etfs "SPY,QQQ"
 ```
 
-這個 `us_only_eodhd` 範例只包含上述四個美國 ticker 加上自動補入的
-`VTI.US`，不包含 TWSE／TPEx 資料。
+這個例子含上述四檔美股與必要的 `VTI.US` benchmark。若改成 `us_tw_eodhd`，
+台股仍為完整合格 universe，不受這四個 ticker 限制；純台股則使用
+`--data-profile tw_only --universe all`，不帶 `--stocks`／`--etfs`。
+這些是不同資料範圍的替代選擇，不應在已有資料時逐一照抄執行。
 
-台股全市場、不使用 EODHD 的範例：
-
-```bash
-bash scripts/runpod_workflow.sh configure \
-  --stage stage1 \
-  --data-profile tw_only \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
-  --universe all
-```
+Provider quota、QPS 與此次新增 API attempts 在建立 CPU Pod 時設定，不是 configure
+的資料參數。依帳戶剩餘額度設定 `--max-api-calls`；完整 request 計畫超出單次額度時
+會續傳，不會縮小 universe。價格與供應商限制請查
+[EODHD Pricing](https://eodhd.com/pricing)、
+[API Limits](https://eodhd.com/financial-apis/api-limits) 與
+[User API](https://eodhd.com/financial-apis/user-api)，不要把程式預設值當作帳戶保證額度。
 
 腳本會建立 `.runpod/selections/<selection-id>.json` 與
 `.runpod/active-selection.json`。兩者都不含 secret 且被 `.gitignore` 排除。
 目前使用 selection schema 3；舊 schema 不含完整 `h_start` 處理契約，因此更新程式碼後
 必須重新執行 `configure`，不會自動轉換。修改 `--end`
 會按設計建立新的 dataset request namespace；既有 network-volume 檔案不會被刪除。
-profile、日期、universe、symbol limit、資料處理契約或 stage config SHA-256
-任一不同，都會得到不同 identity。QPS、API budget 與最大退避只記錄在 CPU launch
+Selection identity 包含 stage/config 與資料選擇；dataset request identity 只包含會改變
+持久化資料的 profile、日期、universe、symbol limit、revision 與 storage preparation 契約。
+**改 LoRA 或主模型學習率不是新資料集**，不可混淆兩種 identity。QPS、API budget 與最大退避只記錄在 CPU launch
 metadata、download progress 與 download manifest，不會進入 selection identity。
 
 只修改 `h_start` 會產生新的 training selection SHA，但 `h_start=1`、`2`、`3` 共用相同
@@ -904,13 +848,12 @@ dataset request SHA、raw Parquet、symbol bar store、品質 cutoff ranges 與 
 DataLoader 在訓練時才選取對應的 `h_start...14` label，train-only robust scales 也在該次
 訓練啟動時由 train split 動態抽樣估計，並寫入每個 checkpoint 供續訓、評估與推論精確
 還原。因此切換 `h_start` 不會重建資料、不會掃描 API
-cache，更不會呼叫 provider；若新 selection 需要更新 readiness binding，CPU prepare
-只會驗證既有 `_SUCCESS.json` 與 artifacts 後重新綁定 marker。日期、symbol universe、provider request 或
+cache，更不會呼叫 provider；新 selection 由啟動流程核對所選 dataset manifest 與 artifacts，不要求額外 CPU finalization。日期、symbol universe、provider request 或
 `dataset-revision` 改變時才會建立不同的 dataset namespace。
 
 若 provider 可能修訂歷史資料，且確實要為相同 profile/date/universe 建立新快照，
 請在 `configure` 明確加入新的 `--dataset-revision <label>`；CPU workflow 不會
-覆寫完整的既有 namespace，部分殘留也會 fail closed。
+覆寫完整的既有 namespace，同 identity 的未完成工作依續傳流程恢復，身分不符的殘留則拒絕混用。
 
 可用下列指令檢視目前選擇，不需開啟 JSON：
 
@@ -926,7 +869,7 @@ stage、資料範圍、runtime 與 config 不從 `.env` 讀取。不要 `source 
 收到 RunPod Secret reference 解析出的 relay token 與非敏感 `run.app` URL，不會收到
 本機 account-level RunPod/S3 或 GCP deployment credential。
 
-#### 2. 驗證 S3 並上傳程式碼
+##### 驗證 S3 並上傳程式碼
 
 先執行 read-only S3 權限檢查，再預覽明確的上傳 allowlist：
 
@@ -935,7 +878,7 @@ bash scripts/verify_runpod_s3_access.sh
 bash scripts/runpod_workflow.sh sync --dry-run
 ```
 
-確認清單後才實際上傳，並驗證 remote code readiness：
+確認清單且該 volume 已無 Pod 使用後，才實際上傳並驗證 remote code readiness：
 
 ```bash
 bash scripts/runpod_workflow.sh sync --apply
@@ -949,12 +892,30 @@ artifact 不會上傳。`poetry.lock` 也不會上傳；它會依 approved RunPo
 的 Python/PyTorch/CUDA 環境在 network volume 上重新產生。
 
 任何 allowlisted 程式碼或 config 修改後，都要重新執行 `--dry-run`、
-`--apply` 與 readiness check。config 修改也會使 active selection 失效，必須
-重新執行 `configure`。只要所選資料集已完成 prepare，且資料內容與 preparation
+`--apply` 與 readiness check。所選 config 修改後需用 `configure --reuse-current` 刷新 selection；此選項保留資料範圍，
+若資料 identity 會改變則拒絕。未使用的其他 config 修改不會改變這份 selection。只要所選資料集已完成 prepare，且資料內容與 preparation
 契約未改變，切換 selection 或更新非資料程式不需重跑 CPU preparation。
 GPU gate 仍會驗證所選資料集完整性及目前模型的離線快取，不得略過。
 
-#### 3. 遠端部署模型與離線資料層
+##### 已完成 prepare 後切換 Stage 或 A/B
+
+先用 `selection show` 核對原資料範圍。只改訓練 Stage、h_start 或 feature mode，不需
+CPU finalization；資料 profile、revision、日期與 universe 須仍指向已準備好的 namespace。
+例如從同資料的 Stage 1 改 Stage 2，重新 configure 時保留原資料參數，只改 `--stage stage2`，
+再依本節同步 selection。不要為此執行 `cpu prepare --max-api-calls 1`。
+
+如果已上傳六份容量 YAML，可直接以 `train --experiment` 選 A/B 與容量；
+launcher 自動發布該實驗的 immutable selection，不修改全域 active selection，也不再上傳
+原始碼。缺少資料或 baseline 時會在付費建立前報錯；應完成缺少的前置項目，不改 manifest
+或重新下載已有資料。Resume／validate 則以 run ID 還原原 selection，見[接續訓練](#resume-zh)。
+
+<a id="cpu-zh"></a>
+
+#### 3. 首次準備資料，或接續未完成的 CPU 工作
+
+**已完成相同資料範圍的 prepare 時跳過本步。** 首次建置需先 configure `stage1`；
+目前 creator 遇到 `stage2` 會選 `cpu-finalize`，它只重驗既有資料，不能建立缺少的 bar store。
+不需要先訓練 Stage 1 模型。若已完成準備而只切換訓練 Stage／容量，直接進入 baseline／train。
 
 CPU Pod 只能使用 active selection；如果尚未執行 `configure`、config SHA 已改變，
 或 selection JSON 不完整，建立前就會失敗。在本機不帶任何選項執行時會進入
@@ -1044,6 +1005,9 @@ bash scripts/runpod_tmux_launch.sh cpu-prepare
 tmux -L stock-forecasting-cpu-prepare attach -t stock-forecasting-cpu-prepare
 ```
 
+<details>
+<summary>CPU preparation 產物、資源規劃與資料身分細節</summary>
+
 `cpu-prepare` 會依序：
 
 1. 建立 persistent directory layout、Poetry 2.4.0 與 remote Python 3.12
@@ -1074,24 +1038,26 @@ tmux -L stock-forecasting-cpu-prepare attach -t stock-forecasting-cpu-prepare
    或發布續傳狀態。完整 request 估算只作資訊；workflow 自動保留 max runtime 的 25%（最多 2 小時；預設 6 小時即
    90 分鐘）給 data cleaning/bar-store construction，也可用 `--prepareReserve` 調整。
 4. 建立並驗證下列 persistent artifacts：
-   | 遠端路徑                                                                  | 內容                                              |
-   | ------------------------------------------------------------------------- | ------------------------------------------------- |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/api-cache/`            | provider raw response cache                       |
+
+   | 遠端路徑 | 內容 |
+   | --- | --- |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/api-cache/` | provider raw response cache |
    | `/runpod-volume/datasets/<dataset-request-sha256>/download-progress.json` | 續傳 attempt、cache 數量與 provider／budget／runtime 等待狀態 |
    | `/runpod-volume/datasets/<dataset-request-sha256>/provider-checkpoints/` | 可驗證並跨 CPU Pod 重用的 provider materialization checkpoints |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/raw/market.parquet`    | durable `downloaded` checkpoint 的 canonical daily OHLCV |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/raw/market.parquet` | durable `downloaded` checkpoint 的 canonical daily OHLCV |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/shards/` | 依 symbol row group 壓縮且可隨機讀取的 OHLCV bars |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/symbol-index.parquet` | symbol → shard/row-group 索引 |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/cutoff-ranges.parquet` | train/validation/test 的連續有效 cutoff ranges |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/cutoff-ranges.parquet` | prepared 候選 cutoff ranges；runtime 另套用完整連續性／流動性規則 |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/_SUCCESS.json` | bar store 完成與完整性 checkpoint |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/.work/execution-plan.json` | 建置中各階段的記憶體預算、有效 process 數與續用 task 數；成功後回收 |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/.work/scan-index.json` | 建置中來源分區至 bucket row group 的精確索引；成功後回收 |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/.work/scan-partitions/` | 粗粒度、可續傳的 raw scan 分區；成功後回收 |
    | `/runpod-volume/datasets/<dataset-request-sha256>/download-manifest.json` | 實際 provider、profile、symbols 與下載 provenance |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/dataset-manifest.json` | split counts、hash 與資料契約                     |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/manifests/api-request-log.jsonl` | 不含 token 的 request audit             |
-   | `/runpod-volume/cache/huggingface/`                                      | 離線 Kronos model/tokenizer cache                 |
-   | `/runpod-volume/cache/hf-models.json`                                    | 固定 model revisions 與 cache manifest            |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/dataset-manifest.json` | split counts、hash 與資料契約 |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/manifests/api-request-log.jsonl` | 不含 token 的 request audit |
+   | `/runpod-volume/cache/huggingface/` | 離線 Kronos model/tokenizer cache |
+   | `/runpod-volume/cache/hf-models.json` | 固定 model revisions 與 cache manifest |
+
 5. raw Parquet、download manifest 與 request log 完整驗證後，先在
    `/runpod-volume/lifecycle/stage1/cpu-preparation.json` 發布 `downloaded`
    執行狀態。沒有 exit code 的 `downloaded` 是同一 Pod 內的中間 checkpoint，外部 guard
@@ -1140,6 +1106,8 @@ mount point**：優先使用 `mountpoint`，否則使用 `findmnt`，最後才�
 位於 volume root 下的獨立子目錄；任何 persistent path 都不得使用會被 Pod
 重建清除的 `/workspace`。這個 layout 避免把專案目錄本身當成 mount target，
 也避免 network volume 掛載時遮蔽同名的 Pod 內建目錄。
+
+</details>
 
 Pod 終止後，以 S3 lifecycle 為準，不要依賴已消失的 SSH session：
 
@@ -1191,7 +1159,6 @@ request-count 上限。共同 acquisition deadline 仍可讓任何迴圈進入
    cd /runpod-volume/stock_forecasting
    bash scripts/runpod_tmux_launch.sh cpu-prepare
    ```
-
 6. 新 attempt 會先驗證並重用具有相同 provider materialization request 與 data-content
    digest 的 provider checkpoints。只有未完成或內容身分不相容的 provider
    才重新播放已快取 responses 並對缺少的 request 呼叫 provider。只有全部資料、
@@ -1222,183 +1189,39 @@ attempt、已快取 response 數、此次 network request 數、可用的完整 
 provider 資料快照時才改 `--dataset-revision`，新 revision 不會沿用舊 snapshot cache。
 
 若狀態是 `waiting_for_budget`、`waiting_for_provider`、`waiting_for_resume`、
-`waiting_for_preparation`、`failed` 或 `timed_out`，先從
-`lifecycle/stage1/cpu-preparation.json` 讀取
-`launch_id`、`log_path` 與可用的 `progress_path`。tmux log 目錄固定為
-`logs/tmux/stock-forecasting-cpu-prepare/<launch-id>/`；由腳本解析並下載到本機診斷目錄：
+`waiting_for_preparation`、`failed` 或 `timed_out`，用以下命令下載 CPU 紀錄；腳本會解析 lifecycle 中的
+`launch_id`、`log_path` 與 `progress_path`，不需手動查 JSON 或輸入遠端路徑：
 
 ```bash
 bash scripts/runpod_workflow.sh cpu-logs
 ```
 
-只有下列 gate 通過後才租用 GPU：
+CPU 結束後先檢查狀態；baseline 使用 `readiness --baseline`，主模型使用
+`readiness --gpu`。兩者都由建立命令再次檢查，不用修改 readiness marker：
 
 ```bash
-bash scripts/runpod_workflow.sh readiness --gpu
+bash scripts/runpod_workflow.sh status
+bash scripts/runpod_workflow.sh readiness --baseline
 ```
 
-##### 從 Stage 1 完整切換至 Stage 2
+<a id="baseline-zh"></a>
 
-Stage 2 使用相同 dataset request 時會得到相同 data namespace，但會使用既有
-chronological split 中 100% 的 **train partition**；validation/test partition 仍保持隔離。
-Stage 2 會從相同 pretrained base 開始，不接續 Stage 1 checkpoint。切換 stage 本身不會
-下載 provider 資料或重建 bar store，但 profile、日期、universe、dataset revision 等資料
-身分若改變，就會建立另一個 immutable dataset namespace。
+#### 4. 建置或接續獨立 baseline
 
-請依下列順序操作，不要跳過 dataset request SHA 比對：
-
-1. **本機控制端：記錄現有 Stage 1 selection。** `configure` 會改變 active selection，
-   所以必須先保存目前的 `dataset_request_sha256`，並抄下 profile、revision、起訖日期、
-   `h_start`、universe、symbol limit 與 explicit symbol lists：
-
-   ```bash
-   bash scripts/runpod_workflow.sh selection show
-   ```
-
-2. **本機控制端：建立 Stage 2 selection。** 明確提供上一步顯示的相同資料參數；不要直接
-   執行無參數的互動式 `configure` 後接受預設值。下例只有在現有 Stage 1 selection
-   恰好使用相同值時才可原樣執行：
-
-   ```bash
-   bash scripts/runpod_workflow.sh configure \
-     --stage stage2 \
-     --data-profile us_tw_eodhd \
-     --dataset-revision v1 \
-     --start 2021-01-01 \
-     --end 2026-06-01 \
-     --h-start 1 \
-     --universe all
-
-   bash scripts/runpod_workflow.sh selection show
-   ```
-
-   `--end` 是不包含該日的 exclusive boundary。`all` 模式若原本沒有
-   `symbol_limit`，就不要加入 `--symbol-limit`、`--stocks` 或 `--etfs`；`explicit`
-   模式則必須逐字保留原本的 `--stocks` 與 `--etfs`。新的 `selection_id`／
-   `selection_sha256` 應該改變，但新的 `dataset_request_sha256` 必須和步驟 1 完全相同。
-   若不同，立即停止；不要執行 sync，也不要建立 CPU 或 GPU Pod。重新執行正確的
-   `configure` 不會呼叫資料 API。
-
-3. **本機控制端：上傳目前程式碼與 Stage 2 selection。**
-
-   ```bash
-   bash scripts/runpod_workflow.sh sync --apply
-   ```
-
-4. **本機控制端：建立 Stage 2 CPU finalization Pod。** 這個非互動命令會立即建立付費
-   CPU Pod；`--max-api-calls 1` 只滿足共用建立介面的必要參數，`cpu-finalize` 不會使用
-   provider acquisition budget：
-
-   ```bash
-   bash scripts/runpod_workflow.sh cpu prepare \
-     --max-api-calls 1
-   ```
-
-   Active selection 是 `stage2` 時，建立腳本會自動把 workflow 映射為
-   `cpu-finalize`。建立成功後的提示必須是：
-
-   ```text
-   After SSH login, run: bash scripts/runpod_tmux_launch.sh cpu-finalize
-   ```
-
-   若提示仍為 `cpu-prepare`，不要在該 Pod 啟動 workflow；先重新檢查 active selection。
-
-5. **CPU Pod：執行 Stage 2 finalization。** 由 RunPod Console SSH 登入剛建立的 CPU
-   Pod，然後執行：
-
-   ```bash
-   cd /runpod-volume/stock_forecasting
-   bash scripts/runpod_tmux_launch.sh cpu-finalize
-   ```
-
-   即時查看 tmux：
-
-   ```bash
-   tmux -L stock-forecasting-cpu-finalize attach -t stock-forecasting-cpu-finalize
-   ```
-
-   Finalizer 只會驗證程式碼、runtime、既有 dataset/bar store、Hugging Face cache 與
-   Stage 2 config，執行完整 pytest，然後把既有 dataset readiness marker 綁到新的
-   Stage 2 selection。它不會執行 `stock-forecasting-download`、provider API acquisition、
-   `stock-forecasting-prepare` 或 bar-store materialization。
-
-6. **本機控制端：等待 CPU finalization 完成並通過 GPU gate。** Pod 終止後執行：
-
-   ```bash
-   bash scripts/runpod_workflow.sh status
-   bash scripts/runpod_workflow.sh readiness --gpu
-   ```
-
-   `status` 必須顯示 dataset ready，且 `readiness --gpu` 必須成功。Finalization 完成前，
-   共用 CPU 摘要暫時仍顯示舊 Stage 1 selection ID 是正常的；`status` 的 dataset 列
-   顯示目前所選資料集的 manifest 摘要，不等於完整 artifact readiness 驗證。
-
-7. **本機控制端：先完成下節「獨立 baseline 與既有資料升級」的 baseline 流程，再列出 GPU 並建立 Stage 2 training Pod。** `--gpuId` 必須使用清單中的
-   完整 `gpuId`，不是表格中的簡稱；`--maxRuntime` 同時涵蓋訓練與自動 validation：
-
-   ```bash
-   bash scripts/runpodctl_project.sh gpu list
-
-   bash scripts/runpod_workflow.sh train \
-     --maxRuntime 24h \
-     --gpuId "NVIDIA GeForce RTX 5090"
-   ```
-
-   `gpu list` 預設顯示表格，包括 GPU 型號、VRAM、Secure／Community 每小時美元價格、
-   全域庫存，以及每張卡的完整 `gpuId` 與機房庫存。`--` 表示 API 未提供資訊，不表示免費或有貨。
-   可用以下命令搜尋型號或篩選機房；機房篩選後，表格庫存欄顯示該機房的庫存，
-   仍會列出該機房標示為 `NONE` 的 GPU。庫存資訊不代表已保留容量：
-
-   ```bash
-   bash scripts/runpodctl_project.sh gpu list --search "5090"
-   bash scripts/runpodctl_project.sh gpu list --search "4500" --data-center EU-RO-1
-   ```
-
-   腳本需要解析原始 GPU 資料時，明確指定 JSON 輸出；搜尋與機房篩選也可搭配 JSON：
-
-   ```bash
-   bash scripts/runpodctl_project.sh gpu list --output json
-   ```
-
-8. **GPU Pod：啟動 Stage 2 訓練。** 由 RunPod Console SSH 登入剛建立的 GPU Pod，
-   然後執行：
-
-   ```bash
-   cd /runpod-volume/stock_forecasting
-   bash scripts/runpod_tmux_launch.sh stage1-train
-   ```
-
-   `stage1-train` 是保留給既有部署的 workflow 名稱，不會把 Stage 2 降回 Stage 1；實際
-   config 由 immutable selection 的 `RUNPOD_CONFIG` 決定。啟動記錄必須顯示 Stage 2
-   config。若要即時查看：
-
-   ```bash
-   tmux -L stock-forecasting-train attach -t stock-forecasting-train
-   ```
-
-9. **本機控制端：確認 terminal state。** 訓練與自動 validation 完成、Pod 終止後執行：
-
-   ```bash
-   bash scripts/runpod_workflow.sh status
-   ```
-
-#### 獨立 baseline 與既有資料升級
-
-已完成 CPU prepare／finalize 的 dataset，升級本版只需刷新 training selection；
-`--reuse-current` 保留 active selection 的日期、profile、universe、revision、horizon、stage
-與 feature mode，並強制檢查 dataset request SHA 不變。**不要重跑 `cpu prepare`、
-`cpu-finalize` 或 download-data；不會新增行情 API call。** 新 dataset 則先按前節完成既有
-CPU 流程。以下命令在本機專案目錄執行：
+先完成所需 train 資料及共用 evaluation 資料的 CPU prepare。程式與 active selection
+依前一步同步後，在本機執行：
 
 ```bash
-bash scripts/runpod_workflow.sh configure --reuse-current
-bash scripts/runpod_workflow.sh selection show
-bash scripts/runpod_workflow.sh sync --dry-run
-bash scripts/runpod_workflow.sh sync --apply
 bash scripts/runpod_workflow.sh readiness --baseline
-bash scripts/runpodctl_project.sh gpu list
+bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
+
+`--data-center` 只篩選庫存；需改成已登記 volume 所在的機房。Baseline 建立參數只有
+`--maxRuntime` 與 `--gpuId`（及其同義旗標），未提供時為 `12h` 與 RTX 5090；
+資料組別由 configure 選擇，不能把 `--experiment` 傳給 baseline。
+已準備好的資料只因更新主模型設定而刷新 selection 時，用 `configure --reuse-current`；
+不重跑 `cpu prepare`／`cpu-finalize`。
 
 `readiness --baseline` 只驗證所選 dataset 的既有資料、完整切分、bar-store 發布狀態與
 上傳程式；不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定。A／B 各自讀取
@@ -1410,7 +1233,7 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 Kronos cache 另外依目前 config 的 repository、固定 revision 與離線驗證結果檢查，
 不與 CPU prepare 當時的共用 HF manifest 檔案雜湊綁定。切換至已完成 prepare 的
 A／B 資料集，無須重跑 CPU prepare、下載或切分，也不會使既有 baseline 失效。
-續訓／評估則驗證 run 本身記錄的資料 manifest、原始 checksum 及目前 selection；
+續訓／評估則驗證 run 本身記錄的資料 manifest、原始 checksum 及該 run 固定的 selection；
 不會以另一組最後完成 prepare 的摘要取代該 run 的資料身分。
 
 `baseline` 自動讀 `.env` 的 network volume 與 active selection。在本機檢查完成 manifest
@@ -1429,7 +1252,7 @@ tmux -L stock-forecasting-baseline attach -t stock-forecasting-baseline
 ```
 
 按 `Ctrl-b d` 離開不會中斷工作。完成／失敗／逾時後由**本機 guard**終止 Pod，
-因此本機須保持開機與網路；baseline 不依賴 Pod 自我終止。回到本機確認：
+因此本機須保持開機與網路；baseline 不依賴 Pod 自我終止。回到本機先用 `status` 確認原 Pod 已結束。需要接續未完成工作或確認快取時，再執行：
 
 ```bash
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
@@ -1437,15 +1260,12 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 
 若先前已完整完成，這次應直接命中快取；若逾時或失敗，會建立新 Pod，SSH 後仍執行同一個
 tmux baseline 命令，接續已保存的 job／checkpoint。完整 baseline 可能超過單次 24 小時，
-此參數是單次 workload 上限，不是完成時間保證。確認 cache hit 後才建立主模型 Pod：
+此參數是單次 workload 上限，不是完成時間保證。確認 cache hit 後才進入下一步建立主模型 Pod。注意：`baseline` 不是唯讀查詢命令；
+快取未完成時會建立付費 Pod。`train` 若找不到匹配的完整 baseline，會在本機拒絕建立
+Pod，不會自動執行 baseline 訓練。
 
-```bash
-bash scripts/runpod_workflow.sh train --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
-```
 
-主模型 Pod SSH 後執行 `bash scripts/runpod_tmux_launch.sh stage1-train`；名稱保留相容性，
-實際使用 active stage。`train` 在本機找不到匹配完整 baseline 就拒絕建立 Pod，不會自動
-偷偷訓練 baseline。不同 train 年份的 A／B dataset 各建立一份，之後同 dataset 的主模型共用。
+不同 train 年份的 A／B dataset 各建立一份，之後同 dataset 的主模型共用。
 baseline 的參數、early stopping 與模型清單來自 `configs/baseline.json`；主模型的
 Kronos revision、LoRA、feature mode、學習率與 checkpoint 不參與 baseline 啟動或快取判定。
 變更主模型設定不會令已完成的 baseline 失效。資料內容／切分或 baseline 自身數值契約
@@ -1468,6 +1288,9 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 
 此流程不執行 prepare、不重新切分或下載行情，也不需要手動調整 manifest、SHA 或路徑。
 如果資料檢查失敗，先處理明確指出的資料問題；不要直接重跑 CPU prepare。
+
+<details>
+<summary>Baseline 資源調校、儲存與中斷恢復</summary>
 
 baseline 以 `configs/baseline.json` 管理參數及資源：預設同張 GPU 最多兩個 deep jobs，
 另有一個 CPU rule／GBDT job；先按 CPU、cgroup 記憶體、GPU 可用記憶體與 `/dev/shm`
@@ -1522,9 +1345,15 @@ rules 從尚未完成的 rule 接續。中斷中的原生 GBDT fit、完整 vali
 該工作單元。這些快取與 checkpoint 屬於 baseline 訓練產物，不需要新行情 API call，
 也不要求重跑 CPU prepare。進度預設每 30 秒輸出，完整結果仍由 `complete.json` 認定。
 
-#### 4. 建立 GPU Pod 並訓練
+</details>
 
-<a id="gpu-catalog-zh"></a>GPU 資源查詢
+<a id="train-zh"></a>
+
+#### 5. 選擇容量實驗並建立訓練 Pod
+
+<a id="gpu-catalog-zh"></a>
+
+##### GPU 資源查詢
 
 先查詢 GPU 型號與庫存目錄，取得完整 `gpuId`；訓練預設型號是
 `NVIDIA GeForce RTX 5090`。不帶參數會列出所有機房，不會自動以 `.env` 的機房篩選：
@@ -1536,12 +1365,12 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-SE-1 --search "5090"
 bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 ```
 
-| 參數                                  | 預設／格式                               | 說明                                                                                                                           |
-| ------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `--data-center ID`                  | 預設不篩選；例如`EU-RO-1`、`EU-SE-1` | 依完整機房 ID 篩選，不區分大小寫；不是`EU` 等區域前綴。不會改變 `.env` 或 Pod 建立位置                                     |
-| `--search TEXT`                     | 預設不篩選                               | 在 GPU 顯示名稱或完整`gpuId` 中作不區分大小寫的子字串搜尋，可和機房篩選合用                                                  |
-| `--output table`、`--output json` | `table`                                | 表格提供 VRAM、Secure／Community 每小時美元價格、完整`gpuId` 與機房庫存；JSON 保留符合條件 GPU 的 API 欄位，包含其他機房資料 |
-| `-h`、`--help`                    | 無值 flag                                | 顯示 GPU 查詢的參數說明                                                                                                        |
+| 參數 | 預設／格式 | 說明 |
+| --- | --- | --- |
+| `--data-center ID` | 預設不篩選；例如 `EU-RO-1`、`EU-SE-1` | 依完整機房 ID 篩選，不區分大小寫；不是 `EU` 等區域前綴。不會改變 `.env` 或 Pod 建立位置 |
+| `--search TEXT` | 預設不篩選 | 在 GPU 顯示名稱或完整 `gpuId` 中作不區分大小寫的子字串搜尋，可和機房篩選合用 |
+| `--output table`、`--output json` | `table` | 表格提供 VRAM、Secure／Community 每小時美元價格、完整 `gpuId` 與機房庫存；JSON 保留符合條件 GPU 的 API 欄位，包含其他機房資料 |
+| `-h`、`--help` | 無值 flag | 顯示 GPU 查詢的參數說明 |
 
 `--` 表示 API 未回報資訊；`NONE` 表示該機房回報無庫存，這些 GPU **仍會出現在結果**。
 查詢結果不是可建立 Pod 的保證或容量預約；篩選後的表格庫存欄才是指定機房的庫存。
@@ -1569,7 +1398,7 @@ Stage 2 提供六份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01�
 六個實驗從相同 pretrained Kronos-base 初始化，不從其他容量實驗的 checkpoint 接續。
 共同 task／LoRA／解凍層學習率為 `3e-5`／`5e-6`／`1e-6`，warmup 固定為
 256,000 次樣本呈現。Training 保留動態 sampling；年度權重為
-`0.8 ** (最新訓練年份 − cutoff 年份)`，年度配額等於有效 window 數乘年度權重，
+`0.8 ** (最新訓練年份 − cutoff 年份)`，年度配額按「有效 window 數 × 年度權重」正規化分配並作整數配額調整，
 會記錄配額、loss 與實際處理樣本數。Validation/test 則完整循序遍歷，不使用此 sampler。
 
 q50 location、正值上下區間寬度與獨立 ranking score 分開。Checkpoint／early stop
@@ -1678,7 +1507,7 @@ Baseline 仍使用其原有硬上限。每台 Pod 都有自己的本機 guard；
 
 ```bash
 bash scripts/runpod_workflow.sh recover
-bash scripts/runpod_workflow.sh recover --apply --pod-id <POD_ID>
+bash scripts/runpod_workflow.sh recover --apply --pod-id "<POD_ID>"
 ```
 
 省略 `--pod-id` 會檢查本專案所有 Pod；`--apply` 才允許重新啟動缺失的 guard
@@ -1702,12 +1531,14 @@ ranking loss、各學習率、已處理樣本數與完整 validation 指標。`l
 
 ```bash
 cd /runpod-volume/stock_forecasting
-bash scripts/runpod_wandb_sync.sh <RUN_ID>
+bash scripts/runpod_wandb_sync.sh "<RUN_ID>"
 ```
 
 新建的 run-scoped Pod 只允許補傳自身 run；省略參數也只處理自身 run，不掃描其他
 正在訓練的實驗。腳本保留所有接續／重評估 transaction，使用專案固定 W&B 版本的
 legacy sync 路徑；完成後終止補傳 Pod，不在其內再啟動訓練。
+
+<a id="resume-zh"></a>
 
 ##### 接續訓練與獨立 holdout 驗證
 
@@ -1717,7 +1548,7 @@ legacy sync 路徑；完成後終止補傳 Pod，不在其內再啟動訓練。
 bash scripts/runpod_workflow.sh resume \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090" \
-  <RUN_ID>
+  "<RUN_ID>"
 ```
 
 省略 run ID 時，只有唯一一個未完成且可接續的 run 才自動選用；若存在多個候選，
@@ -1737,7 +1568,7 @@ SSH 後仍執行 `bash scripts/runpod_tmux_launch.sh stage1-train`。切換容�
 bash scripts/runpod_workflow.sh validate \
   --maxRuntime 8h \
   --gpuId "NVIDIA GeForce RTX 5090" \
-  <RUN_ID>
+  "<RUN_ID>"
 ```
 
 `validate` 省略 run ID 會選最新完成 training 的 run；省略 runtime/GPU 時分別為
@@ -1752,14 +1583,16 @@ bash scripts/runpod_tmux_launch.sh stage1-validate
 
 不同 run 的 validation 可以並行，但不能和同一 run 的 training/validation 重疊。
 
-#### 5. 下載 checkpoint、loss 與最終評估結果
+<a id="download-zh"></a>
+
+#### 6. 下載 checkpoint、loss 與最終評估結果
 
 本機下載不需要 volume ID 或遠端路徑。多實驗比較建議明確指定每次建立時回報的 run ID：
 
 ```bash
-bash scripts/runpod_workflow.sh download <RUN_ID>
-bash scripts/runpod_workflow.sh download --checkpointScope best <RUN_ID>
-bash scripts/runpod_workflow.sh download --resume --checkpointScope all <RUN_ID>
+bash scripts/runpod_workflow.sh download "<RUN_ID>"
+bash scripts/runpod_workflow.sh download --checkpointScope best "<RUN_ID>"
+bash scripts/runpod_workflow.sh download --resume --checkpointScope all "<RUN_ID>"
 ```
 
 | 參數 | 預設 | 說明 |
@@ -1779,6 +1612,8 @@ Checkpoint 內的 validation metrics 用於選模；最終 `validation-benchmark
 是 holdout 與 baseline 比較。比較前核對 run ID、設定、有效評估集合與完成狀態。
 尺度表徵診斷另用 [下載診斷結果](#在本機下載診斷結果)中的 `download-probes`，不包含在
 這個下載命令內。
+
+<a id="artifacts-zh"></a>
 
 ### 訓練與推論產物
 
@@ -1817,17 +1652,22 @@ identity、artifact integrity、validation-selection、資料、模型與訓練�
 也不允許拿舊 checkpoint 配上新固定日期 config 或把舊報告當作新 holdout 結果。
 
 推論也必須在已建立專案 Poetry environment 且掛載相同 network volume 的 RunPod Pod
-內執行，不在本機載入 checkpoint：
+內執行，不在本機載入 checkpoint。替換 run／checkpoint 識別碼，並將 `<MARKET_PARQUET>`
+換成含目標商品及 benchmark 的實際輸入檔；不依賴 SSH session 中未必存在的 `DATA_ROOT`：
 
 ```bash
 poetry run stock-forecasting-infer \
-  --config /runpod-volume/savedModel/<run-id>/<checkpoint>/resolved-config.yaml \
-  --checkpoint /runpod-volume/savedModel/<run-id>/<checkpoint> \
-  --input "${DATA_ROOT}/raw/market.parquet" \
+  --config "/runpod-volume/savedModel/<RUN_ID>/<CHECKPOINT>/resolved-config.yaml" \
+  --checkpoint "/runpod-volume/savedModel/<RUN_ID>/<CHECKPOINT>" \
+  --input "<MARKET_PARQUET>" \
   --symbol AAPL.US
 ```
 
-推論輸出只包含數值 forecast、資料 provenance、encoder shape 與 checkpoint metadata，不包含自然語言解釋。
+推論輸出包含原始 `forecast`、獨立 `ranking_scores`、資料 provenance、encoder shape
+與 checkpoint metadata。若存在與此 checkpoint 權重相符的 validation 校準，另外回傳
+`calibrated_forecast`；否則為 `null` 並附 `interval_calibration_status`。不生成自然語言解釋。
+
+<a id="probes-zh"></a>
 
 ### 歷史尺度表徵診斷
 
@@ -1838,7 +1678,8 @@ poetry run stock-forecasting-infer \
 
 `probe-scales` **不會自動建立 GPU Pod，也不能在本機執行模型診斷**。執行順序如下：
 
-1. **本機控制端：同步程式碼。** 透過 `bash scripts/runpod_workflow.sh sync --apply` 與既有雲端部署流程
+1. **本機控制端：確認程式就緒。** 已同步且未修改 source 時不用再同步；需更新時，
+   等該 volume 無任何 Pod 後才執行同步。 透過 `bash scripts/runpod_workflow.sh sync --apply` 與既有雲端部署流程
    更新程式碼；GPU readiness 必須通過，原始 network volume 中須已有可用的專案環境。
    本機與 volume 必須同時更新至支援診斷 lifecycle 的版本，再建立 Pod 與本機 guard；
    更新檔案不會替已在運行的舊 guard 加上新的監控項目。
@@ -1850,7 +1691,7 @@ poetry run stock-forecasting-infer \
    bash scripts/runpod_workflow.sh train --maxRuntime 2h
    ```
 
-   這裡的 `train` 只負責檢查 readiness、配置新 run identity、建立 Pod 與設定期限，
+   這裡的 `train` 仍需通過目前 selection 的資料、模型與 baseline readiness，並配置新 run identity、建立 Pod 與設定期限，
    不會自動啟動訓練。此為沿用既有訓練 Pod 建立入口，並非獨立的診斷 Pod lifecycle。
 3. **GPU Pod：透過 tmux 啟動診斷。** SSH 登入該 Pod，執行下列診斷命令。
    **不要執行**建立 Pod 後提示的
@@ -1869,7 +1710,7 @@ bash scripts/runpod_tmux_launch.sh probe-scales
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh probe-scales \
-  --checkpoint run-20260905T203327Z-270337978 \
+  --checkpoint "<RUN_ID>" \
   --train-samples 16384 \
   --validation-samples 4096 \
   --batch-size 16 \
@@ -1915,9 +1756,10 @@ owner run ID 是本次 Pod 的識別，不是 `--checkpoint` 指定的歷史模�
 診斷不呼叫 Pod 端終止 API，也不需要將本機 RunPod API key 放入 Pod。
 不改寫訓練 / validation 的 lifecycle 完成標記。
 若 session 已存在、啟動前檢查不通過，或 runner 無法取得 GPU lease，會保留 Pod，避免
-中斷既有工作；這些情況不發布診斷終止訊號，既有 hard deadline 仍生效。
-runner 的 timeout 沿用 Pod 建立時的 `MAX_RUNTIME_SECONDS`（上例為 2 小時），另有
-60 秒強制中止寬限；不延長 Pod 原本已設定的 hard deadline。
+中斷既有工作；這些情況不發布診斷終止訊號，本機 guard 仍按該 Pod 的設定監控。
+診斷 runner 自身的 timeout 使用 Pod 建立時的 `MAX_RUNTIME_SECONDS`（上例為 2 小時），
+另有 60 秒強制中止寬限。這是診斷程序的上限，不是雲端費用保證；本機 guard 仍須成功
+讀取終態並取得 RunPod API 確認，才算 Pod 已終止。
 看到 `awaiting Pod termination by the local guard` 表示診斷計算已結束，正等待本機 guard
 下一次成功輪詢；runner 在等待期間繼續持有 GPU lease，避免其他工作在終止前插入。
 **SSH 可以斷線，但執行 guard 的本機必須保持開機、連網，且 guard 程序不可中止。**
@@ -1938,7 +1780,7 @@ launcher 會印出這次工作的確切路徑。執行狀態與診斷數值報�
 RunPod API 已確認終止。終止請求與重試記錄位於**本機**的
 `~/.local/state/runpod-guards/<pod-id>.log`（或建立 Pod 時印出的自訂 Guard log 路徑），
 不是 Pod 內的 `pod-shutdown` 目錄；仍須以 RunPod 的 Pod 狀態確認是否已終止。
-無法讀取終態時，沿用既有 hard-limit 保護。Pod 終止後不能再 attach，應從持久化
+無法讀取終態時須檢查本機 guard 與 RunPod 狀態，不可假定已停止計費。Pod 終止後不能再 attach，應從持久化
 network volume 讀取 log、status 與報告。
 可用下列命令查看所有診斷參數：
 
@@ -1996,7 +1838,7 @@ bash scripts/runpod_workflow.sh download-probes
 若要下載指定模型 run 的最新完成診斷，只需加上 `PROBE_RUN_ID`：
 
 ```bash
-bash scripts/runpod_workflow.sh download-probes run-20260905T203327Z-270337978
+bash scripts/runpod_workflow.sh download-probes "<RUN_ID>"
 ```
 
 `PROBE_RUN_ID` 是被診斷模型的 run ID，與執行診斷時 `--checkpoint` 使用的 run ID
@@ -2103,14 +1945,15 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 | `--selection-workers N` | auto，範圍 1–8 | 掃描完成訓練 metadata 的 I/O 上限，另受 CPU／可用記憶體限制 |
 | `-h`、`--help` | 無值 flag | 顯示診斷參數，不啟動診斷 |
 
-`bash scripts/runpod_wandb_sync.sh [RUN_ID]` 省略 ID 時掃描所有 run 的待補傳 training／validation
-W&B 紀錄，指定 ID 則只補傳該 run；`-h`／`--help` 由內層 parser 處理。
-此腳本會載入 Pod 環境、驗證掛載，且退出時呼叫既有終止流程（包括 help 路徑），
-**只在沒有其他工作的專用補傳 Pod 執行**，不可在訓練中的 Pod 查 help 或補傳。
+`bash scripts/runpod_wandb_sync.sh [RUN_ID]` 在新建 run-scoped Pod 中只處理自身 run；
+省略 ID 也不掃描別的實驗，指定不同 run 或 `--help` 會在取得工作 lease 前拒絕。
+只有歷史未分 scope 的 Pod 保留省略 ID 掃描全部的行為；不應用它處理並行中的實驗。
+腳本取得 lease 後退出會進入既有終止流程，因此只在專用、閒置補傳 Pod 執行，
+完成後仍須用本機狀態確認 Pod 已終止；不可把 help 當成安全的線上檢查命令。
 
 #### 遠端低階資料與推論 CLI
 
-以下為前文 `poetry run stock-forecasting-*` 的完整選項，只供已準備好環境的雲端 Pod
+以下為 `poetry run stock-forecasting-*` 的完整選項，只供已準備好環境的雲端 Pod
 除錯，不取代本機 workflow；正常流程不要求手填資料路徑或 identity。
 這四個 Python CLI 均接受 `-h`／`--help`，但仍須在雲端既有環境執行。
 
@@ -2147,7 +1990,7 @@ W&B 紀錄，指定 ID 則只補傳該 run；`-h`／`--help` 由內層 parser �
 | `--fixed-evaluation` | 無值 flag；啟用 production 的 2025-06／2025-12／2026-06 exclusive 切分；省略為歷史比例模式 |
 | `--window-size N` | `128` 個 bars |
 | `--h-start N` | `1`；可選 1／2／3，最大 horizon 固定 14 |
-| `--max-abs-log-return X` | `0.5`，資料品質門檻 |
+| `--max-abs-log-return X` | `0.5`，舊 preparation 候選範圍的極端值標記；production runtime 依 `configs/data_cleaning.json` 重建有效集合，不以此刪除真實極端報酬 |
 | `--train-fraction X`、`--validation-fraction X` | `0.70`、`0.15`，僅比例模式使用 |
 | `--purge-bars N` | `20`，比例模式的 purge；固定日期模式改用 label end 邊界 |
 | `--stride N`、`--sample-stride N` | 相容欄位只接受 `5`、`1`；不是可任意修改的抽樣步距 |
@@ -2170,21 +2013,38 @@ W&B 紀錄，指定 ID 則只補傳該 run；`-h`／`--help` 由內層 parser �
 `.venv/bin/python -m pytest TEST_FILE` 的 `-m` 是 Python 模組執行，`TEST_FILE` 限定測試範圍；
 pytest 的 `-k EXPR` 篩選測試、`-q` 簡潔輸出、`-h` 顯示全部第三方選項，只在雲端 Pod 使用。
 
-### 驗收原則
+<a id="acceptance-zh"></a>
 
-PoC 最低驗收條件：
+### 驗收與結果解讀
 
-1. Stage 1 固定選取 `min(full train samples × 5%, 500,000)` 個 train samples，規劃 2 epochs，每個 epoch 僅改變順序，early stop 必須完成最低 LR 的兩個訓練／validation 間隔；使用完整 validation/test，並能完成 forward/backward、checkpoint reload 與 inference smoke test。
-2. Stage 2 與 Stage 1 architecture digest 相同，且由相同 pretrained base 重新開始。
-3. 所有 run 都可追溯到 immutable Parquet、dataset profile、provider、symbols、日期範圍與 split counts。
-4. CPU marker 與 active training selection 必須在 stage、config SHA、profile、日期、requested universe 與 dataset request SHA 完全一致；例如 CPU `tw_only` 對 GPU `us_tw_eodhd` 必須在 Pod 建立前 fail closed。
-5. `alpha_quantiles` 固定為 `[B,15-h_start,3]`，`h_start ∈ {1,2,3}`、最大 horizon
-   固定為 14，且沒有 classifier、文字或 fact 輸出。
-6. 模型 input、時序切分與正規化不使用未來資訊；未來 benchmark 只存在於離線 label construction。
-7. 模型至少與 zero-return、momentum、technical、GBDT 與 neural baselines 在同一 validation/test protocol 下比較。
-8. 不只報告單一 aggregate loss；同時報告各 horizon 的 normalized pinball、median correlation、方向一致率、區間 coverage/width 與依市場、asset type、年份的切片。
+1. Training 使用動態 sampling；validation/test 完整、固定順序遍歷清理後的有效集合，
+   不遺漏最後一個短 batch，不以估計數量或抽樣代替全量評估。
+2. 所有 split 遵守相同的連續 input/output、行情有效性與流動性規則；保留真實極端報酬。
+   A/B 評估共用同一份來源，不只核對日期範圍或筆數。
+3. Standard Stage 1/2 的 architecture digest 一致；三種容量實驗則各有自己的架構，
+   均從同一 pretrained base 開始。未完成 run 的接續必須還原原架構、optimizer、RNG 與進度。
+4. Readiness 核對所選 dataset 自身的 manifest 與實際 artifacts；不要求另一份資料最後寫入的
+   共用 CPU marker 在 stage/config 上相同，也不能混用不同 profile、universe 或資料內容。
+5. `alpha_quantiles` 為 `[B,15-h_start,3]`、q10 ≤ q50 ≤ q90；
+   `ranking_scores` 與中位數報酬分開，不輸出分類機率或自然語言。
+6. 輸入與 train-only 正規化不使用未來資料。Validation 用於選模和選模後的區間校準；
+   test 僅作最終評估，不參與 fitting。完整記錄 train pinball、ranking 與 validation loss。
+7. 主模型在相同評估集合上讀取已完成 baseline 結果，不重訓 baseline；報告應同時列出
+   normalized pinball、correlation、方向一致率、coverage/width、ranking 與市場／月份切片。
+8. 多 Pod 驗收須涵蓋 selection、run ID、checkpoint、log、lease 與 guard 隔離；
+   一台完成不能終止另一台，sync／共用環境更新不能覆寫使用中的資源。
 
-Stage 1 只證明腳本與契約可運作，不用來宣稱模型具備 alpha。Stage 2 若只跑單一 seed，也只能視為 PoC 結果；要做較強的模型優劣主張，需增加多 seed 與受控 ablation。
+Stage 1 證明流程可運作，不證明 alpha。單一 seed、單一 holdout 或高 GPU utilization
+也不能建立穩健的預測優勢；需搭配多 seed、受控比較及未參與調參的後續回測。
+
+工程證據有各自的版本與範圍，不代表後續變更或正式全量訓練已自動通過：
+[清理與容量實驗驗證](docs/cleaning_experiments_verification.md)、
+[tensor 資料管線驗證](docs/baseline_tensor_pipeline_validation.md)、
+[baseline runtime 驗證](docs/baseline_runtime_validation.md)、
+[完整評估流程驗證](docs/performance_workflow_validation.md)。
+模型分析見 [reports](reports)，版本快照見 [RELEASES.md](RELEASES.md)。
+
+<a id="references-zh"></a>
 
 ### 主要資料與模型參考
 
@@ -2213,23 +2073,41 @@ Stage 1 只證明腳本與契約可運作，不用來宣稱模型具備 alpha。
 
 ## English
 
-The `v0.2.2` baseline tensor pipeline has completed bounded engineering acceptance:
-590 cloud tests and 97 subtests passed; one Git-dependent check passed locally.
-Complete baseline building/cache reuse, CUDA concurrency and mid-epoch resume passed;
-see the measurements and limitations in the
-[tensor-pipeline validation record](docs/baseline_tensor_pipeline_validation.md).
+### Navigation
 
-The `v0.2.1` full-evaluation/reusable-baseline architecture has completed bounded
-engineering acceptance. Training retains dynamic sampling; validation/testing
-enumerate every eligible window. Baselines support hardware-tuned batches/prefetch,
-bounded vectorized input and interrupted-training resume; see the
-[baseline runtime acceptance](docs/baseline_runtime_validation.md) for measurements
-and limitations. Production A/B training and predictive-performance
-evaluation of this architecture remain outstanding. See the
-[acceptance record](docs/performance_workflow_validation.md) for evidence, capacity
-measurements and scope, and [release history](RELEASES.md) for earlier snapshots.
+- [Scope and license](#overview-en), [architecture and outputs](#model-en)
+- [Data sources, continuity and liquidity](#data-en), [fixed time splits](#splits-en)
+- [Offline pipeline](#pipeline-en), [training, losses and full evaluation](#training-en)
+- [RunPod operations](#operations-en): [account/storage](#setup-en) → [configure/sync](#configure-en)
+  → [CPU preparation](#cpu-en) → [baselines](#baseline-en) → [capacity/multi-Pod training](#train-en)
+  → [downloads](#download-en)
+- [Artifacts and inference](#artifacts-en), [scale diagnostics](#probes-en), [CLI reference](#cli-reference-en)
+- [Acceptance and interpretation](#acceptance-en), [model/data references](#references-en)
 
-### License and versions
+If data and baselines are ready, start at capacity/multi-Pod training. Synchronize first only
+when source or YAML changed; never overwrite shared source while a Pod owns the volume.
+
+<a id="overview-en"></a>
+
+### Project scope and license
+
+This project fine-tunes a finance-pretrained time-series foundation model on
+daily OHLCV data for US/Taiwan common stocks, ADRs/TDRs, and audited
+benchmark-mappable unleveraged equity ETFs. The system processes only
+numerical time series:
+
+- Inputs and outputs are numerical tensors; no natural-language generation or
+  fact-reconstruction interface is provided.
+- The training loop never calls an external market-data API.
+- It predicts continuous conditional alpha distributions from configurable
+  `h_start` (1, 2, or 3) through the fixed 14th holding day, with an independent
+  score head for same-date, same-market security ranking.
+- It exposes reusable numerical encoder representations for downstream systems.
+
+This is a research and capability-validation PoC. It is not investment advice,
+a production trading system, or a claim of guaranteed profitability.
+
+#### License and versions
 
 Project-owned code and expressly released model additions are available only to
 individuals for free personal research, learning, experimentation, non-commercial
@@ -2245,26 +2123,11 @@ This project does not restrict rights independently granted upstream. See
 Other; the complete text controls. See [release history](RELEASES.md) for
 architecture and report snapshots.
 
-### Project scope
+<a id="model-en"></a>
 
-This project fine-tunes a finance-pretrained time-series foundation model on
-daily OHLCV data for US/Taiwan common stocks, ADRs/TDRs, and audited
-benchmark-mappable unleveraged equity ETFs. The system processes only
-numerical time series:
+### Architecture and numerical outputs
 
-- Inputs and outputs are numerical tensors; no natural-language generation or
-  fact-reconstruction interface is provided.
-- The training loop never calls an external market-data API.
-- It predicts continuous conditional alpha distributions from configurable
-  `h_start` (1, 2, or 3) through the fixed 14th holding day.
-- It exposes reusable numerical encoder representations for downstream systems.
-
-This is a research and capability-validation PoC. It is not investment advice,
-a production trading system, or a claim of guaranteed profitability.
-
-### Numerical output contract
-
-The only prediction emitted by `MultiHorizonAlphaHead` is:
+#### Output contract
 
 - `alpha_quantiles`: `[batch, 15-h_start, 3]`.
 - Dimension two contains holding periods `h_start`, `h_start+1`, ..., 14;
@@ -2272,6 +2135,8 @@ The only prediction emitted by `MultiHorizonAlphaHead` is:
   resolved configs retain their original horizons.
 - Dimension three is fixed to q10, q50, and q90.
 - Units are adjusted execution log return relative to the instrument's benchmark.
+- `ranking_scores`: `[batch, 15-h_start]` when the independent ranking head is enabled;
+  dimensionless ordering scores, not returns, probabilities, or replacements for q50.
 
 There is no `forecast_logits`, classification head, classification loss, or
 direction probability. Inference may post-process each horizon's q10/q50/q90
@@ -2280,21 +2145,22 @@ or `strong_bullish`. These signals are not extra training targets and introduce
 no loss weights. Checkpoints must use `model_output_schema_version=5.0`;
 incompatible output schemas fail closed.
 
-### Architecture
-
 ```text
-Asset + benchmark OHLCV through close t
-  ├─ window normalization → shared Kronos-base + LoRA → resampler
-  │                                                      ├─ benchmark latents ───────┐
-  │                                                      └─ gated conditioning     │
-  │                                                           ↓                    │
-  │                                                    head trunk + horizon        │
-  │                                                           ├──────────────┐     │
-  └─ 20 past-only numerical features → train-calibrated MLP ────┼─ residual fusion ←─┘
-                                                              ↓            │
-                                                     base head + residual ←┘
-                                                              ↓
-                                                     1–14d q10 / q50 / q90
+OHLCV through close t (asset + benchmark)
+  ├─ normalized windows → Kronos → resampler → benchmark conditioning → head trunk
+  │                                └─ benchmark latent ────┐               │
+  └─ 20 historical numerical features ──────────────────────┤               │
+                                                           ▼               │
+                                                    numerical residual ←───┤
+                                                           │               ├─ ranking head → scores
+                                                           ▼               ▼
+                                                  residual + base quantile parameters
+                                                           │
+                           q50 (train scale) + positive tail widths (past volatility × gates)
+                                                           │
+                                                   raw q10 / q50 / q90
+                                                           │
+                                 validation-fitted tail calibration (q50 unchanged)
 ```
 
 Production configs use `NeoQuasar/Kronos-base` and
@@ -2315,9 +2181,8 @@ configs, and checkpoints bind those revisions.
 - `attention_mask`
 - `latent_tokens`
 
-Downstream systems can attach additional numerical modules or multimodal
-alignment modules after these representations without changing the current
-alpha-output contract.
+Downstream systems can reuse these numerical representations in other forecasting,
+ranking or risk-analysis modules without changing the current alpha-output contract.
 
 The model predicts the conditional alpha distribution directly; it does not
 predict a raw-return q50 and subtract a benchmark q50. Historical benchmark
@@ -2330,8 +2195,8 @@ model input.
 #### Small numerical feature branch
 
 Production defaults to `combined`, retaining Kronos-base and the conditioner.
-LoRA uses rank 32 / alpha 64 (the scaling ratio remains 2), with unchanged target
-modules. The extended numerical branch has 20 features in a fixed order:
+The numerical branch is independent of LoRA rank or partial-unfreezing capacity.
+Its 20 features have the following fixed order:
 
 | Positions | Features | Definition |
 | --- | --- | --- |
@@ -2365,53 +2230,40 @@ With `decoupled_output_scale`, lower and upper widths use separate positive gate
 the q50 location uses the train robust scale instead of inheriting historical
 volatility. Subtracting/adding positive widths to q50 preserves quantile ordering. The market
 embedding, residual output layer, and scale gate start at zero; the gate initially
-multiplies by one, but initial output scales differ from v0.1.0. The head, feature
+multiplies by one. The head, feature
 transforms and pinball loss use FP32; Kronos retains BF16 mixed precision.
 
 Production `explicit_output_scale` requires `scales` or `combined` feature mode.
-The four original feature-mode experiments are reproducible at v0.1.0; removing
-the scale branch in new configurations also requires disabling explicit scale
-control. Changing the mode preserves the dataset namespace but requires a new run.
+Removing the scale branch in a custom configuration also requires disabling
+explicit scale control. Changing the mode preserves the dataset namespace but requires a new run.
 Predictive improvement must be demonstrated by new evaluation results; adding
 scale information alone is not evidence of improved alpha forecasting.
 
-Training adds pairwise logistic ranking loss with weight `0.05` to normalized
-pinball. An independent score head handles ranking instead of treating q50 as its
-score. Pairs must share the cutoff date and market and represent different
-securities; duplicate padding and nearly tied labels are excluded. Each microbatch
-uses at most 256 pairs across all forecast horizons. A runtime-only date/market
-index improves within-group batch membership, with annual-decay dynamic sampling
-over cleaned train windows; it does not modify the prepared bar store. Checkpoint selection remains
-pure full-validation normalized pinball. No prediction ensemble is used.
+#### Backbone choice
 
-### Why Kronos-base
+The integrated backbone is the finance-OHLCV-pretrained Kronos-base: its domain matches the
+inputs, public model/tokenizer revisions can be pinned, and LoRA/partial-unfreezing experiments
+fit the single-GPU workflow. See the [official repository](https://github.com/shiyu-coder/Kronos)
+and [paper](https://arxiv.org/abs/2508.02739). This is not a claim of universal superiority;
+backbone comparisons must control data, context, heads and evaluation membership, not merely
+compare aggregate scores from different projects.
 
-| Candidate                                      | Financial-OHLCV evidence                                                                                 | Advantages here                                                                                                       | Main limitations here                                                                                             | Decision                  |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| Kronos-base                                    | The paper reports pretraining on more than 12 billion financial K-line records from 45 exchanges         | Strong domain match, public checkpoints, an official fine-tuning path, and about 102M parameters for a single-GPU PoC | Corpus composition and comparisons are primarily author-reported; context is limited to 512                       | Selected                  |
-| TimesFM 2.5                                    | The original TimesFM corpus is dominated by general series such as Google Trends and Wikipedia pageviews | 200M parameters, up to 16k context, mature point/quantile forecasting, and a LoRA example                             | Insufficient evidence that financial K-lines dominate pretraining; multivariate OHLCV needs additional adaptation | Not the first backbone    |
-| Chronos-Bolt / Chronos-2                       | General public and synthetic time-series corpora rather than clearly finance-focused pretraining         | Bolt is fast and memory-efficient; Chronos-2 supports multivariate data and covariates; mature tooling                | Lower domain match than Kronos; throughput alone is not a fair backbone criterion                                 | Controlled baseline later |
-| MOIRAI-1.1-R / Moirai 2                        | LOTSA spans about 27B observations and nine domains, but is not finance-OHLCV-centric                    | Native multivariate, frequency, and arbitrary-horizon support with a complete fine-tuning toolkit                     | Weaker domain specificity; checkpoint licensing must be checked individually                                      | Not the first backbone    |
-| PLUTUS / DELPHYNE and related financial models | Research direction matches finance                                                                       | Useful future research references                                                                                     | Public weights, reproducible tuning paths, or integration maturity with the locked head are insufficient          | Deferred                  |
+<a id="data-en"></a>
 
-Kronos is selected because this PoC prioritizes demonstrable exposure to a
-large financial K-line corpus while remaining reproducible, single-GPU
-fine-tunable on RunPod, and usable as a numerical encoder. This is not a claim
-that Kronos is universally superior. Later comparisons must hold the dataset,
-splits, input length, quant head, and evaluation protocol constant.
+### Data sources and sample rules
 
-### Data sources and selectable datasets
+#### Data sources and selectable datasets
 
 The normal RunPod workflow selects a profile through
 `bash scripts/runpod_workflow.sh configure`. `FIN_TS_DATASET_PROFILE` is an
 internal value passed to the Pod only after the script validates the selection:
 
-| profile           | Actual sources                | Status               | Use case                                  |
-| ----------------- | ----------------------------- | -------------------- | ----------------------------------------- |
-| `tw_only`       | Official TWSE + official TPEx | Available            | Research without US API cost              |
-| `us_only_eodhd` | EODHD US stocks/ETFs          | Available            | Validate US-market capability first       |
-| `us_tw_eodhd`   | EODHD + TWSE + TPEx           | Default PoC          | Full US/Taiwan PoC                        |
-| `us_tw_massive` | Massive + TWSE + TPEx         | Typed interface only | Implement after obtaining suitable rights |
+| profile | Actual sources | Status | Use case |
+| --- | --- | --- | --- |
+| `tw_only` | Official TWSE + official TPEx | Available | Research without US API cost |
+| `us_only_eodhd` | EODHD US stocks/ETFs | Available | Validate US-market capability first |
+| `us_tw_eodhd` | EODHD + TWSE + TPEx | Default PoC | Full US/Taiwan PoC |
+| `us_tw_massive` | Massive + TWSE + TPEx | Typed interface only | Implement after obtaining suitable rights |
 
 The EODHD path can discover both active and delisted US stocks/ETFs by default,
 reducing survivorship bias. When budget or quota is constrained, use
@@ -2443,17 +2295,59 @@ Adjusted prices, corporate actions, delisted history, time zones, and revisions
 can differ across providers. Sample reconciliation on overlapping instruments
 is required before formal comparisons.
 
-### Execution timing, benchmark, and adjusted-data contract
+#### Execution timing, benchmarks and adjusted data
 
 Each sample emits a signal after trading-day `t` closes. Entry occurs at the
 next **market session's** raw regular-session open, which counts as holding day
-one. A horizon `h` exits at the raw close of the `h`th market session. The
+one. A horizon `h` exits at the raw close of the `h` th market session. The
 label is the difference between instrument and benchmark total-return log
 returns over identical entry and exit timestamps, for
 `h ∈ {h_start,...,14}` and `h_start ∈ {1,2,3}`.
 Missing or zero-volume asset bars never postpone entry or exit to the next available row.
 
-### Data completeness, continuity, and minimum liquidity
+Default benchmark policy:
+
+- US common stocks, ADRs, and allowlisted equity ETFs: `VTI.US`.
+- TWSE common stocks, TDRs, and allowlisted equity ETFs: `TAIEX.TW`, whose adjusted anchor uses the official TAIEX total
+  return index.
+- TPEx common stocks: `TPEX.TWO`, whose adjusted anchor uses the official TPEx return
+  index.
+- Only audited allowlisted unleveraged equity ETFs that can map to an approved
+  benchmark enter training. Leveraged, inverse, bond, commodity, volatility,
+  and unaudited ETFs fail closed. `benchmark_mapping_path` may change the
+  benchmark of an allowlisted ETF but cannot expand the training universe.
+
+`VTI.US` is a required data dependency for US benchmark-relative labels and
+benchmark context. It is not an ordinary `--symbol-limit` candidate and cannot
+be its own training target (`self_benchmark` excludes it). The workflow first
+selects N ETF candidates and N stock candidates, then ensures VTI is present:
+an already-selected VTI is not duplicated; otherwise it is added. This prevents
+the benchmark from consuming one of the N ETF candidate slots. The raw universe
+is therefore at most `N ETFs + N stocks + 1 VTI`, while data-length, benchmark
+mapping, and quality gates can reduce the actual trainable-target count.
+
+Raw O/H/L/C is retained permanently, as is official Taiwan raw volume. EODHD
+defines its EOD `volume` as already split-adjusted, so the pipeline uses the
+complete Historical Splits response to reconstruct contemporaneous unadjusted
+`volume` and retains the vendor value as `split_adjusted_volume`; it never
+multiplies that value by the split factor again. Model windows normalize each vendor or
+official total-return factor to `cutoff_at` before applying it to historical
+O/H/L/C, so future corporate actions cannot rewrite an after-close inference
+input. Volume is adjusted only for splits/share changes, never for cash
+dividends. EODHD retains `adjusted_close` and uses the per-symbol Historical
+Splits API for every date range. EODHD lists that endpoint under EOD
+Historical Data — All World at one API call per request; the pipeline does not
+use `calendar/splits`, which belongs to Calendar-enabled products. Each symbol
+therefore requires one EOD-history request plus one split-history request. Both
+are cacheable/resumable and included in the informational request estimate; the
+estimate never blocks a complete dataset. The provider's pre-2018 delisting
+exception is retained explicitly in the warning described above. Taiwan uses
+official TWSE/TPEx ex-right/ex-dividend data and return indices. Existing monthly
+benchmark rows provide the actual trading sessions, so ordinary weekdays are
+not blindly treated as open sessions. This removes artificial corporate-action
+gaps while retaining the tradable next-day raw-open entry semantics.
+
+#### Data completeness, continuity and minimum liquidity
 
 Main-model and baseline train/validation/test share `configs/data_cleaning.json`.
 Inference applies the same checks that depend only on past observations:
@@ -2513,101 +2407,9 @@ build per A/B history. Old weights/results remain but are not fair references fo
 the new population. Changing only LoRA/unfreezing capacity reuses that baseline.
 Existing market data is reused without rerunning CPU preparation or downloading data.
 
-Default benchmark policy:
+<a id="splits-en"></a>
 
-- US common stocks, ADRs, and allowlisted equity ETFs: `VTI.US`.
-- TWSE common stocks, TDRs, and allowlisted equity ETFs: `TAIEX.TW`, whose adjusted anchor uses the official TAIEX total
-  return index.
-- TPEx common stocks: `TPEX.TWO`, whose adjusted anchor uses the official TPEx return
-  index.
-- Only audited allowlisted unleveraged equity ETFs that can map to an approved
-  benchmark enter training. Leveraged, inverse, bond, commodity, volatility,
-  and unaudited ETFs fail closed. `benchmark_mapping_path` may change the
-  benchmark of an allowlisted ETF but cannot expand the training universe.
-
-`VTI.US` is a required data dependency for US benchmark-relative labels and
-benchmark context. It is not an ordinary `--symbol-limit` candidate and cannot
-be its own training target (`self_benchmark` excludes it). The workflow first
-selects N ETF candidates and N stock candidates, then ensures VTI is present:
-an already-selected VTI is not duplicated; otherwise it is added. This prevents
-the benchmark from consuming one of the N ETF candidate slots. The raw universe
-is therefore at most `N ETFs + N stocks + 1 VTI`, while data-length, benchmark
-mapping, and quality gates can reduce the actual trainable-target count.
-
-Raw O/H/L/C is retained permanently, as is official Taiwan raw volume. EODHD
-defines its EOD `volume` as already split-adjusted, so the pipeline uses the
-complete Historical Splits response to reconstruct contemporaneous unadjusted
-`volume` and retains the vendor value as `split_adjusted_volume`; it never
-multiplies that value by the split factor again. Model windows normalize each vendor or
-official total-return factor to `cutoff_at` before applying it to historical
-O/H/L/C, so future corporate actions cannot rewrite an after-close inference
-input. Volume is adjusted only for splits/share changes, never for cash
-dividends. EODHD retains `adjusted_close` and uses the per-symbol Historical
-Splits API for every date range. EODHD lists that endpoint under EOD
-Historical Data — All World at one API call per request; the pipeline does not
-use `calendar/splits`, which belongs to Calendar-enabled products. Each symbol
-therefore requires one EOD-history request plus one split-history request. Both
-are cacheable/resumable and included in the informational request estimate; the
-estimate never blocks a complete dataset. The provider's pre-2018 delisting
-exception is retained explicitly in the warning described above. Taiwan uses
-official TWSE/TPEx ex-right/ex-dividend data and return indices. Existing monthly
-benchmark rows provide the actual trading sessions, so ordinary weekdays are
-not blindly treated as open sessions. This removes artificial corporate-action
-gaps while retaining the tradable next-day raw-open entry semantics.
-
-Raw OHLCV is written incrementally as immutable compressed Parquet. CPU
-preparation never expands every 128-bar window and never persists labels. It
-coalesces fragmented source row groups into coarse scan partitions of roughly
-`4 * batch_rows`, streams at most `batch_rows` at a time, builds temporary bucket
-parts on Pod-local `/tmp`, and atomically publishes only one indexed Parquet per
-source partition to the Network Volume. Compaction reads exact bucket row groups
-from `scan-index.json`, without listing tens of thousands of segment directories.
-It then uses 128 hash buckets to build a compressed, symbol-oriented bar store
-with one Parquet row group per symbol, plus small `symbol-index.parquet` and
-contiguous valid-cutoff ranges. Every partition, compaction, quality, and split
-bucket has an atomic checkpoint. At max runtime the Pod exits as
-`waiting_for_preparation`; the next CPU Pod in the same dataset namespace skips
-completed scan partitions and buckets. `.work` partitions are reclaimed only
-after `_SUCCESS.json` is published.
-
-The training DataLoader uses a bounded-state dynamic sampler over valid cutoff ranges. It
-loads one symbol row group on demand, constructs aligned 128-bar asset and
-benchmark contexts, and computes alpha labels from `h_start` through holding
-day 14 in memory. No per-window or per-label dataset is written. Stage 1 presents
-5% of the valid-train count per epoch, capped at 500,000; Stage 2 presents the full
-valid-train count. Annual decay means newer windows can repeat and older windows
-need not appear in the same epoch. Seed and epoch determine reproducible order and
-resume position. Both use fixed-size batches and record deterministic final-batch
-padding. The compact date/market index is memory-mapped, not an in-memory expansion
-of every window. This out-of-core design
-handles long full-market history without loading all bars or all potential windows
-into RAM.
-
-### Offline data pipeline
-
-Acquisition and model training are separate phases:
-
-```text
-External APIs
-  │
-  ▼
-Immutable raw JSON cache
-  │
-  ▼
-Canonical daily OHLCV Parquet + download-manifest.json
-  │
-  ▼
-Resumable symbol bar store + quality-approved cutoff ranges
-  │
-  ▼
-bar-store/index/ranges + dataset-manifest.json
-  │
-  ▼
-Lazy DataLoader builds contexts/labels on demand (fully offline)
-  │
-  ▼
-Stage 1 / Stage 2 training
-```
+#### Fixed Train/Validation/Holdout periods
 
 Production Stage 1/2 use fixed exclusive dates, independent of dataset size or its
 earliest observation:
@@ -2627,18 +2429,72 @@ were already available at prediction time; forward labels may not cross the end.
 Dates from `2026-06-01` onward are excluded from all three splits, reserving
 June–August for subsequent backtests.
 
-CPU preparation, readiness, and training preflight validate the exact contract
-and require at least **80 distinct forecast dates per market in each evaluation
-split**, failing before GPU admission when coverage is insufficient.
-`split_audit.dates_by_market` records actual dates and counts. This is an
+CPU preparation and local readiness validate the prepared manifest's contract, including
+at least **80 distinct forecast dates per market in each evaluation split**, recorded in
+`split_audit.dates_by_market`. This checks prepared data. The cleaned runtime population
+must separately be read from sample-universe audits and actual evaluation results;
+prepared candidate counts are not post-cleaning counts. This is an
 engineering coverage floor, not a guarantee of significance or all-regime
 generalization. Many stocks are not equally many independent time observations.
 
-Fixed dates enter immutable dataset identity. Upgrade with `configure` and the
-existing CPU prepare workflow to create a new namespace. Matching raw request
-caches remain reusable, but an old proportional-split ready marker cannot simply
-be relabelled. Legacy resolved configs and mock fixtures retain their proportional
-split and purge/embargo semantics; old reports are not new holdout results.
+Dates and storage-preparation semantics belong to dataset identity. Historical proportional
+splits require a namespace prepared for the fixed-date contract, not a relabelled ready marker.
+Once these fixed splits are prepared, changing stage, A/B selection, or capacity does not
+require CPU preparation again. Runtime-cleaning changes rebuild compact sample indexes and
+the affected baselines, not market data or the bar store.
+
+<a id="pipeline-en"></a>
+
+### Offline data pipeline
+
+Acquisition and model training are separate phases:
+
+```text
+External APIs
+  │
+  ▼
+Immutable raw JSON cache
+  │
+  ▼
+Canonical daily OHLCV Parquet + download-manifest.json
+  │
+  ▼
+Resumable symbol bar store + prepared candidate cutoff ranges
+  │
+  ▼
+bar-store/index/ranges + dataset-manifest.json
+  │
+  ▼
+Runtime continuity/liquidity sample-universe index
+  │
+  ▼
+Lazy DataLoader builds contexts/labels on demand (fully offline)
+  │
+  ▼
+Stage 1 / Stage 2 training
+```
+
+Raw OHLCV is written incrementally as immutable compressed Parquet. CPU
+preparation never expands every 128-bar window and never persists labels. It
+coalesces fragmented source row groups into coarse scan partitions of roughly
+`4 * batch_rows`, streams at most `batch_rows` at a time, builds temporary bucket
+parts on Pod-local `/tmp`, and atomically publishes only one indexed Parquet per
+source partition to the Network Volume. Compaction reads exact bucket row groups
+from `scan-index.json`, without listing tens of thousands of segment directories.
+It then uses 128 hash buckets to build a compressed, symbol-oriented bar store
+with one Parquet row group per symbol, plus small `symbol-index.parquet` and
+contiguous valid-cutoff ranges. Every partition, compaction, quality, and split
+bucket has an atomic checkpoint. At max runtime the Pod exits as
+`waiting_for_preparation`; the next CPU Pod in the same dataset namespace skips
+completed scan partitions and buckets. `.work` partitions are reclaimed only
+after `_SUCCESS.json` is published.
+
+Dataset requests automatically map to `/runpod-volume/datasets/<dataset-request-sha256>/`;
+users do not supply DATA_ROOT. CPU preparation does not expand full windows; runtime cleaning
+builds the eligible-sample index afterward.
+
+<details>
+<summary>Download cache, quota and preparation integrity rules</summary>
 
 The downloader provides:
 
@@ -2689,92 +2545,104 @@ and a dataset manifest whose state is `ready`. CPU readiness and training
 preflight verify every shard's size and SHA-256, not only the small indexes.
 Training, evaluation, and inference never call EODHD, TWSE, TPEx, or Massive.
 
-### Remote runtime and local boundary
+</details>
 
-Python dependency resolution, the Poetry environment, lint, pytest, data
-preparation, model-cache smoke tests, training, and validation all run on
-RunPod. The local machine is only a control plane: edit source and use the
-workflow script to manage credentials, selections, uploads, Pod lifecycle, and
-artifacts. Do not manually edit `.env`, YAML, or JSON configuration.
+<a id="training-en"></a>
 
-Do not run `poetry install`, `poetry lock`, pytest, Python preflight, or model
-loading for this project on the local machine, and do not create or inspect a
-local `.venv`. If a `poetry.lock` generated by another environment remains in
-the working directory, `.gitignore` and the source-upload allowlist exclude it;
-it is not runtime evidence for this project.
+### Training and evaluation protocol
 
-The RunPod workflow uses Python `>=3.12,<3.13` inside the approved image,
-creates the persistent Poetry environment, regenerates the canonical
-`poetry.lock`, and then runs lint, the complete pytest suite, and subsequent
-work. After changing `pyproject.toml`, resync the source. If the required offline
-calendar dependency is missing, GPU workflows update the project-owned cloud
-environment after acquiring their workflow lease, without CPU prepare or market
-downloads. Do not reproduce the RunPod Python/PyTorch/CUDA environment locally.
+#### Stage 1/Stage 2 and dynamic sampling
 
-### Download data and build the bar store
+| Item | Stage 1 | Stage 2 |
+| --- | --- | --- |
+| Purpose | Bounded workflow/model smoke run | Formal experiments on the full training history |
+| Sample presentations per epoch | 5% of eligible train count, capped at 500,000 | Full eligible train count |
+| Training sampler | Annual-decay dynamic sampling, not one fixed 5% membership | Annual-decay dynamic sampling, not exactly-once traversal |
+| Epoch limit | 2 | 5 |
+| Validation cadence | Full validation at 20%/40%/60%/80%/100% of each epoch | Same |
+| Early stopping | Five non-improving normalized-pinball evaluations plus two minimum-LR intervals, active from epoch 1 | Same |
+| Stored results | Best five validation-ranked full checkpoints plus compact completion weights | Same |
+| Validation / test | Full eligible populations, no sampling, padding or drop_last | Same |
+| Standard config | `configs/stage1_kronos_base_lora.yaml` | `configs/stage2_kronos_base_lora.yaml` |
+| Initialization | Original pretrained base | Original pretrained base, not Stage 1 weights |
 
-The standard path is the RunPod CPU-preparation workflow documented below; do
-not execute the data CLI locally. The following commands are low-level
-references for debugging the data pipeline inside a RunPod CPU Pod after its
-remote environment has been set up. `--end` is exclusive. RunPod Secrets must
-inject the EODHD token; do not export a plaintext token into shell history.
+The training DataLoader uses a bounded-state dynamic sampler over valid cutoff ranges. It
+loads one symbol row group on demand, constructs aligned 128-bar asset and
+benchmark contexts, and computes alpha labels from `h_start` through holding
+day 14 in memory. No per-window or per-label dataset is written. Stage 1 presents
+5% of the valid-train count per epoch, capped at 500,000; Stage 2 presents the full
+valid-train count. Annual decay means newer windows can repeat and older windows
+need not appear in the same epoch. Seed and epoch determine reproducible order and
+resume position. Both use fixed-size batches and record deterministic final-batch
+padding. The compact date/market index is memory-mapped, not an in-memory expansion
+of every window. This out-of-core design
+handles long full-market history without loading all bars or all potential windows
+into RAM.
 
-Taiwan official data only:
+The standard stage configs have matching `model_architecture_digest()` values. Capacity
+experiments use separate YAML files; see [capacity experiments](#train-en). [Resume](#resume-en)
+continues one interrupted run, not Stage 1 weights into Stage 2.
 
-```bash
-poetry run stock-forecasting-download \
-  --profile tw_only \
-  --start 2010-01-01 \
-  --end 2026-07-28 \
-  --output data/raw/market.parquet
-```
+Production Stage 1/2 rejects `max_steps`, fixed-step validation cadence, and a
+separate fixed-step checkpoint cadence. The optimizer budget is derived only
+from the per-epoch presentation budget, batch size, gradient accumulation, and epoch count. Every
+epoch-relative validation participates in the best-five checkpoint ranking.
+Normal completion and early stopping both atomically publish one
+`completion-result/` containing the current trainable weights, resolved config,
+stop reason, actual step/sample counts, and final validation metrics, without
+duplicating optimizer/scheduler state that is no longer needed for resume.
 
-Small EODHD US validation universe:
+#### Objectives, learning rates and calibration
 
-```bash
-poetry run stock-forecasting-download \
-  --profile us_only_eodhd \
-  --symbols AAPL MSFT \
-  --etf-symbols SPY QQQ \
-  --start 2010-01-01 \
-  --end 2026-07-28 \
-  --output data/raw/market.parquet
-```
+Normalized pinball divides each horizon's quantile error by its **train-only robust scale**
+before applying pinball loss, then averages valid samples, horizons and q10/q50/q90.
+Lower is better. It is neither a percentage nor directional accuracy/correlation and does
+not guarantee 80% coverage. The retained monitor name `primary_5d/selection_score`
+covers every horizon, not only day five.
 
-Build or resume the lazy symbol bar store (no window/label files):
-
-```bash
-poetry run stock-forecasting-prepare \
-  --fixed-evaluation --h-start 1 \
-  --input data/raw/market.parquet \
-  --output data/prepared/bar-store
-```
-
-Each dataset request maps automatically to
-`/runpod-volume/datasets/<dataset-request-sha256>/`. A profile, date range,
-universe, symbol limit, or preparation-contract change selects a new root. No
-manual `DATA_ROOT` is required, and different data ranges cannot be mistaken
-for the same dataset.
-
-### Two training stages
+For `u = (true alpha − predicted quantile) / train_scale[h]`, one quantile's loss is
+`max(q × u, (q − 1) × u)`.
 
 Stage 1/2 calibrate label robust scales on the same deterministic, at-most-50,000
 sample from the full **train partition**, using seed 59 rather than shrinking it
-with Stage 1's 5% training subset. Feature median/IQR calibration uses the same
+with Stage 1's 5% sample-presentation budget. Feature median/IQR calibration uses the same
 sample-count/seed contract. Aggregate caches bind the training dataset manifest
 SHA; neither calibration reads validation or holdout.
+
+Training adds pairwise logistic ranking loss with weight `0.05` to normalized
+pinball. An independent score head handles ranking instead of treating q50 as its
+score. Pairs must share the cutoff date and market and represent different
+securities; duplicate padding and nearly tied labels are excluded. Each microbatch
+uses at most 256 pairs across all forecast horizons. A runtime-only date/market
+index improves within-group batch membership, with annual-decay dynamic sampling
+over cleaned train windows; it does not modify the prepared bar store. Checkpoint selection remains
+pure full-validation normalized pinball. No prediction ensemble is used.
+
+After warmup, two non-improving validations multiply neural learning rates by 0.3,
+down to 0.09 of their original values. Early stopping additionally requires two
+completed training/validation intervals at the minimum rate. Checkpoints preserve
+the plateau state; resuming or changing runtime batch plans never resets reductions.
+
+After checkpoint selection, full validation fits market/horizon lower/upper tail calibration.
+It leaves q50 unchanged and never fits test labels. Final test retains raw and calibrated
+results; calibration does not guarantee future coverage.
+
+#### Full validation/test and comparisons
 
 The existing workflow name `validation stage` scores **holdout/test** for fixed-date
 runs. The full model recomputes predictions rather than reusing checkpoint validation.
 Every routine validation and final test visits its entire split, with
 `evaluation_max_samples` and `baseline_max_samples_per_split` set to `null`.
 Predictions leave the GPU batch by batch and use disk-backed aggregation with exact
-sample weighting. All models share train-calibrated label scales and verified ordered
-symbol/date SHA-256. Matching dates alone does not guarantee matching universes.
+sample weighting. The main model and baselines for one training data group share train-calibrated
+label scales and verified ordered symbol/date SHA-256. A/B train-only scales can differ,
+so cross-group normalized-pinball comparisons must also check their denominators.
+Their evaluation populations must match exactly, not merely have the same date limits.
 
 Full evaluation enumerates every valid window in fixed `symbol → cutoff` order.
-The existing `cutoff-ranges.parquet` contains exact valid ranges, not estimated
-counts. The dataset retains compact indexes and bounded instrument caches, building
+The cleaned runtime `prepared/sample-universes/<identity>/cutoff-ranges.parquet`
+contains exact valid ranges, not estimated counts. Old CPU-preparation candidate
+counts cannot substitute for this actual evaluation population. The dataset retains compact indexes and bounded instrument caches, building
 contexts/labels only when the DataLoader fetches a batch; no giant window dataset
 is expanded. The final short batch is retained without padding or duplication.
 A numeric legacy `evaluation_max_samples` now warns and is ignored, never enabling
@@ -2790,6 +2658,15 @@ The result's `execution` section records actual counts, batch size, workers,
 prefetch, throughput and peak GPU memory; these are runtime measurements, not
 predictive-performance scores.
 
+Reports include month, market, and horizon breakdowns plus full-model-minus-baseline
+differences in mean daily normalized pinball. The 95% interval uses a 14-date
+circular moving-block bootstrap (1,000 draws, seed 42), not independent stock-row
+resampling. Intervals are not adjusted for multiple comparisons. Holdout rankings
+are descriptive, never a source for checkpoint selection or repeated tuning,
+and do not establish coverage of every future market regime.
+
+#### Prerequisite baseline building and reuse
+
 Baselines are an independent prerequisite. Rules, GBDT, GRU, DLinear and PatchTST
 use full train/validation/test. Neural models validate five times per epoch with
 the same normalized-pinball criterion and five-evaluation patience, for at most
@@ -2798,10 +2675,9 @@ eight added boosting rounds, up to 200, with sklearn's internal validation split
 disabled. Fixed rules have no iterative optimizer to early-stop; their residual
 quantiles use all train rows. Equal data is not equal FLOPs or wall-clock cost.
 
-After warmup, two non-improving validations multiply neural learning rates by 0.3,
-down to 0.09 of their original values. Early stopping additionally requires two
-completed training/validation intervals at the minimum rate. Checkpoints preserve
-the plateau state; resuming or changing runtime batch plans never resets reductions.
+Neural baselines dynamically permute the full training population; they currently do not use
+the main model's annual-decay weights. Comparisons should disclose candidate data, sampling
+policy, sample presentations and training cost.
 
 Baseline weights/rule parameters, best-validation metrics, complete test predictions
 and metrics live under `/runpod-volume/baselines/<baseline-id>/`, with `complete.json`
@@ -2824,68 +2700,41 @@ redundant copies. If cleanup is interrupted, the baseline workflow finishes publ
 without retraining. This storage change does not alter periods, labels, parameters
 or baseline numerical identity.
 
-Reports include month, market, and horizon breakdowns plus full-model-minus-baseline
-differences in mean daily normalized pinball. The 95% interval uses a 14-date
-circular moving-block bootstrap (1,000 draws, seed 42), not independent stock-row
-resampling. Intervals are not adjusted for multiple comparisons. Holdout rankings
-are descriptive, never a source for checkpoint selection or repeated tuning,
-and do not establish coverage of every future market regime.
-
-| Item                  | Stage 1                                                                 | Stage 2                                     |
-| --------------------- | ----------------------------------------------------------------------- | ------------------------------------------- |
-| Purpose               | Validate data, model, loss, checkpoints, evaluation, and RunPod scripts | Full-data fine-tuning and formal evaluation |
-| Train samples         | One fixed 5% set capped at 500,000; only traversal order changes between epochs | 100% of valid train cutoffs                  |
-| Epoch limit           | 2                                                                       | 5                                            |
-| Validation cadence    | Five times per epoch at 20%/40%/60%/80%/100%                             | Same                                         |
-| Early stopping        | Five non-improving normalized-pinball validations plus two intervals at minimum LR; active from epoch 1 | Same |
-| Stored results        | Best five full validation-ranked checkpoints plus compact completion weights | Same                                      |
-| Validation / test     | Complete eligible stock-date populations, without sampling               | Same                                         |
-| Architecture          | Kronos-base + the same LoRA + resampler + conditioner + alpha head      | Identical                                   |
-| Initialization        | Original pretrained base                                                | Original pretrained base                    |
-| Continue from Stage 1 | No                                                                      | No                                          |
-
-"Do not continue from Stage 1" means that Stage 2 does not initialize from
-Stage 1 weights. An incomplete run can still resume from a complete checkpoint
-within the same stage; see "Resume interrupted training in the same stage."
-
-Configs:
-
-- `configs/stage1_kronos_base_lora.yaml`
-- `configs/stage2_kronos_base_lora.yaml`
-
-The two configs must have identical `config.model_architecture_digest()` values;
-this digest binds model parameters and the `h_start`/output-horizon contract. Stage
-1 uses a deterministic target set selected by an O(1)-state blockwise
-permutation. Its size is `min(valid train cutoffs * 5%, 500,000)`. It is not the
-earliest 5%, does not shrink validation/test, and does not allocate all possible
-window indices.
-
-Production Stage 1/2 rejects `max_steps`, fixed-step validation cadence, and a
-separate fixed-step checkpoint cadence. The optimizer budget is derived only
-from the target set, batch size, gradient accumulation, and epoch count. Every
-epoch-relative validation participates in the best-five checkpoint ranking.
-Normal completion and early stopping both atomically publish one
-`completion-result/` containing the current trainable weights, resolved config,
-stop reason, actual step/sample counts, and final validation metrics, without
-duplicating optimizer/scheduler state that is no longer needed for resume.
+<a id="operations-en"></a>
 
 ### Complete RunPod operations guide
 
-See the [CLI parameter reference](#cli-reference-en) for supported arguments, defaults,
-and execution locations. [GPU resource queries](#gpu-catalog-en) explain data-center
-filtering; queries do not create Pods or move data.
+#### Execution locations and safety boundaries
 
-The RunPod workflow covers Pod creation, S3 synchronization, network volumes,
-readiness markers, supervision, checkpoints, validation, and automatic
-termination. Data preparation, training, and validation use quant-only configs.
+The local controller needs Bash, system Python 3, AWS CLI and curl; Taiwan-relay deployment
+also needs Google Cloud CLI. Locally edit source, manage credentials/selections, transfer
+artifacts and supervise Pods; do not load models. Stdlib control/contract tests, shell syntax
+checks and standalone static analysis require no local ML environment.
 
-This project currently deploys **no PostgreSQL, SQLite, vector database, or
-other database service**. The "remote data layer" below means Parquet, raw API
-cache, manifests, and model cache on a persistent RunPod network volume. A CPU
-preparation Pod builds this offline data layer. The GPU Pod reads the completed
-bar store and never calls an external market-data API from the training loop.
+Retain Poetry for Python package management. The cloud environment belongs at
+`/runpod-volume/stock_forecasting/.venv`. Resolve dependencies and the canonical lockfile,
+run full pytest/model/CUDA checks, prepare data and train on RunPod. Do not create or inspect
+a local ML environment or run `poetry install`, `poetry lock`, `uv sync` or `uv lock`
+locally. A leftover local lockfile is not evidence of the cloud runtime.
 
-#### 1. Create RunPod account resources and local configuration
+Normal operation uses configure and experiment names; do not edit `.env` or generated
+selections/manifests manually. Developers may edit YAML for a new controlled configuration,
+refresh its selection, sync while no Pod owns the volume, and start a new run. A numerical
+contract change is not a resume of the old run. Remote Python is `>=3.12,<3.13`.
+Dependency updates require the workflow's exclusive environment-write lease and do not
+trigger market downloads or CPU preparation.
+
+`bash scripts/runpod_workflow.sh` is the **local control entry point**.
+`bash scripts/runpod_tmux_launch.sh` runs **inside the Pod after SSH login**.
+Creating a Pod does not start training. Detached tmux survives SSH disconnection;
+the local guard host must still remain powered and online to terminate its assigned Pod.
+
+Replace `<RUN_ID>`/`<POD_ID>` with actual values. Supported options, defaults and aliases
+are collected in the [CLI reference](#cli-reference-en).
+
+<a id="setup-en"></a>
+
+#### 1. Create account resources, credentials and storage
 
 The local control machine needs `bash`, Python 3, AWS CLI, and `curl`.
 GPU Pod, CPU Pod, and network volume creation, along with Pod lookup, actions,
@@ -2903,11 +2752,11 @@ project Python environment. Official RunPod references:
 In the RunPod Console, create a project-scoped RunPod API key and a separate S3
 API key. Then create these fixed-name RunPod Secrets:
 
-   - `huggingface_token`: required to prefetch the pinned Kronos model and
-     tokenizer revisions.
-   - `wandb_api_key`: required for training and validation tracking.
-   - `eodhd_api_token`: required only by the `us_only_eodhd` and
-     `us_tw_eodhd` profiles; it is not required by `tw_only`.
+- `huggingface_token`: required to prefetch the pinned Kronos model and
+  tokenizer revisions.
+- `wandb_api_key`: required for training and validation tracking.
+- `eodhd_api_token`: required only by the `us_only_eodhd` and
+  `us_tw_eodhd` profiles; it is not required by `tw_only`.
 
 Profiles containing Taiwan data also require a TPEx Cloud Run relay in GCP
 `asia-east1` (Taiwan). Each verified relay deployment creates a uniquely named
@@ -2921,7 +2770,23 @@ through hidden input; the script writes it atomically with mode `600`:
 bash scripts/runpod_workflow.sh credentials
 ```
 
-##### TPEx Cloud Run relay
+Create the network volume through the script. The returned volume ID,
+datacenter, S3 region, and endpoint are written back to the same `.env`
+automatically:
+
+```bash
+bash scripts/runpod_workflow.sh volume deploy \
+  --name stock-forecasting \
+  --size-gb 100 \
+  --datacenter EU-RO-1
+```
+
+If `.env` already registers a volume, the script will not create another
+potentially billable volume by default. Only an intentional `--force-new`
+creates and registers a replacement.
+
+<details>
+<summary>Required for Taiwan profiles: deploy and verify the TPEx Cloud Run relay</summary>
 
 When a RunPod datacenter receives HTTP 403 from TPEx data endpoints, deploy the
 restricted Cloud Run relay before using a Taiwan-market profile. Create a
@@ -3065,27 +2930,14 @@ Official references:
 - [Cloud Run pricing](https://cloud.google.com/run/pricing)
 - [RunPod REST API v2 OpenAPI specification](https://api.runpod.io/v2/openapi.json)
 
-Create the network volume through the script. The returned volume ID,
-datacenter, S3 region, and endpoint are written back to the same `.env`
-automatically:
+</details>
 
-```bash
-bash scripts/runpod_workflow.sh volume deploy \
-  --name stock-forecasting \
-  --size-gb 100 \
-  --datacenter EU-RO-1
-```
+<a id="configure-en"></a>
 
-If `.env` already registers a volume, the script will not create another
-potentially billable volume by default. Only an intentional `--force-new`
-creates and registers a replacement.
+#### 2. Choose data/configuration and synchronize
 
-Before creating a CPU Pod, select the stage, data source, date range, and
-universe through the script. With no options, it opens an interactive menu:
-
-```bash
-bash scripts/runpod_workflow.sh configure
-```
+Run from the local project root. With no arguments, `configure` is interactive; options and
+fixed examples follow.
 
 ##### `configure` options and dataset scope
 
@@ -3145,12 +2997,15 @@ an unknown option instead of creating another selection. The lower-level helper'
 `--project-root` is injected by `runpod_workflow.sh`; it is not a user-facing
 dataset-scope option and should not be supplied manually.
 
-Standard Stage 2 configuration for fixed dates and the complete US/Taiwan scope:
+Use `stage1` to prepare a dataset and model cache for the first time; this does not require
+training a Stage 1 model. For already-prepared data, select `stage2` without another CPU Pod.
+The complete US/Taiwan B-group dataset is configured as follows:
 
 ```bash
 bash scripts/runpod_workflow.sh configure \
-  --stage stage2 \
+  --stage stage1 \
   --data-profile us_tw_eodhd \
+  --dataset-revision v1 \
   --start 2016-01-01 \
   --end 2026-06-01 \
   --h-start 1 \
@@ -3158,111 +3013,46 @@ bash scripts/runpod_workflow.sh configure \
   --universe all
 ```
 
-Continue with this chapter's existing sync, CPU prepare, GPU creation, and tmux
-workflow. Upgrading proportional splits requires CPU preparation of the new
-dataset namespace; `cpu-finalize` cannot convert the old split into fixed dates.
+For A, change `--start` to `2021-01-01` and preserve all other dataset values.
+**A still evaluates on shared B data, so both datasets must be prepared.** Capacity presets
+such as `--experiment a-lora32` belong to the later train command, not configure.
 
-The following example has this exact scope:
-
-- US: `AAPL.US`, `MSFT.US`, `SPY.US`, `QQQ.US`, plus the automatically added
-  `VTI.US` benchmark.
-- Taiwan: it is neither absent nor restricted to the four US tickers; it
-  contains the complete market data and official benchmarks returned by the
-  TWSE/TPEx endpoints over the same date range.
-- Dates: both markets start on `2015-01-01` and end before `2026-07-27`;
-  `2026-07-27` itself is excluded.
-
-Non-interactive "explicit US universe plus complete Taiwan market" example:
-
-```bash
-bash scripts/runpod_workflow.sh configure \
-  --stage stage1 \
-  --data-profile us_tw_eodhd \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
-  --h-start 3 \
-  --universe explicit \
-  --stocks "AAPL,MSFT" \
-  --etfs "SPY,QQQ"
-```
-
-Provider acquisition policy is supplied separately when creating the CPU Pod.
-`--max-api-calls 10000` limits only EODHD network attempts in that acquisition.
-It neither truncates either market to 10,000 rows nor requires the full dataset
-to finish within 10,000 requests. At the ceiling, the EODHD loop exits while the
-parallel TWSE/TPEx loops continue. CPU preparation saves cache and
-`waiting_for_budget` progress only after all three loops exit.
-
-Provider quotas are a separate boundary. EODHD's current pricing page lists the
-personal `EOD Historical Data — All World` plan at USD 19.99 per month. Its
-limits documentation gives paid plans a default 100,000 API calls per day and
-1,000 HTTP requests per minute, with subscription daily limits resetting at
-midnight GMT. The units are independent, and endpoints may consume different
-numbers of billed calls. The actual subscription, used account quota, and
-provider response headers remain authoritative. This project floors the default
-pacing to 16 requests per second (960 per minute); lower `--eodhd-qps` further
-if another client uses the same account concurrently. See
-[EODHD Pricing](https://eodhd.com/pricing),
-[EODHD API Limits](https://eodhd.com/financial-apis/api-limits) and the
-[EODHD User API](https://eodhd.com/financial-apis/user-api). A complete US
-target-security request plan may exceed `--max-api-calls`; the resumable CPU workflow
-handles both project and provider boundaries across multiple attempts.
-
-For the complete EODHD and Taiwan target-security scopes, provide none of
-`--stocks`, `--etfs`, or `--symbol-limit`:
-
-```bash
-bash scripts/runpod_workflow.sh configure \
-  --stage stage1 \
-  --data-profile us_tw_eodhd \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
-  --universe all
-```
-
-Even when the post-discovery complete HTTP request estimate exceeds that CPU
-Pod's `--max-api-calls`, it remains informational: it neither prevents Pod
-creation nor shrinks the dataset. Each CPU attempt sends at most the configured
-EODHD network attempts and the next Pod resumes from cache. Adjust
-`cpu prepare --max-api-calls` for cost and usage control; it never bypasses
-provider quotas.
-
-To use the same explicit US universe while downloading **no Taiwan data**, set
-the profile to `us_only_eodhd`:
+Example for named US instruments with no Taiwan data:
 
 ```bash
 bash scripts/runpod_workflow.sh configure \
   --stage stage1 \
   --data-profile us_only_eodhd \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
+  --start 2016-01-01 \
+  --end 2026-06-01 \
   --universe explicit \
   --stocks "AAPL,MSFT" \
   --etfs "SPY,QQQ"
 ```
 
-This `us_only_eodhd` example contains only those four US tickers plus the
-automatically added `VTI.US`; it contains no TWSE or TPEx data.
+This contains the four named US instruments and required `VTI.US` benchmark.
+Changing the profile to `us_tw_eodhd` adds the complete eligible Taiwan universe,
+not just four instruments. Taiwan-only uses `--data-profile tw_only --universe all`
+without `--stocks`/`--etfs`. These are alternative dataset choices, not a sequence
+to copy over an already-prepared selection.
 
-For the complete Taiwan universe without EODHD:
-
-```bash
-bash scripts/runpod_workflow.sh configure \
-  --stage stage1 \
-  --data-profile tw_only \
-  --start 2015-01-01 \
-  --end 2026-07-27 \
-  --universe all
-```
+Provider quota, QPS and new API-attempt budgets are configured when creating a CPU Pod,
+not in configure. Set `--max-api-calls` from remaining account quota; a larger complete
+request plan resumes across attempts instead of shrinking the universe. Check
+[EODHD Pricing](https://eodhd.com/pricing),
+[API Limits](https://eodhd.com/financial-apis/api-limits) and the
+[User API](https://eodhd.com/financial-apis/user-api) for current account limits.
+Program defaults do not establish subscription entitlements.
 
 The script creates `.runpod/selections/<selection-id>.json` and
 `.runpod/active-selection.json`. They contain no secrets and are excluded by
 `.gitignore`. Selection schema 3 binds the complete `h_start` preparation
 contract. Older selections are not migrated automatically, so rerun `configure`
 after updating the code. Changing `--end` intentionally creates a new dataset request
-namespace; existing network-volume files are not deleted. A different profile,
-date range, universe, symbol limit, data
-preparation contract, or stage-config SHA-256 produces a different identity.
+namespace; existing network-volume files are not deleted. Selection identity includes stage/config and dataset choices; dataset-request identity
+only includes profile, dates, universe, symbol limit, revision and storage-preparation
+semantics. **Changing LoRA or main-model learning rates does not create a dataset.**
+These identities serve different purposes.
 QPS, API budget, and maximum backoff are recorded only in CPU launch metadata,
 download progress, and the download manifest; they never enter selection identity.
 
@@ -3273,15 +3063,14 @@ quality cutoff ranges, and split audit. The DataLoader selects the corresponding
 dynamically from the train split when that run starts, then persisted in every
 checkpoint for exact resume, evaluation, and inference restoration. Switching `h_start`
 therefore neither rebuilds data nor scans API caches and sends no provider
-request. If the new selection needs a readiness binding, CPU preparation only
-verifies the existing `_SUCCESS.json` and artifacts before rebinding the
-marker. A different date range, symbol universe, provider request, or
+request. Launch preflight checks that selection's dataset manifest and artifacts without
+requiring another CPU-finalization step. A different date range, symbol universe, provider request, or
 `dataset-revision` creates a different dataset namespace.
 
 When provider history may have been revised and a new snapshot is intentional
 for the same profile/date/universe, pass a new explicit
 `--dataset-revision <label>` to `configure`. The CPU workflow never overwrites a
-complete existing namespace and fails closed on a partial namespace.
+complete existing namespace and resumes matching incomplete work rather than mixing incompatible partial data.
 
 Inspect the active selection without opening JSON:
 
@@ -3299,7 +3088,7 @@ Secret-resolved relay tokens and a non-secret `run.app` URL. The local `gcloud`
 credential stays in the Google Cloud CLI credential store; account-level
 RunPod, S3, and GCP deployment credentials never enter a Pod.
 
-#### 2. Verify S3 and upload source code
+##### Verify S3 and upload source code
 
 Run the read-only S3 access check, then preview the explicit upload allowlist:
 
@@ -3308,7 +3097,7 @@ bash scripts/verify_runpod_s3_access.sh
 bash scripts/runpod_workflow.sh sync --dry-run
 ```
 
-After reviewing the list, upload it and verify remote code readiness:
+After reviewing the list and confirming no Pod owns the volume, upload and verify code readiness:
 
 ```bash
 bash scripts/runpod_workflow.sh sync --apply
@@ -3323,13 +3112,35 @@ the approved RunPod image regenerates that file for its Python/PyTorch/CUDA
 environment on the network volume.
 
 After any allowlisted source or config change, rerun `--dry-run`, `--apply`, and
-the readiness check. A config change also invalidates the active selection, so
-rerun `configure`. Switching selections or changing non-data code does not require
+the readiness check. After editing the selected config, refresh with `configure --reuse-current`,
+which preserves dataset scope and rejects a changed dataset identity. Editing another
+unused config does not change this selection. Switching selections or changing non-data code does not require
 CPU preparation again when the selected dataset is already prepared and its data
 content/preparation contract is unchanged. The GPU gate still verifies that
 dataset's integrity and the current model's offline cache; never bypass it.
 
-#### 3. Deploy the model and offline data layer remotely
+##### Switch stage or A/B after preparation
+
+Use `selection show` to verify the original scope. Changing stage, h_start or feature mode
+does not require CPU finalization; profile, revision, dates and universe must still select
+a prepared namespace. For Stage 1 → Stage 2 on the same data, retain the original dataset
+arguments, change only `--stage stage2`, and synchronize the selection as described here.
+Do not run `cpu prepare --max-api-calls 1` for this switch.
+
+Once all six capacity YAML files are uploaded, choose A/B and capacity with
+`train --experiment`. The launcher publishes that experiment's immutable selection without
+changing the global active selection or uploading source again. Missing data/baselines fail
+before paid creation; complete only the missing prerequisite, never rewrite manifests or
+redownload existing data. Resume/validate restore selection by run ID; see [resume](#resume-en).
+
+<a id="cpu-en"></a>
+
+#### 3. Prepare new data or resume incomplete CPU work
+
+**Skip this step for a dataset whose preparation is complete.** Configure `stage1` for initial
+preparation: the current creator maps `stage2` to `cpu-finalize`, which revalidates existing
+artifacts and cannot build a missing bar store. No Stage 1 model training is required.
+If only stage/capacity changes for prepared data, proceed to baseline/train.
 
 The CPU Pod accepts only the active selection. Pod creation fails before any
 compute is rented when `configure` has not run, the config SHA changed, or the
@@ -3430,6 +3241,9 @@ session:
 tmux -L stock-forecasting-cpu-prepare attach -t stock-forecasting-cpu-prepare
 ```
 
+<details>
+<summary>CPU-preparation artifacts, resource planning and data identity</summary>
+
 `cpu-prepare` performs the following sequence:
 
 1. Creates the persistent directory layout, Poetry 2.4.0, and the remote Python
@@ -3470,24 +3284,26 @@ tmux -L stock-forecasting-cpu-prepare attach -t stock-forecasting-cpu-prepare
    default six-hour runtime and capped at 2 hours), configurable with
    `--prepareReserve`.
 4. Creates and verifies these persistent artifacts:
-   | Remote path                                                                        | Contents                                                    |
-   | ---------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/api-cache/`                     | Provider raw-response cache                                 |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/download-progress.json`          | Resume attempt, cache counts, and provider/budget/runtime wait state |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/provider-checkpoints/`          | Validated provider-materialization checkpoints reusable across CPU Pods |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/raw/market.parquet`             | Canonical daily OHLCV in the durable `downloaded` checkpoint |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/shards/`    | Compressed OHLCV bars with one row group per symbol         |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/symbol-index.parquet` | Symbol-to-shard/row-group index                    |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/cutoff-ranges.parquet` | Contiguous valid train/validation/test cutoffs      |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/_SUCCESS.json` | Completed bar-store integrity checkpoint          |
+
+   | Remote path | Contents |
+   | --- | --- |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/api-cache/` | Provider raw-response cache |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/download-progress.json` | Resume attempt, cache counts, and provider/budget/runtime wait state |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/provider-checkpoints/` | Validated provider-materialization checkpoints reusable across CPU Pods |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/raw/market.parquet` | Canonical daily OHLCV in the durable `downloaded` checkpoint |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/shards/` | Compressed OHLCV bars with one row group per symbol |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/symbol-index.parquet` | Symbol-to-shard/row-group index |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/cutoff-ranges.parquet` | Prepared candidate cutoffs; runtime additionally applies complete continuity/liquidity rules |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/_SUCCESS.json` | Completed bar-store integrity checkpoint |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/.work/execution-plan.json` | In-progress memory budget, effective processes, and reused-task counts by phase; reclaimed after success |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/.work/scan-index.json` | Exact in-progress source-partition to bucket-row-group index; reclaimed after success |
    | `/runpod-volume/datasets/<dataset-request-sha256>/prepared/bar-store/.work/scan-partitions/` | Coarse resumable raw-scan partitions; reclaimed after success |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/download-manifest.json`         | Actual providers, profile, symbols, and download provenance |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/dataset-manifest.json`          | Split counts, hashes, and data contract                     |
-   | `/runpod-volume/datasets/<dataset-request-sha256>/manifests/api-request-log.jsonl` | Request audit without tokens                               |
-   | `/runpod-volume/cache/huggingface/`                                             | Offline Kronos model/tokenizer cache                        |
-   | `/runpod-volume/cache/hf-models.json`                                           | Pinned model revisions and cache manifest                   |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/download-manifest.json` | Actual providers, profile, symbols, and download provenance |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/dataset-manifest.json` | Split counts, hashes, and data contract |
+   | `/runpod-volume/datasets/<dataset-request-sha256>/manifests/api-request-log.jsonl` | Request audit without tokens |
+   | `/runpod-volume/cache/huggingface/` | Offline Kronos model/tokenizer cache |
+   | `/runpod-volume/cache/hf-models.json` | Pinned model revisions and cache manifest |
+
 5. After validating raw Parquet, the download manifest, and the request log,
    publishes a `downloaded` execution state to
    `/runpod-volume/lifecycle/stage1/cpu-preparation.json`. A `downloaded` marker
@@ -3555,6 +3371,8 @@ paths may never use the restart-cleared `/workspace`. This layout keeps the
 project itself from becoming the mount target and prevents a network-volume
 mount from hiding a same-named image directory.
 
+</details>
+
 After the Pod terminates, use the S3 lifecycle as the authority instead of the
 now-unavailable SSH session:
 
@@ -3613,7 +3431,6 @@ workflow follows this contract:
    cd /runpod-volume/stock_forecasting
    bash scripts/runpod_tmux_launch.sh cpu-prepare
    ```
-
 6. The new attempt first validates and reuses provider checkpoints with the same
    provider-materialization request and data-content digest. It replays cached
    responses only for incomplete or content-incompatible providers and calls
@@ -3650,201 +3467,40 @@ requires correcting the Secret. Change
 revision does not reuse the old snapshot cache.
 
 If the state is `waiting_for_budget`, `waiting_for_provider`,
-`waiting_for_resume`, `waiting_for_preparation`, `failed`, or `timed_out`, first
-read `launch_id`, `log_path`, and any `progress_path` from
-`lifecycle/stage1/cpu-preparation.json`. The tmux log directory is
-`logs/tmux/stock-forecasting-cpu-prepare/<launch-id>/`; let the script resolve and download
-it into the local diagnostic directory:
+`waiting_for_resume`, `waiting_for_preparation`, `failed`, or `timed_out`, download CPU logs
+with the following command. It resolves `launch_id`, `log_path` and `progress_path` from
+lifecycle records without manual JSON inspection or remote paths:
 
 ```bash
 bash scripts/runpod_workflow.sh cpu-logs
 ```
 
-Do not rent a GPU until this gate passes:
+After CPU work finishes, check status. Baselines use `readiness --baseline`; the main
+model uses `readiness --gpu`. Creators check again; never edit readiness markers:
 
 ```bash
-bash scripts/runpod_workflow.sh readiness --gpu
+bash scripts/runpod_workflow.sh status
+bash scripts/runpod_workflow.sh readiness --baseline
 ```
 
-##### Complete Stage 1 to Stage 2 transition
+<a id="baseline-en"></a>
 
-Stage 2 uses the same data namespace when its dataset request is identical and
-uses 100% of the existing chronological **train partition**; the validation and
-test partitions remain isolated. It starts from the same pretrained base rather
-than continuing from a Stage 1 checkpoint. Changing only the stage does not
-download provider data or rebuild the bar store, but changing the profile,
-dates, universe, or dataset revision creates another immutable dataset namespace.
+#### 4. Build or resume independent baselines
 
-Follow this sequence and do not skip the dataset request SHA comparison:
-
-1. **Local control machine: record the current Stage 1 selection.** `configure`
-   changes the active selection, so first save its `dataset_request_sha256` and
-   record the profile, revision, start/end dates, `h_start`, universe, symbol
-   limit, and explicit symbol lists:
-
-   ```bash
-   bash scripts/runpod_workflow.sh selection show
-   ```
-
-2. **Local control machine: create the Stage 2 selection.** Explicitly provide
-   the same data values printed in the previous step. Do not run interactive
-   `configure` without arguments and accept its defaults. The following example
-   is directly reusable only when the current Stage 1 selection has these exact
-   values:
-
-   ```bash
-   bash scripts/runpod_workflow.sh configure \
-     --stage stage2 \
-     --data-profile us_tw_eodhd \
-     --dataset-revision v1 \
-     --start 2021-01-01 \
-     --end 2026-06-01 \
-     --h-start 1 \
-     --universe all
-
-   bash scripts/runpod_workflow.sh selection show
-   ```
-
-   `--end` is an exclusive boundary. If the original `all` selection has no
-   symbol limit, do not add `--symbol-limit`, `--stocks`, or `--etfs`; an
-   `explicit` selection must preserve its exact `--stocks` and `--etfs` lists.
-   The new `selection_id` and `selection_sha256` should change, but the new
-   `dataset_request_sha256` must exactly match the value recorded in step 1. If
-   it differs, stop immediately: do not sync or create a CPU/GPU Pod. Rerunning
-   the correct `configure` command does not call a data API.
-
-3. **Local control machine: upload the current code and Stage 2 selection.**
-
-   ```bash
-   bash scripts/runpod_workflow.sh sync --apply
-   ```
-
-4. **Local control machine: create the Stage 2 CPU finalization Pod.** This
-   non-interactive command immediately creates a paid CPU Pod. The
-   `--max-api-calls 1` value only satisfies the shared creator interface;
-   `cpu-finalize` does not use a provider acquisition budget:
-
-   ```bash
-   bash scripts/runpod_workflow.sh cpu prepare \
-     --max-api-calls 1
-   ```
-
-   When the active selection is `stage2`, the creator automatically maps the
-   workflow to `cpu-finalize`. Its success message must say:
-
-   ```text
-   After SSH login, run: bash scripts/runpod_tmux_launch.sh cpu-finalize
-   ```
-
-   If it still says `cpu-prepare`, do not start that Pod workflow; inspect the
-   active selection first.
-
-5. **CPU Pod: run Stage 2 finalization.** Connect to the newly created CPU Pod
-   through the RunPod Console SSH command and run:
-
-   ```bash
-   cd /runpod-volume/stock_forecasting
-   bash scripts/runpod_tmux_launch.sh cpu-finalize
-   ```
-
-   Attach for live observation:
-
-   ```bash
-   tmux -L stock-forecasting-cpu-finalize attach -t stock-forecasting-cpu-finalize
-   ```
-
-   The finalizer validates the code, runtime, existing dataset/bar store,
-   Hugging Face cache, and Stage 2 config; runs the complete pytest suite; and
-   binds the existing dataset readiness marker to the new Stage 2 selection. It
-   does not run `stock-forecasting-download`, provider API acquisition, `stock-forecasting-prepare`, or
-   bar-store materialization.
-
-6. **Local control machine: wait for finalization and pass the GPU gate.** After
-   the CPU Pod terminates, run:
-
-   ```bash
-   bash scripts/runpod_workflow.sh status
-   bash scripts/runpod_workflow.sh readiness --gpu
-   ```
-
-   `status` must report a ready dataset and `readiness --gpu` must succeed. Until
-   finalization completes, the shared CPU summary may retain the old Stage 1
-   selection ID. The dataset row in `status` summarizes the selected dataset's
-   own manifest; it does not replace the full artifact readiness check.
-
-7. **Local control machine: complete the independent baseline workflow below, then list GPUs and create the Stage 2 training Pod.** Use
-   one complete `gpuId` from the current list, not the abbreviated table name. `--maxRuntime` covers training and
-   the automatic validation workflow together:
-
-   ```bash
-   bash scripts/runpodctl_project.sh gpu list
-
-   bash scripts/runpod_workflow.sh train \
-     --maxRuntime 24h \
-     --gpuId "NVIDIA GeForce RTX 5090"
-   ```
-
-   `gpu list` defaults to a table showing GPU names, VRAM, Secure/Community prices
-   in USD/hour, global stock, and each GPU's full `gpuId` and data-center stock.
-   `--` means the API did not report a value, not free pricing or available stock.
-   Search by model or filter by data center with the commands below. When filtered,
-   the stock column shows that data center's stock; GPUs marked `NONE` there remain
-   listed. Stock information is not a capacity reservation:
-
-   ```bash
-   bash scripts/runpodctl_project.sh gpu list --search "5090"
-   bash scripts/runpodctl_project.sh gpu list --search "4500" --data-center EU-RO-1
-   ```
-
-   Scripts parsing raw GPU entries must explicitly request JSON. Search and
-   data-center filters also work with JSON output:
-
-   ```bash
-   bash scripts/runpodctl_project.sh gpu list --output json
-   ```
-
-8. **GPU Pod: start Stage 2 training.** Connect through the RunPod Console SSH
-   command and run:
-
-   ```bash
-   cd /runpod-volume/stock_forecasting
-   bash scripts/runpod_tmux_launch.sh stage1-train
-   ```
-
-   `stage1-train` is the compatibility workflow name retained for existing
-   deployments; it does not downgrade Stage 2 to Stage 1. The immutable
-   selection's `RUNPOD_CONFIG` determines the actual config, and the launch log
-   must identify the Stage 2 config. Attach for live observation with:
-
-   ```bash
-   tmux -L stock-forecasting-train attach -t stock-forecasting-train
-   ```
-
-9. **Local control machine: verify the terminal state.** After training plus
-   automatic validation finishes and the Pod terminates, run:
-
-   ```bash
-   bash scripts/runpod_workflow.sh status
-   ```
-
-#### Independent baselines and upgrading an existing dataset
-
-For datasets with completed CPU preparation/finalization, refresh only the training
-selection. `--reuse-current` retains its dates, profile, universe, revision, horizon,
-stage and feature mode, and refuses any dataset-request SHA change. **Do not rerun
-`cpu prepare`, `cpu-finalize`, or data downloads. No new market-data API call is
-required.** A genuinely new dataset still follows the existing CPU workflow first.
-Run these commands in the local project directory:
+Prepare both the required training data and the shared evaluation source first.
+After synchronizing source and the active selection as described above, run locally:
 
 ```bash
-bash scripts/runpod_workflow.sh configure --reuse-current
-bash scripts/runpod_workflow.sh selection show
-bash scripts/runpod_workflow.sh sync --dry-run
-bash scripts/runpod_workflow.sh sync --apply
 bash scripts/runpod_workflow.sh readiness --baseline
-bash scripts/runpodctl_project.sh gpu list
+bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
+
+Replace the catalog's `--data-center` with the registered volume's data center; this only
+filters stock. Baseline creation accepts only `--maxRuntime` and `--gpuId` (and their aliases),
+defaulting to `12h` and RTX 5090. Configure selects the dataset; baseline does not accept
+`--experiment`. When updating only the main-model config for prepared data, refresh the
+selection with `configure --reuse-current`; do not rerun CPU preparation/finalization.
 
 `readiness --baseline` verifies the selected dataset, full splits, bar-store publication
 and uploaded source. It does not require Kronos/HF caches or read main-model training
@@ -3860,7 +3516,7 @@ not the shared HF manifest file hash from an earlier CPU preparation. Switching
 between already-prepared A/B datasets requires no CPU preparation, downloads, or
 resplitting and does not invalidate completed baselines. Resume/evaluation checks
 use the dataset manifest and original checksums recorded by that run plus the
-active selection, never the most recently prepared dataset's shared summary.
+run's pinned selection, never the most recently prepared dataset's shared summary.
 
 `baseline` reads the volume from `.env` and uses the active selection. It checks the
 complete manifest and artifact sizes **locally before allocating a paid Pod**.
@@ -3880,7 +3536,7 @@ tmux -L stock-forecasting-baseline attach -t stock-forecasting-baseline
 
 Detach with `Ctrl-b d`. The **local guard** terminates the Pod after completion,
 failure or timeout; keep the local host powered and connected. Baselines do not
-depend on Pod self-termination. Back on the local host, run:
+depend on Pod self-termination. Use `status` locally to confirm the original Pod has ended. To resume unfinished work or check the cache, run:
 
 ```bash
 bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
@@ -3889,15 +3545,11 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 Successful completion returns a cache hit. An incomplete build instead creates a
 new Pod; launch the same remote baseline tmux command to resume saved jobs and
 checkpoints. Full baselines may take longer than 24 hours; this is a per-Pod workload
-limit, not a completion-time guarantee. After a cache hit, start main training:
+limit, not a completion-time guarantee. After a cache hit, proceed to the main-model launch step. `baseline` is not a read-only
+status query: an incomplete cache creates a paid Pod. Missing complete baselines cause
+`train` to reject creation locally rather than silently starting baseline training.
 
-```bash
-bash scripts/runpod_workflow.sh train --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
-```
 
-Inside that Pod, run `bash scripts/runpod_tmux_launch.sh stage1-train`; the name is
-retained for compatibility while the active stage determines the config. A missing
-baseline causes `train` to refuse Pod creation, never to train baselines implicitly.
 A/B datasets with different training histories each build their own reusable cache.
 Baseline parameters, early stopping and model lists come from `configs/baseline.json`.
 Main-model Kronos revisions, LoRA, feature mode, learning rate and checkpoints do not
@@ -3924,6 +3576,9 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 This does not prepare/split data again or download market data. No manual manifest,
 SHA or path editing is required. If data admission fails, investigate the reported
 data issue instead of automatically rerunning CPU preparation.
+
+<details>
+<summary>Baseline resource tuning, persistence and interruption recovery</summary>
 
 `configs/baseline.json` controls numerical parameters and resource limits. Defaults
 allow two deep-model experiments on one GPU plus one CPU rule/GBDT job. Admission
@@ -3991,9 +3646,15 @@ or final test restarts that work unit. These are baseline artifacts: no new mark
 API calls or CPU prepare reruns are required. Progress is reported every 30 seconds
 by default; only `complete.json` denotes a complete baseline result.
 
-#### 4. Create a GPU Pod and train
+</details>
 
-<a id="gpu-catalog-en"></a>Query GPU resources
+<a id="train-en"></a>
+
+#### 5. Choose capacity experiments and create training Pods
+
+<a id="gpu-catalog-en"></a>
+
+##### Query GPU resources
 
 Query the GPU model and stock catalog to obtain a complete `gpuId`. Training defaults
 to `NVIDIA GeForce RTX 5090`. With no options, the query covers all data centers;
@@ -4006,12 +3667,12 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-SE-1 --search "5090"
 bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 ```
 
-| Option                                | Default or format                       | Behavior                                                                                                                                                            |
-| ------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--data-center ID`                  | No filter; e.g.`EU-RO-1`, `EU-SE-1` | Case-insensitive exact data-center ID, not a region prefix such as`EU`. Does not change `.env` or the Pod deployment location                                   |
-| `--search TEXT`                     | No filter                               | Case-insensitive substring of the GPU display name or complete`gpuId`; can be combined with the data-center filter                                                |
-| `--output table`, `--output json` | `table`                               | Tables show VRAM, Secure/Community USD hourly prices, complete`gpuId` and data-center stock. JSON retains matching GPUs' API fields, including other data centers |
-| `-h`, `--help`                    | Flag with no value                      | Show GPU query options                                                                                                                                              |
+| Option | Default or format | Behavior |
+| --- | --- | --- |
+| `--data-center ID` | No filter; e.g. `EU-RO-1`, `EU-SE-1` | Case-insensitive exact data-center ID, not a region prefix such as `EU`. Does not change `.env` or the Pod deployment location |
+| `--search TEXT` | No filter | Case-insensitive substring of the GPU display name or complete `gpuId`; can be combined with the data-center filter |
+| `--output table`, `--output json` | `table` | Tables show VRAM, Secure/Community USD hourly prices, complete `gpuId` and data-center stock. JSON retains matching GPUs' API fields, including other data centers |
+| `-h`, `--help` | Flag with no value | Show GPU query options |
 
 `--` means the API did not report a value; `NONE` means that data center reports no
 stock, and these GPUs **remain in the results**. A catalog query is neither a capacity
@@ -4158,7 +3819,7 @@ After recovering the control machine, inspect first and explicitly apply recover
 
 ```bash
 bash scripts/runpod_workflow.sh recover
-bash scripts/runpod_workflow.sh recover --apply --pod-id <POD_ID>
+bash scripts/runpod_workflow.sh recover --apply --pod-id "<POD_ID>"
 ```
 
 Without `--pod-id`, all project Pods are inspected. Only `--apply` permits re-arming missing
@@ -4186,13 +3847,15 @@ After SSH login, run:
 
 ```bash
 cd /runpod-volume/stock_forecasting
-bash scripts/runpod_wandb_sync.sh <RUN_ID>
+bash scripts/runpod_wandb_sync.sh "<RUN_ID>"
 ```
 
 A newly created run-scoped Pod may sync only its own run. Omitting the argument also selects
 only that run, not other active experiments. All resume/re-evaluation transactions are
 preserved and synced using the project's pinned W&B legacy sync path. The recovery Pod is
 terminated afterward; do not start training in it.
+
+<a id="resume-en"></a>
 
 ##### Resume training and run standalone holdout validation
 
@@ -4202,7 +3865,7 @@ Confirm the original run's Pod has terminated. Resume by run ID without changing
 bash scripts/runpod_workflow.sh resume \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090" \
-  <RUN_ID>
+  "<RUN_ID>"
 ```
 
 With no run ID, automatic selection requires exactly one incomplete resumable candidate.
@@ -4222,7 +3885,7 @@ For completed training whose holdout needs resuming or recomputing:
 bash scripts/runpod_workflow.sh validate \
   --maxRuntime 8h \
   --gpuId "NVIDIA GeForce RTX 5090" \
-  <RUN_ID>
+  "<RUN_ID>"
 ```
 
 Omitting the run ID selects the latest completed training run; runtime/GPU defaults are
@@ -4238,15 +3901,17 @@ bash scripts/runpod_tmux_launch.sh stage1-validate
 Different runs may validate concurrently, but a run's validation cannot overlap its own
 training or another validation.
 
-#### 5. Download checkpoints, loss logs and final evaluations
+<a id="download-en"></a>
+
+#### 6. Download checkpoints, loss logs and final evaluations
 
 Downloads need neither a volume ID nor remote paths. For multi-experiment comparisons, specify
 each run ID reported at creation:
 
 ```bash
-bash scripts/runpod_workflow.sh download <RUN_ID>
-bash scripts/runpod_workflow.sh download --checkpointScope best <RUN_ID>
-bash scripts/runpod_workflow.sh download --resume --checkpointScope all <RUN_ID>
+bash scripts/runpod_workflow.sh download "<RUN_ID>"
+bash scripts/runpod_workflow.sh download --checkpointScope best "<RUN_ID>"
+bash scripts/runpod_workflow.sh download --resume --checkpointScope all "<RUN_ID>"
 ```
 
 | Option | Default | Behavior |
@@ -4266,6 +3931,8 @@ Checkpoint validation metrics select the model; final `validation-benchmark.json
 holdout results and baselines. Verify run IDs, configs, eligible evaluation membership and
 completion before comparison. Scale representation probes are separate: use `download-probes`
 under [Download diagnostic results locally](#download-diagnostic-results-locally).
+
+<a id="artifacts-en"></a>
 
 ### Training and inference artifacts
 
@@ -4310,18 +3977,24 @@ resume, loading an old checkpoint under a new fixed-date config, or relabelling
 old scores as new holdout results.
 
 Inference also runs inside a RunPod Pod with the project Poetry environment and
-the same network volume mounted; do not load the checkpoint locally:
+the same network volume mounted; do not load the checkpoint locally. Replace the run/checkpoint
+IDs and `<MARKET_PARQUET>` with an actual input file containing the target and benchmark.
+This example does not depend on `DATA_ROOT` being inherited by the SSH session:
 
 ```bash
 poetry run stock-forecasting-infer \
-  --config /runpod-volume/savedModel/<run-id>/<checkpoint>/resolved-config.yaml \
-  --checkpoint /runpod-volume/savedModel/<run-id>/<checkpoint> \
-  --input "${DATA_ROOT}/raw/market.parquet" \
+  --config "/runpod-volume/savedModel/<RUN_ID>/<CHECKPOINT>/resolved-config.yaml" \
+  --checkpoint "/runpod-volume/savedModel/<RUN_ID>/<CHECKPOINT>" \
+  --input "<MARKET_PARQUET>" \
   --symbol AAPL.US
 ```
 
-Inference returns only numerical forecasts, data provenance, encoder shapes, and
-checkpoint metadata. It produces no natural-language explanation.
+Inference returns raw `forecast`, independent `ranking_scores`, data provenance, encoder
+shapes and checkpoint metadata. Matching validation-fitted checkpoint calibration additionally
+produces `calibrated_forecast`; otherwise it is `null`, with `interval_calibration_status`.
+No natural-language explanation is generated.
+
+<a id="probes-en"></a>
 
 ### Historical scale representation diagnostics
 
@@ -4334,7 +4007,8 @@ and calculates no future alpha labels.
 `probe-scales` **does not create a GPU Pod automatically and cannot run model diagnostics
 on the local control machine**. Follow this sequence:
 
-1. **Local control machine: synchronize source.** Use `bash scripts/runpod_workflow.sh sync --apply`
+1. **Local control machine: confirm source readiness.** Already-synced unchanged source needs
+   no upload. If an update is needed, wait until no Pod owns the volume before synchronizing. Use `bash scripts/runpod_workflow.sh sync --apply`
    and the existing cloud deployment workflow. GPU readiness must pass, and the original
    network volume must already contain a usable project environment.
    Update both the local checkout and volume to support the diagnostic lifecycle before
@@ -4349,7 +4023,8 @@ on the local control machine**. Follow this sequence:
    bash scripts/runpod_workflow.sh train --maxRuntime 2h
    ```
 
-   Here, `train` checks readiness, allocates a fresh run identity, creates the Pod and arms
+   Here, `train` still requires the current selection's data, model and baseline readiness,
+   allocates a fresh run identity, creates the Pod and arms
    its deadlines. It does not start training automatically. This reuses the training Pod
    creation route rather than introducing a separate diagnostic Pod lifecycle.
 3. **GPU Pod: start diagnostics through tmux.** SSH into the Pod and run the commands below.
@@ -4369,7 +4044,7 @@ To select a historical training run, pass its **run ID** directly, without a ful
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh probe-scales \
-  --checkpoint run-20260905T203327Z-270337978 \
+  --checkpoint "<RUN_ID>" \
   --train-samples 16384 \
   --validation-samples 4096 \
   --batch-size 16 \
@@ -4422,10 +4097,11 @@ the historical model run selected by `--checkpoint`. Diagnostics do not call the
 termination API or require the local RunPod API key inside the Pod. Training and validation
 lifecycle completion markers remain unchanged. An existing session, rejected launch
 preflight or failure to acquire the GPU lease emits no diagnostic termination signal,
-protecting existing work; the original hard deadline still applies.
-The runner inherits `MAX_RUNTIME_SECONDS` from Pod creation
-(two hours above), with a further 60-second forced-termination grace period. It never
-extends the Pod's original hard deadline.
+protecting existing work; the local guard still follows that Pod's configured policy.
+The diagnostic runner uses `MAX_RUNTIME_SECONDS` from Pod creation (two hours above),
+plus a 60-second forced-termination grace period. This bounds the diagnostic process, not
+cloud charges: termination still requires successful local-guard polling and RunPod API
+confirmation.
 `awaiting Pod termination by the local guard` means computation has finished and the
 runner is waiting for the next successful local guard poll. It retains the GPU lease
 while waiting so another job cannot start just before termination.
@@ -4450,7 +4126,8 @@ successful diagnostic, and `succeeded` does not establish confirmed Pod terminat
 Termination requests and retries are recorded **locally** in
 `~/.local/state/runpod-guards/<pod-id>.log` (or the custom Guard log path printed at Pod
 creation), not a Pod-side `pod-shutdown` directory. Confirm termination from RunPod's
-actual Pod state. Unreadable terminal signals retain the existing hard-limit fallback.
+actual Pod state. Unreadable terminal signals require checking the local guard and actual Pod state;
+do not assume billing has stopped.
 After Pod termination, attach is unavailable; retrieve logs, status and reports from the
 persistent network volume instead.
 List all diagnostic options with:
@@ -4517,7 +4194,7 @@ To download the latest completed diagnostic for a particular model run, add only
 `PROBE_RUN_ID`:
 
 ```bash
-bash scripts/runpod_workflow.sh download-probes run-20260905T203327Z-270337978
+bash scripts/runpod_workflow.sh download-probes "<RUN_ID>"
 ```
 
 `PROBE_RUN_ID` is the diagnosed model's run ID, the same ID accepted by `--checkpoint`
@@ -4639,15 +4316,16 @@ Only `probe-scales` forwards the following diagnostic options:
 | `--selection-workers N` | Auto, range 1–8 | I/O concurrency cap for scanning completed-training metadata, also limited by CPU/available memory |
 | `-h`, `--help` | Flag with no value | Show diagnostic options without launching a diagnostic |
 
-`bash scripts/runpod_wandb_sync.sh [RUN_ID]` scans all runs for pending training/validation
-W&B uploads when no ID is supplied; an ID restricts the upload to that run. The inner
-parser handles `-h`/`--help`. This wrapper loads Pod environment, verifies the mount and
-invokes its existing termination flow on exit, **including help**. Use only a dedicated,
-otherwise-idle upload Pod; do not run it or request its help on a training Pod.
+`bash scripts/runpod_wandb_sync.sh [RUN_ID]` in a new run-scoped Pod processes only its
+own run, even when the ID is omitted. A different ID or `--help` is rejected before lease
+admission. Only historical unscoped Pods retain all-run discovery; do not use that behavior
+with concurrent experiments. Once admitted, exit invokes the existing termination flow.
+Use a dedicated idle sync Pod, then confirm its termination locally; help is not a safe
+live-training diagnostic.
 
 #### Remote low-level data and inference CLIs
 
-These are the full options for the `poetry run stock-forecasting-*` examples above.
+These are the full options for the `poetry run stock-forecasting-*` developer CLIs.
 They are for debugging on a cloud Pod with an existing environment, not replacements
 for local workflows. Normal operation does not require manual data paths or identities.
 All four Python CLIs accept `-h`/`--help`, still within the existing cloud environment.
@@ -4685,7 +4363,7 @@ All four Python CLIs accept `-h`/`--help`, still within the existing cloud envir
 | `--fixed-evaluation` | Flag enabling production exclusive split boundaries at 2025-06/2025-12/2026-06; omitting it uses legacy proportional splits |
 | `--window-size N` | `128` bars |
 | `--h-start N` | `1`, choices 1/2/3; maximum horizon is fixed at 14 |
-| `--max-abs-log-return X` | `0.5`, data-quality threshold |
+| `--max-abs-log-return X` | `0.5`, legacy preparation extreme-transition flag; production runtime rebuilds membership from `configs/data_cleaning.json` and does not use this flag to remove genuine extreme returns |
 | `--train-fraction X`, `--validation-fraction X` | `0.70`, `0.15`, used only by proportional splitting |
 | `--purge-bars N` | `20`, proportional-split purge; fixed-date mode uses label-end boundaries instead |
 | `--stride N`, `--sample-stride N` | Compatibility fields accept only `5`, `1`, not arbitrary sampling strides |
@@ -4711,36 +4389,45 @@ In `.venv/bin/python -m pytest TEST_FILE`, `-m` runs a Python module and `TEST_F
 the test scope. Pytest `-k EXPR` selects tests, `-q` reduces output and `-h` lists third-party
 options. Run these only on the cloud Pod.
 
-### Acceptance principles
+<a id="acceptance-en"></a>
 
-Minimum PoC acceptance:
+### Acceptance and interpretation
 
-1. Stage 1 selects one fixed `min(full train samples * 5%, 500,000)` train set
-   for up to two epochs and changes only its traversal order between epochs.
-   Under the validation-plateau policy, early stopping additionally requires two completed validation intervals at the minimum learning rate. Full validation/test
-   remain intact, and forward/backward, checkpoint reload, and inference smoke
-   tests complete.
-2. Stage 2 has the same architecture digest and starts again from the same
-   pretrained base.
-3. Every run is traceable to immutable Parquet, dataset profile, providers,
-   symbols, date range, and split counts.
-4. The CPU marker and active training selection match exactly on stage, config
-   SHA, profile, dates, requested universe, and dataset request SHA. For example,
-   CPU `tw_only` versus GPU `us_tw_eodhd` fails closed before Pod creation.
-5. `alpha_quantiles` remains fixed at `[B,15-h_start,3]`, with
-   `h_start in {1,2,3}`, a fixed maximum horizon of 14, and no classifier, text,
-   or fact output.
-6. Model inputs, time splits, and normalization use no future information;
-   future benchmark values exist only in offline label construction.
-7. The model is compared with zero-return, momentum, technical, GBDT, and neural
-   baselines under one validation/test protocol.
-8. Reports include per-horizon normalized pinball, median correlation,
-   directional agreement, interval coverage/width, and slices by market, asset
-   type, and year—not only one aggregate loss.
+1. Training uses dynamic sampling. Validation/test enumerate the complete cleaned population in
+   fixed order, retaining the final short batch; estimates or sampling never replace full evaluation.
+2. All splits use the same continuous input/output, valid-observation and liquidity rules while
+   retaining real extreme returns. A/B share one evaluation source, not merely dates or row counts.
+3. Standard Stage 1/2 have matching architecture digests. Capacity presets intentionally have
+   different architectures but initialize from the same pretrained base. Resume restores the
+   original architecture, optimizer, RNG and progress.
+4. Readiness checks the selected dataset's own manifest and actual artifacts. Another dataset's
+   last-written CPU summary need not match stage/config, but profile, universe and content cannot
+   be silently substituted.
+5. `alpha_quantiles` has shape `[B,15-h_start,3]` with q10 ≤ q50 ≤ q90.
+   `ranking_scores` is separate from median return; there are no classification probabilities or text.
+6. Inputs and train-only normalization exclude future data. Validation selects checkpoints and
+   subsequently fits interval calibration; test is evaluation-only. Log train pinball, ranking
+   and validation loss separately.
+7. Main evaluation reads completed baselines on identical membership without retraining them.
+   Report normalized pinball, correlation, directional agreement, coverage/width, ranking and
+   market/month slices.
+8. Multi-Pod acceptance covers independent selections, run IDs, checkpoints, logs, leases and
+   guards. One Pod finishing must not terminate another; sync/runtime updates cannot overwrite
+   in-use shared resources.
 
-Stage 1 proves script and contract viability, not alpha. A single-seed Stage 2
-run remains a PoC result; stronger model-comparison claims require multiple
-seeds and controlled ablations.
+Stage 1 establishes workflow viability, not alpha. One seed, one holdout or high GPU utilization
+does not demonstrate robust predictive superiority. Stronger claims require multiple seeds,
+controlled comparisons and subsequent backtests untouched by tuning.
+
+Engineering evidence is version- and scope-specific; it does not automatically validate later
+changes or production-scale training:
+[cleaning/capacity verification](docs/cleaning_experiments_verification.md),
+[tensor-pipeline verification](docs/baseline_tensor_pipeline_validation.md),
+[baseline runtime verification](docs/baseline_runtime_validation.md), and
+[full-evaluation workflow verification](docs/performance_workflow_validation.md).
+See [reports](reports) for model analyses and [RELEASES.md](RELEASES.md) for version snapshots.
+
+<a id="references-en"></a>
 
 ### Primary model and data references
 
