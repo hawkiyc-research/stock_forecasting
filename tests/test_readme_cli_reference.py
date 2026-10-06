@@ -71,6 +71,7 @@ class ReadmeCliReferenceTests(unittest.TestCase):
             ("scripts/runpod_selection.py", "create"),
             ("scripts/recover_runpod_after_wake.py", "parser"),
             ("scripts/runpod_rest_v2_control.py", "gpu_list"),
+            ("scripts/runpod_run_status.py", "parser"),
         ):
             self.assert_documented(parser_options(relative, receiver), relative)
 
@@ -110,7 +111,7 @@ class ReadmeCliReferenceTests(unittest.TestCase):
 
     def test_reference_links_resolve_in_the_correct_language(self) -> None:
         for language, text in self.languages.items():
-            for name in ("gpu-catalog", "cli-reference"):
+            for name in ("gpu-catalog", "cli-reference", "run-status"):
                 anchor = f"{name}-{language}"
                 with self.subTest(anchor=anchor):
                     self.assertEqual(text.count(f'<a id="{anchor}"></a>'), 1)

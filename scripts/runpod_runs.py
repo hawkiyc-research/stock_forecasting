@@ -218,14 +218,18 @@ class RunRecords:
 
 
 def main(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in {"list", "status"}:
+        query = runpy.run_path(str(ROOT / "scripts/runpod_run_status.py"))
+        return query["main"](RunRecords(), arguments[0], arguments[1:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("latest", "lifecycle", "selection", "status"))
+    parser.add_argument("command", choices=("latest", "lifecycle", "selection", "list", "status"))
     parser.add_argument("--run-id")
     parser.add_argument("--kind", choices=("training", "validation"), default="training")
     parser.add_argument(
         "--purpose", choices=("completed", "results", "resume"), default="completed"
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     reader = RunRecords()
     if args.command == "latest":
         print(reader.choose(args.purpose))
@@ -233,20 +237,6 @@ def main(argv=None):
         print(json.dumps(reader.lifecycle(args.run_id, args.kind)))
     elif args.command == "selection":
         print(reader.selection(args.run_id))
-    else:
-        for key, payload in reader.records():
-            if key.endswith("/training-completed.json"):
-                continue
-            detail = ""
-            if key.endswith("/wandb.json"):
-                detail = " ".join(
-                    f"{name}={value.get('state', '?')}"
-                    for name, value in payload.get("components", {}).items()
-                )
-            print(
-                f"{key.split('/')[2]} {Path(key).stem}: {payload.get('state', '?')} "
-                f"pod={payload.get('pod_id', '?')} at={payload.get('generated_at', '?')} {detail}"
-            )
     return 0
 
 

@@ -26,7 +26,8 @@ Usage:
   bash scripts/runpod_workflow.sh baseline [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh resume [--maxRuntime DURATION] [--gpuId GPU_ID] [RUN_ID]
   bash scripts/runpod_workflow.sh validate [VALIDATION OPTIONS]
-  bash scripts/runpod_workflow.sh status
+  bash scripts/runpod_workflow.sh runs [--experiment NAME] [--state STATE] [--limit N] [--offset N] [--workers N] [--output table|json] [--timezone ZONE]
+  bash scripts/runpod_workflow.sh status [RUN_ID] [--output table|json] [--timezone ZONE]
   bash scripts/runpod_workflow.sh recover [--apply] [--pod-id POD_ID]
   bash scripts/runpod_workflow.sh download [--resume] [--checkpointScope all|best] [RUN_ID]
   bash scripts/runpod_workflow.sh download-probes [PROBE_RUN_ID]
@@ -423,9 +424,16 @@ EOF
     probe-scales)
         exec bash "${SCRIPT_DIR}/runpod_probe_scales.sh" "$@"
         ;;
-    status)
-        [[ $# -eq 0 ]] || { usage; exit 2; }
-        exec bash "${SCRIPT_DIR}/show_runpod_status.sh"
+    runs|status)
+        if [[ "${COMMAND}" == status && $# -eq 0 ]]; then
+            exec bash "${SCRIPT_DIR}/show_runpod_status.sh"
+        fi
+        # Read-only inventory uses each run's stored configuration, not active selection.
+        source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
+        runpod_load_s3_env "${SCRIPT_DIR}/.."
+        query_command="${COMMAND}"
+        [[ "${query_command}" != runs ]] || query_command=list
+        exec python3 "${SCRIPT_DIR}/runpod_runs.py" "${query_command}" "$@"
         ;;
     recover)
         exec python3 "${SCRIPT_DIR}/recover_runpod_after_wake.py" "$@"

@@ -1499,7 +1499,7 @@ Pod 保留自己的 guard，不會被一起刪除，也不會自動重試租用�
 
 費用按各台 Pod 累加。`--launchWorkers 1` 只限制建立請求並行度，不會讓已建立的
 訓練 Pod 排隊或降低同時租用數量。建立輸出會列出各 Pod ID、run ID 與 guard log；
-請保留 run ID 以便指定下載、接續與驗證。
+也可隨時用 [`runs` 查詢 run ID 與執行設定](#run-status-zh)，再指定下載、接續與驗證。
 
 ##### 在每台 Pod 內啟動訓練
 
@@ -1529,16 +1529,82 @@ checkpoint、evaluation、log 與 training/validation lifecycle；同一個 run 
 CPU prepare、baseline 建置、共用程式同步與環境更新不能和主模型讀取同一 volume
 同時執行；先完成這些共用寫入，再並行訓練。
 
-##### 狀態、時間限制與 guard 恢復
+<a id="run-status-zh"></a>
 
-在本機查詢所有 run，而不是只看最後寫入的一份狀態：
+##### 查詢 run ID、執行設定與完成狀態
+
+以下指令在**本機專案目錄**執行，直接使用 `.env` 的 network volume 設定；
+不需要先啟動 Pod，也不需要提供 volume ID 或檔案路徑。先列出最近的 runs：
+
+```bash
+bash scripts/runpod_workflow.sh runs
+```
+
+每筆以 run ID 分組，顯示實驗名稱、training／最終 evaluation／整體狀態、run 初始化時間、
+最後活動時間，以及當時的 configure 設定：stage、data profile、dataset revision、
+資料起訖日期（end exclusive）、h-start、feature mode、universe、symbol limit、
+股票／ETF 清單與 YAML 路徑。設定來自**該 run 自己保存的 selection／manifest**，
+不是目前的 active selection；後來切換 configure 不會改變過去 run 的顯示。
+`symbol-limit=none` 表示未設上限；`stocks=-`／`etfs=-` 表示未指定個別清單，
+不是該市場沒有產品，實際範圍仍由 universe 與 data profile 決定。
+
+查詢特定參數實驗，或僅列出完整完成的 runs：
+
+```bash
+bash scripts/runpod_workflow.sh runs --experiment a-lora32
+```
+
+```bash
+bash scripts/runpod_workflow.sh runs --state complete
+```
+
+從列表複製 run ID 後，查詢該 run 是否完成及詳細時間、Pod／launch ID、LoRA 記錄：
+
+```bash
+bash scripts/runpod_workflow.sh status "<RUN_ID>"
+```
+
+`COMPLETE` 必須同時有該 run 的 training 完成證據及 `state=ready` 的最終評估報告。
+`TRAINED` 只代表訓練完成，尚未完成最終評估；`TRAINING`／`EVALUATING` 表示紀錄中的
+進行階段；`INCOMPLETE` 表示中斷、失敗或完成紀錄所需的結果缺失；`NOT_STARTED`
+表示只有建立前的 selection，沒有訓練開始證據；`UNKNOWN`／`ERROR` 不會算成功。
+清單的 `split=test` 才是 holdout；早期 run 若最後評估的是 validation，會如實顯示
+`split=validation`，不會稱為 holdout 完成。W&B 同步狀態另外列出，不會混同模型完成狀態。
+
+這是持久化結果／lifecycle 的唯讀查詢，不是即時 GPU 或 Pod 存活探測。
+`Initialized` 是訓練程式建立 run manifest 的時間，不是 configure 時間，也不等同每次
+resume 的 GPU 開始運算時間；`Last activity` 是最近一筆保存的狀態／結果時間。
+詳細查詢會分別顯示 training 完成與 evaluation 開始／完成時間；未記錄的欄位明示
+`unknown`／`unrecorded`，不以現在的設定補值。若停止期限與完成寫入競態造成舊 lifecycle
+仍是 `timed_out`，會同時保留原狀態並以該 run 的已保存完成結果判定，不只看一個標籤。
+
+| 參數 | 指令／預設 | 說明 |
+| --- | --- | --- |
+| `RUN_ID`／`--run-id RUN_ID` | `status`；兩者擇一 | 指定 run 詳情；不要填 Pod ID 或 baseline ID |
+| `--experiment NAME` | `runs`；不篩選 | 依保存的實驗名稱精確篩選，如 `a-lora32`、`a-lora64`、`a-partial`；歷史未記錄名稱的 run 仍可在不篩選的清單查到 |
+| `--state STATE` | `runs`；不篩選 | `complete`、`trained`、`training`、`evaluating`、`incomplete`、`not_started`、`unknown`、`error` |
+| `--limit N` | `runs`；`20` | 每頁 1–200 筆，以 run 配發時間由新到舊排列，不依後來的 resume 時間排序 |
+| `--offset N` | `runs`；`0` | 跳過 N 筆符合篩選的 run；有更多候選時輸出下一頁 offset，翻頁須保留相同篩選 |
+| `--workers N` | `runs`；`2` | 1–8 個並行查詢上限，另依可見 CPU、可用記憶體與 API 上限降低；只讀 metadata，不載入模型權重或 dataset |
+| `--output table\|json` | `runs`、`status RUN_ID`；`table` | 預設為按 run 分組的人可讀摘要；`json` 保留結構化設定、時間與狀態，供程式使用 |
+| `--timezone ZONE` | `runs`、`status RUN_ID`；`Asia/Taipei` | 人可讀時間的 IANA 時區，如 `UTC`；JSON 保留來源時間與 UTC offset |
+
+`status RUN_ID` 的 exit code：`0`＝完整完成、`1`＝找到但尚未完整完成、`2`＝查無 run、
+參數錯誤或讀取／身分錯誤。`runs` 查詢成功為 `0`，清單中有未完成 run 不算查詢失敗；
+遇到讀取錯誤會列出錯誤並回傳 `2`，不默默略過。這些查詢不修改 selection 或結果，
+不要求為查詢上傳程式，不觸發 CPU prepare、baseline 或訓練。
+
+原本不帶 run ID 的 `status` 仍保留程式、CPU prepare、dataset、baseline、下載進度、
+run 清單與 W&B 總覽：
 
 ```bash
 bash scripts/runpod_workflow.sh status
 ```
 
-`ready` 表示對應階段完成；`failed`、`timed_out` 不表示成功。Training completion
-與最終 holdout 完成是不同狀態，須核對相同 run ID 的 training／validation 結果。
+總覽的單一階段 `ready` 不等於整個 run 完成；請用 `status RUN_ID` 查看該 run 的判定。
+Baseline 是否完成仍用 `bash scripts/runpod_workflow.sh readiness --baseline`。
+
+##### 時間限制與 guard 恢復
 
 `--maxRuntime` 到期時，本機 guard 發出該 Pod、該 run 的停止請求。Pod 完成目前的
 validation／checkpoint 保存或 benchmark 模型／seed 的原子寫入，回報安全邊界後
@@ -1954,7 +2020,9 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。僅 `train` 接受可重複的 `--experiment NAME` 與 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；省略實驗時固定 active selection 建立一台。Baseline 完成快取在本機檢查，命中即跳過。兩者無 run ID 位置參數 |
 | `resume [RUN_ID]` | 接續未完成訓練；省略 ID 時須只有唯一可接續候選，多個候選拒絕猜測。自動讀取原 run 的 selection，不需 configure。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是 best checkpoint |
 | `validate [RUN_ID]` | 省略 ID 選最新完成 training 的 run，自動讀取原 selection。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設沿用完成工作；`--no-resume` 停用續評估；`--force` 重算主模型並停用續評估；三者擇一，不重訓 baseline |
-| `status`、`cpu-logs` | 無參數；前者查詢狀態，後者下載 CPU 工作紀錄 |
+| `runs` | `--experiment NAME`、`--state STATE`、`--limit N`、`--offset N`、`--workers N`、`--output table\|json`、`--timezone ZONE`；列出 run ID、執行時間與固定設定，詳見[查詢 run](#run-status-zh) |
+| `status [RUN_ID]` | 指定 run 時可用 `--run-id RUN_ID` 取代位置參數，另有 `--output table\|json`、`--timezone ZONE`；無參數保留專案總覽，指定 ID 則查該 run 是否完整完成 |
+| `cpu-logs` | 無參數；下載 CPU 工作紀錄 |
 | `recover` | 預設僅診斷；`--apply` 才恢復 guard／終止已確認可終止的 Pod；`--pod-id ID` 限定一個 Pod；`--confirmations N` 預設 `2`，至少 2；`--confirmation-delay-seconds N` 預設 `5`，不可負數；`--guard-dir PATH` 為進階控制端紀錄位置，預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help` 顯示說明 |
 | `download [RUN_ID]` | 省略 ID 選最新完成結果的 run；`--checkpointScope all` 預設下載 retained checkpoints，`best` 只取最佳；`--resume` 補齊／更新本機下載，**不是接續訓練**；`-h`／`--help` 顯示說明 |
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
@@ -3860,7 +3928,8 @@ they are not deleted or automatically rented again. Retry only failed experiment
 
 Costs add across Pods. `--launchWorkers 1` serializes creation requests, not the training
 workloads or number of rented Pods. Output includes each Pod ID, run ID and guard log.
-Keep the run IDs for downloads, resume and validation.
+Use [`runs` to look up run IDs and recorded settings](#run-status-en) at any time before
+downloading, resuming or validating a particular run.
 
 ##### Start training inside each Pod
 
@@ -3892,16 +3961,87 @@ network volume remains. CPU preparation, baseline building, source synchronizati
 updates cannot write the shared volume while main-model readers are running. Finish these
 shared writes before starting parallel training.
 
-##### Status, runtime limits and guard recovery
+<a id="run-status-en"></a>
 
-On the local control machine, inspect all runs rather than one last-writer status:
+##### Find run IDs, execution settings and completion status
+
+Run these commands in the **local project directory**. They use the network volume configured
+in `.env`; no running Pod, volume ID argument or file path is required. List recent runs:
+
+```bash
+bash scripts/runpod_workflow.sh runs
+```
+
+Each entry groups the run ID, experiment name, training/final-evaluation/overall state, run
+initialization time, last activity and recorded configure settings: stage, data profile, dataset
+revision, start/end-exclusive dates, h-start, feature mode, universe, symbol limit, stock/ETF
+lists and YAML path. Settings come from **that run's saved selection/manifest**, not today's
+active selection. Changing configure later does not change historical entries.
+`symbol-limit=none` means no configured cap. `stocks=-`/`etfs=-` means no explicit list,
+not an empty market; universe and data profile still determine the scope.
+
+Find a specific capacity experiment, or list only fully completed runs:
+
+```bash
+bash scripts/runpod_workflow.sh runs --experiment a-lora32
+```
+
+```bash
+bash scripts/runpod_workflow.sh runs --state complete
+```
+
+Copy a run ID from the list to inspect completion, detailed timestamps, Pod/launch IDs and
+recorded LoRA settings:
+
+```bash
+bash scripts/runpod_workflow.sh status "<RUN_ID>"
+```
+
+`COMPLETE` requires both training completion evidence and that run's final evaluation report
+with `state=ready`. `TRAINED` means training is complete but final evaluation is still pending;
+`TRAINING`/`EVALUATING` describe the recorded active phase. `INCOMPLETE` means interruption,
+failure or missing results needed to support a completion marker. `NOT_STARTED` means only
+a pre-launch selection exists, without evidence that training started. `UNKNOWN`/`ERROR` are
+not success. Only `split=test` identifies holdout evaluation; older runs evaluated on validation
+remain labeled `split=validation`. W&B delivery is shown separately from model completion.
+
+This is a read-only query of persisted results/lifecycle, not a live GPU or Pod-liveness check.
+`Initialized` is when training created the run manifest, not the configure timestamp or the
+GPU compute start of each resume attempt. `Last activity` is the latest recorded state/result
+timestamp. Details separate training completion from evaluation start/completion. Unrecorded
+fields display `unknown`/`unrecorded` instead of borrowing current settings. If a cutoff/completion
+race left a `timed_out` lifecycle, the query retains that raw state but uses the run's durable
+completion results instead of interpreting one label alone.
+
+| Parameter | Command/default | Meaning |
+| --- | --- | --- |
+| `RUN_ID` / `--run-id RUN_ID` | `status`; use one form | Inspect one run, not a Pod ID or baseline ID |
+| `--experiment NAME` | `runs`; no filter | Exact recorded experiment, e.g. `a-lora32`, `a-lora64`, `a-partial`; older unnamed runs remain visible without this filter |
+| `--state STATE` | `runs`; no filter | `complete`, `trained`, `training`, `evaluating`, `incomplete`, `not_started`, `unknown`, `error` |
+| `--limit N` | `runs`; `20` | 1–200 entries per page, newest run allocation first, not ordered by a later resume time |
+| `--offset N` | `runs`; `0` | Skip N matching runs; use the printed next-page offset with the same filters when more candidates remain |
+| `--workers N` | `runs`; `2` | 1–8 concurrent-query ceiling, further bounded by visible CPUs, available memory and the API cap; reads metadata, not weights or datasets |
+| `--output table\|json` | `runs`, `status RUN_ID`; `table` | Human-readable grouped summaries by default; `json` preserves structured settings, timestamps and states for automation |
+| `--timezone ZONE` | `runs`, `status RUN_ID`; `Asia/Taipei` | IANA timezone for human-readable times, e.g. `UTC`; JSON retains source timestamps and offsets |
+
+`status RUN_ID` exits `0` for fully complete, `1` for an existing but not fully complete run,
+and `2` for a missing run, invalid arguments or read/ownership errors. `runs` exits `0` for a
+successful query even when entries are unfinished; read errors are reported and return `2`,
+never silently skipped. Queries do not change selections/results, require a source upload,
+or trigger CPU preparation, baseline building or training.
+
+The existing no-argument `status` keeps the code, CPU preparation, dataset, baseline, download
+progress, run listing and W&B overview:
 
 ```bash
 bash scripts/runpod_workflow.sh status
 ```
 
-`ready` means the corresponding phase completed; `failed` and `timed_out` do not mean success.
-Training completion and final holdout completion are distinct; check both for the same run ID.
+A phase-level `ready` in the overview does not certify the entire run; use `status RUN_ID`
+for that run's completion decision. Check baseline completion with
+`bash scripts/runpod_workflow.sh readiness --baseline`.
+
+##### Runtime limits and guard recovery
 
 At `--maxRuntime`, each local guard publishes a stop request bound to its Pod and run.
 The Pod completes its current validation/checkpoint transaction or benchmark model/seed result
@@ -4375,7 +4515,9 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Only `train` accepts repeated `--experiment NAME` and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`). Omitted experiment pins active selection for one Pod. Baseline cache hits skip creation locally. Neither accepts a positional run ID |
 | `resume [RUN_ID]` | Resume unfinished training. Without an ID, exactly one eligible candidate is required. Restore the original selection without configure. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above; resume the latest usable checkpoint, not the best |
 | `validate [RUN_ID]` | Without an ID, select the latest completed training run and its stored selection. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above. `--resume` (default) reuses completed work; `--no-resume` disables continuation; `--force` recomputes the main model and disables resume. Choose one; no baseline retraining |
-| `status`, `cpu-logs` | No options; respectively inspect status or download CPU workflow logs |
+| `runs` | `--experiment NAME`, `--state STATE`, `--limit N`, `--offset N`, `--workers N`, `--output table\|json`, `--timezone ZONE`; list run IDs, execution times and frozen settings; see [run queries](#run-status-en) |
+| `status [RUN_ID]` | `--run-id RUN_ID` is an alternative to the positional ID; also `--output table\|json`, `--timezone ZONE`; no arguments retain the project overview, an ID checks that run's full completion |
+| `cpu-logs` | No options; download CPU workflow logs |
 | `recover` | Diagnostic-only by default; `--apply` restores guards/terminates Pods confirmed safe to terminate; `--pod-id ID` restricts scope; `--confirmations N` defaults to `2`, minimum 2; `--confirmation-delay-seconds N` defaults to `5`, nonnegative; `--guard-dir PATH` is an advanced control-host log location, defaulting to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help` shows help |
 | `download [RUN_ID]` | Without an ID, select the latest completed results. `--checkpointScope all` (default) downloads retained checkpoints; `best` selects the best. `--resume` fills/refreshes a local download, **not training continuation**; `-h`/`--help` shows help |
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
