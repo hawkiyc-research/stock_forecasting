@@ -1197,7 +1197,8 @@ bash scripts/runpod_workflow.sh cpu-logs
 ```
 
 CPU 結束後先檢查狀態；baseline 使用 `readiness --baseline`，主模型使用
-`readiness --gpu`。兩者都由建立命令再次檢查，不用修改 readiness marker：
+`readiness --gpu`。建立命令會自行處理前置檢查，無須手動修改 readiness marker；
+baseline 會重用仍有效的近期檢查結果：
 
 ```bash
 bash scripts/runpod_workflow.sh status
@@ -1227,6 +1228,14 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 它核對上傳程式、所選 training bar-store，以及 `configs/data_cleaning.json` 指定的
 共用 validation／test bar-store；A 組不能以自己的評估快照代替共用 B 組來源。
 不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定或「最近一次 CPU prepare」紀錄。
+
+`readiness --baseline` 與 `baseline` 共用本機 10 分鐘的成功檢查快取。
+程式版本、volume、資料選擇、清理規則及遠端 artifacts 均未變更時，後續建立或重試只核對
+小型 manifests 與分頁物件清單中的版本／大小，不再逐一查詢所有 shards，也不重印完整報告。
+超時、程式或規則改變、檔案被替換／刪除、清理索引新建完成時自動重新驗證；遠端查詢失敗時
+不採用舊結果。首次直接執行 `baseline` 也會完成檢查，無須先另跑 `readiness`。
+此快取只加速本機啟動檢查，不是 baseline 模型身分或訓練完成紀錄；完成結果檢查、
+即時 Pod 衝突檢查與掛載後資料驗證仍會執行。
 
 輸出區分兩種筆數與狀態：
 
@@ -3495,7 +3504,8 @@ bash scripts/runpod_workflow.sh cpu-logs
 ```
 
 After CPU work finishes, check status. Baselines use `readiness --baseline`; the main
-model uses `readiness --gpu`. Creators check again; never edit readiness markers:
+model uses `readiness --gpu`. Creation commands handle preflight automatically;
+baselines reuse still-valid recent checks. Never edit readiness markers:
 
 ```bash
 bash scripts/runpod_workflow.sh status
@@ -3526,6 +3536,16 @@ It verifies uploaded source, the selected training bar store, and the shared val
 bar store selected by `configs/data_cleaning.json`. A cannot substitute its own evaluation
 snapshot for the shared B source. No Kronos/HF cache, main-model training YAML, or shared
 "most recent CPU prepare" record is required.
+
+`readiness --baseline` and `baseline` share a local ten-minute successful-check cache.
+If the code release, volume, dataset selection, cleaning policy and remote artifacts are unchanged,
+creation/retries check only small manifests and paginated object revision/size listings, without
+issuing another individual query for every shard or printing the full report again. Expiration,
+code/policy changes, replaced/deleted artifacts or newly built cleaning indexes trigger full
+verification. Failed remote queries never fall back to stale success. Running `baseline` directly
+performs the initial check; a separate `readiness` command is optional. This cache only accelerates
+local admission; it is not a baseline model identity or completion record. Completed-result checks,
+live Pod conflict checks and mounted data verification still run.
 
 Counts and states have distinct meanings:
 

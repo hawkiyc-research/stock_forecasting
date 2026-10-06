@@ -25,8 +25,8 @@ class Reader(GATE["BaselineArtifactReader"]):
         self.objects, self.calls = objects, []
 
     def s3(self, *args):
-        self.calls.append(args)
         if args[:2] == ("s3api", "list-objects-v2"):
+            self.calls.append(args)
             key = args[args.index("--prefix") + 1]
             return encode(
                 {
@@ -35,6 +35,199 @@ class Reader(GATE["BaselineArtifactReader"]):
                 }
             )
         return BASE["MemoryReader"].s3(self, *args)
+
+
+class CacheReader(Reader):
+    def s3(self, *args):
+        if (args[:2] == ("s3api", "list-objects-v2")
+                and args[args.index("--max-keys") + 1] == "1000"):
+            self.calls.append(args)
+            prefix = args[args.index("--prefix") + 1]
+            return encode({"IsTruncated": False, "Contents": [
+                {"Key": key, "Size": len(value), "ETag": hashlib.sha256(value).hexdigest(),
+                 "LastModified": "2026-10-06T00:00:00Z"}
+                for key, value in sorted(self.objects.items()) if key.startswith(prefix)
+            ]})
+        return super().s3(*args)
+
+
+class ReadinessReuseTests(unittest.TestCase):
+    def setUp(self):
+        self.a, self.b = BASE["selection"](), BASE["selection"]("2016-01-01")
+        self.objects = {**BASE["fixture"](self.a), **BASE["fixture"](self.b)}
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.cache_root = Path(self.temp.name)
+
+    def verify(self, *, selected=None, objects=None, now=1000, release="a" * 64, reader=None):
+        reader = reader or CacheReader(self.objects if objects is None else objects)
+        result, reused = GATE["verify_with_receipt"](
+            ROOT, selected or self.a, reader, workers=2, release_digest=release,
+            cache_root=self.cache_root, now=now,
+        )
+        return result, reused, reader
+
+    @staticmethod
+    def artifact_heads(reader):
+        return [call for call in reader.calls if call[:2] == ("s3api", "head-object")
+                and call[call.index("--key") + 1].endswith(".parquet")]
+
+    def test_launch_reuses_success_without_repeating_artifact_head_requests(self):
+        first, reused, first_reader = self.verify()
+        second, reused_second, second_reader = self.verify(now=1100)
+        self.assertFalse(reused)
+        self.assertTrue(reused_second)
+        self.assertEqual(second, first)
+        self.assertEqual(len(self.artifact_heads(first_reader)), 6)
+        self.assertEqual(self.artifact_heads(second_reader), [])
+        self.assertEqual(len([call for call in second_reader.calls
+                              if call[:2] == ("s3api", "list-objects-v2")]), 4)
+        self.assertNotIn("hf-models", repr(second_reader.calls))
+
+    def test_full_size_shard_inventory_avoids_260_repeated_heads(self):
+        for selected in (self.a, self.b):
+            prefix = f"datasets/{selected['dataset_request_sha256']}/"
+            bar_key = prefix + "prepared/bar-store/bar-store.json"
+            bar = json.loads(self.objects[bar_key])
+            template = bar["shards"][0]
+            payload = self.objects[prefix + "prepared/bar-store/" + template["relative_path"]]
+            bar["shards"] = []
+            for index in range(128):
+                relative = f"shards/bucket-{index:04d}/shard.parquet"
+                bar["shards"].append({**template, "relative_path": relative})
+                self.objects[prefix + "prepared/bar-store/" + relative] = payload
+            bar["row_count"] *= 128
+            bar["symbol_count"] *= 128
+            self.objects[bar_key] = encode(bar)
+            bar_hash = hashlib.sha256(self.objects[bar_key]).hexdigest()
+            dataset_key = prefix + "dataset-manifest.json"
+            dataset = json.loads(self.objects[dataset_key])
+            dataset["artifacts"]["bar_store_manifest"].update(
+                sha256=bar_hash, size_bytes=len(self.objects[bar_key]),
+            )
+            self.objects[dataset_key] = encode(dataset)
+            success_key = prefix + "prepared/bar-store/_SUCCESS.json"
+            success = json.loads(self.objects[success_key])
+            success["bar_store_manifest_sha256"] = bar_hash
+            self.objects[success_key] = encode(success)
+        first, _, first_reader = self.verify()
+        second, reused, second_reader = self.verify()
+        self.assertTrue(reused)
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.artifact_heads(first_reader)), 260)
+        self.assertEqual(self.artifact_heads(second_reader), [])
+
+    def test_cache_does_not_extend_its_own_lifetime(self):
+        self.verify()
+        self.assertTrue(self.verify(now=1500)[1])
+        self.assertFalse(self.verify(now=1600)[1])
+        self.assertFalse(self.verify(now=1599)[1])  # Clock rollback also invalidates reuse.
+
+    def test_ab_source_switch_and_code_change_cannot_reuse_wrong_success(self):
+        self.verify()
+        self.assertFalse(self.verify(selected=self.b)[1])
+        self.assertTrue(self.verify(selected=self.a)[1])
+        self.assertFalse(self.verify(release="b" * 64)[1])
+
+    def test_volume_switch_cannot_reuse_success(self):
+        self.verify()
+        reader = CacheReader(self.objects)
+        reader.bucket = "different-volume"
+        self.assertFalse(self.verify(reader=reader)[1])
+
+    def test_policy_change_rechecks_even_with_same_release_argument(self):
+        self.verify()
+        original = GATE["baseline_sources"]
+
+        def changed(*args):
+            policy, sources, splits = original(*args)
+            policy["minimum_median_daily_turnover"]["USD"] *= 2
+            return policy, sources, splits
+
+        with patch.dict(GATE["verify_with_receipt"].__globals__, {"baseline_sources": changed}):
+            self.assertFalse(self.verify()[1])
+
+    def test_deleted_shard_fails_instead_of_using_cached_success(self):
+        self.verify()
+        objects = dict(self.objects)
+        objects.pop(next(key for key in objects if key.endswith("/shard.parquet")))
+        with self.assertRaises((ValueError, KeyError)):
+            self.verify(objects=objects)
+
+    def test_same_size_replaced_shard_invalidates_reuse(self):
+        self.verify()
+        objects = dict(self.objects)
+        key = next(key for key in objects if key.endswith("/shard.parquet"))
+        objects[key] = b"x" * len(objects[key])
+        self.assertFalse(self.verify(objects=objects)[1])
+
+    def test_newly_completed_clean_index_rechecks_and_refreshes_counts(self):
+        self.verify()
+        self.objects.update(clean_fixture(self.a, self.objects))
+        self.objects.update(clean_fixture(self.b, self.objects))
+        result, reused, _ = self.verify()
+        self.assertFalse(reused)
+        self.assertEqual(result["cleaning_state"], "ready")
+        self.assertEqual(result["eligible_sample_counts"]["test"], 70)
+
+    def test_changed_manifest_failure_does_not_overwrite_success(self):
+        self.verify()
+        path = next(self.cache_root.glob("*.json"))
+        original = path.read_bytes()
+        objects = dict(self.objects)
+        key = next(key for key in objects if key.endswith("/dataset-manifest.json"))
+        payload = json.loads(objects[key])
+        payload["state"] = "building"
+        objects[key] = encode(payload)
+        with self.assertRaises(ValueError):
+            self.verify(objects=objects)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_remote_failure_never_falls_back_to_success(self):
+        self.verify()
+        reader = CacheReader(self.objects)
+        with (patch.object(reader, "s3", side_effect=ValueError("network failure")),
+              self.assertRaisesRegex(ValueError, "network failure")):
+            self.verify(reader=reader)
+
+    def test_missing_or_corrupt_receipt_performs_full_verification(self):
+        self.verify()
+        path = next(self.cache_root.glob("*.json"))
+        for raw in (b"broken-json", b"[]", b"{}"):
+            path.write_bytes(raw)
+            self.assertFalse(self.verify()[1])
+
+    def test_unverified_code_or_mounted_path_never_uses_receipt(self):
+        self.verify()
+        self.assertFalse(self.verify(release="")[1])
+        reader = CacheReader(self.objects)
+        reader.volume = self.cache_root
+        with patch.dict(GATE["verify_with_receipt"].__globals__, {
+            "verify_baseline_data": lambda *args, **kwargs: {"mounted": True},
+        }):
+            result, reused, _ = self.verify(reader=reader)
+        self.assertEqual(result, {"mounted": True})
+        self.assertFalse(reused)
+
+    def test_paginated_inventory_is_complete_and_sorted(self):
+        reader = CacheReader({})
+        def entry(key):
+            return {"Key": key, "Size": 1, "ETag": "fixture", "LastModified": "date"}
+        pages = [encode({"IsTruncated": True, "NextContinuationToken": "page2",
+                         "Contents": [entry("prepared/z")]}),
+                 encode({"IsTruncated": False, "Contents": [entry("prepared/a")]})]
+        with patch.object(reader, "s3", side_effect=pages) as s3:
+            result = reader.inventory("prepared/")
+        self.assertEqual([item["Key"] for item in result], ["prepared/a", "prepared/z"])
+        self.assertIn("page2", s3.call_args_list[1].args)
+
+    def test_inventory_without_revision_or_complete_pages_fails_closed(self):
+        reader = CacheReader({})
+        for page in ({}, {"IsTruncated": True, "Contents": []},
+                     {"IsTruncated": False, "Contents": [{"Key": "prepared/a", "Size": 1}]}):
+            with (patch.object(reader, "s3", return_value=encode(page)),
+                  self.assertRaises(ValueError)):
+                reader.inventory("prepared/")
 
 
 def clean_fixture(selected, prepared, *, counts=None, policy=None, source_hash=None):

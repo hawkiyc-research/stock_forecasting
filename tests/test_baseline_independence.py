@@ -501,19 +501,25 @@ class BaselineIndependenceTests(unittest.TestCase):
             (project / ".env").write_text("RUNPOD_NETWORK_VOLUME_ID=fixture-volume\n")
             (project / ".env").chmod(0o600)
             transport = project / "scripts/fixture_transport.py"
-            transport.write_text("""import os, sys
+            transport.write_text("""import hashlib, json, os, sys
 from pathlib import Path
 args = sys.argv[1:]
 root = Path(os.environ["FAKE_VOLUME"])
+with (root / "requests.jsonl").open("a") as stream:
+    stream.write(json.dumps(args) + "\\n")
 if args[:2] == ["s3", "cp"] and args[3] == "-":
     sys.stdout.buffer.write((root / args[2].split("/", 3)[3]).read_bytes())
 elif args[:2] == ["s3api", "head-object"]:
     print((root / args[args.index("--key") + 1]).stat().st_size)
 elif args[:2] == ["s3api", "list-objects-v2"]:
-    import json
     key = args[args.index("--prefix") + 1]
-    print(json.dumps({"Contents": [{"Key": key}] if (root / key).is_file() else [],
-                      "IsTruncated": False}))
+    target = root / key
+    paths = sorted(target.rglob("*")) if target.is_dir() else [target]
+    entries = [{"Key": str(path.relative_to(root)), "Size": path.stat().st_size,
+                "ETag": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "LastModified": str(path.stat().st_mtime_ns)}
+               for path in paths if path.is_file()]
+    print(json.dumps({"Contents": entries, "IsTruncated": False}))
 else:
     raise RuntimeError("Unexpected mutation or cloud action")
 """)
@@ -574,6 +580,29 @@ else:
             self.assertIn('"cleaning_state": "pending_build"', result.stdout)
             self.assertIn("NOT verified yet", result.stdout)
             self.assertNotIn("Baseline gate passed", result.stdout)
+
+            def artifact_head_count():
+                requests = [json.loads(line) for line in
+                            (volume / "requests.jsonl").read_text().splitlines()]
+                return sum(args[:2] == ["s3api", "head-object"]
+                           and args[args.index("--key") + 1].endswith(".parquet")
+                           for args in requests)
+
+            before = artifact_head_count()
+            self.assertEqual(before, 6)
+            result = command("verify_runpod_stage_readiness.sh", "--baseline")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("Baseline readiness reused", result.stdout)
+            self.assertNotIn('"sources":', result.stdout)
+            self.assertEqual(artifact_head_count(), before)
+
+            shard = next(volume.glob("datasets/*/prepared/bar-store/shards/*/shard.parquet"))
+            original = shard.read_bytes()
+            shard.write_bytes(b"")
+            result = command("verify_runpod_stage_readiness.sh", "--baseline")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Baseline readiness reused", result.stdout)
+            shard.write_bytes(original)
             # Main training keeps its strict model-config checks.
             result = command("verify_runpod_stage_readiness.sh", "--gpu")
             self.assertNotEqual(result.returncode, 0)

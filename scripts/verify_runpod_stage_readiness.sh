@@ -78,7 +78,9 @@ if [[ "${MODE}" == "baseline" ]]; then
         | python3 "${SCRIPT_DIR}/runpod_selection.py" verify-selection-copy --data-only \
             --project-root "${LOCAL_PROJECT_ROOT}" --selection "${RUNPOD_SELECTION_FILE}" --candidate -
     python3 "${SCRIPT_DIR}/runpod_baseline_readiness.py" --project-root "${LOCAL_PROJECT_ROOT}" \
-        --selection "${RUNPOD_SELECTION_FILE}"
+        --selection "${RUNPOD_SELECTION_FILE}" \
+        --verified-code-release "$(printf '%s' "${CODE_JSON}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["release_digest"])')"
     exit 0
 fi
 

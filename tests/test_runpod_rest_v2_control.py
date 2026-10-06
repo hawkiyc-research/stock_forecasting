@@ -11,13 +11,125 @@ import sys
 import tempfile
 import unittest
 import urllib.error
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 CONTROL = runpy.run_path(
     str(Path(__file__).resolve().parents[1] / "scripts/runpod_rest_v2_control.py")
 )
+
+
+class ErrorResponseTests(unittest.TestCase):
+    def fail_request(self, raw, *, status=400, body=None, path="/pods", method="POST"):
+        stream = io.BytesIO(raw if isinstance(raw, bytes) else raw.encode())
+        error = urllib.error.HTTPError("https://api.runpod.io/v2/pods", status, "Error", {}, stream)
+        with (
+            patch.dict(os.environ, {"RUNPOD_API_KEY": "fixture-private-api-key"}),
+            patch("urllib.request.urlopen", side_effect=error) as request,
+            self.assertRaises(CONTROL["ApiError"]) as caught,
+        ):
+            CONTROL["_request"](method, path, body=body)
+        request.assert_called_once()
+        self.assertTrue(stream.closed)
+        return caught.exception.payload()
+
+    def test_entire_json_body_including_unknown_fields_and_whitespace_is_preserved(self):
+        raw = '{\n "title": "Bad Request", "detail": "Placement rejected",\n' \
+              ' "errors": [{"field":"gpu.id","reason":"fixture"}], "new_field": [1,2]\n}'
+        result = self.fail_request(raw)
+        self.assertEqual(result["response_body"], raw)
+        self.assertEqual(result["method"], "POST")
+        self.assertEqual(result["path"], "/pods")
+        self.assertIn("POST /pods", result["error"])
+        self.assertFalse(result["response_body_truncated"])
+
+    def test_error_body_is_not_parsed_or_summarized(self):
+        with patch("json.loads", side_effect=AssertionError("Do not parse the error body")):
+            result = self.fail_request('{"arbitrary_provider_format": "reason"}')
+        self.assertIn("arbitrary_provider_format", result["response_body"])
+
+    def test_plain_text_html_empty_and_malformed_json_are_preserved(self):
+        for raw in ("No matching capacity\nTry again later",
+                    "<html>upstream failed</html>", "", "{bad"):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.fail_request(raw)["response_body"], raw)
+
+    def test_error_larger_than_old_eight_kilobyte_limit_is_preserved(self):
+        raw = "x" * 10000 + "\nThe actual reason at the end."
+        self.assertEqual(self.fail_request(raw)["response_body"], raw)
+
+    def test_http_status_is_authoritative_for_reconciliation_not_response_fields(self):
+        for status, code in ((400, "bad_request"), (401, "unauthorized"), (403, "forbidden"),
+                             (404, "not_found"), (409, "conflict"), (422, "bad_request"),
+                             (429, "rate_limited"), (500, "api_error")):
+            with self.subTest(status=status):
+                result = self.fail_request('{"status":404,"code":"not_found"}', status=status)
+                self.assertEqual((result["status"], result["code"]), (status, code))
+
+    def test_request_credentials_environment_values_and_encoded_values_are_redacted(self):
+        body = {"env": {"HF_TOKEN": "fixture-hf-private", "APP_CONFIG": "opaque-env-private"},
+                "registry": {"password": 'fixture-quote-"-private'}}
+        raw = json.dumps({"title": "fixture-private-api-key", "detail": body,
+                          "unknown": "fixture-quote-%22-private"})
+        result = self.fail_request(raw, body=body)
+        output = json.dumps(result)
+        for secret in ("fixture-private-api-key", "fixture-hf-private", "opaque-env-private",
+                       "fixture-quote-", "%22-private"):
+            self.assertNotIn(secret, output)
+        self.assertIn("[REDACTED]", output)
+
+    def test_credentials_returned_by_server_are_redacted_without_known_request_value(self):
+        raw = '{"detail":"Bearer unseen-bearer", "access_token":"unseen-token",' \
+              '"password":"unseen-pass", "GPU":"5090"}'
+        output = self.fail_request(raw)["response_body"]
+        self.assertNotIn("unseen-", output)
+        self.assertIn('"GPU":"5090"', output)
+
+    def test_request_query_values_are_not_in_diagnostic_endpoint(self):
+        result = self.fail_request("Not available", path="/pods?cursor=opaque-cursor", method="GET")
+        self.assertEqual(result["path"], "/pods")
+        self.assertNotIn("opaque-cursor", json.dumps(result))
+
+    def test_control_characters_are_escaped_in_cli_json(self):
+        output = json.dumps(self.fail_request("problem\n\x1b[2J\x00failure"))
+        self.assertNotIn("\x1b", output)
+        self.assertNotIn("\x00", output)
+        self.assertIn("\\u001b", output)
+
+    def test_bounded_read_reports_truncation_and_drops_partial_final_line(self):
+        raw = "Complete line\n" + "x" * CONTROL["MAX_ERROR_BYTES"]
+        result = self.fail_request(raw)
+        self.assertTrue(result["response_body_truncated"])
+        self.assertEqual(result["response_body"], "Complete line")
+
+    def test_non_utf8_error_body_is_losslessly_escaped(self):
+        result = self.fail_request(b"failure:\xff")
+        self.assertEqual(result["response_body"], "failure:\\xff")
+
+    def test_cli_stderr_stays_one_json_document_and_exits_nonzero(self):
+        raw = b'{"detail":"fixture-provider-reason","extra":{"keep":true}}'
+        error = urllib.error.HTTPError(
+            "https://api.runpod.io/v2/pods", 400, "Error", {}, io.BytesIO(raw)
+        )
+        stderr, stdout = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {"RUNPOD_API_KEY": "fixture-private-api-key"}),
+            patch.object(sys, "argv", ["control", "pod", "list"]),
+            patch("urllib.request.urlopen", side_effect=error) as request,
+            redirect_stderr(stderr), redirect_stdout(stdout),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            runpy.run_path(
+                str(Path(__file__).resolve().parents[1] / "scripts/runpod_rest_v2_control.py"),
+                run_name="__main__",
+            )
+        self.assertEqual(caught.exception.code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        result = json.loads(stderr.getvalue())
+        self.assertEqual(result["response_body"], raw.decode())
+        self.assertEqual(result["method"], "GET")
+        request.assert_called_once()
 
 
 class GpuCatalogTests(unittest.TestCase):

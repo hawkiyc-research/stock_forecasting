@@ -17,6 +17,10 @@ import urllib.request
 API_BASE = "https://api.runpod.io/v2"
 USER_AGENT = "stock-forecasting-runpod-control/0.1"
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+MAX_ERROR_BYTES = 2_000_000
+SENSITIVE_FIELD = re.compile(
+    r"(?i)api[_-]?key|token|secret|password|credential|authorization|cookie"
+)
 STATUS_CODES = {
     400: "bad_request",
     401: "unauthorized",
@@ -29,11 +33,52 @@ STATUS_CODES = {
 
 
 class ApiError(RuntimeError):
-    def __init__(self, status: int | None, code: str, message: str) -> None:
+    def __init__(self, status: int | None, code: str, message: str, **diagnostics: object) -> None:
         self.status = status
         self.code = code
+        self.diagnostics = diagnostics
         super().__init__(message)
 
+    def payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"error": str(self), "code": self.code}
+        if self.status is not None:
+            payload["status"] = self.status
+        payload.update(self.diagnostics)
+        return payload
+
+
+def _redact_response(text: str, key: str, body: dict[str, object] | None) -> str:
+    """Keep the provider's response text, not a selected subset of JSON fields."""
+    secrets = {key}
+
+    def collect(value: object, sensitive: bool = False) -> None:
+        if isinstance(value, dict):
+            for name, item in value.items():
+                collect(item, sensitive or bool(SENSITIVE_FIELD.search(str(name))))
+        elif isinstance(value, list):
+            for item in value:
+                collect(item, sensitive)
+        elif sensitive and isinstance(value, str) and value:
+            secrets.add(value)
+
+    collect(body)
+    # Environment values may be credentials even under application-specific names.
+    # Short non-secret settings such as "1" must not erase HTTP codes or GPU sizes.
+    if body and isinstance(body.get("env"), dict):
+        secrets.update(value for value in body["env"].values()
+                       if isinstance(value, str) and len(value) >= 8)
+    variants = {variant for secret in secrets for variant in (
+        secret, json.dumps(secret)[1:-1], urllib.parse.quote(secret, safe=""),
+    ) if variant}
+    for secret in sorted(variants, key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", r"\1 [REDACTED]", text)
+    # Redact labelled credentials returned by the server, including unfamiliar ones.
+    return re.sub(
+        r'''(?ix)((?<![\w-])["']?(?:[\w-]{0,128}(?:api[_-]?key|token|secret|password|credential)[\w-]{0,128}|authorization|cookie)["']?\s*[:=]\s*)
+        ("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;}]+)''',
+        r'\1"[REDACTED]"', text,
+    )
 
 def _api_key() -> str:
     key = os.environ.get("RUNPOD_API_KEY", "")
@@ -73,19 +118,26 @@ def _request(
             raw = response.read(2_000_001)
     except urllib.error.HTTPError as error:
         try:
-            raw = error.read(8192)
+            raw = error.read(MAX_ERROR_BYTES + 1)
         finally:
             error.close()
-        message = f"Runpod REST v2 returned HTTP {error.code}"
-        try:
-            problem = json.loads(raw)
-        except (UnicodeError, json.JSONDecodeError):
-            problem = None
-        if isinstance(problem, dict) and isinstance(problem.get("title"), str):
-            message += f": {problem['title'][:120]}"
-        raise ApiError(error.code, STATUS_CODES.get(error.code, "api_error"), message) from None
+        endpoint = path.split("?", 1)[0]
+        # Never parse/filter the error body: unknown fields, plain text and HTML
+        # are all useful diagnostics. JSON encoding at the CLI escapes controls.
+        response_body = _redact_response(raw.decode("utf-8", errors="backslashreplace"), key, body)
+        truncated = len(raw) > MAX_ERROR_BYTES
+        if truncated:
+            # Do not print a partial credential crossing the bounded read boundary.
+            response_body = response_body[:max(0, response_body.rfind("\n"))]
+        raise ApiError(
+            error.code, STATUS_CODES.get(error.code, "api_error"),
+            f"Runpod REST v2 {method} {endpoint} returned HTTP {error.code}",
+            method=method, path=endpoint, response_body=response_body,
+            response_body_truncated=truncated,
+        ) from None
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         reason = error.reason if isinstance(error, urllib.error.URLError) else type(error).__name__
+        reason = _redact_response(str(reason), key, body)
         raise ApiError(None, "network_error", f"Runpod REST v2 is unavailable: {reason}") from None
     if status != expected_status:
         raise ApiError(status, "api_error", f"Runpod REST v2 returned unexpected HTTP {status}")
@@ -443,8 +495,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except ApiError as error:
-        payload: dict[str, object] = {"error": str(error), "code": error.code}
-        if error.status is not None:
-            payload["status"] = error.status
-        print(json.dumps(payload, separators=(",", ":")), file=sys.stderr)
+        print(json.dumps(error.payload(), separators=(",", ":")), file=sys.stderr)
         raise SystemExit(1) from None

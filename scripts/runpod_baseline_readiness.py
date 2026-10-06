@@ -11,14 +11,61 @@ import re
 import runpy
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 DATA_GATE = runpy.run_path(str(Path(__file__).with_name("runpod_dataset_readiness.py")))
 # Preserve the shared prepared-data validator for existing control-plane callers.
 globals().update({key: value for key, value in DATA_GATE.items() if not key.startswith("__")})
+READINESS_REUSE_SECONDS = 600
 
 
 class BaselineArtifactReader(DATA_GATE["ArtifactReader"]):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.metadata = {}
+
+    def read(self, key):
+        # Only bounded metadata is memoized, never bars, arrays or model weights.
+        if key not in self.metadata:
+            self.metadata[key] = super().read(key)
+        return self.metadata[key]
+
+    def inventory(self, prefix):
+        """Observe revisions with paginated LISTs instead of one HEAD per artifact."""
+        DATA_GATE["relative_path"](prefix.rstrip("/"))
+        items, cursor, seen = [], None, set()
+        # Pagination is sequential because each page supplies the next token.
+        for _ in range(16):
+            args = ["s3api", "list-objects-v2", "--bucket", self.bucket,
+                    "--prefix", prefix, "--max-keys", "1000", "--no-paginate",
+                    "--output", "json"]
+            if cursor:
+                args.extend(("--continuation-token", cursor))
+            page = json.loads(self.s3(*args))
+            if not isinstance(page, dict) or type(page.get("IsTruncated")) is not bool:
+                raise ValueError("Invalid readiness artifact inventory")
+            contents = page.get("Contents", [])
+            if not isinstance(contents, list) or len(contents) > 1000:
+                raise ValueError("Invalid readiness artifact inventory entries")
+            for item in contents:
+                if (not isinstance(item, dict) or not isinstance(item.get("Key"), str)
+                        or not item["Key"].startswith(prefix)
+                        or type(item.get("Size")) is not int or item["Size"] < 0
+                        or not isinstance(item.get("ETag"), str)
+                        or not isinstance(item.get("LastModified"), str)):
+                    raise ValueError("Readiness inventory lacks artifact revision metadata")
+                items.append({name: item[name] for name in ("Key", "Size", "ETag", "LastModified")})
+            if not page["IsTruncated"]:
+                if len({item["Key"] for item in items}) != len(items):
+                    raise ValueError("Readiness inventory repeats an artifact")
+                return sorted(items, key=lambda item: item["Key"])
+            cursor = page.get("NextContinuationToken")
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                raise ValueError("Readiness artifact inventory pagination is incomplete")
+            seen.add(cursor)
+        raise ValueError("Readiness artifact inventory exceeds the bounded page limit")
+
     def optional_read(self, key):
         """Only a confirmed missing object means pending, never a transport failure."""
         DATA_GATE["relative_path"](key)
@@ -145,7 +192,7 @@ def verify_cleaning(project, selected, prepared, policy, reader, *, splits):
     return result
 
 
-def verify_baseline_data(project, selected, reader, *, workers):
+def baseline_sources(project, selected):
     policy_tools = runpy.run_path(str(project / "src/stock_forecasting/data_policy.py"))
     policy = policy_tools["load_data_policy"](project)
     evaluation = copy.deepcopy(selected)
@@ -160,6 +207,11 @@ def verify_baseline_data(project, selected, reader, *, workers):
         "validation": evaluation["dataset_request_sha256"],
         "test": evaluation["dataset_request_sha256"],
     }
+    return policy, selections, split_sources
+
+
+def verify_baseline_data(project, selected, reader, *, workers):
+    policy, selections, split_sources = baseline_sources(project, selected)
 
     def check(item):
         dataset_id, source = item
@@ -200,11 +252,71 @@ def verify_baseline_data(project, selected, reader, *, workers):
     }
 
 
+def readiness_snapshot(project, selected, reader, *, workers):
+    policy, selections, _ = baseline_sources(project, selected)
+
+    def snapshot(dataset_id):
+        prefix = f"datasets/{dataset_id}/"
+        metadata = {name: hashlib.sha256(reader.read(prefix + name)).hexdigest() for name in (
+            "dataset-manifest.json", "download-manifest.json", "prepared/bar-store/bar-store.json",
+        )}
+        bar_name = "prepared/bar-store/bar-store.json"
+        identity = cleaning_identity(
+            project, json.loads(reader.read(prefix + bar_name)), metadata[bar_name], policy,
+        )
+        return dataset_id, {
+            "metadata": metadata,
+            "bars": reader.inventory(prefix + "prepared/bar-store/"),
+            "cleaned": reader.inventory(
+                prefix + "prepared/sample-universes/" + DATA_GATE["digest"](identity) + "/"
+            ),
+        }
+
+    return dict(DATA_GATE["bounded_map"](
+        snapshot, sorted(selections), min(workers, len(selections))
+    ))
+
+
+def verify_with_receipt(project, selected, reader, *, workers, release_digest,
+                        cache_root=None, now=None):
+    """Reuse recent successful checks only after observing unchanged source revisions."""
+    if reader.volume is not None or not release_digest:
+        return verify_baseline_data(project, selected, reader, workers=workers), False
+    if not re.fullmatch(r"[0-9a-f]{64}", release_digest):
+        raise ValueError("Invalid verified code release for readiness reuse")
+    started = time.time() if now is None else now
+    policy, _, _ = baseline_sources(project, selected)
+    context = {"schema": 1, "volume": reader.bucket, "release": release_digest,
+               "dataset_request": selected["dataset_request"], "policy": policy}
+    root = cache_root if cache_root is not None else project / ".runpod/readiness"
+    path = root / ("baseline-" + DATA_GATE["digest"](context) + ".json")
+    # Remote errors must propagate; a cached success never substitutes for a
+    # failed freshness check. A deleted/replaced shard changes this snapshot.
+    snapshot = readiness_snapshot(project, selected, reader, workers=workers)
+    try:
+        receipt = json.loads(path.read_text()) if path.stat().st_size <= 16 * 1024**2 else {}
+    except (FileNotFoundError, UnicodeError, json.JSONDecodeError):
+        receipt = {}
+    checked_at = receipt.get("checked_at") if isinstance(receipt, dict) else None
+    if (type(checked_at) in (int, float) and 0 <= started - checked_at < READINESS_REUSE_SECONDS
+            and receipt.get("context") == context and receipt.get("snapshot") == snapshot
+            and isinstance(receipt.get("result"), dict)
+            and receipt["result"].get("cleaning_state") in {"ready", "pending_build"}
+            and receipt["result"].get("state") == "ready_for_baseline_build"):
+        return receipt["result"], True
+    result = verify_baseline_data(project, selected, reader, workers=workers)
+    DATA_GATE["READINESS"]["_atomic_json"](path, {
+        "context": context, "snapshot": snapshot, "checked_at": started, "result": result,
+    })
+    return result, False
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=DATA_GATE["ROOT"])
     parser.add_argument("--selection", default=os.environ.get("RUNPOD_SELECTION_FILE"))
     parser.add_argument("--network-volume-root", type=Path)
+    parser.add_argument("--verified-code-release", default="", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     project = args.project_root.resolve()
     _, selected = DATA_GATE["SELECTION"]["_resolve_selection_path"](
@@ -213,7 +325,16 @@ def main(argv=None):
     reader = BaselineArtifactReader(
         project, volume=args.network_volume_root, bucket=os.environ.get("RUNPOD_NETWORK_VOLUME_ID")
     )
-    result = verify_baseline_data(project, selected, reader, workers=DATA_GATE["worker_count"]())
+    result, reused = verify_with_receipt(
+        project, selected, reader, workers=DATA_GATE["worker_count"](),
+        release_digest=args.verified_code_release,
+    )
+    if reused:
+        print("Baseline readiness reused (verified within 10 minutes; code, selection, "
+              "cleaning policy and remote artifact revisions unchanged).")
+        print(f"Current-rule cleaning: {result['cleaning_state']}; "
+              "baseline completion and live Pod admission are checked separately.")
+        return 0
     print(json.dumps(result, sort_keys=True), flush=True)
     if result["cleaning_state"] == "pending_build":
         print(
