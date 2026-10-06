@@ -79,7 +79,6 @@ if [[ "${MODE}" == "baseline" ]]; then
             --project-root "${LOCAL_PROJECT_ROOT}" --selection "${RUNPOD_SELECTION_FILE}" --candidate -
     python3 "${SCRIPT_DIR}/runpod_baseline_readiness.py" --project-root "${LOCAL_PROJECT_ROOT}" \
         --selection "${RUNPOD_SELECTION_FILE}"
-    printf 'Baseline gate passed: selected full dataset is ready; no main-model cache is required.\n'
     exit 0
 fi
 

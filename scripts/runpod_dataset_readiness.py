@@ -303,8 +303,9 @@ def verify_data(
     for _ in bounded_map(reader.verify, items, workers):
         pass
     return {
-        "state": "ready", "dataset_request_sha256": selection["dataset_request_sha256"],
-        "date_range": request["date_range"], "sample_counts": counts,
+        "state": "ready", "scope": "prepared_bar_store",
+        "dataset_request_sha256": selection["dataset_request_sha256"],
+        "date_range": request["date_range"], "prepared_candidate_counts": counts,
         "bar_store_manifest_sha256": bar_hash, "verified_artifacts": len(items),
         "verification": (
             "checksums" if reader.volume is not None else "metadata-checksums-and-object-sizes"

@@ -1223,11 +1223,29 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 已準備好的資料只因更新主模型設定而刷新 selection 時，用 `configure --reuse-current`；
 不重跑 `cpu prepare`／`cpu-finalize`。
 
-`readiness --baseline` 只驗證所選 dataset 的既有資料、完整切分、bar-store 發布狀態與
-上傳程式；不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定。A／B 各自讀取
-自己的 dataset manifest，不使用共用的「最近一次 CPU prepare」紀錄判定另一組是否就緒。
-本機驗證小型 metadata 的 checksum 與全部 shard/index 的物件大小；Pod 掛載後再串流驗證
-實際資料 checksum。`readiness --gpu` 保留給主模型，不是 baseline 的前置要求。
+`readiness --baseline` 是 **baseline 建置輸入檢查，不是 baseline 訓練完成檢查**。
+它核對上傳程式、所選 training bar-store，以及 `configs/data_cleaning.json` 指定的
+共用 validation／test bar-store；A 組不能以自己的評估快照代替共用 B 組來源。
+不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定或「最近一次 CPU prepare」紀錄。
+
+輸出區分兩種筆數與狀態：
+
+- `prepared_candidate_counts` 僅代表既有 CPU prepare 的候選筆數，**不是清理後有效 windows**。
+- `eligible_sample_counts` 才是目前連續性、有效行情與最低流動性規則下的筆數。
+  只接受符合目前規則、來源快照、128-bar 視窗與固定 split 的 `sample-universes` 索引；
+  validation／test 的數字來自共用評估來源。
+- `cleaning_state=ready` 表示已核對當前清理索引與稽核筆數；`pending_build` 表示仍須
+  在 baseline 流程中先建立索引，尚未確認的筆數為 `null`，不以舊筆數代填。
+  此時資料可供建置（`state=ready_for_baseline_build`，exit code 0），但不是清理已完成；
+  無須重跑 CPU prepare、重新下載行情或手動修改 manifest。
+- 共用來源缺失、索引損壞、規則／來源不符或實際使用的 split 沒有有效樣本時，檢查失敗。
+  舊規則的索引保留原樣，不會被當成新規則的已完成索引。
+
+本機驗證小型 metadata 的 checksum、prepared shard/index 物件大小及 cleaned index 的
+存在與非空狀態；Pod 掛載後串流驗證實際資料與 cleaned range index 的 checksum。
+這不是在本機重新掃描所有行情。`readiness --gpu` 保留給主模型，不是 baseline 的前置要求。
+baseline 完成結果能否重用，仍由 `baseline`／`train` 建立命令在本機檢查，不能以
+`readiness --baseline` 的成功退出推斷舊 baseline 可重用。
 
 主模型的 `readiness --gpu`、Pod 內檢查及訓練紀錄同樣使用所選資料集的 manifest；
 Kronos cache 另外依目前 config 的 repository、固定 revision 與離線驗證結果檢查，
@@ -3503,12 +3521,34 @@ defaulting to `12h` and RTX 5090. Configure selects the dataset; baseline does n
 `--experiment`. When updating only the main-model config for prepared data, refresh the
 selection with `configure --reuse-current`; do not rerun CPU preparation/finalization.
 
-`readiness --baseline` verifies the selected dataset, full splits, bar-store publication
-and uploaded source. It does not require Kronos/HF caches or read main-model training
-YAML. A/B each resolve their own dataset manifests instead of a shared "most recent
-CPU prepare" record. The local gate verifies small metadata checksums and every
-shard/index object size; mounted admission streams the actual data checksums.
-`readiness --gpu` remains the main-model gate, not a baseline prerequisite.
+`readiness --baseline` checks **baseline build inputs, not completed baseline training**.
+It verifies uploaded source, the selected training bar store, and the shared validation/test
+bar store selected by `configs/data_cleaning.json`. A cannot substitute its own evaluation
+snapshot for the shared B source. No Kronos/HF cache, main-model training YAML, or shared
+"most recent CPU prepare" record is required.
+
+Counts and states have distinct meanings:
+
+- `prepared_candidate_counts` are historical CPU-preparation candidate counts, **not eligible
+  windows after runtime cleaning**.
+- `eligible_sample_counts` come from a `sample-universes` index matching the current
+  continuity, valid-bar and liquidity rules, source snapshot, 128-bar window and fixed splits.
+  Validation/test counts come from the shared evaluation source.
+- `cleaning_state=ready` means the current index and accepted-window audit counts were
+  checked. `pending_build` means the baseline workflow must first build the missing indexes;
+  unverified counts are `null`, never filled from preparation counts. Input availability
+  (`state=ready_for_baseline_build`, exit code 0) does not mean cleaning has finished.
+  No repeated CPU preparation, market-data download or manual manifest edit is needed.
+- Missing shared sources, corrupt indexes, inconsistent current policy/source metadata,
+  or empty populations for used splits fail admission. Old-rule indexes remain untouched
+  and cannot satisfy the current-rule check.
+
+Local checks cover small metadata checksums, prepared shard/index object sizes and the
+existence/nonempty size of the cleaned range index. Mounted admission streams data and
+cleaned range-index checksums. The control host does not rescan every market-data row.
+`readiness --gpu` remains the main-model gate, not a baseline prerequisite. The `baseline`
+and `train` creation commands separately check completed-result reuse locally; a successful
+`readiness --baseline` exit does not certify that an old baseline is reusable.
 
 Main-model `readiness --gpu`, mounted admission, and run provenance also use the
 selected dataset's own manifest. Kronos is checked independently against the

@@ -487,7 +487,8 @@ class BaselineIndependenceTests(unittest.TestCase):
                 shutil.copytree(
                     ROOT / name, project / name, ignore=shutil.ignore_patterns("__pycache__")
                 )
-            for key, data in self.objects.items():
+            objects = {**self.objects, **fixture(selection("2016-01-01"))}
+            for key, data in objects.items():
                 path = volume / key
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
@@ -508,6 +509,11 @@ if args[:2] == ["s3", "cp"] and args[3] == "-":
     sys.stdout.buffer.write((root / args[2].split("/", 3)[3]).read_bytes())
 elif args[:2] == ["s3api", "head-object"]:
     print((root / args[args.index("--key") + 1]).stat().st_size)
+elif args[:2] == ["s3api", "list-objects-v2"]:
+    import json
+    key = args[args.index("--prefix") + 1]
+    print(json.dumps({"Contents": [{"Key": key}] if (root / key).is_file() else [],
+                      "IsTruncated": False}))
 else:
     raise RuntimeError("Unexpected mutation or cloud action")
 """)
@@ -564,7 +570,10 @@ else:
 
             result = command("verify_runpod_stage_readiness.sh", "--baseline")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Baseline gate passed", result.stdout)
+            self.assertIn('"state": "ready_for_baseline_build"', result.stdout)
+            self.assertIn('"cleaning_state": "pending_build"', result.stdout)
+            self.assertIn("NOT verified yet", result.stdout)
+            self.assertNotIn("Baseline gate passed", result.stdout)
             # Main training keeps its strict model-config checks.
             result = command("verify_runpod_stage_readiness.sh", "--gpu")
             self.assertNotEqual(result.returncode, 0)
