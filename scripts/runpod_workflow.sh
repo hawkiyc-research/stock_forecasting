@@ -354,6 +354,16 @@ EOF
         exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
         ;;
     readiness)
+        if [[ $# -eq 1 && "$1" == "--baseline" ]]; then
+            # Status retains the full data-rule check and uses the same result
+            # validator as launch. Deployment checks remain in the launch gate.
+            source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
+            runpod_load_create_env "${SCRIPT_DIR}/.."
+            source "${SCRIPT_DIR}/lib/runpod_selection.sh"
+            runpod_load_active_selection "${SCRIPT_DIR}/.." baseline
+            exec python3 "${SCRIPT_DIR}/runpod_baseline_readiness.py" --status \
+                --project-root "${SCRIPT_DIR}/.." --selection "${RUNPOD_SELECTION_FILE}"
+        fi
         exec bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" "$@"
         ;;
     train|baseline)

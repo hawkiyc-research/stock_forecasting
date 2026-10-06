@@ -120,6 +120,14 @@ class ReadmeCliReferenceTests(unittest.TestCase):
         example = "```bash\ncommand --undocumented VALUE\n```\nDocument `--documented VALUE`."
         self.assertEqual(set(OPTION.findall(prose(example))), {"--documented"})
 
+    def test_baseline_readiness_documents_both_existing_capabilities(self) -> None:
+        for text in self.languages.values():
+            for expected in ("Baseline: COMPLETE", "Baseline: NOT COMPLETE", "Data rules: PASS",
+                             "STORAGE FINALIZATION REQUIRED", "--baseline"):
+                self.assertIn(expected, text)
+        self.assertNotIn("不是 baseline 訓練完成檢查", self.languages["zh"])
+        self.assertNotIn("not completed baseline training", self.languages["en"])
+
     def test_experiment_protocol_matches_current_early_stop_and_holdout(self) -> None:
         protocol = (ROOT / "docs/experiment_protocol.md").read_text(encoding="utf-8")
         chinese, english = protocol.split("\n## English\n", 1)

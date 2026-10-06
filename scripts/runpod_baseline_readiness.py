@@ -311,12 +311,66 @@ def verify_with_receipt(project, selected, reader, *, workers, release_digest,
     return result, False
 
 
+def print_input_summary(result, reused):
+    if reused:
+        print("Baseline input check reused "
+              "(verified within 10 minutes; remote artifacts unchanged).")
+    if result["cleaning_state"] == "pending_build":
+        print("Data rules: PENDING INDEX BUILD; current-rule cleaned windows are NOT verified yet.")
+        print("The baseline workflow will build the missing indexes "
+              "from existing bars before training.")
+    else:
+        print("Data rules: PASS (continuity, valid bars, liquidity and shared evaluation source).")
+    counts = result["eligible_sample_counts"]
+    values = ", ".join(
+        f"{split}={counts[split]:,}" if counts[split] is not None else f"{split}=pending"
+        for split in ("train", "validation", "test")
+    )
+    print("Eligible windows: " + values)
+
+
+def check_status(project, selected, reader, *, workers):
+    """Keep both data-policy admission and completed-result validation in the public command."""
+    # A read-only query does not deploy or run remote code. Use the published
+    # release only to share the existing input-check receipt with the launch
+    # gate; local script edits must not prevent inspecting completed results.
+    raw = reader.optional_read("lifecycle/stage1/code.json")
+    release = json.loads(raw).get("release_digest", "") if raw is not None else ""
+    if not isinstance(release, str) or not re.fullmatch(r"[0-9a-f]{64}", release):
+        release = ""
+    inputs, reused = verify_with_receipt(
+        project, selected, reader, workers=workers, release_digest=release,
+    )
+    cache = runpy.run_path(str(project / "scripts/runpod_baseline_cache.py"))
+    result = cache["check_baseline"](project, selected)
+    if result["complete"]:
+        if inputs["cleaning_state"] != "ready" or (
+            result["sample_counts"] != inputs["eligible_sample_counts"]
+        ):
+            raise ValueError("Completed baseline does not match the current-rule input population")
+        print(f"Baseline: COMPLETE ({result['verified_models']} models; "
+              f"{result['verified_artifacts']} artifacts verified).")
+    elif result.get("storage_finalization_pending"):
+        print("Baseline: STORAGE FINALIZATION REQUIRED; "
+              "existing training results do not need retraining.")
+    else:
+        print("Baseline: NOT COMPLETE for the selected data and current rules.")
+    print_input_summary(inputs, reused)
+    print("Baseline ID: " + result["baseline_id"])
+    if result["complete"]:
+        print("Completed baseline is reusable; no baseline training is required.")
+        return 0
+    print("Next: bash scripts/runpod_workflow.sh baseline --maxRuntime DURATION --gpuId GPU_ID")
+    return 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project-root", type=Path, default=DATA_GATE["ROOT"])
     parser.add_argument("--selection", default=os.environ.get("RUNPOD_SELECTION_FILE"))
     parser.add_argument("--network-volume-root", type=Path)
     parser.add_argument("--verified-code-release", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--status", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     project = args.project_root.resolve()
     _, selected = DATA_GATE["SELECTION"]["_resolve_selection_path"](
@@ -325,25 +379,20 @@ def main(argv=None):
     reader = BaselineArtifactReader(
         project, volume=args.network_volume_root, bucket=os.environ.get("RUNPOD_NETWORK_VOLUME_ID")
     )
+    if args.status:
+        if args.network_volume_root is not None or (
+            os.environ.get("RUNPOD_POD_ID") and os.environ.get("RUNPOD_TEST_MODE") != "1"
+        ):
+            raise ValueError("Baseline status must run on the local control host")
+        print("Checking current data rules and baseline completion...", file=sys.stderr, flush=True)
+        return check_status(project, selected, reader, workers=DATA_GATE["worker_count"]())
     result, reused = verify_with_receipt(
         project, selected, reader, workers=DATA_GATE["worker_count"](),
         release_digest=args.verified_code_release,
     )
-    if reused:
-        print("Baseline readiness reused (verified within 10 minutes; code, selection, "
-              "cleaning policy and remote artifact revisions unchanged).")
-        print(f"Current-rule cleaning: {result['cleaning_state']}; "
-              "baseline completion and live Pod admission are checked separately.")
-        return 0
-    print(json.dumps(result, sort_keys=True), flush=True)
-    if result["cleaning_state"] == "pending_build":
-        print(
-            "Baseline inputs available; current-rule cleaned windows are NOT verified yet. "
-            "The baseline workflow must build the pending indexes before training."
-        )
-    else:
-        print("Baseline build inputs verified with current-rule cleaned sample counts.")
-    print("This input check does not certify that baseline training/results are complete.")
+    if args.network_volume_root is not None:
+        print(json.dumps(result, sort_keys=True), flush=True)
+    print_input_summary(result, reused)
     return 0
 
 
@@ -358,5 +407,5 @@ if __name__ == "__main__":
         OSError,
         subprocess.SubprocessError,
     ) as error:
-        print(f"Baseline data readiness failed: {error}", file=sys.stderr)
+        print(f"Baseline readiness failed: {error}", file=sys.stderr)
         raise SystemExit(2) from error

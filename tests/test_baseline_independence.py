@@ -576,8 +576,8 @@ else:
 
             result = command("verify_runpod_stage_readiness.sh", "--baseline")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('"state": "ready_for_baseline_build"', result.stdout)
-            self.assertIn('"cleaning_state": "pending_build"', result.stdout)
+            self.assertIn("Data rules: PENDING INDEX BUILD", result.stdout)
+            self.assertIn("train=pending, validation=pending, test=pending", result.stdout)
             self.assertIn("NOT verified yet", result.stdout)
             self.assertNotIn("Baseline gate passed", result.stdout)
 
@@ -592,7 +592,7 @@ else:
             self.assertEqual(before, 6)
             result = command("verify_runpod_stage_readiness.sh", "--baseline")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Baseline readiness reused", result.stdout)
+            self.assertIn("Baseline input check reused", result.stdout)
             self.assertNotIn('"sources":', result.stdout)
             self.assertEqual(artifact_head_count(), before)
 
@@ -601,7 +601,7 @@ else:
             shard.write_bytes(b"")
             result = command("verify_runpod_stage_readiness.sh", "--baseline")
             self.assertNotEqual(result.returncode, 0)
-            self.assertNotIn("Baseline readiness reused", result.stdout)
+            self.assertNotIn("Baseline input check reused", result.stdout)
             shard.write_bytes(original)
             # Main training keeps its strict model-config checks.
             result = command("verify_runpod_stage_readiness.sh", "--gpu")

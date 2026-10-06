@@ -1224,20 +1224,35 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 已準備好的資料只因更新主模型設定而刷新 selection 時，用 `configure --reuse-current`；
 不重跑 `cpu prepare`／`cpu-finalize`。
 
-`readiness --baseline` 是 **baseline 建置輸入檢查，不是 baseline 訓練完成檢查**。
-它核對上傳程式、所選 training bar-store，以及 `configs/data_cleaning.json` 指定的
-共用 validation／test bar-store；A 組不能以自己的評估快照代替共用 B 組來源。
-不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定或「最近一次 CPU prepare」紀錄。
+`readiness --baseline` 是唯讀查詢，**同時檢查目前資料篩選規則及 baseline 是否完成**。
+它核對所選 training bar-store、`configs/data_cleaning.json` 指定的共用 validation／test
+bar-store，以及符合當前資料與 baseline 訓練契約的完整結果。A 組不能以自己的評估快照
+代替共用 B 組來源。不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定或
+「最近一次 CPU prepare」紀錄；不建立 Pod、不重新訓練。
+
+預設只顯示完成狀態、資料規則、有效樣本筆數、baseline ID 及下一步：
+
+- `Baseline: COMPLETE` 且 `Data rules: PASS`：所有模型、評估指標、權重／訓練結果、
+  共用評估資料與預測檔均通過現有完整性檢查；三個 split 的筆數與當前有效索引一致。
+  exit code 為 **0**，可重用這份 baseline，不需要重訓。
+- `Baseline: NOT COMPLETE`：目前資料與規則沒有匹配的完整結果。即使資料規則已通過，
+  仍須執行 `baseline` 建置或接續；exit code 為 **1**。
+- `STORAGE FINALIZATION REQUIRED`：已有訓練結果，但尚須完成共用結果的儲存整理；
+  exit code 為 **1**，執行 `baseline` 完成整理，不需重訓。
+- 資料、規則、結果檔缺損或遠端查詢失敗：exit code 為 **2**，輸出具體錯誤，
+  不會假報完成，也不把連線失敗當成「尚未建置」。
 
 `readiness --baseline` 與 `baseline` 共用本機 10 分鐘的成功檢查快取。
 程式版本、volume、資料選擇、清理規則及遠端 artifacts 均未變更時，後續建立或重試只核對
 小型 manifests 與分頁物件清單中的版本／大小，不再逐一查詢所有 shards，也不重印完整報告。
 超時、程式或規則改變、檔案被替換／刪除、清理索引新建完成時自動重新驗證；遠端查詢失敗時
 不採用舊結果。首次直接執行 `baseline` 也會完成檢查，無須先另跑 `readiness`。
-此快取只加速本機啟動檢查，不是 baseline 模型身分或訓練完成紀錄；完成結果檢查、
-即時 Pod 衝突檢查與掛載後資料驗證仍會執行。
+此快取只加速資料輸入檢查，不是 baseline 模型身分或訓練完成紀錄；每次完成查詢仍核對
+baseline 結果。建立 Pod 時的程式部署檢查、即時 Pod 衝突檢查與掛載後資料驗證也保留。
+唯讀查詢不要求本機查詢腳本與遠端部署逐檔相同；正式啟動前仍須同步修改過的程式，
+且必須通過部署版本檢查。同步程式不等於 baseline 需要重訓。
 
-輸出區分兩種筆數與狀態：
+資料檢查區分候選筆數與有效筆數，CLI 的 `Eligible windows` 只顯示後者：
 
 - `prepared_candidate_counts` 僅代表既有 CPU prepare 的候選筆數，**不是清理後有效 windows**。
 - `eligible_sample_counts` 才是目前連續性、有效行情與最低流動性規則下的筆數。
@@ -1245,7 +1260,7 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
   validation／test 的數字來自共用評估來源。
 - `cleaning_state=ready` 表示已核對當前清理索引與稽核筆數；`pending_build` 表示仍須
   在 baseline 流程中先建立索引，尚未確認的筆數為 `null`，不以舊筆數代填。
-  此時資料可供建置（`state=ready_for_baseline_build`，exit code 0），但不是清理已完成；
+  此時資料可供建置，但不是清理或 baseline 訓練已完成；唯讀完成查詢不會回傳成功。
   無須重跑 CPU prepare、重新下載行情或手動修改 manifest。
 - 共用來源缺失、索引損壞、規則／來源不符或實際使用的 split 沒有有效樣本時，檢查失敗。
   舊規則的索引保留原樣，不會被當成新規則的已完成索引。
@@ -1253,8 +1268,8 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 本機驗證小型 metadata 的 checksum、prepared shard/index 物件大小及 cleaned index 的
 存在與非空狀態；Pod 掛載後串流驗證實際資料與 cleaned range index 的 checksum。
 這不是在本機重新掃描所有行情。`readiness --gpu` 保留給主模型，不是 baseline 的前置要求。
-baseline 完成結果能否重用，仍由 `baseline`／`train` 建立命令在本機檢查，不能以
-`readiness --baseline` 的成功退出推斷舊 baseline 可重用。
+`readiness --baseline` 與 `baseline`／`train` 共用同一套已完成結果驗證，
+查詢或建立命令都不接受不符合當前篩選規則的舊 baseline。
 
 主模型的 `readiness --gpu`、Pod 內檢查及訓練紀錄同樣使用所選資料集的 manifest；
 Kronos cache 另外依目前 config 的 repository、固定 revision 與離線驗證結果檢查，
@@ -1287,7 +1302,8 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 
 若先前已完整完成，這次應直接命中快取；若逾時或失敗，會建立新 Pod，SSH 後仍執行同一個
 tmux baseline 命令，接續已保存的 job／checkpoint。完整 baseline 可能超過單次 24 小時，
-此參數是單次 workload 上限，不是完成時間保證。確認 cache hit 後才進入下一步建立主模型 Pod。注意：`baseline` 不是唯讀查詢命令；
+此參數是單次 workload 上限，不是完成時間保證。可用 `readiness --baseline` 唯讀確認
+`COMPLETE` 與 `PASS` 後，再進入主模型建立流程。注意：`baseline` 不是唯讀查詢命令；
 快取未完成時會建立付費 Pod。`train` 若找不到匹配的完整 baseline，會在本機拒絕建立
 Pod，不會自動執行 baseline 訓練。
 
@@ -1934,7 +1950,7 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `selection show` | 無額外參數；顯示 active selection |
 | `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
 | `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
-| `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 只核對 baseline 所需資料與程式，不要求主模型 HF cache |
+| `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 同時核對當前資料篩選規則與 baseline 完成結果，不要求主模型 HF cache；完成為 exit 0、尚未完成／待整理為 1、驗證錯誤為 2 |
 | `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。僅 `train` 接受可重複的 `--experiment NAME` 與 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；省略實驗時固定 active selection 建立一台。Baseline 完成快取在本機檢查，命中即跳過。兩者無 run ID 位置參數 |
 | `resume [RUN_ID]` | 接續未完成訓練；省略 ID 時須只有唯一可接續候選，多個候選拒絕猜測。自動讀取原 run 的 selection，不需 configure。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是 best checkpoint |
 | `validate [RUN_ID]` | 省略 ID 選最新完成 training 的 run，自動讀取原 selection。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設沿用完成工作；`--no-resume` 停用續評估；`--force` 重算主模型並停用續評估；三者擇一，不重訓 baseline |
@@ -3531,11 +3547,25 @@ defaulting to `12h` and RTX 5090. Configure selects the dataset; baseline does n
 `--experiment`. When updating only the main-model config for prepared data, refresh the
 selection with `configure --reuse-current`; do not rerun CPU preparation/finalization.
 
-`readiness --baseline` checks **baseline build inputs, not completed baseline training**.
-It verifies uploaded source, the selected training bar store, and the shared validation/test
-bar store selected by `configs/data_cleaning.json`. A cannot substitute its own evaluation
-snapshot for the shared B source. No Kronos/HF cache, main-model training YAML, or shared
-"most recent CPU prepare" record is required.
+`readiness --baseline` is a read-only query that **checks both current data-cleaning rules and
+baseline completion**. It verifies the selected training bar store, the shared validation/test
+source selected by `configs/data_cleaning.json`, and complete results matching the current data
+and baseline training contract. A cannot substitute its own evaluation snapshot for the shared
+B source. No Kronos/HF cache, main-model training YAML, or shared "most recent CPU prepare"
+record is required. This query never creates a Pod or retrains models.
+
+The default output contains completion, data-rule status, eligible counts, baseline ID and next action:
+
+- `Baseline: COMPLETE` with `Data rules: PASS`: every required model, metric, weight/training
+  artifact, shared evaluation array and prediction file passed the existing integrity checks;
+  all three split counts match the current eligible indexes. Exit code **0** means this baseline
+  is reusable without retraining.
+- `Baseline: NOT COMPLETE`: no complete result matches the selected data and rules. Even if
+  data rules pass, run `baseline` to build or resume. Exit code is **1**.
+- `STORAGE FINALIZATION REQUIRED`: training results exist but shared-result storage needs
+  finalization. Exit code is **1**; run `baseline` to finalize without retraining.
+- Invalid data/rules/results, missing artifacts, or failed remote reads produce exit code **2**
+  with a specific error, never a false completion or a network failure mislabeled as an unbuilt cache.
 
 `readiness --baseline` and `baseline` share a local ten-minute successful-check cache.
 If the code release, volume, dataset selection, cleaning policy and remote artifacts are unchanged,
@@ -3544,10 +3574,14 @@ issuing another individual query for every shard or printing the full report aga
 code/policy changes, replaced/deleted artifacts or newly built cleaning indexes trigger full
 verification. Failed remote queries never fall back to stale success. Running `baseline` directly
 performs the initial check; a separate `readiness` command is optional. This cache only accelerates
-local admission; it is not a baseline model identity or completion record. Completed-result checks,
-live Pod conflict checks and mounted data verification still run.
+data-input admission; it is not a baseline model identity or completion record. Every status query
+still verifies baseline results. Deployment-version checks, live Pod conflict checks and mounted
+data verification remain mandatory for Pod creation. A read-only query does not require local
+query scripts to match the deployed release file for file; actual launches still require changed
+source to be synchronized and deployment verification to pass. Source synchronization does not
+by itself require baseline retraining.
 
-Counts and states have distinct meanings:
+Candidate and eligible counts have distinct meanings; the CLI's `Eligible windows` shows only the latter:
 
 - `prepared_candidate_counts` are historical CPU-preparation candidate counts, **not eligible
   windows after runtime cleaning**.
@@ -3556,8 +3590,8 @@ Counts and states have distinct meanings:
   Validation/test counts come from the shared evaluation source.
 - `cleaning_state=ready` means the current index and accepted-window audit counts were
   checked. `pending_build` means the baseline workflow must first build the missing indexes;
-  unverified counts are `null`, never filled from preparation counts. Input availability
-  (`state=ready_for_baseline_build`, exit code 0) does not mean cleaning has finished.
+  unverified counts are `null`, never filled from preparation counts. Available build inputs
+  do not mean cleaning or baseline training is complete; the read-only completion query does not succeed.
   No repeated CPU preparation, market-data download or manual manifest edit is needed.
 - Missing shared sources, corrupt indexes, inconsistent current policy/source metadata,
   or empty populations for used splits fail admission. Old-rule indexes remain untouched
@@ -3566,9 +3600,9 @@ Counts and states have distinct meanings:
 Local checks cover small metadata checksums, prepared shard/index object sizes and the
 existence/nonempty size of the cleaned range index. Mounted admission streams data and
 cleaned range-index checksums. The control host does not rescan every market-data row.
-`readiness --gpu` remains the main-model gate, not a baseline prerequisite. The `baseline`
-and `train` creation commands separately check completed-result reuse locally; a successful
-`readiness --baseline` exit does not certify that an old baseline is reusable.
+`readiness --gpu` remains the main-model gate, not a baseline prerequisite. `readiness --baseline`,
+`baseline` and `train` share the same completed-result validator; neither status nor launch accepts
+old results that fail the current cleaning rules.
 
 Main-model `readiness --gpu`, mounted admission, and run provenance also use the
 selected dataset's own manifest. Kronos is checked independently against the
@@ -3606,7 +3640,8 @@ bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForc
 Successful completion returns a cache hit. An incomplete build instead creates a
 new Pod; launch the same remote baseline tmux command to resume saved jobs and
 checkpoints. Full baselines may take longer than 24 hours; this is a per-Pod workload
-limit, not a completion-time guarantee. After a cache hit, proceed to the main-model launch step. `baseline` is not a read-only
+limit, not a completion-time guarantee. Use the read-only `readiness --baseline` query to confirm
+`COMPLETE` and `PASS` before launching the main model. `baseline` is not a read-only
 status query: an incomplete cache creates a paid Pod. Missing complete baselines cause
 `train` to reject creation locally rather than silently starting baseline training.
 
@@ -4336,7 +4371,7 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `selection show` | No extra options; display the active selection |
 | `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
 | `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
-| `readiness` | Choose exactly one: `--code-only` verifies uploaded code; `--gpu` verifies main-model training dependencies; `--baseline` checks baseline data/code without requiring the main model's HF cache |
+| `readiness` | Choose exactly one: `--code-only` verifies uploaded code; `--gpu` verifies main-model training dependencies; `--baseline` checks both current data-cleaning rules and completed baseline results without the main model's HF cache; exit 0 means complete, 1 means incomplete/pending finalization, and 2 means a verification error |
 | `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Only `train` accepts repeated `--experiment NAME` and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`). Omitted experiment pins active selection for one Pod. Baseline cache hits skip creation locally. Neither accepts a positional run ID |
 | `resume [RUN_ID]` | Resume unfinished training. Without an ID, exactly one eligible candidate is required. Restore the original selection without configure. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above; resume the latest usable checkpoint, not the best |
 | `validate [RUN_ID]` | Without an ID, select the latest completed training run and its stored selection. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above. `--resume` (default) reuses completed work; `--no-resume` disables continuation; `--force` recomputes the main model and disables resume. Choose one; no baseline retraining |
