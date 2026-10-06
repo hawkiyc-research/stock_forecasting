@@ -2038,6 +2038,7 @@ Stage 1 證明流程可運作，不證明 alpha。單一 seed、單一 holdout �
 也不能建立穩健的預測優勢；需搭配多 seed、受控比較及未參與調參的後續回測。
 
 工程證據有各自的版本與範圍，不代表後續變更或正式全量訓練已自動通過：
+[多 Pod 控制與文件驗收](docs/runpod_parallel_verification.md)、
 [清理與容量實驗驗證](docs/cleaning_experiments_verification.md)、
 [tensor 資料管線驗證](docs/baseline_tensor_pipeline_validation.md)、
 [baseline runtime 驗證](docs/baseline_runtime_validation.md)、
@@ -4421,6 +4422,7 @@ controlled comparisons and subsequent backtests untouched by tuning.
 
 Engineering evidence is version- and scope-specific; it does not automatically validate later
 changes or production-scale training:
+[multi-Pod control and documentation verification](docs/runpod_parallel_verification.md),
 [cleaning/capacity verification](docs/cleaning_experiments_verification.md),
 [tensor-pipeline verification](docs/baseline_tensor_pipeline_validation.md),
 [baseline runtime verification](docs/baseline_runtime_validation.md), and
