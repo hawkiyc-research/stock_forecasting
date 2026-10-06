@@ -120,6 +120,32 @@ class ReadmeCliReferenceTests(unittest.TestCase):
         example = "```bash\ncommand --undocumented VALUE\n```\nDocument `--documented VALUE`."
         self.assertEqual(set(OPTION.findall(prose(example))), {"--documented"})
 
+    def test_experiment_protocol_matches_current_early_stop_and_holdout(self) -> None:
+        protocol = (ROOT / "docs/experiment_protocol.md").read_text(encoding="utf-8")
+        chinese, english = protocol.split("\n## English\n", 1)
+        for stage in ("stage1", "stage2"):
+            config = (ROOT / f"configs/{stage}_kronos_base_lora.yaml").read_text()
+            for key, value in (
+                ("early_stopping_start_epoch", 1),
+                ("early_stopping_patience_evaluations", 5),
+                ("plateau_min_low_lr_evaluations", 2),
+            ):
+                with self.subTest(stage=stage, key=key):
+                    self.assertRegex(config, rf"(?m)^  {key}: {value}$")
+        chinese_row = re.search(r"(?m)^\| early stopping \|.*$", chinese).group()
+        english_row = re.search(r"(?m)^\| Early stopping \|.*$", english).group()
+        for expected in ("連續 5 次未改善", "最低 LR 的兩個訓練間隔", "第 1 epoch 起生效"):
+            self.assertIn(expected, chinese_row)
+        for expected in ("Five consecutive", "two training intervals", "active from epoch 1"):
+            self.assertIn(expected, english_row)
+        for language in (chinese, english):
+            self.assertIn("`test_unlocked=true`", language)
+            self.assertNotIn("`test_unlocked=false`", language)
+        self.assertNotIn("第 2 epoch 前生效", chinese)
+        self.assertNotIn("activate before epoch 2", english)
+        self.assertIn("同一 Pod\n自動執行完整 test benchmark", chinese)
+        self.assertIn("the same Pod automatically runs the full test benchmark", english)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -86,9 +86,9 @@ validation/test 來源，完整循序評估。詳細清理門檻及年度衰減�
 |---|---|---|
 | 目的 | 驗證完整腳本、資料、GPU、loss、checkpoint 與 validation | 完整 train split 的 PoC 結果 |
 | train 樣本 | 動態年度加權取樣；每 epoch 呈現有效數的 5%，上限 500,000 | 動態年度加權取樣；每 epoch 呈現次數等於有效 train 數 |
-| epoch 上限 | 2；第 2 epoch 開始前不得 early stop | 5 |
+| epoch 上限 | 2 | 5 |
 | validation cadence | 每個 epoch 的 20%／40%／60%／80%／100% | 同左 |
-| early stopping | normalized pinball validation loss 連續 5 次未改善，第 2 epoch 起生效 | 同一 loss 與 patience，第 1 epoch 起生效 |
+| early stopping | normalized pinball validation loss 連續 5 次未改善，且完成最低 LR 的兩個訓練間隔；第 1 epoch 起生效 | 同左 |
 | retention | validation 最佳 5 個完整 checkpoints，加上 completion result | 同左 |
 | validation/test | 完整有效 windows，不抽樣 | 同左 |
 | 模型架構 | Kronos-base + LoRA + shared resampler + conditioner + alpha head | 完全相同 |
@@ -131,8 +131,9 @@ subset 與 validation split：
 - causal DL：paired GRU、DLinear、compact PatchTST
 - full model：Kronos-base LoRA + dynamic benchmark conditioner
 
-規則 baseline 的 residual quantiles、GBDT、neural early stopping 與 robust scales 都只
-能使用 train labels；validation 用來選 model/checkpoint；test 不參與調參。
+規則 baseline 的 residual quantiles、GBDT／neural 的參數擬合與 robust scales 只使用
+train labels；validation 用來選 model/checkpoint 與決定 early stopping。
+主模型的區間尾部校準在 checkpoint 選定後才使用 validation 擬合；test 不參與調參。
 
 ### 9. Validation metrics
 
@@ -160,10 +161,14 @@ transaction-cost 假設必須明列；單一 Sharpe 不可解讀為已證明可�
 
 ### 10. Test policy
 
-自動 RunPod validation 預設只讀 train 與 validation，`test_unlocked=false`。test split
-要在 architecture、hyperparameters、threshold、data QA 與 model selection 全部鎖定後
-才能一次性解封。若 test 結果導致修改模型，該 test 已成為 validation，下一輪必須用
-新的時間區間或 dataset version。
+正式 RunPod 訓練以完整 validation 選定最佳 checkpoint；訓練完成後，由同一 Pod
+自動執行完整 test benchmark。若啟用區間校準，先固定該 checkpoint，僅用完整
+validation 擬合校準係數，再套用於 test；raw 與 calibrated 指標均保留。
+Baseline 的 test 指標直接讀取已完成的快取，不在這個階段重新訓練或推論。
+同一 run 內所有模型的 test membership 與報酬尺度一致性檢查通過後，才發布
+`test_unlocked=true`；test 不決定 checkpoint、early stopping 或校準係數。
+若使用 test 結果修改模型，該集合已成為研究迭代用的評估資料；後續獨立泛化主張
+必須以未參與這些決策的新時間區間驗證，不能僅更換 dataset version 就宣稱獨立。
 
 ### 11. Checkpoint 與重現性
 
@@ -191,7 +196,8 @@ state 與 raw validation JSON 交叉確認，不能只看 W&B chart 或 README�
 Stage 1：
 
 - 年度加權動態取樣，呈現次數為有效 train 數的 5%（上限 500,000）；seed／epoch
-  決定可重現序列，最多 2 epochs，early stopping 不得在第 2 epoch 前生效。
+  決定可重現序列，最多 2 epochs。Early stopping 從第 1 epoch 起啟用，但仍須
+  同時滿足連續 5 次未改善及最低 LR 下兩個訓練間隔的條件。
 - 完成 remote ruff/pytest、forward/backward、validation-ranked checkpoint save/reload、
   inference schema smoke 與自動 lifecycle termination。
 - 輸出 `[B,15-h_start,3]` ordered alpha quantiles，`h_start ∈ {1,2,3}`；
@@ -312,9 +318,9 @@ no full windows/labels are stored and genuine extreme returns remain.
 |---|---|---|
 | Purpose | Validate the complete script/data/GPU/loss/checkpoint/validation path | Full-train PoC result |
 | Train samples | Dynamic annual weighting; 5% of eligible count per epoch, capped at 500,000 | Dynamic annual weighting; presentations equal the full eligible count |
-| Epoch limit | 2; early stopping cannot activate before epoch 2 | 5 |
+| Epoch limit | 2 | 5 |
 | Validation cadence | 20%/40%/60%/80%/100% of every epoch | Same |
-| Early stopping | Five consecutive non-improving normalized-pinball validations, active from epoch 2 | Same loss and patience, active from epoch 1 |
+| Early stopping | Five consecutive non-improving normalized-pinball validations and two training intervals at the minimum LR; active from epoch 1 | Same |
 | Retention | Best five full validation-ranked checkpoints plus completion result | Same |
 | Validation/test | Every eligible window, without subsampling | Same |
 | Architecture | Kronos-base + LoRA + shared resampler + conditioner + alpha head | Identical |
@@ -360,8 +366,10 @@ the same train subset and validation split:
 - causal DL: paired GRU, DLinear, compact PatchTST
 - full model: Kronos-base LoRA plus dynamic benchmark conditioning
 
-Rule residual quantiles, learned baselines, early stopping, and robust scales use
-train labels only. Validation selects models/checkpoints; test never tunes them.
+Rule residual quantiles, GBDT/neural parameter fitting, and robust scales use train
+labels only. Validation selects models/checkpoints and controls early stopping.
+Main-model interval-tail calibration fits validation only after checkpoint selection;
+test never tunes these parameters.
 
 ### 9. Validation metrics
 
@@ -379,11 +387,17 @@ proof of tradability.
 
 ### 10. Test policy
 
-Automatic RunPod validation reads train and validation only and records
-`test_unlocked=false`. Unlock test once after architecture, hyperparameters,
-thresholds, data QA, and selection are frozen. If test results cause a model
-change, that test became validation and the next cycle needs a new time range or
-dataset version.
+Production RunPod training selects the best checkpoint using full validation;
+after training completes, the same Pod automatically runs the full test benchmark. When
+interval calibration is enabled, the selected checkpoint is fixed, calibration
+fits full validation only, and test retains both raw and calibrated metrics.
+Baseline test scores come from the completed cache without refitting or inference.
+Only after all models within the run pass test-membership and return-scale consistency checks
+is `test_unlocked=true` published. Test never selects checkpoints, controls early
+stopping, or fits calibration. If test results drive model changes, that population
+has become an iterative research evaluation set. Independent generalization claims
+then require a new time interval not used in those decisions; a different dataset
+version alone does not restore independence.
 
 ### 11. Checkpoint and reproducibility
 
@@ -407,7 +421,8 @@ counts, and validation metrics, without duplicating optimizer/scheduler state.
 
 Stage 1 uses reproducible annual-weighted dynamic sampling, presenting 5% of the
 eligible train count (capped at 500,000) per epoch for up to two epochs. Early stopping cannot
-activate before epoch 2 begins. Stage 1 passes remote ruff/pytest,
+trigger until five consecutive non-improving validations and two training intervals
+at the minimum LR have both occurred; it is enabled from epoch 1. Stage 1 passes remote ruff/pytest,
 forward/backward, validation-ranked save/reload, inference-schema smoke, and
 lifecycle termination. It outputs ordered `[B,15-h_start,3]` alpha quantiles for
 `h_start in {1,2,3}`, with no LLM, facts, or classifier.

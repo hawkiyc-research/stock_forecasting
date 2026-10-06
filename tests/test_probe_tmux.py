@@ -303,8 +303,7 @@ class ProbeTmuxTests(unittest.TestCase):
                 commands_by_language.append(commands)
                 self.assertEqual(commands, [
                     "bash scripts/runpod_workflow.sh download-probes\n",
-                    "bash scripts/runpod_workflow.sh download-probes "
-                    "run-20260905T203327Z-270337978\n",
+                    'bash scripts/runpod_workflow.sh download-probes "<RUN_ID>"\n',
                 ])
                 for forbidden in (
                     "runpod_s3_project.sh", "PROBE_VOLUME_ID", "PROBE_CHECKPOINT", "PROBE_ID",

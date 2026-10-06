@@ -92,6 +92,31 @@ README 的中文及英文部分均完整重整，不只追加多 Pod 段落。�
   workflow options 的文件覆蓋檢查通過。
 - 同步 dry-run 與 secret scan 通過；dry-run 沒有上傳或改寫正式部署。
 
+### 本機控制流程再驗收
+
+2026-10-06 再驗收時，發現結果下載測試尚未帶入新增的 `runpod_runs.py`、
+run-scoped lifecycle 與 object listing 模擬；診斷文件測試則仍要求歷史 run ID，
+未跟隨 README 改用通用 `<RUN_ID>` 範例。兩者皆已修正測試，沒有更改正式腳本。
+下載測試現在執行真實的 run discovery helper，涵蓋指定 run 的身分隔離、依完成時間
+選取 run、歷史結果、必要 loss／校準／completion artifacts，以及 403 不被當成 404。
+
+獨立的 `docs/experiment_protocol.md` 亦已同步現行 early stopping、validation-only
+校準及自動 full-holdout 行為，新增文件回歸檢查；README 本體不需改動。
+
+- 合併執行 **179 項 stdlib 控制／文件／下載／tmux／guard 測試**，0 failures、
+  0 errors、0 skipped，耗時約 104 秒。
+- 全專案 Ruff、50 個受版本控制 shell scripts 的 `bash -n` 及 `git diff --check` 通過。
+- README 全文重新檢查：92 段 shell 範例、74 個本機連結、雙語命令一致性及 CLI
+  options 的說明覆蓋通過。
+- 初次合併測試有一項日誌斷言失敗。追查到本機 sandbox 拒絕 Bash 的
+  `/dev/fd/62` process substitution，並非等待不足；經核准在 sandbox 外執行同一組
+  測試後全數通過。沒有新增 sleep、跳過斷言或修改正式 logging 行為。
+
+本次只修改測試與文件，沒有修改 `src/`、`scripts/`、`configs/` 或依賴設定，
+不改資料準備、baseline／checkpoint 數值契約。沒有啟動 Pod、同步正式部署、
+執行行情 API 或建立本機 ML 環境；也沒有重跑全量模型訓練。前述雲端模型與
+雙 Pod 證據仍各自受其驗收範圍限制，不把分項測試誤稱為六組正式訓練已完成。
+
 這些證據界定工程流程的驗收範圍，不證明任何容量實驗的預測指標已改善，
 亦不替代後續正式訓練的持續監控。
 
@@ -201,6 +226,38 @@ to `.env` or deployment location.
   and 36 shell-workflow options passed structural checks.
 - Sync dry-run and secret scanning passed, without uploading or modifying the
   production deployment.
+
+### Local control-workflow re-verification
+
+Re-verification on October 6 found that download fixtures had not included the
+new `runpod_runs.py`, run-scoped lifecycle records, or object listing. The probe
+documentation test still expected a historical run ID instead of the README's
+generic `<RUN_ID>` example. Both fixtures were corrected without changing the
+production scripts. Download tests now execute the real run-discovery helper and
+cover explicit-run isolation, completion-time selection, historical results,
+required loss/calibration/completion artifacts, and distinguishing 403 from 404.
+
+The separate `docs/experiment_protocol.md` now matches current early stopping,
+validation-only calibration, and automatic full-holdout behavior, with a new
+documentation regression check. The README itself did not need another edit.
+
+- **179 combined stdlib control/documentation/download/tmux/guard tests passed**:
+  zero failures, errors, or skips, in approximately 104 seconds.
+- Full-project Ruff, `bash -n` for all 50 version-controlled shell scripts, and
+  `git diff --check` passed.
+- The complete README was rechecked: 92 shell examples, 74 local links, bilingual
+  command parity, and CLI option-description coverage passed.
+- One log assertion initially failed because the local sandbox rejected Bash's
+  `/dev/fd/62` process substitution, not because the test needed a longer wait.
+  The same combined suite passed outside the sandbox after approval. No sleeps,
+  skipped assertions, or production logging changes were introduced.
+
+Only tests and documentation changed; `src/`, `scripts/`, `configs/`, dependencies,
+data preparation, and baseline/checkpoint numerical contracts were untouched.
+No Pods, deployment sync, market API calls, local ML environments, or full model
+training were involved. Earlier cloud-model and dual-Pod evidence retains its
+stated scope; component verification does not mean six production experiments
+have already completed.
 
 This evidence defines engineering acceptance scope. It neither demonstrates better
 forecast metrics for a capacity variant nor replaces monitoring of production runs.
