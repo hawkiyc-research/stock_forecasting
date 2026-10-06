@@ -2122,6 +2122,13 @@ def command_write_state(arguments):
     expected_output = canonical_outputs.get(arguments.kind)
     if expected_output is None:
         raise ValueError("Lifecycle kind is unsupported")
+    if (
+        arguments.kind in {"stage1-training", "stage1-validation"}
+        and output != expected_output.resolve(strict=False)
+    ):
+        run_id = _validate_run_id(arguments.wandb_run_id, "Scoped lifecycle run ID")
+        phase = arguments.kind.removeprefix("stage1-")
+        expected_output = volume_root / "lifecycle" / "runs" / run_id / f"{phase}.json"
     if output != expected_output.resolve(strict=False):
         raise ValueError(f"{arguments.kind} lifecycle must equal {expected_output}")
     if (

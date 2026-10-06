@@ -53,6 +53,37 @@ runpod_validate_path_in_root() {
     esac
 }
 
+runpod_gpu_lifecycle_key() {
+    local phase="$1" run_id="${2:-${WANDB_RUN_ID:-}}"
+    case "${phase}" in training|validation|baseline) ;; *) return 2 ;; esac
+    if [[ "${RUNPOD_SCOPED_LIFECYCLE:-0}" == 1 && "${phase}" != baseline ]]; then
+        if [[ ! "${run_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ || "${run_id}" == *--* ]]; then
+            echo "Run-scoped lifecycle requires a canonical run ID" >&2
+            return 2
+        fi
+        printf 'lifecycle/runs/%s/%s.json\n' "${run_id}" "${phase}"
+    else
+        printf 'lifecycle/stage1/%s.json\n' "${phase}"
+    fi
+}
+
+runpod_guard_lifecycle_kind() {
+    local key="$1" run_id="${2:-}"
+    case "${key}" in
+        lifecycle/stage1/cpu-preparation.json) echo stage1-cpu-preparation ;;
+        lifecycle/stage1/mixed-finalization.json) echo stage1-mixed-finalization ;;
+        lifecycle/stage1/training.json) echo stage1-training ;;
+        lifecycle/stage1/validation.json) echo stage1-validation ;;
+        lifecycle/stage1/baseline.json) echo stage1-baseline ;;
+        "lifecycle/runs/${run_id}/training.json"|"lifecycle/runs/${run_id}/validation.json")
+            [[ "${run_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ && "${run_id}" != *--* ]] || return 2
+            echo "stage1-$(basename "${key}" .json)"
+            ;;
+        "") echo "" ;;
+        *) echo "Unsupported lifecycle marker key" >&2; return 2 ;;
+    esac
+}
+
 runpod_acquire_gpu_workflow_lease() {
     local volume_root="${1:-}"
     local lease_root lease_path
@@ -75,7 +106,22 @@ runpod_acquire_gpu_workflow_lease() {
     fi
     mkdir -p "${lease_root}"
     exec 9>"${lease_path}"
-    if ! flock -n 9; then
+    if [[ "${RUNPOD_SCOPED_LIFECYCLE:-0}" == 1 \
+        && ( "${RUNPOD_ROLE:-}" == gpu-train || "${RUNPOD_ROLE:-}" == gpu-validation ) ]]; then
+        local key
+        key="$(runpod_gpu_lifecycle_key training)" || return
+        mkdir -p "${volume_root}/$(dirname "${key}")"
+        exec 8>"${volume_root}/$(dirname "${key}")/gpu-workflow.lock"
+        if ! flock -n 8; then
+            echo "This run already has a training or validation owner" >&2
+            return 75
+        fi
+        if ! flock -s -n 9; then
+            echo "An exclusive volume workflow is active" >&2
+            return 75
+        fi
+        export RUNPOD_GPU_WORKFLOW_LEASE_MODE=shared
+    elif ! flock -n 9; then
         echo "Another training or validation workflow already holds the GPU workflow lease" >&2
         return 75
     fi

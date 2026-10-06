@@ -1524,9 +1524,7 @@ rules 從尚未完成的 rule 接續。中斷中的原生 GBDT fit、完整 vali
 
 #### 4. 建立 GPU Pod 並訓練
 
-<a id="gpu-catalog-zh"></a>
-
-##### GPU 資源查詢
+<a id="gpu-catalog-zh"></a>GPU 資源查詢
 
 先查詢 GPU 型號與庫存目錄，取得完整 `gpuId`；訓練預設型號是
 `NVIDIA GeForce RTX 5090`。不帶參數會列出所有機房，不會自動以 `.env` 的機房篩選：
@@ -1538,12 +1536,12 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-SE-1 --search "5090"
 bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 ```
 
-| 參數 | 預設／格式 | 說明 |
-| --- | --- | --- |
-| `--data-center ID` | 預設不篩選；例如 `EU-RO-1`、`EU-SE-1` | 依完整機房 ID 篩選，不區分大小寫；不是 `EU` 等區域前綴。不會改變 `.env` 或 Pod 建立位置 |
-| `--search TEXT` | 預設不篩選 | 在 GPU 顯示名稱或完整 `gpuId` 中作不區分大小寫的子字串搜尋，可和機房篩選合用 |
-| `--output table`、`--output json` | `table` | 表格提供 VRAM、Secure／Community 每小時美元價格、完整 `gpuId` 與機房庫存；JSON 保留符合條件 GPU 的 API 欄位，包含其他機房資料 |
-| `-h`、`--help` | 無值 flag | 顯示 GPU 查詢的參數說明 |
+| 參數                                  | 預設／格式                               | 說明                                                                                                                           |
+| ------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `--data-center ID`                  | 預設不篩選；例如`EU-RO-1`、`EU-SE-1` | 依完整機房 ID 篩選，不區分大小寫；不是`EU` 等區域前綴。不會改變 `.env` 或 Pod 建立位置                                     |
+| `--search TEXT`                     | 預設不篩選                               | 在 GPU 顯示名稱或完整`gpuId` 中作不區分大小寫的子字串搜尋，可和機房篩選合用                                                  |
+| `--output table`、`--output json` | `table`                                | 表格提供 VRAM、Secure／Community 每小時美元價格、完整`gpuId` 與機房庫存；JSON 保留符合條件 GPU 的 API 欄位，包含其他機房資料 |
+| `-h`、`--help`                    | 無值 flag                                | 顯示 GPU 查詢的參數說明                                                                                                        |
 
 `--` 表示 API 未回報資訊；`NONE` 表示該機房回報無庫存，這些 GPU **仍會出現在結果**。
 查詢結果不是可建立 Pod 的保證或容量預約；篩選後的表格庫存欄才是指定機房的庫存。
@@ -1551,353 +1549,236 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 既有 volume 跨區掛載，也不會重新建立 volume。請把完整 `gpuId` 傳給下列建立命令，
 不要把表格中可能被截短的 GPU 顯示名稱當成 ID。
 
-##### 建立訓練 Pod
+##### 選擇資料組別與容量實驗
 
-Stage 2 的 A/B 容量實驗可直接使用 `--experiment` 選擇。A 的資料起點是
-2021-01-01，B 是 2016-01-01；兩者結束日皆為 2026-06-01（不含）。
-此選項保留 configure 的 profile、universe、revision 與 h_start，僅切換資料起點及
-對應的模型設定，不呼叫行情 API 或 CPU prepare。相應資料與 baseline 必須已完成。
+先完成所需資料組別的 CPU prepare 與 baseline，再建立主模型 Pod。已準備好的資料、
+baseline 與預訓練模型會直接共用；切換容量實驗不重新下載行情、不重新切分資料，
+也不因 Pod 數量而重訓 baseline。每台 Pod 各自使用一張 GPU，不是 DDP 或多 GPU
+聯合訓練。
 
-| `--experiment` | 設定檔 | Kronos 調整 |
-|---|---|---|
-| `a-lora32` / `b-lora32` | `configs/experiments/a_lora32.yaml` / `b_lora32.yaml` | LoRA rank 32、alpha 64 |
-| `a-lora64` / `b-lora64` | `configs/experiments/a_lora64.yaml` / `b_lora64.yaml` | LoRA rank 64、alpha 128 |
-| `a-partial` / `b-partial` | `configs/experiments/a_partial.yaml` / `b_partial.yaml` | 前 10 層 LoRA-32；最後 2 層與 final norm 解凍，解凍層不重複套 LoRA |
+Stage 2 提供六份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01，資料終點皆為
+2026-06-01（不含）；兩者共用相同的 validation/test 來源與有效樣本規則。
+`--experiment` 保留 configure 的 profile、universe、revision 與 h_start。
 
-首次部署一次上傳所有設定；之後切換實驗只發布小型 selection JSON，不必重傳程式：
+| 實驗名稱 | 設定檔（位於 `configs/experiments/`） | Kronos 可訓練容量 |
+| --- | --- | --- |
+| `a-lora32`、`b-lora32` | `a_lora32.yaml`、`b_lora32.yaml` | LoRA rank 32、alpha 64 |
+| `a-lora64`、`b-lora64` | `a_lora64.yaml`、`b_lora64.yaml` | LoRA rank 64、alpha 128 |
+| `a-partial`、`b-partial` | `a_partial.yaml`、`b_partial.yaml` | 前 10 層 LoRA-32；解凍最後 2 層與 final norm，解凍層不重複套 LoRA |
 
-```bash
-bash scripts/runpod_workflow.sh sync --apply
-bash scripts/runpod_workflow.sh train --experiment a-lora32 --maxRuntime 12h --gpuId "NVIDIA GeForce RTX 5090"
-```
+六個實驗從相同 pretrained Kronos-base 初始化，不從其他容量實驗的 checkpoint 接續。
+共同 task／LoRA／解凍層學習率為 `3e-5`／`5e-6`／`1e-6`，warmup 固定為
+256,000 次樣本呈現。Training 保留動態 sampling；年度權重為
+`0.8 ** (最新訓練年份 − cutoff 年份)`，年度配額等於有效 window 數乘年度權重，
+會記錄配額、loss 與實際處理樣本數。Validation/test 則完整循序遍歷，不使用此 sampler。
 
-下一次將 `a-lora32` 換成表中其他名稱即可；不要同時啟動正式實驗。
-省略 `--experiment` 會使用目前 active selection；`resume` 仍接續原實驗，不切換架構。
-若修改 YAML 內容或程式本身，仍須重新 sync，不能只重發布 selection。
-六個容量實驗皆從同一個預訓練 Kronos-base 開始；不能接續舊架構或其他容量實驗的 checkpoint。
+q50 location、正值上下區間寬度與獨立 ranking score 分開。Checkpoint／early stop
+使用未校準的完整 validation normalized pinball；選定 checkpoint 後才用完整
+validation 擬合 market/horizon 上下尾校準。Test 同時保留 raw 與 `calibrated` 指標，
+不使用 test labels 擬合，也不保證未來 coverage 永遠等於 80%。
+`FORECAST_METRIC_WORKERS` 可限制診斷／校準執行緒（預設上限 4，另受 CPU／記憶體限制）。
 
-六組共同使用：task／LoRA／解凍層 LR 分別為 `3e-5`／`5e-6`／`1e-6`；warmup
-固定 256,000 次樣本呈現，避免 B 因 epoch 較長而有更長 warmup。A/B 動態 training
-sampling 均採 `yearly_sampling_decay: 0.8`；每筆 window 權重為
-`0.8 ** (最新訓練年份 − cutoff 年份)`。2025、2024、2021、2016 年的相對權重分別
-為 1、0.8、0.4096、約 0.1342；年度抽樣質量等於該年有效 window 數乘此權重。
-每年配額、處理樣本數與 loss 都記錄在訓練結果；不是分成兩塊，也不是每 epoch 全量不重複遍歷。
-validation/test 不使用這個 sampler，仍完整循序遍歷。
+##### 在本機建立單台或多台訓練 Pod
 
-q50 location 與正值上下區間寬度分離，ranking 使用獨立無量綱 score head。
-checkpoint/early stop 仍由**未校準**的完整 validation normalized pinball 決定。
-最後選定 checkpoint 才以完整 validation 擬合 market/horizon 上下尾校準，test 同時
-保留 raw 與 `calibrated` 指標；不以 test labels 擬合，不保證未來 coverage 恆為 80%。
-校準係數保存於該 run 的 `evaluations/<RUN_ID>/interval-calibration.json`。
-`FORECAST_METRIC_WORKERS` 可限制診斷／校準 thread 數（預設上限 4，並受 CPU／記憶體限制）。
-
-檢視 active selection 並通過 GPU gate；gate 會在租用 GPU 前比對本機 selection、
-S3 selection、CPU marker、code release、config SHA 與 namespaced artifacts：
-
-```bash
-bash scripts/runpod_workflow.sh selection show
-bash scripts/runpod_workflow.sh readiness --gpu
-```
-
-以預設 GPU 與 12 小時 workload 上限建立 Pod：
-
-```bash
-bash scripts/runpod_workflow.sh train
-```
-
-或直接指定 workload 上限與清單中完整的 `gpuId`：
-
-```bash
-bash scripts/runpod_workflow.sh train \
-  --maxRuntime 18h \
-  --gpuId "NVIDIA GeForce RTX 5090"
-```
-
-`--maxRuntime` 是 GPU 訓練與 validation 的本機停止請求時間。到時本機 guard
-在 network volume 寫入停止請求；Pod 會完成目前的訓練 validation 與 checkpoint
-交易，或完成目前 validation 模型／seed 並原子寫入結果，才回報安全邊界並結束
-workflow。本機 guard 看到同一 Pod、同一 run 的終止 lifecycle 後才刪除 Pod。
-既有的舊 checkpoint 不會觸發停止。原本的一小時硬上限不會強制中斷這兩種
-workflow；若目前段落較久，Pod 會持續運行並計費至保存完成。這個時間是目標
-截止時間，無法保證費用上限。`RUNPOD_REQUESTED_RUNTIME_SECONDS` 記錄原始的
-`--maxRuntime` 值。baseline workflow 仍使用原本的硬上限與 Pod 端逾時。
-
-建立指令會在本機先配置唯一 run ID、掛載同一個 network volume、注入 W&B
-Secret reference，並啟動獨立 hard-limit guard。本機 guard 在 macOS 會自動以
-`caffeinate -is -w <guard-pid>` 防止控制端睡眠，並把 guard、caffeinate 與
-keep-awake 狀態寫在提示的 guard log 同目錄；不要關閉 guard process 或讓本機
-斷電。Pod 端也會在完成或逾時後自行終止；RunPod 不提供此 Pod 的供應商端
-自動截止時間。本專案沿用終止 Pod 的流程，網路磁碟資料會保留；若僅停止 Pod，
-Pod 的 volume disk 仍可能產生儲存費用。
-
-##### 本機休眠或關機後恢復 guard
-
-本機控制端休眠或關機時，本機 guard 無法執行；重新喚醒或開機並恢復網路後，
-先執行唯讀檢查：
-
-```bash
-bash scripts/runpod_workflow.sh recover
-```
-
-`recover` 會列出同一個 RunPod network volume 下仍為啟動狀態的本專案 Pod，
-讀取遠端 lifecycle marker，並將 `preparing`、`finalizing` 或 CPU 的
-`downloaded` 中間狀態視為仍有 workflow 在執行。若本機 guard 已不存在且原本的
-hard-limit 尚未到期，會在 `--apply` 模式下以原本剩餘時間重新啟動 guard；不會
-把整個時間上限重新計算，避免休眠造成額外租用時間。
-
-確認輸出正確後，才使用會改變遠端狀態的模式：
-
-```bash
-bash scripts/runpod_workflow.sh recover --apply
-```
-
-`--apply` 需要兩次一致的 RunPod/API 與 S3 lifecycle 觀測，並且在任何 mutation
-前再做一次最新觀測。只有明確驗證為 `ready`、`failed`、`timed_out` 或 CPU
-terminal `downloaded` 的 Pod 才會被 terminate。`runtimeStatus=initializing`、
-查詢錯誤、marker 不存在、marker 無法驗證或狀態不明時都會保留 Pod，因此
-「無法證明閒置」不會被當成「閒置」。這個功能不會終止不屬於本 network volume
-或不含本專案角色的 Pod。Recovery 重新啟動 guard 時會停用新建 Pod 專用的
-startup emergency termination；若本機工具或 guard handshake 失敗，既有 Pod
-會保持執行並回報錯誤。Readiness 會記錄本機 boot identity，重新開機前遺留的
-PID 不會被誤認為目前仍存活的 guard。
-由 Console SSH 登入後執行：
-
-```bash
-cd /runpod-volume/stock_forecasting
-bash scripts/runpod_tmux_launch.sh stage1-train
-```
-
-`stage1-train` 是為了維持既有部署相容性的 workflow 名稱；實際 Stage 1 或
-Stage 2 由 immutable selection 所映射的 `RUNPOD_CONFIG` 決定。即時查看：
-
-```bash
-tmux -L stock-forecasting-train attach -t stock-forecasting-train
-```
-
-訓練會先驗證 image runtime、CUDA、mounted readiness、dataset/model
-manifest 與 run identity，再寫入
-`/runpod-volume/savedModel/<run-id>/`。兩份 production config 都設定
-`validation.auto_run_after_training: true`，因此同一個 GPU workflow 會在訓練
-完成後自動執行完整 validation benchmark。訓練加 validation 正確完成時，GPU
-Pod 會自動終止；CPU prepare 正確完成，以及 CPU/GPU 工作失敗或超時時，也會先
-發布 terminal lifecycle／tmux status，再自動終止。若 Pod 端 API 呼叫失敗，
-本機 guard 會根據同一 Pod ID、run ID 與 lifecycle 接手；掛載 network volume 的
-Pod 一律使用 terminate，而不是 stop。Guard 依 marker 類型驗證版本：完整且為
-`ready` 的 numerical dataset 必須是 readiness schema v2，CPU 的進行中／續傳／失敗
-狀態與 GPU lifecycle 則維持 schema v1；錯誤 Pod ID、run ID 或跨狀態版本都不會觸發
-終止。
-
-##### W&B 記錄與離線補傳
-
-W&B run config 會保存完整的 resolved YAML／Pydantic 設定、system metadata、
-dataset provenance 與 immutable selection identity。`train/loss` 與
-`train/pinball_loss` 依 `loss_log_points_per_epoch`（預設 250）及 validation 邊界
-記錄分段 microbatch 平均值，並以 `trainer/global_step` custom axis 標示。
-loss 與 validation 即使位於相同 optimizer step，也會各自保留
-history row，不會因重複使用 W&B internal step 而遺失。訓練期間的 validation
-固定在每個 epoch 的 20%／40%／60%／80%／100% 上傳所有有限數值指標與
-early-stopping 狀態；訓練後
-benchmark validation 會以 `benchmark_validation/global_step` custom axis 對齊
-被評估 checkpoint，而不回寫已完成 run 的舊 W&B internal step，並上傳模型與
-baseline 的完整數值結果，包括 cross-sectional Sharpe、RankIC、turnover、
-drawdown、coverage 與 subgroup 指標，而不只記錄最終 loss。
-
-每個 run 的傳送狀態會原子寫入
-`/runpod-volume/lifecycle/runs/<run-id>/wandb.json`，並由
-`bash scripts/runpod_workflow.sh status` 顯示 `training` 與 `validation`
-component。`online_finished`／`synced` 才表示該 component 已確認完成；
-`offline_pending`、`sync_failed`，或 terminal workflow 後仍為 `online_running`
-都必須視為尚待補傳。線上初始化失敗時，production config 允許切換為保存在
-network volume 的 offline run；若連 offline transaction 都無法建立，工作會標記
-`failed` 並中止。W&B 官方支援事後同步，因此單純 server 暫時不可用不需要丟棄
-已完成的模型工作。
-
-在一個由本專案建立、已注入 `wandb_api_key` 的 GPU Pod 中，**不要啟動訓練或
-validation tmux**，直接執行下列補傳腳本；省略 run ID 會掃描所有 pending run：
-
-```bash
-cd /runpod-volume/stock_forecasting
-bash scripts/runpod_wandb_sync.sh <run-id>
-```
-
-腳本只處理 `online_running`、`offline_pending` 或 `sync_failed` component，使用
-W&B transaction directory 執行 `wandb sync --legacy --include-offline
---include-online --append --id <run-id>`。專案將 dependency 固定為 W&B 0.28.0；
-`--legacy` 使用該版本的 legacy sync 路徑，因為 `--include-offline` 與 `--append`
-在該版只支援 legacy mode。
-成功改為 `synced`；失敗改為 `sync_failed` 並保留錯誤
-原因。每次續訓或重跑 validation 產生的 transaction 都會分別保留及補傳，不會只
-處理最後一段。腳本完成後會自動終止這個補傳 Pod。訓練已完成的 run 可先用 `validate` 建立
-這個 Pod；未完成但已有 retained checkpoint 的 run 可先用後述 `resume` 建立，
-然後改執行補傳腳本。也可以在下一個已存在的本專案 GPU Pod 開始工作前補傳，
-避免另租 Pod。W&B 官方參考：
-[offline mode](https://docs.wandb.ai/models/ref/python/functions/init) 與
-[`wandb sync`](https://docs.wandb.ai/models/ref/cli/wandb-sync)。
-
-Pod 終止後，以 workflow status 查詢 S3 上的最新 terminal state：
-
-```bash
-bash scripts/runpod_workflow.sh status
-```
-
-`state=ready` 才表示該 lifecycle 完成；`failed` 與 `timed_out` 必須視為未完成。
-`wandb_run_id` 是 checkpoint、evaluation、W&B 與 run-scoped log 共用的
-`<run-id>`。SSH/tmux 只用於仍存活 Pod 的即時除錯，不是 terminal state 的
-權威來源。
-
-##### 中斷後接續同一個 Stage 的訓練
-
-若 training loop 在 `--maxRuntime` 前未完成、Pod 被手動終止，或執行錯誤造成中斷，
-training lifecycle 應為 `timed_out` 或 `failed`，而且 `training_completed` 不得為
-true。接續前先確認原 Pod 已終止，並在本機控制端執行：
-
-```bash
-bash scripts/runpod_workflow.sh status
-bash scripts/runpod_workflow.sh selection show
-```
-
-active selection 必須與該 run 記錄的 stage、config 與 dataset identity 一致。只為了
-接續同一個 run，不需要重新執行 `configure`、`cpu prepare` 或 provider API
-acquisition。如果本機程式碼已改變，必須等原訓練 Pod 終止後才上傳：
+首次部署或修改程式／YAML 後，上傳一次全部設定；**同一個 volume 尚有 Pod 時不可
+執行 `sync --apply` 或更新共用環境**。同步會在覆寫檔案前檢查，避免影響正在執行的工作。
+只切換已上傳的實驗名稱，不需要再次同步。
 
 ```bash
 bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
 ```
 
-接續訓練不會普遍略過 training resume contract 差異。相同 contract 可直接接續；
-不同 contract 只有在程式碼內明確登錄、舊新檔案雜湊完全相符，且資料、
-模型與訓練語意都沒有改變的單向 migration 才會通過。任何其他 config、dataset、
-model architecture、受監控訓練程式碼或 checkpoint artifact integrity 差異都會
-fail closed。
-
-建議明確指定 `<run-id>`，避免在有多個失敗或超時 run 時選錯：
+單台實驗：
 
 ```bash
-bash scripts/runpod_workflow.sh resume <run-id>
+bash scripts/runpod_workflow.sh train \
+  --experiment a-lora32 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-如需指定新 Pod 這一段的執行上限與 GPU：
+一次建立三台 Pod，比較 A 組的三種容量；每個 `--experiment` 都帶一個名稱：
 
 ```bash
-bash scripts/runpod_workflow.sh resume \
-  --maxRuntime 18h \
-  --gpuId "NVIDIA GeForce RTX 5090" \
-  <run-id>
+bash scripts/runpod_workflow.sh train \
+  --experiment a-lora32 \
+  --experiment a-lora64 \
+  --experiment a-partial \
+  --launchWorkers 2 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-未指定 `<run-id>` 時，只會從 canonical training lifecycle 選擇最新的
-`failed`／`timed_out` 且尚未完成 training phase 的 run。`resume` 會在建立付費
-GPU Pod **之前**進行遠端 preflight：完整驗證 run manifest、checkpoint pointer、
-trainer state、resolved config 與每個 artifact hash。若有有效且比最佳五個
-retained checkpoints 都更新的 `temp_checkpoint.json`，會優先接續它；否則從
-最佳五個中選擇 `global_step` 最大的 checkpoint，不是單純選擇 validation
-metric 最佳者。沒有完整可接續 checkpoint 時不會建立 Pod。
+把上述名稱的 `a-` 改成 `b-` 即可比較 B 組；也可以混合 A/B，最多一次選六個
+不同名稱。可以在其他實驗已執行時另開不同 run。每個實驗先固定自己的 immutable
+selection，不修改全域 active selection；後續 configure 不會改變已建立 Pod 的設定。
 
-新 Pod 會沿用原本的 run ID 與 W&B run ID，並還原模型可訓練權重、optimizer、
-scheduler、RNG、已完成 batch／optimizer step、early-stopping 與 runtime batch plan。
-`--maxRuntime` 是新 Pod 這一段執行的上限，不會把原 run 的計數歸零。
+| 參數 | 預設 | 用法與限制 |
+| --- | --- | --- |
+| `--experiment NAME` | 省略時固定目前 active selection，建立一台 | 可重複指定；同一次命令不得重複名稱 |
+| `--launchWorkers N`／`--launch-workers N` | `2` | 同時進行本機 API／preflight 的 worker 數，範圍 1–6；不是 GPU 數或 DataLoader worker 數 |
+| `--maxRuntime DURATION`／`--max-runtime DURATION` | `12h` | 每台 Pod 各自的停止請求時間；接受正整數加 `m`、`h`、`d` 後綴，例如 `30m`、`12h` |
+| `--gpuId GPU_ID`／`--gpu-id GPU_ID` | `NVIDIA GeForce RTX 5090` | 這批 Pod 使用同一型號；完整 ID 應加引號。要不同 GPU 型號，分開執行建立命令 |
 
-Pod 建立成功後，由 RunPod Console SSH 登入並執行：
+所有實驗的資料、程式與 baseline preflight 通過後，才開始付費建立。若之後部分
+Pod 因缺貨或 API 錯誤建立失敗，指令會回報各實驗結果並以非零狀態結束；已成功建立的
+Pod 保留自己的 guard，不會被一起刪除，也不會自動重試租用。只重試失敗的實驗。
+
+費用按各台 Pod 累加。`--launchWorkers 1` 只限制建立請求並行度，不會讓已建立的
+訓練 Pod 排隊或降低同時租用數量。建立輸出會列出各 Pod ID、run ID 與 guard log；
+請保留 run ID 以便指定下載、接續與驗證。
+
+##### 在每台 Pod 內啟動訓練
+
+建立 Pod 不會自動開始訓練。分別從 RunPod Console SSH 登入每台 Pod，再執行相同命令：
 
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh stage1-train
 ```
 
-`stage1-train` 是兼容性 workflow 名稱；實際接續 Stage 1 或 Stage 2 由 immutable
-selection 的 config 決定。即時查看：
+`stage1-train` 是工作流程名稱，實際 Stage 1／Stage 2 與容量由該 Pod 固定的設定決定，
+不需要在 SSH 內再 configure。即時查看該台的 log：
 
 ```bash
 tmux -L stock-forecasting-train attach -t stock-forecasting-train
 ```
 
-訓練正常跑完或 early stopping 觸發後，流程會發布 immutable
-`training-completed.json`、移除不再需要的 temporary checkpoint pointer，接著自動執行
-validation。若 `training-completed.json` 已存在，`resume` 會拒絕續訓並要求改用
-獨立 validation。Pod 終止後再以 `bash scripts/runpod_workflow.sh status` 確認最後的
-terminal state。
+tmux session 在各 Pod 內獨立存在，SSH 斷線不會停止訓練。每個 run 使用獨立的
+checkpoint、evaluation、log 與 training/validation lifecycle；同一個 run 不允許
+同時由兩台 Pod 訓練或驗證。不同 run 共用唯讀行情、模型與已完成 baseline。
+第一次使用的 training cache 會協調建置，其他 Pod 等待快取完成後各自訓練；
+不建立多份完整 window dataset。Batch size、DataLoader worker 與 prefetch 仍由
+各 Pod 根據自身硬體調校。
 
-若訓練已完成但需要獨立重跑 validation，可在本機建立 validation Pod。active
-selection 必須與該 run 保存的 stage 與 dataset identity 相同：
+訓練正常完成或 early stopping 後，同台 Pod 自動執行完整 holdout benchmark，
+再由本機 guard 依該 Pod／run 的 terminal lifecycle 終止 Pod；network volume 保留。
+CPU prepare、baseline 建置、共用程式同步與環境更新不能和主模型讀取同一 volume
+同時執行；先完成這些共用寫入，再並行訓練。
+
+##### 狀態、時間限制與 guard 恢復
+
+在本機查詢所有 run，而不是只看最後寫入的一份狀態：
 
 ```bash
-bash scripts/runpod_workflow.sh validate <run-id>
-# Optional overrides; defaults are 12h and NVIDIA GeForce RTX 5090:
+bash scripts/runpod_workflow.sh status
+```
+
+`ready` 表示對應階段完成；`failed`、`timed_out` 不表示成功。Training completion
+與最終 holdout 完成是不同狀態，須核對相同 run ID 的 training／validation 結果。
+
+`--maxRuntime` 到期時，本機 guard 發出該 Pod、該 run 的停止請求。Pod 完成目前的
+validation／checkpoint 保存或 benchmark 模型／seed 的原子寫入，回報安全邊界後
+才被終止。**這是停止請求時間，不是保證的費用上限**：長段落可能超時並繼續計費。
+Baseline 仍使用其原有硬上限。每台 Pod 都有自己的本機 guard；macOS 以
+`caffeinate` 防止控制端睡眠，但關機、斷電或網路中斷仍會影響監控。
+
+控制端恢復後，先唯讀查看，再決定是否套用修復；`--pod-id` 可只處理指定 Pod：
+
+```bash
+bash scripts/runpod_workflow.sh recover
+bash scripts/runpod_workflow.sh recover --apply --pod-id <POD_ID>
+```
+
+省略 `--pod-id` 會檢查本專案所有 Pod；`--apply` 才允許重新啟動缺失的 guard
+或終止已核實完成的 Pod。恢復不重置原本期限；狀態不明、查詢失敗或 lifecycle
+不符合 Pod/run 身分時，不會把它當成已完成。SSH/tmux 畫面不是完成狀態的唯一依據。
+
+##### Loss 記錄與 W&B 補傳
+
+每個 run 的 `metrics.jsonl`、`summary.json` 與 W&B 保存 training loss、pinball、
+ranking loss、各學習率、已處理樣本數與完整 validation 指標。`loss_log_points_per_epoch`
+預設 250，另記錄 validation 邊界；`evaluations_per_epoch: 5` 對應每 epoch 的
+20%／40%／60%／80%／100%。W&B 使用 `trainer/global_step` 與
+`benchmark_validation/global_step`，loss 和 validation 的同 step 紀錄不互相覆蓋。
+
+`status` 會列出各 run 的 W&B component；`online_finished`／`synced` 才代表送達，
+`offline_pending`、`sync_failed` 或 workflow 結束後的 `online_running` 需要補傳。
+線上初始化失敗可保存 offline transaction，不必丟棄已完成的模型結果。
+
+若需補傳，使用 `resume <RUN_ID>`（training 未完成）或 `validate <RUN_ID>`
+建立對應 Pod；**不要啟動 training/validation tmux**，SSH 登入後改執行：
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_wandb_sync.sh <RUN_ID>
+```
+
+新建的 run-scoped Pod 只允許補傳自身 run；省略參數也只處理自身 run，不掃描其他
+正在訓練的實驗。腳本保留所有接續／重評估 transaction，使用專案固定 W&B 版本的
+legacy sync 路徑；完成後終止補傳 Pod，不在其內再啟動訓練。
+
+##### 接續訓練與獨立 holdout 驗證
+
+先確認原 run 的 Pod 已終止。接續訓練直接指定原 run，不需要切換 active selection：
+
+```bash
+bash scripts/runpod_workflow.sh resume \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090" \
+  <RUN_ID>
+```
+
+省略 run ID 時，只有唯一一個未完成且可接續的 run 才自動選用；若存在多個候選，
+會列出 ID 並拒絕猜測。指令讀取該 run 保存的 selection/config，建立 Pod 前驗證
+checkpoint 與數值訓練契約。優先使用有效且更新的 temporary checkpoint，否則選擇
+retained checkpoints 中 global step 最大者，而非 validation 分數最佳者。
+已完成 training 的 run 必須改用 `validate`。
+
+新 Pod 沿用 run ID，還原權重、optimizer、scheduler、RNG、進度與 early-stop 狀態；
+SSH 後仍執行 `bash scripts/runpod_tmux_launch.sh stage1-train`。切換容量不是 resume；
+改變模型、資料或數值訓練設定需開新 run。只改選擇器或顯示／路徑控制，不應使既有
+資料或 baseline 失效。
+
+若 training 已完成，但要接續或重跑 holdout：
+
+```bash
 bash scripts/runpod_workflow.sh validate \
   --maxRuntime 8h \
   --gpuId "NVIDIA GeForce RTX 5090" \
-  <run-id>
+  <RUN_ID>
 ```
 
-SSH 登入後執行：
+`validate` 省略 run ID 會選最新完成 training 的 run；省略 runtime/GPU 時分別為
+`12h`／`NVIDIA GeForce RTX 5090`。`--resume`（預設）沿用已完成的 benchmark
+工作；`--no-resume` 停用續評估；`--force` 強制重算主模型結果並停用續評估。
+baseline 仍讀取已建好的結果，不因此重新訓練。SSH 後執行：
 
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh stage1-validate
 ```
 
-獨立 validation 會沿用已完成 training run 的 best checkpoint 與同一個 W&B
-run ID；數值 benchmark 完成、失敗或超時後都會發布 validation lifecycle 並自動
-終止 GPU Pod。它不能用來替代尚未完成的 training；後者必須使用 `resume`。
+不同 run 的 validation 可以並行，但不能和同一 run 的 training/validation 重疊。
 
-#### 5. 下載所有 retained checkpoints 或 best checkpoint 與 validation 結果
+#### 5. 下載 checkpoint、loss 與最終評估結果
 
-不需要手動讀取 `.env` 的 volume ID、解析 lifecycle 或拼接 S3 path。先查看
-已知 lifecycle：
+本機下載不需要 volume ID 或遠端路徑。多實驗比較建議明確指定每次建立時回報的 run ID：
 
 ```bash
-bash scripts/runpod_workflow.sh status
+bash scripts/runpod_workflow.sh download <RUN_ID>
+bash scripts/runpod_workflow.sh download --checkpointScope best <RUN_ID>
+bash scripts/runpod_workflow.sh download --resume --checkpointScope all <RUN_ID>
 ```
 
-不帶 run ID 時，下載腳本只接受最新 `state=ready` 的 training lifecycle，並
-自動解析 run ID。`--checkpointScope` 可設為 `all` 或 `best`，預設為 `all`；
-`--checkpoint-scope` 是等效別名。預設命令會下載 checkpoint leaderboard 目前
-列出的所有 retained checkpoints：
+| 參數 | 預設 | 說明 |
+| --- | --- | --- |
+| `RUN_ID` | 省略時選最新已完成結果的 run | 根據 run-scoped terminal 記錄的時間選擇，不使用「最後啟動 Pod」推測 |
+| `--checkpointScope all\|best`／`--checkpoint-scope all\|best` | `all` | `all` 為 leaderboard 仍保留的 best-5 集合；`best` 為 validation-selected best |
+| `--resume` | 不啟用 | 目標目錄已存在時必須帶此 flag，填補／更新已知檔案，不刪除其他本機 checkpoint |
+| `-h`／`--help` | 無 | 顯示下載用法 |
 
-```bash
-bash scripts/runpod_workflow.sh download
-```
+檔案固定寫入 `artifacts/runpod/<RUN_ID>/`，包括 run manifest、resolved config、
+leaderboard、所選 checkpoint、`completion-result/`、`metrics.jsonl`、`summary.json`、
+training/validation lifecycle、training completion 與最終 `validation-benchmark.json`。
+啟用區間校準時另含 `interval-calibration.json`。不會重建已被 retention 政策刪除的
+checkpoint；`--resume` 也不會把已下載的 `all` 自動裁切成 `best`。
 
-也可以明確選擇全部或僅下載 validation-selected best checkpoint；run ID 可省略以
-使用最新 ready run，或由使用者明確指定：
-
-```bash
-bash scripts/runpod_workflow.sh download --checkpointScope best
-bash scripts/runpod_workflow.sh download --checkpointScope all <run-id>
-bash scripts/runpod_workflow.sh download --checkpointScope best <run-id>
-```
-
-`all` 的意義是 leaderboard 中仍由 best-5 retention policy 保留的完整 checkpoint
-集合，不包含
-訓練期間已被該政策刪除的歷史 checkpoints。下載流程直接使用 immutable leaderboard，
-不會以目錄列舉猜測 checkpoint。若本機目錄已存在，必須顯式使用 `--resume` 才會
-填補或重新取得所選範圍的已知檔案：
-
-```bash
-bash scripts/runpod_workflow.sh download <run-id>
-bash scripts/runpod_workflow.sh download --resume <run-id>
-bash scripts/runpod_workflow.sh download --resume --checkpointScope best <run-id>
-```
-
-成果固定下載到被 `.gitignore` 排除的
-`artifacts/runpod/<run-id>/`，包含 run manifest、resolved config、leaderboard、
-best-checkpoint pointer、所選範圍的 checkpoint 目錄、`completion-result/`、validation benchmark、
-training/validation lifecycle 與 immutable training completion record。`--resume` 不會
-刪除本機既有的其他 checkpoint 目錄；例如從 `all` 切換成 `best` 時不會進行 prune。
-
-每個下載的 checkpoint 目錄至少應包含 `adapter.safetensors`、
-`resolved-config.yaml`、`trainer-state.json` 與它所列出的 optimizer/scheduler
-state。`validation-benchmark.json` 在新固定日期模式是 holdout 與 baseline 比較，
-checkpoint 內的 validation metrics 才是訓練選模分數；
-不要只根據 W&B 畫面或 README 宣稱 run 成功，應同時檢查 lifecycle 的
-`state`、run ID、result path 與本機下載的原始 JSON。
-
-歷史尺度表徵診斷不包含在此 `download` 範圍內；請使用下方
-[在本機下載診斷結果](#在本機下載診斷結果)的 `download-probes` 命令。
-
-實際訓練 stage 由 active immutable selection 與它綁定的 config SHA 決定。
-操作命令、tmux session 或 lifecycle 路徑中的 `stage1-*` 名稱不會覆寫該選擇。
+Checkpoint 內的 validation metrics 用於選模；最終 `validation-benchmark.json`
+是 holdout 與 baseline 比較。比較前核對 run ID、設定、有效評估集合與完成狀態。
+尺度表徵診斷另用 [下載診斷結果](#在本機下載診斷結果)中的 `download-probes`，不包含在
+這個下載命令內。
 
 ### 訓練與推論產物
 
@@ -2185,12 +2066,12 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
 | `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
 | `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 只核對 baseline 所需資料與程式，不要求主模型 HF cache |
-| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。僅 `train` 接受 `--experiment`（上表六種名稱；省略保留 active selection）。baseline 完成快取會在本機建立 Pod 前檢查，命中即跳過。兩者皆無 run ID 位置參數 |
-| `resume [RUN_ID]` | 接續未完成訓練；省略 ID 時由最近 training lifecycle 找到可續訓 run，**不是新建另一輪訓練**。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是改用 best checkpoint |
-| `validate [RUN_ID]` | 省略 ID 使用最近訓練 lifecycle，指定 ID 可評估歷史已完成訓練；`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設重用已完成評估；`--no-resume` 不接續評估進度；`--force` 強制重新計算主模型評估並停用 resume。三種策略擇一；預建 baseline 結果仍重用，不會重訓 baseline |
+| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。僅 `train` 接受可重複的 `--experiment NAME` 與 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；省略實驗時固定 active selection 建立一台。Baseline 完成快取在本機檢查，命中即跳過。兩者無 run ID 位置參數 |
+| `resume [RUN_ID]` | 接續未完成訓練；省略 ID 時須只有唯一可接續候選，多個候選拒絕猜測。自動讀取原 run 的 selection，不需 configure。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是 best checkpoint |
+| `validate [RUN_ID]` | 省略 ID 選最新完成 training 的 run，自動讀取原 selection。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設沿用完成工作；`--no-resume` 停用續評估；`--force` 重算主模型並停用續評估；三者擇一，不重訓 baseline |
 | `status`、`cpu-logs` | 無參數；前者查詢狀態，後者下載 CPU 工作紀錄 |
 | `recover` | 預設僅診斷；`--apply` 才恢復 guard／終止已確認可終止的 Pod；`--pod-id ID` 限定一個 Pod；`--confirmations N` 預設 `2`，至少 2；`--confirmation-delay-seconds N` 預設 `5`，不可負數；`--guard-dir PATH` 為進階控制端紀錄位置，預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help` 顯示說明 |
-| `download [RUN_ID]` | 不帶 ID 使用最近 ready training lifecycle；`--checkpointScope all` 預設下載全部 retained checkpoints，`best` 只下載 validation 選出的最佳 checkpoint；`--resume` 補齊／更新已存在的本機下載目錄，**不是接續訓練**；`-h`／`--help` 顯示說明 |
+| `download [RUN_ID]` | 省略 ID 選最新完成結果的 run；`--checkpointScope all` 預設下載 retained checkpoints，`best` 只取最佳；`--resume` 補齊／更新本機下載，**不是接續訓練**；`-h`／`--help` 顯示說明 |
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
 
 時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
@@ -4112,9 +3993,7 @@ by default; only `complete.json` denotes a complete baseline result.
 
 #### 4. Create a GPU Pod and train
 
-<a id="gpu-catalog-en"></a>
-
-##### Query GPU resources
+<a id="gpu-catalog-en"></a>Query GPU resources
 
 Query the GPU model and stock catalog to obtain a complete `gpuId`. Training defaults
 to `NVIDIA GeForce RTX 5090`. With no options, the query covers all data centers;
@@ -4127,12 +4006,12 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-SE-1 --search "5090"
 bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 ```
 
-| Option | Default or format | Behavior |
-| --- | --- | --- |
-| `--data-center ID` | No filter; e.g. `EU-RO-1`, `EU-SE-1` | Case-insensitive exact data-center ID, not a region prefix such as `EU`. Does not change `.env` or the Pod deployment location |
-| `--search TEXT` | No filter | Case-insensitive substring of the GPU display name or complete `gpuId`; can be combined with the data-center filter |
-| `--output table`, `--output json` | `table` | Tables show VRAM, Secure/Community USD hourly prices, complete `gpuId` and data-center stock. JSON retains matching GPUs' API fields, including other data centers |
-| `-h`, `--help` | Flag with no value | Show GPU query options |
+| Option                                | Default or format                       | Behavior                                                                                                                                                            |
+| ------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--data-center ID`                  | No filter; e.g.`EU-RO-1`, `EU-SE-1` | Case-insensitive exact data-center ID, not a region prefix such as`EU`. Does not change `.env` or the Pod deployment location                                   |
+| `--search TEXT`                     | No filter                               | Case-insensitive substring of the GPU display name or complete`gpuId`; can be combined with the data-center filter                                                |
+| `--output table`, `--output json` | `table`                               | Tables show VRAM, Secure/Community USD hourly prices, complete`gpuId` and data-center stock. JSON retains matching GPUs' API fields, including other data centers |
+| `-h`, `--help`                    | Flag with no value                      | Show GPU query options                                                                                                                                              |
 
 `--` means the API did not report a value; `NONE` means that data center reports no
 stock, and these GPUs **remain in the results**. A catalog query is neither a capacity
@@ -4142,396 +4021,251 @@ must be created in that volume's data center: querying another location neither 
 the volume attachable across regions nor creates a replacement volume. Pass the complete
 `gpuId` to creation commands, not a potentially truncated GPU display name.
 
-##### Create a training Pod
+##### Choose the data group and capacity experiment
 
-Select a controlled Stage 2 A/B experiment with `--experiment`. A starts on
-2021-01-01 and B on 2016-01-01; both end on 2026-06-01 (exclusive). This preserves
-the configured profile, universe, revision and h_start, changes the start date
-and model config, and never calls market-data APIs or CPU prepare. The matching
-prepared dataset and baseline must already exist.
+Complete CPU preparation and baseline building for each required data group before creating
+main-model Pods. Prepared data, baselines and pretrained models are shared. Changing capacity
+or Pod count does not download market data, split datasets again, or retrain baselines.
+Each Pod runs its own single-GPU model; this is not DDP or distributed model training.
 
-| `--experiment` | Config files | Kronos adaptation |
-|---|---|---|
-| `a-lora32` / `b-lora32` | `configs/experiments/a_lora32.yaml` / `b_lora32.yaml` | LoRA rank 32, alpha 64 |
-| `a-lora64` / `b-lora64` | `configs/experiments/a_lora64.yaml` / `b_lora64.yaml` | LoRA rank 64, alpha 128 |
-| `a-partial` / `b-partial` | `configs/experiments/a_partial.yaml` / `b_partial.yaml` | LoRA-32 on the first 10 blocks; unfreeze the final 2 blocks and final norm without redundant adapters |
+Stage 2 offers six configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
+2026-06-01 (exclusive). They share the validation/test source and eligibility rules.
+`--experiment` preserves the configured profile, universe, revision and h_start.
 
-Upload all configs once. Later experiment switches publish only a small selection
-JSON, without uploading the source again:
+| Experiment | Config files under `configs/experiments/` | Trainable Kronos capacity |
+| --- | --- | --- |
+| `a-lora32`, `b-lora32` | `a_lora32.yaml`, `b_lora32.yaml` | LoRA rank 32, alpha 64 |
+| `a-lora64`, `b-lora64` | `a_lora64.yaml`, `b_lora64.yaml` | LoRA rank 64, alpha 128 |
+| `a-partial`, `b-partial` | `a_partial.yaml`, `b_partial.yaml` | LoRA-32 on the first 10 blocks; unfreeze the last 2 blocks and final norm without redundant LoRA |
 
-```bash
-bash scripts/runpod_workflow.sh sync --apply
-bash scripts/runpod_workflow.sh train --experiment a-lora32 --maxRuntime 12h --gpuId "NVIDIA GeForce RTX 5090"
-```
+All six initialize from the same pretrained Kronos-base, not another experiment's checkpoint.
+Task/LoRA/unfrozen learning rates are `3e-5`/`5e-6`/`1e-6`, with a fixed 256,000
+sample-presentation warmup. Training retains dynamic sampling: a window's year weight is
+`0.8 ** (latest_training_year - cutoff_year)`; each year's quota is proportional to eligible
+windows times this weight. Quotas, losses and processed samples are recorded.
+Validation/test use full sequential traversal, not this sampler.
 
-For the next run, replace `a-lora32` with another listed name. Do not launch
-concurrent production experiments. Omitting `--experiment` keeps the active
-selection. `resume` continues the original experiment, not another architecture.
-Actual YAML/source edits still require sync; publishing a selection is not a code update.
-All six capacity experiments start from the same pretrained Kronos-base. Do not
-resume a checkpoint from an older architecture or another capacity experiment.
+The q50 location, positive interval widths and independent ranking score are separate.
+Checkpoint selection and early stopping use uncalibrated full-validation normalized pinball.
+Market/horizon tail calibration is fitted on full validation after checkpoint selection;
+test retains raw and `calibrated` metrics. Test labels never fit calibration, and future
+80% coverage is not guaranteed. `FORECAST_METRIC_WORKERS` caps diagnostic/calibration
+threads (default cap 4, additionally constrained by CPU and memory).
 
-All six use task/LoRA/unfrozen learning rates of `3e-5`/`5e-6`/`1e-6`, with a fixed
-256,000 sample-presentation warmup. A/B both use `yearly_sampling_decay: 0.8`:
-each window has relative weight `0.8 ** (latest_training_year - cutoff_year)`.
-Weights for 2025, 2024, 2021, and 2016 are 1, 0.8, 0.4096, and approximately 0.1342.
-Each year's sampling mass is its eligible window count times that weight. Annual
-quotas, processed samples, and losses are recorded. This is neither a two-block
-split nor a full unique-window pass. Validation/test remain full sequential passes.
+##### Create one or multiple training Pods locally
 
-The q50 location is separated from positive lower/upper interval widths; ranking
-uses an independent dimensionless score head. Checkpoint selection and early
-stopping still use **uncalibrated** full-validation normalized pinball. After selecting a
-checkpoint, market/horizon tail factors are fitted on full validation only. Test
-reports retain raw and `calibrated` metrics; test labels never fit these factors,
-and future 80% coverage is not guaranteed. Factors are saved to
-`evaluations/<RUN_ID>/interval-calibration.json`. `FORECAST_METRIC_WORKERS` caps
-diagnostic/calibration threads (default cap 4, further bounded by CPU and memory).
-
-Inspect the active selection and pass the GPU gate. Before renting the GPU, the
-gate compares the local selection, S3 selection, CPU marker, code release,
-config SHA, and namespaced artifacts:
-
-```bash
-bash scripts/runpod_workflow.sh selection show
-bash scripts/runpod_workflow.sh readiness --gpu
-```
-
-Create a Pod with the default GPU and a 12-hour workload limit:
-
-```bash
-bash scripts/runpod_workflow.sh train
-```
-
-Or set the workload limit and one complete `gpuId` from the list directly:
-
-```bash
-bash scripts/runpod_workflow.sh train \
-  --maxRuntime 18h \
-  --gpuId "NVIDIA GeForce RTX 5090"
-```
-
-`--maxRuntime` is the local stop-request time for GPU training and validation.
-At that time, the local guard writes a request to the network volume. The Pod
-finishes the current training validation and checkpoint transaction, or the
-current validation model or seed and its atomic result publication, before
-acknowledging the saved section and ending the workflow. The local guard deletes
-the Pod only after a terminal lifecycle for the same Pod and run. An older
-checkpoint does not authorize stopping. The former additional one-hour hard
-limit does not force these workflows to stop; a long section continues running
-and billing until it is saved. This is a target cutoff, not a guaranteed cost
-ceiling. `RUNPOD_REQUESTED_RUNTIME_SECONDS` records the original `--maxRuntime`
-value. Baseline workflows retain their existing hard limit and Pod-side timeout.
-
-The creator first allocates one run ID locally, mounts the same network volume,
-injects a W&B Secret reference, and arms an independent hard-limit guard. On
-macOS, the local launcher automatically runs `caffeinate -is -w <guard-pid>` and
-writes guard, caffeinate, and keep-awake state beside the reported guard log.
-Do not stop the guard process or power off the control machine. Pod-side
-self-termination remains active when work finishes or times out. RunPod does
-not provide a provider-side cutoff for this Pod. The project continues to
-terminate completed Pods while retaining the network volume; a merely stopped
-Pod can continue to incur volume-disk storage charges. SSH through the Console and run:
-
-##### Recovering the guard after local sleep or shutdown
-
-While the local control machine is asleep or powered off, its guard cannot
-poll RunPod. After the machine wakes or boots and the network is available,
-run the read-only check first:
-
-```bash
-bash scripts/runpod_workflow.sh recover
-```
-
-`recover` lists active Pods attached to this project's RunPod network volume,
-reads the remote lifecycle marker, and treats `preparing`, `finalizing`, and
-the CPU `downloaded` intermediate state as an active workflow. With `--apply`,
-an active workload whose local guard is missing is re-armed using its original
-remaining hard-limit time; the full limit is not restarted after sleep.
-
-After reviewing the dry-run output, use the mutating mode:
-
-```bash
-bash scripts/runpod_workflow.sh recover --apply
-```
-
-The mutating mode requires two consistent RunPod/API and S3 lifecycle
-observations, followed by one final observation immediately before mutation.
-A Pod is terminated only when its lifecycle is explicitly verified as `ready`,
-`failed`, `timed_out`, or CPU terminal `downloaded`. Pods with
-`runtimeStatus=initializing`, query failures, a missing marker, an unverifiable
-marker, or an unknown state are retained because inability to prove idleness is
-not treated as idleness. Pods that are not attached to this network volume or
-do not carry an approved project role are ignored. Guard recovery disables the
-new-Pod startup emergency termination path: if local prerequisites or the guard
-handshake fail, the existing Pod is left running and the error is reported.
-Guard readiness also records the host boot identity so a PID left by an earlier
-boot cannot be mistaken for a live guard after restart.
-
-```bash
-cd /runpod-volume/stock_forecasting
-bash scripts/runpod_tmux_launch.sh stage1-train
-```
-
-The immutable selection maps to the `RUNPOD_CONFIG` that determines whether
-Stage 1 or Stage 2 runs; the `stage1-train` command name does not override that
-selection. Attach for live observation:
-
-```bash
-tmux -L stock-forecasting-train attach -t stock-forecasting-train
-```
-
-Training verifies the image runtime, CUDA, mounted readiness, dataset/model
-manifests, and run identity before writing
-`/runpod-volume/savedModel/<run-id>/`. Both production configs set
-`validation.auto_run_after_training: true`, so the same GPU workflow
-automatically executes the complete validation benchmark after training.
-The GPU Pod terminates after training plus validation succeeds. A successful
-CPU preparation and any CPU/GPU workflow failure or timeout likewise publish
-terminal lifecycle/tmux status before terminating. If the Pod-side API call
-fails, the local guard takes over using the same Pod ID, run ID, and lifecycle.
-Pods with network volumes are always terminated, never stopped.
-The guard validates schema by marker type: a complete numerical dataset in
-`ready` state must use readiness schema v2, while in-progress, resumable, and
-failed CPU states plus GPU lifecycle markers remain on schema v1. A mismatched
-Pod ID, run ID, or state/schema combination never triggers termination.
-
-##### W&B logging and offline recovery
-
-The W&B run config contains the full resolved YAML/Pydantic configuration,
-system metadata, dataset provenance, and immutable selection identity.
-`train/loss` and `train/pinball_loss` record segment-averaged microbatch losses at
-`loss_log_points_per_epoch` points (default 250), including validation boundaries,
-against the `trainer/global_step` custom axis.
-Loss and validation retain separate history rows even when they share an
-optimizer step instead of colliding on W&B's internal step. In-training
-validation runs at 20%/40%/60%/80%/100% of every epoch and sends every finite
-numeric metric plus early-stopping state. The
-post-training benchmark uses `benchmark_validation/global_step` as a custom
-axis for the evaluated checkpoint instead of writing to an already committed
-internal W&B step. It logs the complete model-and-baseline results, including
-cross-sectional Sharpe, RankIC, turnover, drawdown, coverage, and subgroup
-metrics—not only the final loss.
-
-Each run atomically records delivery state at
-`/runpod-volume/lifecycle/runs/<run-id>/wandb.json`.
-`bash scripts/runpod_workflow.sh status` prints separate `training` and
-`validation` components. Only `online_finished` or `synced` confirms completion;
-`offline_pending`, `sync_failed`, or `online_running` after a terminal workflow
-requires recovery. If online initialization fails, production configs permit
-an offline transaction on the network volume. If that offline transaction also
-cannot be created, the workflow records `failed` and aborts. W&B officially
-supports later synchronization, so a temporary server outage does not require
-discarding otherwise completed model work.
-
-Inside a project-created GPU Pod with the `wandb_api_key` Secret injected,
-**do not start the training or validation tmux workflow**. Run the recovery
-script directly; omitting the run ID scans all pending runs:
-
-```bash
-cd /runpod-volume/stock_forecasting
-bash scripts/runpod_wandb_sync.sh <run-id>
-```
-
-The script processes only `online_running`, `offline_pending`, and
-`sync_failed` components. It invokes `wandb sync --legacy --include-offline
---include-online --append --id <run-id>` on the recorded transaction directory.
-The project pins W&B 0.28.0. The explicit `--legacy` selects that version's
-legacy sync path because `--include-offline` and `--append` are legacy-only in
-that version. It
-then records `synced` or `sync_failed`. Every transaction created by resumed
-training or repeated validation is retained and synced separately, rather than
-only the final segment. The script then terminates the recovery Pod. For a
-completed training run, use `validate` to provision this Pod; for an incomplete
-run with a retained checkpoint, use `resume`, then execute the sync script
-instead of tmux. It can also run before work starts on the next existing project
-GPU Pod, avoiding a separate rental. See W&B's official
-[offline-mode reference](https://docs.wandb.ai/models/ref/python/functions/init)
-and [`wandb sync` reference](https://docs.wandb.ai/models/ref/cli/wandb-sync).
-
-After termination, use the workflow status command to query the latest terminal
-states stored on S3:
-
-```bash
-bash scripts/runpod_workflow.sh status
-```
-
-Only `state=ready` means that lifecycle completed. Treat `failed` and
-`timed_out` as incomplete. `wandb_run_id` is the shared `<run-id>` for
-checkpoints, evaluations, W&B, and run-scoped logs. SSH/tmux is only for live
-debugging while a Pod still exists; it is not the authority for terminal state.
-
-##### Resume interrupted training in the same stage
-
-If the training loop does not complete before `--maxRuntime`, the Pod is
-terminated manually, or an execution error interrupts it, the training
-lifecycle must be `timed_out` or `failed`, and `training_completed` must not be
-true. Confirm that the original Pod is terminal, then inspect the authoritative
-state and active selection on the local control machine:
-
-```bash
-bash scripts/runpod_workflow.sh status
-bash scripts/runpod_workflow.sh selection show
-```
-
-The active selection must match the stage, config, and dataset identity stored
-by the run. Resuming the same run alone does not require rerunning `configure`,
-`cpu prepare`, or provider API acquisition. If local source has changed, wait
-until the original training Pod is terminal before uploading it:
+Upload all configs once on initial deployment or after editing source/YAML.
+**Do not run `sync --apply` or modify the shared runtime while a Pod still owns the volume.**
+Sync checks before overwriting files. Selecting another already-uploaded experiment needs no sync.
 
 ```bash
 bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
 ```
 
-Resume does not generally waive training-resume-contract differences. An
-identical contract resumes normally. A different contract is accepted only by
-an explicitly registered, directional migration whose exact old and new file
-digests match while all data, model, and training semantics remain unchanged.
-Every other config, dataset, model-architecture, monitored training-source, or
-checkpoint-artifact-integrity difference fails closed.
-
-Specify `<run-id>` explicitly to avoid selecting the wrong run when multiple
-failed or timed-out runs exist:
+Create one experiment:
 
 ```bash
-bash scripts/runpod_workflow.sh resume <run-id>
+bash scripts/runpod_workflow.sh train \
+  --experiment a-lora32 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-To select the new Pod segment's runtime limit and GPU explicitly:
+Create three Pods to compare A's three capacities. Each repeated `--experiment` takes one name:
 
 ```bash
-bash scripts/runpod_workflow.sh resume \
-  --maxRuntime 18h \
-  --gpuId "NVIDIA GeForce RTX 5090" \
-  <run-id>
+bash scripts/runpod_workflow.sh train \
+  --experiment a-lora32 \
+  --experiment a-lora64 \
+  --experiment a-partial \
+  --launchWorkers 2 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-Without `<run-id>`, the canonical training lifecycle can select only its latest
-`failed` or `timed_out` run whose training phase is incomplete. Before creating
-a paid GPU Pod, `resume` remotely validates the run manifest, checkpoint
-pointer, trainer state, resolved config, and every artifact hash. A valid
-`temp_checkpoint.json` newer than all best-five retained checkpoints is
-preferred; otherwise, resume selects the best-five checkpoint with the greatest
-`global_step`, not merely the checkpoint with the best validation metric. No
-Pod is created when no complete resumable checkpoint exists.
+Replace `a-` with `b-` for group B, or mix groups; at most six distinct names may be selected
+per command. Additional different runs may be created while experiments are already running.
+Each launch pins its own immutable selection without changing the global active selection.
+Later configure commands do not change a previously created Pod's settings.
 
-The new Pod preserves the original run ID and W&B run ID and restores trainable
-model weights, optimizer, scheduler, RNG, completed batch/optimizer-step
-progress, early-stopping state, and runtime batch plan. `--maxRuntime` limits
-this new Pod segment; it does not reset the original run's progress.
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `--experiment NAME` | Pin the active selection and create one Pod if omitted | Repeatable; duplicate names in one command are rejected |
+| `--launchWorkers N` / `--launch-workers N` | `2` | Concurrent local API/preflight workers, 1–6; not GPU count or DataLoader worker count |
+| `--maxRuntime DURATION` / `--max-runtime DURATION` | `12h` | Independent stop-request time for each Pod; positive integer with an `m`, `h`, `d` suffix, e.g. `30m` or `12h` |
+| `--gpuId GPU_ID` / `--gpu-id GPU_ID` | `NVIDIA GeForce RTX 5090` | One model for the batch; quote the complete ID. Use separate launch commands for different GPUs |
 
-After the Pod is created, connect through the RunPod Console SSH and run:
+Every selected experiment must pass data, code and baseline preflight before paid creation
+starts. If subsequent creation partially fails because of stock or an API error, the command
+reports each result and exits nonzero. Successfully created Pods retain their own guards;
+they are not deleted or automatically rented again. Retry only failed experiments.
+
+Costs add across Pods. `--launchWorkers 1` serializes creation requests, not the training
+workloads or number of rented Pods. Output includes each Pod ID, run ID and guard log.
+Keep the run IDs for downloads, resume and validation.
+
+##### Start training inside each Pod
+
+Creating a Pod does not start training automatically. SSH into each Pod through the RunPod
+Console and run the same command separately:
 
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh stage1-train
 ```
 
-`stage1-train` is the compatibility workflow name. The immutable selection's
-config determines whether Stage 1 or Stage 2 resumes. Attach for live output:
+`stage1-train` is a workflow name; that Pod's pinned configuration determines Stage 1/Stage 2
+and capacity. Do not configure again inside SSH. Attach to that Pod's live log:
 
 ```bash
 tmux -L stock-forecasting-train attach -t stock-forecasting-train
 ```
 
-Normal completion or early stopping publishes immutable
-`training-completed.json`, removes the no-longer-needed temporary checkpoint
-pointer, and then runs validation automatically. If `training-completed.json`
-already exists, `resume` rejects further training and directs the operator to
-standalone validation. After Pod termination, run
-`bash scripts/runpod_workflow.sh status` again to confirm the final terminal
-state.
+Sessions are local to each Pod; disconnecting SSH does not stop training. Each run has independent
+checkpoints, evaluations, logs and training/validation lifecycle records. Two Pods cannot train
+or validate the same run simultaneously. Different runs share read-only market data, models and
+completed baselines. Cold training-cache construction is coordinated: other Pods wait for
+publication, then train independently. No full window dataset is duplicated. Each Pod still
+autotunes its own batch size, DataLoader workers and prefetch for its hardware.
 
-If training completed but validation must be rerun independently, create a
-validation Pod locally. The active selection must match the stage and dataset
-identity stored by that run.
+Normal completion or early stopping automatically starts the full holdout benchmark in the same
+Pod. The local guard terminates that Pod using its matching Pod/run terminal lifecycle; the
+network volume remains. CPU preparation, baseline building, source synchronization and runtime
+updates cannot write the shared volume while main-model readers are running. Finish these
+shared writes before starting parallel training.
+
+##### Status, runtime limits and guard recovery
+
+On the local control machine, inspect all runs rather than one last-writer status:
 
 ```bash
-bash scripts/runpod_workflow.sh validate <run-id>
-# Optional overrides; defaults are 12h and NVIDIA GeForce RTX 5090:
+bash scripts/runpod_workflow.sh status
+```
+
+`ready` means the corresponding phase completed; `failed` and `timed_out` do not mean success.
+Training completion and final holdout completion are distinct; check both for the same run ID.
+
+At `--maxRuntime`, each local guard publishes a stop request bound to its Pod and run.
+The Pod completes its current validation/checkpoint transaction or benchmark model/seed result
+before acknowledging a safe boundary and terminating. **This is a stop-request time, not a
+guaranteed cost ceiling**: long sections may overrun and continue billing. Baselines retain
+their existing hard limit. Each Pod has a separate local guard; macOS uses `caffeinate`
+to prevent sleep, but shutdown, power loss or network loss can still disrupt monitoring.
+
+After recovering the control machine, inspect first and explicitly apply recovery if needed.
+`--pod-id` limits recovery to one Pod:
+
+```bash
+bash scripts/runpod_workflow.sh recover
+bash scripts/runpod_workflow.sh recover --apply --pod-id <POD_ID>
+```
+
+Without `--pod-id`, all project Pods are inspected. Only `--apply` permits re-arming missing
+guards or terminating verified-completed Pods. Recovery does not reset the original deadline.
+Unknown state, transport errors or a mismatched Pod/run lifecycle are not treated as completion.
+An SSH/tmux screen alone is not authoritative completion evidence.
+
+##### Loss logs and W&B recovery
+
+Each run's `metrics.jsonl`, `summary.json` and W&B record training loss, pinball, ranking
+loss, learning rates, processed samples and full validation metrics.
+`loss_log_points_per_epoch` defaults to 250, plus validation boundaries;
+`evaluations_per_epoch: 5` corresponds to 20%/40%/60%/80%/100% of each epoch.
+W&B uses `trainer/global_step` and `benchmark_validation/global_step`; same-step
+loss and validation rows do not overwrite each other.
+
+`status` lists W&B components for each run. Only `online_finished`/`synced` confirms
+delivery; `offline_pending`, `sync_failed`, or `online_running` after workflow termination
+requires recovery. Failed online initialization may preserve an offline transaction without
+discarding completed model results.
+
+For recovery, provision the matching Pod using `resume <RUN_ID>` for unfinished training
+or `validate <RUN_ID>` for completed training. **Do not start training/validation tmux.**
+After SSH login, run:
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_wandb_sync.sh <RUN_ID>
+```
+
+A newly created run-scoped Pod may sync only its own run. Omitting the argument also selects
+only that run, not other active experiments. All resume/re-evaluation transactions are
+preserved and synced using the project's pinned W&B legacy sync path. The recovery Pod is
+terminated afterward; do not start training in it.
+
+##### Resume training and run standalone holdout validation
+
+Confirm the original run's Pod has terminated. Resume by run ID without changing active selection:
+
+```bash
+bash scripts/runpod_workflow.sh resume \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090" \
+  <RUN_ID>
+```
+
+With no run ID, automatic selection requires exactly one incomplete resumable candidate.
+Multiple candidates are listed and rejected instead of guessed. The creator restores the run's
+stored selection/config and validates its checkpoint and numerical training contract before
+renting a Pod. It prefers a valid newer temporary checkpoint, otherwise the retained checkpoint
+with greatest global step, not the best validation score. Completed training must use `validate`.
+
+The new Pod preserves the run ID and restores weights, optimizer, scheduler, RNG, progress and
+early-stop state. After SSH login, run `bash scripts/runpod_tmux_launch.sh stage1-train`.
+Changing capacity is not resume: model, data or numerical-training changes require a new run.
+Selection, display or path-control changes alone do not invalidate prepared data or baselines.
+
+For completed training whose holdout needs resuming or recomputing:
+
+```bash
 bash scripts/runpod_workflow.sh validate \
   --maxRuntime 8h \
   --gpuId "NVIDIA GeForce RTX 5090" \
-  <run-id>
+  <RUN_ID>
 ```
 
-After SSH login, run:
+Omitting the run ID selects the latest completed training run; runtime/GPU defaults are
+`12h`/`NVIDIA GeForce RTX 5090`. `--resume` (default) reuses completed benchmark jobs;
+`--no-resume` disables evaluation resume; `--force` recomputes main-model results and
+disables resume. Prebuilt baselines are still read, not retrained. After SSH login:
 
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh stage1-validate
 ```
 
-Standalone validation reuses the completed training run's best checkpoint and
-W&B run ID. Completion, failure, or timeout publishes the validation lifecycle
-and automatically terminates the GPU Pod. It cannot replace unfinished
-training; use `resume` for that case.
+Different runs may validate concurrently, but a run's validation cannot overlap its own
+training or another validation.
 
-#### 5. Download all retained checkpoints or the best checkpoint and validation results
+#### 5. Download checkpoints, loss logs and final evaluations
 
-There is no need to read the volume ID from `.env`, parse lifecycle JSON, or
-assemble S3 paths manually. First inspect known lifecycle markers:
+Downloads need neither a volume ID nor remote paths. For multi-experiment comparisons, specify
+each run ID reported at creation:
 
 ```bash
-bash scripts/runpod_workflow.sh status
+bash scripts/runpod_workflow.sh download <RUN_ID>
+bash scripts/runpod_workflow.sh download --checkpointScope best <RUN_ID>
+bash scripts/runpod_workflow.sh download --resume --checkpointScope all <RUN_ID>
 ```
 
-Without a run ID, the download script accepts only the latest training
-lifecycle with `state=ready`, then resolves its run ID automatically.
-`--checkpointScope` accepts `all` or `best` and defaults to `all`;
-`--checkpoint-scope` is an equivalent alias. The default command downloads
-every retained checkpoint currently listed by the checkpoint leaderboard:
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `RUN_ID` | Latest completed results if omitted | Select by run-scoped terminal timestamps, not the most recently launched Pod |
+| `--checkpointScope all\|best` / `--checkpoint-scope all\|best` | `all` | `all` is the retained best-five leaderboard set; `best` is the validation-selected best |
+| `--resume` | Off | Required for an existing target; fills/refreshes known files without deleting other local checkpoints |
+| `-h` / `--help` | None | Show download usage |
 
-```bash
-bash scripts/runpod_workflow.sh download
-```
+Files go to `artifacts/runpod/<RUN_ID>/`: run manifest, resolved config, leaderboard, selected
+checkpoints, `completion-result/`, `metrics.jsonl`, `summary.json`, training/validation
+lifecycles, training completion and final `validation-benchmark.json`. Runs with interval
+calibration also include `interval-calibration.json`. Retention-deleted checkpoints are not
+recreated; `--resume` never prunes a previous `all` download into `best`.
 
-You may explicitly select all retained checkpoints or only the
-validation-selected best checkpoint. Omit the run ID to use the latest ready
-run, or provide it explicitly:
-
-```bash
-bash scripts/runpod_workflow.sh download --checkpointScope best
-bash scripts/runpod_workflow.sh download --checkpointScope all <run-id>
-bash scripts/runpod_workflow.sh download --checkpointScope best <run-id>
-```
-
-Here, `all` means the complete checkpoint set still retained by the leaderboard's best-five
-retention policy; it does not include historical checkpoints already deleted
-during training. The download uses the immutable leaderboard directly rather
-than guessing checkpoints from a directory listing. If the local target already
-exists, use `--resume` explicitly before the script fills or refreshes the
-selected set of known files:
-
-```bash
-bash scripts/runpod_workflow.sh download <run-id>
-bash scripts/runpod_workflow.sh download --resume <run-id>
-bash scripts/runpod_workflow.sh download --resume --checkpointScope best <run-id>
-```
-
-Results are written under the ignored
-`artifacts/runpod/<run-id>/` directory. They include the run manifest, resolved
-config, leaderboard, best-checkpoint pointer, checkpoint directories selected
-by the scope, `completion-result/`, validation benchmark, training/validation
-lifecycle files, and immutable training completion record. `--resume` does not delete other local
-checkpoint directories; for example, switching from `all` to `best` does not
-prune local files.
-
-Each downloaded checkpoint directory should contain at least `adapter.safetensors`,
-`resolved-config.yaml`, `trainer-state.json`, and the optimizer/scheduler state
-listed by that trainer state. For new fixed-date runs, `validation-benchmark.json`
-contains holdout and baseline comparisons; checkpoint validation metrics remain
-the training model-selection scores. Do not claim run success from a
-W&B chart or README alone; inspect the lifecycle `state`, run ID, result path,
-and downloaded raw JSON together.
-
-Historical scale representation diagnostics are outside this `download` scope. Use the
-`download-probes` command under [Download diagnostic results locally](#download-diagnostic-results-locally).
-
-The active immutable selection and its bound config SHA control the selected
-stage. Names containing `stage1-*` in operation commands, tmux sessions, or
-lifecycle paths do not override that selection.
+Checkpoint validation metrics select the model; final `validation-benchmark.json` compares
+holdout results and baselines. Verify run IDs, configs, eligible evaluation membership and
+completion before comparison. Scale representation probes are separate: use `download-probes`
+under [Download diagnostic results locally](#download-diagnostic-results-locally).
 
 ### Training and inference artifacts
 
@@ -4865,12 +4599,12 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
 | `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
 | `readiness` | Choose exactly one: `--code-only` verifies uploaded code; `--gpu` verifies main-model training dependencies; `--baseline` checks baseline data/code without requiring the main model's HF cache |
-| `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Only `train` accepts `--experiment` (the six names above; omitted means the active selection). Baseline completion is checked locally before creating a Pod, and a cache hit skips creation. Neither command accepts a positional run ID |
-| `resume [RUN_ID]` | Continue unfinished training; without an ID, resolve the resumable run from the latest training lifecycle, **not a new training run**. `--maxRuntime D` defaults to `12h` and `--gpuId ID` as above. Resume the latest available checkpoint, not the best checkpoint |
-| `validate [RUN_ID]` | Without an ID, use the latest training lifecycle; an explicit ID selects a completed historical training run. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above. `--resume` reuses completed evaluation work by default; `--no-resume` disables evaluation continuation; `--force` recomputes the main-model evaluation and disables resume. Choose one policy; prebuilt baseline results remain reused, without baseline retraining |
+| `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Only `train` accepts repeated `--experiment NAME` and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`). Omitted experiment pins active selection for one Pod. Baseline cache hits skip creation locally. Neither accepts a positional run ID |
+| `resume [RUN_ID]` | Resume unfinished training. Without an ID, exactly one eligible candidate is required. Restore the original selection without configure. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above; resume the latest usable checkpoint, not the best |
+| `validate [RUN_ID]` | Without an ID, select the latest completed training run and its stored selection. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above. `--resume` (default) reuses completed work; `--no-resume` disables continuation; `--force` recomputes the main model and disables resume. Choose one; no baseline retraining |
 | `status`, `cpu-logs` | No options; respectively inspect status or download CPU workflow logs |
 | `recover` | Diagnostic-only by default; `--apply` restores guards/terminates Pods confirmed safe to terminate; `--pod-id ID` restricts scope; `--confirmations N` defaults to `2`, minimum 2; `--confirmation-delay-seconds N` defaults to `5`, nonnegative; `--guard-dir PATH` is an advanced control-host log location, defaulting to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help` shows help |
-| `download [RUN_ID]` | Without an ID, use the latest ready training lifecycle; `--checkpointScope all` downloads all retained checkpoints by default, while `best` downloads only the validation-selected checkpoint; `--resume` fills/updates an existing local download, **not training continuation**; `-h`/`--help` shows help |
+| `download [RUN_ID]` | Without an ID, select the latest completed results. `--checkpointScope all` (default) downloads retained checkpoints; `best` selects the best. `--resume` fills/refreshes a local download, **not training continuation**; `-h`/`--help` shows help |
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
 
 Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,

@@ -170,6 +170,7 @@ if [[ "${VALIDATION_FORCE_RECOMPUTE}" == "1" ]]; then
 fi
 
 arguments=(--config "${CONFIG_PATH}")
+arguments+=(--lifecycle "${NETWORK_VOLUME_ROOT}/$(runpod_gpu_lifecycle_key validation)")
 if [[ -n "${VALIDATION_RUN_ID:-}" ]]; then
     arguments+=(--run-id "${VALIDATION_RUN_ID}")
 fi

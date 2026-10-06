@@ -15,6 +15,18 @@ source "${SCRIPT_DIR}/lib/runpod_paths.sh"
 # shellcheck source=lib/runpod_project_env.sh
 source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
 runpod_load_create_env "${LOCAL_PROJECT_ROOT}"
+if [[ "${RUNPOD_TEST_MODE:-0}" != 1 && "${RUNPOD_CREATE_DRY_RUN:-0}" != 1 \
+    && "${RUNPOD_LAUNCH_CONTROL_LOCK_HELD:-0}" != 1 ]]; then
+    exec python3 "${SCRIPT_DIR}/runpod_concurrency.py" create --kind gpu
+fi
+if [[ "${RUNPOD_GPU_WORKFLOW:-train}" == validation && "${RUNPOD_TEST_MODE:-0}" != 1 ]]; then
+    if [[ -z "${VALIDATION_RUN_ID:-}" ]]; then
+        VALIDATION_RUN_ID="$(python3 "${SCRIPT_DIR}/runpod_runs.py" latest)"
+        export VALIDATION_RUN_ID
+    fi
+    RUNPOD_LAUNCH_SELECTION_FILE="$(python3 "${SCRIPT_DIR}/runpod_runs.py" selection --run-id "${VALIDATION_RUN_ID}")"
+    export RUNPOD_LAUNCH_SELECTION_FILE
+fi
 # shellcheck source=lib/runpod_selection.sh
 source "${SCRIPT_DIR}/lib/runpod_selection.sh"
 if [[ "${RUNPOD_GPU_WORKFLOW:-train}" == "baseline" ]]; then
@@ -112,7 +124,7 @@ fi
 FRESH_TRAINING_RUN=0
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "train" \
     && -z "${WANDB_RUN_ID}" && -z "${RESUME_CHECKPOINT}" ]]; then
-    WANDB_RUN_ID="run-$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}${RANDOM}"
+    WANDB_RUN_ID="run-$(date -u +%Y%m%dT%H%M%SZ)-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
     FRESH_TRAINING_RUN=1
 fi
 
@@ -394,7 +406,13 @@ if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
         echo "RunPod checkpoint preflight helpers are unavailable" >&2
         exit 127
     fi
-    verify_no_active_gpu_workflow
+    if [[ "${RUNPOD_GPU_WORKFLOW}" == baseline ]]; then
+        python3 "${SCRIPT_DIR}/runpod_concurrency.py" admit --mode exclusive
+        verify_no_active_gpu_workflow
+    else
+        python3 "${SCRIPT_DIR}/runpod_concurrency.py" admit \
+            --mode "${RUNPOD_GPU_WORKFLOW}" --run-id "${VALIDATION_RUN_ID:-${WANDB_RUN_ID}}"
+    fi
     if [[ "${RUNPOD_GPU_WORKFLOW}" == "validation" ]]; then
         if [[ -z "${VALIDATION_RUN_ID}" ]]; then
             TRAINING_LIFECYCLE_JSON="$(bash "${S3_WRAPPER}" s3 cp \
@@ -428,6 +446,18 @@ if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
 fi
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "validation" ]]; then
     WANDB_RUN_ID="${VALIDATION_RUN_ID}"
+fi
+RUNPOD_SCOPED_LIFECYCLE=0
+if [[ "${RUNPOD_GPU_WORKFLOW}" != baseline && -n "${WANDB_RUN_ID}" ]]; then
+    RUNPOD_SCOPED_LIFECYCLE=1
+    export RUNPOD_SCOPED_LIFECYCLE
+    lifecycle_phase=training
+    if [[ "${RUNPOD_GPU_WORKFLOW}" == validation ]]; then lifecycle_phase=validation; fi
+    RUNPOD_GUARD_LIFECYCLE_KEY="$(runpod_gpu_lifecycle_key "${lifecycle_phase}" "${WANDB_RUN_ID}")"
+fi
+if [[ "${RUNPOD_PREFLIGHT_ONLY:-0}" == 1 ]]; then
+    echo "Training preflight passed: ${RUNPOD_CONFIG}; no Pod was created"
+    exit 0
 fi
 
 WANDB_API_KEY_REFERENCE="{{ RUNPOD_SECRET_${RUNPOD_WANDB_SECRET_NAME} }}"
@@ -465,7 +495,7 @@ POD_ENV_JSON="$(printf \
     "${VALIDATION_FORCE_RECOMPUTE}" "${VALIDATION_RUN_ID}" \
     "${VALIDATION_CHECKPOINT}")"
 
-POD_CREATE_JSON="$(RUNPOD_POD_NAME="${RUNPOD_POD_NAME}" \
+POD_CREATE_JSON="$(RUNPOD_SCOPED_LIFECYCLE="${RUNPOD_SCOPED_LIFECYCLE}" RUNPOD_POD_NAME="${RUNPOD_POD_NAME}" \
     RUNPOD_GPU_ID="${RUNPOD_GPU_ID}" RUNPOD_GPU_COUNT="${RUNPOD_GPU_COUNT}" \
     RUNPOD_IMAGE="${RUNPOD_IMAGE}" RUNPOD_MIN_CUDA_VERSION="${RUNPOD_MIN_CUDA_VERSION}" \
     RUNPOD_CLOUD_TYPE="${RUNPOD_CLOUD_TYPE}" RUNPOD_DATACENTER_ID="${RUNPOD_DATACENTER_ID}" \
@@ -489,6 +519,7 @@ payload = {
     "volumeMountPath": os.environ["RUNPOD_VOLUME_MOUNT_PATH"],
     "env": json.loads(os.environ["POD_ENV_JSON"]),
 }
+payload["env"]["RUNPOD_SCOPED_LIFECYCLE"] = os.environ["RUNPOD_SCOPED_LIFECYCLE"]
 print(json.dumps(payload, separators=(",", ":")))
 ')"
 
@@ -510,6 +541,10 @@ if [[ ! -r "${RUNPOD_GUARD_LAUNCHER}" ]]; then
     exit 127
 fi
 
+if [[ "${RUNPOD_SCOPED_LIFECYCLE}" == 1 ]]; then
+    bash "${S3_WRAPPER}" s3 cp "${RUNPOD_SELECTION_FILE}" \
+        "s3://${RUNPOD_NETWORK_VOLUME_ID}/lifecycle/runs/${WANDB_RUN_ID}/selection.json" --only-show-errors
+fi
 CREATE_OUTPUT="$(printf '%s' "${POD_CREATE_JSON}" \
     | bash "${SCRIPT_DIR}/runpodctl_project.sh" pod create-gpu)"
 POD_ID="$(printf '%s' "${CREATE_OUTPUT}" | python3 -c \
@@ -533,6 +568,8 @@ GUARD_PID="$(RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}" \
     "${RUNPOD_GUARD_LIFECYCLE_KEY}" "${GUARD_LOG}")"
 
 printf 'Created Pod: %s\n' "${POD_ID}"
+printf 'Run ID: %s\n' "${WANDB_RUN_ID}"
+printf 'Experiment config: %s\n' "${RUNPOD_CONFIG}"
 printf 'External hard-limit guard PID: %s\n' "${GUARD_PID}"
 printf 'Guard log: %s\n' "${GUARD_LOG}"
 printf 'Guard readiness: %s\n' "${GUARD_LOG%.log}.ready.json"

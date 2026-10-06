@@ -35,7 +35,6 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "models/quant.py",
     "models/scale_features.py",
     "preflight.py",
-    "run_paths.py",
     "tracking.py",
     "training.py",
     "training_paths.py",
@@ -147,7 +146,7 @@ def _validated_implementation_files(
         or not set(TRAINING_IMPLEMENTATION_PATHS) <= set(files)
         or set(files)
         - set(TRAINING_IMPLEMENTATION_PATHS)
-        - {"baseline_contract.py", "run_contract.py"}
+        - {"baseline_contract.py", "run_contract.py", "run_paths.py"}
         or any(
             not isinstance(path, str)
             or not isinstance(digest, str)
@@ -160,7 +159,7 @@ def _validated_implementation_files(
     expected_digest = _canonical_payload_digest(files)
     if implementation.get("sha256") != expected_digest:
         raise ValueError(f"{label} training implementation digest is inconsistent")
-    # Historical snapshots included these control-plane readers. Their storage
+    # Historical snapshots included control-plane path validators/readers. Their storage
     # layout/validation code does not define model, data, loss or optimizer math.
     # Validate the original snapshot above, then compare only numerical sources.
     return {path: files[path] for path in TRAINING_IMPLEMENTATION_PATHS}

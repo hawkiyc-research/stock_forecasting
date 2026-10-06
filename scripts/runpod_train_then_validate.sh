@@ -78,6 +78,9 @@ for required_path_name in RUNPOD_SHUTDOWN_DIR RUNPOD_TRAINING_LIFECYCLE_MARKER; 
         "${required_path_name}" NETWORK_VOLUME_ROOT
 done
 
+if [[ "${RUNPOD_SCOPED_LIFECYCLE:-0}" == 1 && "${RUNPOD_TEST_MODE:-0}" != 1 ]]; then
+    "${PROJECT_VENV}/bin/python" "${SCRIPT_DIR}/prepare_runpod_training_caches.py" --config "${CONFIG_PATH}"
+fi
 "${PROJECT_VENV}/bin/python" -m stock_forecasting.cli.train --config "${RUNPOD_CONFIG}"
 
 "${RUNPOD_PYTHON_BIN}" "${READINESS_HELPER}" write-training-completion \

@@ -32,6 +32,10 @@ if [[ $# -eq 1 ]]; then
     esac
 fi
 
+if [[ "${MODE}" == apply && "${RUNPOD_SYNC_CONTROL_LOCK_HELD:-0}" != 1 ]]; then
+    exec python3 "${SCRIPT_DIR}/runpod_concurrency.py" sync
+fi
+
 if [[ ! "${RUNPOD_NETWORK_VOLUME_ID}" =~ ^[A-Za-z0-9_-]+$ ]]; then
     echo "RUNPOD_NETWORK_VOLUME_ID contains invalid characters" >&2
     exit 2

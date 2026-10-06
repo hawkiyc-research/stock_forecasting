@@ -50,22 +50,19 @@ done
 runpod_validate_gpu_id "${GPU_ID}"
 MAX_RUNTIME_SECONDS="$(runpod_duration_seconds "${MAX_RUNTIME}" --maxRuntime)"
 runpod_load_s3_env "${PROJECT_ROOT}"
-runpod_load_active_selection "${PROJECT_ROOT}"
 
 if [[ -z "${TARGET_RUN_ID}" ]]; then
-    TRAINING_LIFECYCLE_JSON="$(bash "${S3_WRAPPER}" s3 cp \
-        "s3://${RUNPOD_NETWORK_VOLUME_ID}/lifecycle/stage1/training.json" - \
-        --only-show-errors)"
-    TARGET_RUN_ID="$(printf '%s\n' "${TRAINING_LIFECYCLE_JSON}" \
-        | python3 "${READINESS_HELPER}" resumable-training-run \
-            --marker - \
-            --network-volume-root "${VOLUME_MOUNT_PATH}")"
+    TARGET_RUN_ID="$(python3 "${SCRIPT_DIR}/runpod_runs.py" latest --purpose resume)"
 fi
 if [[ ! "${TARGET_RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ \
     || "${TARGET_RUN_ID}" == *--* ]]; then
     echo "RUN_ID must be a safe 1-120 character directory name" >&2
     exit 2
 fi
+
+RUNPOD_LAUNCH_SELECTION_FILE="$(python3 "${SCRIPT_DIR}/runpod_runs.py" selection --run-id "${TARGET_RUN_ID}")"
+export RUNPOD_LAUNCH_SELECTION_FILE
+runpod_load_active_selection "${PROJECT_ROOT}"
 
 COMPLETION_KEYS="$(bash "${S3_WRAPPER}" s3api list-objects-v2 \
     --bucket "${RUNPOD_NETWORK_VOLUME_ID}" \

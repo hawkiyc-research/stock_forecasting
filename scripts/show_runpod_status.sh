@@ -245,4 +245,6 @@ summarize_download_progress
 summarize_marker lifecycle/stage1/training.json training
 summarize_marker lifecycle/stage1/baseline.json baseline
 summarize_marker lifecycle/stage1/validation.json validation
+printf '\nRun-scoped training and validation workflows:\n'
+python3 "${SCRIPT_DIR}/runpod_runs.py" status
 summarize_wandb

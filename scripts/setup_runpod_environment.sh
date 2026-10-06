@@ -106,6 +106,10 @@ if [[ ! -f "${RUNTIME_VERIFIER}" ]]; then
     echo "RunPod runtime verifier not found: ${RUNTIME_VERIFIER}" >&2
     exit 2
 fi
+if [[ "${RUNPOD_GPU_WORKFLOW_LEASE_HELD:-0}" != 1 ]]; then
+    # Manual setup and CPU preparation are writers, never shared model readers.
+    RUNPOD_SCOPED_LIFECYCLE=0 runpod_acquire_gpu_workflow_lease "${NETWORK_VOLUME_ROOT}"
+fi
 if [[ ! -f "${POETRY_OWNERSHIP_VERIFIER}" ]]; then
     echo "Poetry ownership verifier not found: ${POETRY_OWNERSHIP_VERIFIER}" >&2
     exit 2

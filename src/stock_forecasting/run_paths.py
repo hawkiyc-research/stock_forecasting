@@ -200,15 +200,22 @@ def validate_validation_lifecycle_path(
     path: str | Path,
     *,
     network_volume_root: str | Path,
+    run_id: str | None = None,
 ) -> Path:
-    """Require the single lifecycle marker monitored by the validation guard."""
+    """Bind a scoped marker to its run; still read historical singleton records."""
 
     candidate = Path(path).expanduser().resolve(strict=False)
     expected = (Path(network_volume_root) / "lifecycle" / "stage1" / "validation.json").resolve(
         strict=False
     )
-    if candidate != expected:
-        raise ValueError("Validation lifecycle must equal lifecycle/stage1/validation.json")
+    scoped = None
+    if run_id is not None:
+        scoped = (
+            Path(network_volume_root) / "lifecycle" / "runs"
+            / validate_run_id(run_id) / "validation.json"
+        ).resolve(strict=False)
+    if candidate != expected and candidate != scoped:
+        raise ValueError("Validation lifecycle must identify this run or the historical marker")
     return candidate
 
 
@@ -216,15 +223,22 @@ def validate_training_lifecycle_path(
     path: str | Path,
     *,
     network_volume_root: str | Path,
+    run_id: str | None = None,
 ) -> Path:
-    """Require the single lifecycle marker monitored by the training guard."""
+    """Require this run's lifecycle marker or the historical singleton path."""
 
     candidate = Path(path).expanduser().resolve(strict=False)
     expected = (Path(network_volume_root) / "lifecycle" / "stage1" / "training.json").resolve(
         strict=False
     )
-    if candidate != expected:
-        raise ValueError("Training lifecycle must equal lifecycle/stage1/training.json")
+    scoped = None
+    if run_id is not None:
+        scoped = (
+            Path(network_volume_root) / "lifecycle" / "runs"
+            / validate_run_id(run_id) / "training.json"
+        ).resolve(strict=False)
+    if candidate != expected and candidate != scoped:
+        raise ValueError("Training lifecycle must identify this run or the historical marker")
     return candidate
 
 

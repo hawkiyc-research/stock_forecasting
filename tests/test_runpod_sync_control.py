@@ -93,6 +93,9 @@ class RunPodSyncControlTests(unittest.TestCase):
             "THIRD_PARTY_NOTICES.md", "RELEASES.md",
         ):
             shutil.copy2(ROOT / name, self.project / name)
+        (self.project / "scripts/runpodctl_project.sh").write_text(
+            '#!/bin/bash\n[[ "$*" == "pod list --output json" ]] || exit 97\nprintf "[]\\n"\n'
+        )
         (self.project / "tests").mkdir()
         transport = self.project / "tests" / Path(__file__).name
         shutil.copy2(__file__, transport)

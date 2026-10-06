@@ -80,7 +80,7 @@ fi
 # Prove the exact volume mount before acquiring leases or creating directories.
 bash "${SCRIPT_DIR}/verify_runpod_mounted_readiness.sh" --mount-only
 
-# A single shared lease protects both singleton training and validation lifecycle files.
+# Distinct runs share a read lease; the run lease excludes duplicate writers.
 runpod_acquire_gpu_workflow_lease "${NETWORK_VOLUME_ROOT}"
 
 export NETWORK_VOLUME_ROOT PROJECT_ROOT DATA_ROOT CACHE_ROOT LOG_ROOT SAVED_MODEL_ROOT WANDB_DIR
@@ -150,8 +150,8 @@ RUNPOD_LAUNCH_ID="$(printf '%s' "${RUNPOD_LAUNCH_ID}" | tr -c 'A-Za-z0-9._-' '-'
 export RUNPOD_LAUNCH_ID
 export RUNPOD_SHUTDOWN_DIR="${LOG_ROOT}/${RUNPOD_RUN_KEY}/launcher/${RUNPOD_LAUNCH_ID}"
 export RUNPOD_SHUTDOWN_MARKER="${RUNPOD_SHUTDOWN_DIR}/shutdown.json"
-export RUNPOD_TRAINING_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/stage1/training.json"
-export RUNPOD_VALIDATION_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/stage1/validation.json"
+export RUNPOD_TRAINING_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/$(runpod_gpu_lifecycle_key training)"
+export RUNPOD_VALIDATION_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/$(runpod_gpu_lifecycle_key validation)"
 export RUNPOD_TRAINING_COMPLETED_MARKER="${RUNPOD_SHUTDOWN_DIR}/training-completed.json"
 
 for path_name in \

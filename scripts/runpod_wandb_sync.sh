@@ -17,7 +17,6 @@ terminate_sync_pod() {
     bash "${SCRIPT_DIR}/runpod_self_terminate.sh" || true
     exit "${sync_exit_code}"
 }
-trap terminate_sync_pod EXIT
 
 NETWORK_VOLUME_ROOT="${NETWORK_VOLUME_ROOT:-${RUNPOD_VOLUME_ROOT:-/runpod-volume}}"
 PROJECT_ROOT="${PROJECT_ROOT:-${NETWORK_VOLUME_ROOT}/stock_forecasting}"
@@ -31,6 +30,20 @@ if [[ ! -x "${PROJECT_PYTHON}" ]]; then
     exit 127
 fi
 bash "${SCRIPT_DIR}/verify_runpod_mounted_readiness.sh" --mount-only
+if [[ "${RUNPOD_SCOPED_LIFECYCLE:-0}" == 1 ]]; then
+    # Never sync another experiment's still-open transactions on a shared volume.
+    if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "${WANDB_RUN_ID:-}" ) ]]; then
+        echo "W&B sync is restricted to this Pod's run ID" >&2
+        exit 2
+    fi
+    set -- "${WANDB_RUN_ID:?A run-scoped Pod requires WANDB_RUN_ID}"
+    source "${SCRIPT_DIR}/lib/runpod_paths.sh"
+    unset RUNPOD_GPU_WORKFLOW_LEASE_HELD
+    runpod_acquire_gpu_workflow_lease "${NETWORK_VOLUME_ROOT}"
+fi
+# Only an admitted sync task owns this Pod. Invalid arguments or a busy training
+# lease must never terminate the experiment that is already using it.
+trap terminate_sync_pod EXIT
 set +e
 "${PROJECT_PYTHON}" -m stock_forecasting.cli.sync_wandb "$@"
 SYNC_EXIT_CODE=$?

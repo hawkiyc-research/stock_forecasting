@@ -639,6 +639,7 @@ class ValidationBenchmark:
         lifecycle = validate_validation_lifecycle_path(
             lifecycle,
             network_volume_root=config.validation.output_root.parent,
+            run_id=run_id,
         )
         validate_evaluation_path(
             output,

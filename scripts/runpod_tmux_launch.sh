@@ -242,6 +242,12 @@ if [[ -z "${RUNPOD_POD_ID:-}" && "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
 fi
 runpod_validate_path_in_root \
     "${JOB_SCRIPT}" "${PROJECT_ROOT}" JOB_SCRIPT PROJECT_ROOT
+if [[ "${RUNPOD_SCOPED_LIFECYCLE:-0}" == 1 \
+    && ( "${JOB_ROLE}" == gpu-train || "${JOB_ROLE}" == gpu-validation ) ]]; then
+    phase=training
+    if [[ "${JOB_ROLE}" == gpu-validation ]]; then phase=validation; fi
+    FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/$(runpod_gpu_lifecycle_key "${phase}" "${RUN_DIRECTORY_ID}")"
+fi
 if [[ -n "${FAILURE_LIFECYCLE_MARKER}" ]]; then
     runpod_validate_path_in_root \
         "${FAILURE_LIFECYCLE_MARKER}" "${NETWORK_VOLUME_ROOT}" \
@@ -301,6 +307,7 @@ mkdir -p "${JOB_DIR}"
     printf 'set -uo pipefail\n'
     printf 'umask 077\n'
     printf 'export RUNPOD_ROLE=%q\n' "${JOB_ROLE}"
+    printf 'export RUNPOD_SCOPED_LIFECYCLE=%q\n' "${RUNPOD_SCOPED_LIFECYCLE:-0}"
     printf 'export RUNPOD_LAUNCH_ID=%q\n' "${LAUNCH_ID}"
     printf 'export RUNPOD_TMUX_LOG_FILE=%q\n' "${JOB_LOG}"
     if [[ "${JOB_ROLE}" == "gpu-train" || "${JOB_ROLE}" == "gpu-baseline" ]]; then
@@ -338,7 +345,7 @@ mkdir -p "${JOB_DIR}"
         printf '  diagnostic_lease_acquired=1\n'
         printf '  if publish_probe_state running 0; then\n'
     fi
-    if [[ "${JOB_ROLE}" == "gpu-baseline" ]]; then
+    if [[ "${JOB_ROLE}" == "gpu-baseline" || "${JOB_ROLE}" == gpu-train || "${JOB_ROLE}" == gpu-validation ]]; then
         printf 'source %q\n' "${SCRIPT_DIR}/lib/runpod_paths.sh"
         printf 'unset RUNPOD_GPU_WORKFLOW_LEASE_HELD\n'
         printf 'runpod_acquire_gpu_workflow_lease %q\n' "${NETWORK_VOLUME_ROOT}"
@@ -360,7 +367,7 @@ mkdir -p "${JOB_DIR}"
     if [[ "${JOB_ROLE}" == "gpu-probe" ]]; then
         printf '  else job_exit_code=74; fi\n'
         printf 'fi\n'
-    elif [[ "${JOB_ROLE}" == "gpu-baseline" ]]; then
+    elif [[ "${JOB_ROLE}" == "gpu-baseline" || "${JOB_ROLE}" == gpu-train || "${JOB_ROLE}" == gpu-validation ]]; then
         printf 'fi\n'
     fi
     printf 'finalization_exit_code=0\n'
@@ -469,7 +476,7 @@ mkdir -p "${JOB_DIR}"
     fi
     if [[ "${JOB_ROLE}" == "gpu-train" ]]; then
         printf 'validation_marker=%q\n' \
-            "${NETWORK_VOLUME_ROOT}/lifecycle/stage1/validation.json"
+            "${NETWORK_VOLUME_ROOT}/$(runpod_gpu_lifecycle_key validation "${RUN_DIRECTORY_ID}")"
         printf 'if [[ -f "${validation_marker}" ]] && %q %q active-run-lifecycle --marker "${validation_marker}" --network-volume-root %q --kind stage1-validation --run-id %q --launch-id %q >/dev/null 2>&1; then\n' \
             "${RUNPOD_IMAGE_PYTHON}" "${READINESS_HELPER}" \
             "${NETWORK_VOLUME_ROOT}" "${RUN_DIRECTORY_ID}" "${LAUNCH_ID}"

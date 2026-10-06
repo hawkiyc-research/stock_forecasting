@@ -591,8 +591,9 @@ def test_stable_runpod_lifecycle_and_synchronization_boundaries_remain() -> None
     assert 'caffeinate -is -w "${GUARD_PID}"' in guard
     assert (
         'RUNPOD_VALIDATION_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}'
-        '/lifecycle/stage1/validation.json"' in entrypoint
+        '/$(runpod_gpu_lifecycle_key validation)"' in entrypoint
     )
+    assert '"RUNPOD_SCOPED_LIFECYCLE"' in pid1_environment
     assert "stock_forecasting.cli.validate_benchmarks" in validation
 
 
@@ -903,7 +904,7 @@ def test_workflow_exposes_bounded_cpu_gpu_resume_and_validation_options() -> Non
     assert '"RUNPOD_CPU_EODHD_QPS"' in reexec
     assert '"RUNPOD_CPU_TAIWAN_QPS"' in reexec
     assert '"RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS"' in reexec
-    assert "resumable-training-run" in resume
+    assert "runpod_runs.py\" latest --purpose resume" in resume
     assert "training-completed.json" in resume
     assert "--maxRuntime" in validation
     assert "--gpuId" in validation

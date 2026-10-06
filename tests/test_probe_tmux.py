@@ -209,6 +209,29 @@ class ProbeTmuxTests(unittest.TestCase):
         self.assertFalse((harness.root / "lifecycle-calls").exists())
         self.assertEqual(list((harness.volume / "lifecycle/stage1").rglob("*.json")), [])
 
+    def test_scoped_training_and_validation_keep_runner_and_finalization_bound(self) -> None:
+        for workflow, phase, role in (
+            ("stage1-train", "training", "gpu-train"),
+            ("stage1-validate", "validation", "gpu-validation"),
+        ):
+            with self.subTest(workflow=workflow):
+                harness = self.harness()
+                harness.environment["RUNPOD_SCOPED_LIFECYCLE"] = "1"
+                harness.write_script(harness.bin / "flock", r'''
+                    [[ "$*" == "-n 8" || "$*" == "-s -n 9" ]] || exit 95
+                    printf '%s\n' "$*" >> "${HARNESS_ROOT}/lease-calls"
+                ''')
+                result = harness.command("runpod_tmux_launch.sh", workflow)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runner = harness.run_worker()
+                self.assertEqual(runner.returncode, 0, runner.stdout + runner.stderr)
+                calls = harness.read("lifecycle-calls")
+                self.assertIn(f"/lifecycle/runs/run-pod-owner/{phase}.json", calls)
+                self.assertNotIn("/lifecycle/stage1/", calls)
+                self.assertEqual(harness.read("lease-calls").splitlines(), ["-n 8", "-s -n 9"])
+                self.assertEqual(harness.read("worker-env").splitlines(), [role, "0", "1"])
+                self.assertEqual(harness.status()["state"], "succeeded")
+
     def test_legacy_workflow_alias_delegates_once_with_unchanged_arguments(self) -> None:
         for arguments in ((), ("--checkpoint", "run-selected", "--batch-size", "8")):
             with self.subTest(arguments=arguments):
@@ -466,12 +489,15 @@ class ProbeTmuxTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 runner = harness.run_worker()
                 self.assertEqual(runner.returncode, 7, runner.stdout + runner.stderr)
-                self.assertEqual(harness.read("worker-env").splitlines(), [role, "0", "0"])
+                expected_lease = "1" if role in {"gpu-train", "gpu-validation"} else "0"
+                self.assertEqual(
+                    harness.read("worker-env").splitlines(), [role, "0", expected_lease]
+                )
                 self.assertEqual(harness.read("timeout-options").splitlines()[-1], duration)
                 self.assertEqual(harness.read("shutdown-called"), f"{role}\n")
                 self.assertEqual(harness.status()["state"], "failed")
                 self.assertIn("write-state", harness.read("lifecycle-calls"))
-                self.assertFalse((harness.root / "lease-calls").exists())
+                self.assertEqual((harness.root / "lease-calls").exists(), expected_lease == "1")
 
     def test_section_safe_gpu_workflows_do_not_use_outer_timeout(self) -> None:
         for workflow in ("stage1-train", "stage1-validate"):

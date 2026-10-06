@@ -10,6 +10,7 @@ GUARD_SCRIPT="${SCRIPT_DIR}/terminate_runpod_after.sh"
 RUNPODCTL_WRAPPER="${SCRIPT_DIR}/runpodctl_project.sh"
 # shellcheck source=lib/runpod_project_env.sh
 source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
+source "${SCRIPT_DIR}/lib/runpod_paths.sh"
 
 if [[ $# -ne 4 ]]; then
     echo "Usage: launch_runpod_guard.sh POD_ID DELAY_SECONDS LIFECYCLE_KEY LOG_FILE" >&2
@@ -30,6 +31,7 @@ RUNPOD_GUARD_DATASET_REQUEST_SHA256="${RUNPOD_GUARD_DATASET_REQUEST_SHA256:-}"
 RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE="${RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE:-}"
 RUNPOD_GUARD_KEEP_AWAKE="${RUNPOD_GUARD_KEEP_AWAKE:-auto}"
 RUNPOD_GUARD_EMERGENCY_TERMINATE_ON_STARTUP_FAILURE="${RUNPOD_GUARD_EMERGENCY_TERMINATE_ON_STARTUP_FAILURE:-1}"
+LIFECYCLE_KIND="$(runpod_guard_lifecycle_kind "${LIFECYCLE_KEY}" "${RUNPOD_GUARD_RUN_ID}")"
 
 if [[ ! "${POD_ID}" =~ ^[A-Za-z0-9_-]+$ \
     || ! "${DELAY_SECONDS}" =~ ^[1-9][0-9]*$ \
@@ -43,8 +45,8 @@ if [[ ! "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" =~ ^[0-9]+$ \
     exit 2
 fi
 if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 \
-    && ( ( "${LIFECYCLE_KEY}" != "lifecycle/stage1/training.json" \
-            && "${LIFECYCLE_KEY}" != "lifecycle/stage1/validation.json" ) \
+    && ( ( "${LIFECYCLE_KIND}" != "stage1-training" \
+            && "${LIFECYCLE_KIND}" != "stage1-validation" ) \
         || ! -r "${RUNPOD_GUARD_CHECKPOINT_CONFIG}" \
         || ! "${RUNPOD_GUARD_DATASET_REQUEST_SHA256}" =~ ^[0-9a-f]{64}$ ) ]]; then
     echo "Section-aware GPU guard requires its local config and dataset digest" >&2
@@ -78,18 +80,16 @@ if [[ -n "${RUNPOD_GUARD_RUN_ID}" \
     echo "RUNPOD_GUARD_RUN_ID must be a safe 1-120 character run ID" >&2
     exit 2
 fi
-case "${LIFECYCLE_KEY}" in
-    lifecycle/stage1/cpu-preparation.json|\
-        lifecycle/stage1/mixed-finalization.json|\
-        lifecycle/stage1/training.json|lifecycle/stage1/validation.json|lifecycle/stage1/baseline.json) ;;
+case "${LIFECYCLE_KIND}" in
+    stage1-cpu-preparation|stage1-mixed-finalization|stage1-training|stage1-validation|stage1-baseline) ;;
     *)
         echo "Unsupported lifecycle marker key" >&2
         exit 2
         ;;
 esac
-if [[ ( "${LIFECYCLE_KEY}" == "lifecycle/stage1/training.json" \
-        || "${LIFECYCLE_KEY}" == "lifecycle/stage1/validation.json" \
-        || "${LIFECYCLE_KEY}" == "lifecycle/stage1/baseline.json" ) \
+if [[ ( "${LIFECYCLE_KIND}" == "stage1-training" \
+        || "${LIFECYCLE_KIND}" == "stage1-validation" \
+        || "${LIFECYCLE_KIND}" == "stage1-baseline" ) \
     && -z "${RUNPOD_GUARD_RUN_ID}" ]]; then
     echo "GPU lifecycle guards require RUNPOD_GUARD_RUN_ID" >&2
     exit 2
@@ -127,6 +127,13 @@ if [[ "${RUNPOD_GUARD_EMERGENCY_TERMINATE_ON_STARTUP_FAILURE}" == "0" \
 fi
 
 mkdir -p "$(dirname "${LOG_FILE}")"
+if [[ "${RUNPOD_GUARD_SOFT_LIMIT_SECONDS}" -gt 0 ]]; then
+    config_snapshot="${LOG_FILE%.log}.config.yaml"
+    if [[ "${RUNPOD_GUARD_CHECKPOINT_CONFIG}" != "${config_snapshot}" ]]; then
+        cp "${RUNPOD_GUARD_CHECKPOINT_CONFIG}" "${config_snapshot}"
+    fi
+    RUNPOD_GUARD_CHECKPOINT_CONFIG="${config_snapshot}"
+fi
 READY_FILE="${LOG_FILE%.log}.ready.json"
 PID_FILE="${LOG_FILE%.log}.pid"
 CAFFEINATE_PID_FILE="${LOG_FILE%.log}.caffeinate.pid"

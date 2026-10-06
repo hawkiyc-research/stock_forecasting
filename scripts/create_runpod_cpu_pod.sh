@@ -11,6 +11,10 @@ source "${SCRIPT_DIR}/lib/runpod_paths.sh"
 # shellcheck source=lib/runpod_project_env.sh
 source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
 runpod_load_create_env "${LOCAL_PROJECT_ROOT}"
+if [[ "${RUNPOD_TEST_MODE:-0}" != 1 && "${RUNPOD_CREATE_DRY_RUN:-0}" != 1 \
+    && "${RUNPOD_LAUNCH_CONTROL_LOCK_HELD:-0}" != 1 ]]; then
+    exec python3 "${SCRIPT_DIR}/runpod_concurrency.py" create --kind cpu
+fi
 # shellcheck source=lib/runpod_selection.sh
 source "${SCRIPT_DIR}/lib/runpod_selection.sh"
 runpod_load_active_selection "${LOCAL_PROJECT_ROOT}"
@@ -324,6 +328,7 @@ if [[ ! -r "${RUNPOD_GUARD_LAUNCHER}" ]]; then
     exit 127
 fi
 
+python3 "${SCRIPT_DIR}/runpod_concurrency.py" admit --mode exclusive
 CREATE_BODY="$(printf '%s' "${POD_CREATE_JSON}" \
     | python3 "${SCRIPT_DIR}/runpod_rest_v2_control.py" pod create-cpu)"
 POD_ID="$(printf '%s' "${CREATE_BODY}" | python3 -c \

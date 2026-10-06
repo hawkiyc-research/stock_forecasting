@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     lifecycle = validate_validation_lifecycle_path(
         args.lifecycle or volume_root / "lifecycle" / "stage1" / "validation.json",
         network_volume_root=volume_root,
+        run_id=run_id,
     )
     models = list(args.models or config.validation.models)
     seeds = list(args.seeds or config.validation.seeds)

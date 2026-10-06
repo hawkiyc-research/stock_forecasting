@@ -77,35 +77,10 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 127
 fi
 
-TRAINING_JSON="$(bash "${S3_WRAPPER}" s3 cp \
-    "s3://${RUNPOD_NETWORK_VOLUME_ID}/lifecycle/stage1/training.json" - \
-    --only-show-errors)"
-LATEST_TRAINING_RUN_ID="$(printf '%s' "${TRAINING_JSON}" | python3 -c '
-import json
-import re
-import sys
-
-payload = json.load(sys.stdin)
-run_id = payload.get("wandb_run_id", "")
-if not isinstance(run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", run_id) is None:
-    raise SystemExit("Latest training lifecycle has no safe run ID")
-print(run_id)
-')"
 if [[ -z "${RUN_ID}" ]]; then
-    RUN_ID="$(printf '%s' "${TRAINING_JSON}" | python3 -c '
-import json
-import re
-import sys
-
-payload = json.load(sys.stdin)
-run_id = payload.get("wandb_run_id", "")
-if payload.get("state") != "ready":
-    raise SystemExit("Latest training lifecycle is not ready")
-if not isinstance(run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", run_id) is None:
-    raise SystemExit("Latest training lifecycle has no safe run ID")
-print(run_id)
-')"
+    RUN_ID="$(python3 "${SCRIPT_DIR}/runpod_runs.py" latest --purpose results)"
 fi
+TRAINING_JSON="$(python3 "${SCRIPT_DIR}/runpod_runs.py" lifecycle --run-id "${RUN_ID}")"
 if [[ ! "${RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ \
     || "${RUN_ID}" == *--* ]]; then
     echo "Run ID contains unsupported characters" >&2
@@ -118,11 +93,10 @@ if [[ -d "${RUN_DOWNLOAD_ROOT}" && "${RESUME}" != "1" ]]; then
     exit 2
 fi
 mkdir -p "${RUN_DOWNLOAD_ROOT}"
-if [[ "${LATEST_TRAINING_RUN_ID}" == "${RUN_ID}" ]]; then
+if [[ "${TRAINING_JSON}" != '{}' ]]; then
     printf '%s\n' "${TRAINING_JSON}" > "${RUN_DOWNLOAD_ROOT}/training-lifecycle.json"
 elif [[ "${RUN_ID_WAS_EXPLICIT}" == "1" ]]; then
-    printf 'Latest singleton training lifecycle belongs to %s; it will not be attached to older run %s.\n' \
-        "${LATEST_TRAINING_RUN_ID}" "${RUN_ID}"
+    printf 'Historical run %s has no retained training lifecycle.\n' "${RUN_ID}"
 fi
 
 download_file() {
@@ -238,9 +212,7 @@ download_file \
     "lifecycle/runs/${RUN_ID}/training-completed.json" \
     training-completed.json
 
-VALIDATION_JSON="$(bash "${S3_WRAPPER}" s3 cp \
-    "s3://${RUNPOD_NETWORK_VOLUME_ID}/lifecycle/stage1/validation.json" - \
-    --only-show-errors)"
+VALIDATION_JSON="$(python3 "${SCRIPT_DIR}/runpod_runs.py" lifecycle --kind validation --run-id "${RUN_ID}")"
 VALIDATION_RUN_ID="$(printf '%s' "${VALIDATION_JSON}" | python3 -c '
 import json
 import sys

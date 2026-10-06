@@ -550,7 +550,8 @@ def _build_selection(arguments: argparse.Namespace, project_root: Path) -> Dict[
     return _validate_selection(payload, project_root=project_root)
 
 
-def _activate_selection(project_root: Path, payload: Dict[str, Any]) -> Path:
+def _store_selection(project_root: Path, payload: Dict[str, Any]) -> Path:
+    """Persist a selection without changing another launch's active pointer."""
     selection_path = _selection_dir(project_root) / f"{payload['selection_id']}.json"
     if selection_path.exists():
         existing = _load_json_path(selection_path, "Existing immutable selection")
@@ -560,6 +561,11 @@ def _activate_selection(project_root: Path, payload: Dict[str, Any]) -> Path:
         payload = existing
     else:
         _atomic_write_json(selection_path, payload)
+    return selection_path
+
+
+def _activate_selection(project_root: Path, payload: Dict[str, Any]) -> Path:
+    selection_path = _store_selection(project_root, payload)
     relative_selection_path = selection_path.relative_to(project_root).as_posix()
     _atomic_write_json(
         _active_pointer_path(project_root),

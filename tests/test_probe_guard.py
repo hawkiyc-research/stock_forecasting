@@ -12,6 +12,7 @@ import sys
 import threading
 import unittest
 from argparse import Namespace
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from test_probe_tmux import ROOT, ProbeHarness
@@ -20,6 +21,78 @@ CONTRACT = runpy.run_path(str(ROOT / "scripts/runpod_probe_lifecycle.py"))
 
 
 class ProbeGuardTests(unittest.TestCase):
+    def test_concurrent_run_guards_never_consume_other_runs_completion(self):
+        harness = self.harness()
+        harness.write_script(
+            harness.bin / "python3",
+            'if [[ "$1" == */runpod_rest_v2_control.py ]]; then\n'
+            '  [[ "$2 $3" == "pod delete" ]] || exit 91\n'
+            '  printf "%s\\n" "$4" >> ' + shlex.quote(str(harness.root / "scoped-deletes")) + "\n"
+            '  printf "{}\\n"\n'
+            "  exit 0\nfi\nexec " + shlex.quote(sys.executable) + ' "$@"\n',
+        )
+
+        def publish(name, ready):
+            marker = harness.volume / f"lifecycle/runs/run-{name}/training.json"
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            temporary = marker.with_suffix(".pending")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "stage1-training",
+                        "state": "ready" if ready else "preparing",
+                        "pod_id": "pod-" + name,
+                        "wandb_run_id": "run-" + name,
+                        "training_completed": ready,
+                    }
+                )
+            )
+            temporary.replace(marker)
+
+        publish("a", True)
+        publish("b", False)
+
+        def guard(name):
+            env = {
+                **harness.environment,
+                "RUNPOD_TEST_MODE": "1",
+                "RUNPOD_GUARD_RUN_ID": "run-" + name,
+                "RUNPOD_GUARD_LIFECYCLE_KEY": f"lifecycle/runs/run-{name}/training.json",
+                "RUNPOD_GUARD_VOLUME_ROOT": str(harness.volume),
+                "RUNPOD_GUARD_POLL_SECONDS": "1",
+                "RUNPOD_GUARD_MAX_ATTEMPTS": "1",
+            }
+            env.pop("RUNPOD_POD_ID")
+            return subprocess.run(
+                [
+                    "bash",
+                    str(harness.scripts / "terminate_runpod_after.sh"),
+                    "pod-" + name,
+                    "8",
+                    str(harness.root / f"guard-{name}.log"),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=12,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first, second = pool.submit(guard, "a"), pool.submit(guard, "b")
+            result = first.result(timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr + harness.read("guard-a.log"))
+            self.assertFalse(second.done(), "B stopped when only A had completed")
+            self.assertEqual(harness.read("scoped-deletes").splitlines(), ["pod-a"])
+            publish("b", True)
+            result = second.result(timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr + harness.read("guard-b.log"))
+        self.assertEqual(harness.read("scoped-deletes").splitlines(), ["pod-a", "pod-b"])
+        for name in ("a", "b"):
+            self.assertIn(
+                "termination triggered by lifecycle-ready", harness.read(f"guard-{name}.log")
+            )
+
     def harness(self) -> ProbeHarness:
         harness = ProbeHarness()
         self.addCleanup(harness.temporary.cleanup)

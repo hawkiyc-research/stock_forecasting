@@ -147,8 +147,11 @@ def load_readiness_module() -> Any:
 
 
 def list_lifecycle_keys(volume_id: str) -> set[str]:
-    payload = run_json(
-        [
+    keys = set()
+    token = None
+    seen = set()
+    for _ in range(256):
+        command = [
             "bash",
             str(S3),
             "s3api",
@@ -156,17 +159,30 @@ def list_lifecycle_keys(volume_id: str) -> set[str]:
             "--bucket",
             volume_id,
             "--prefix",
-            "lifecycle/stage1/",
+            "lifecycle/",
+            "--max-keys",
+            "1000",
+            "--no-paginate",
             "--output",
             "json",
         ]
-    )
-    contents = payload.get("Contents", []) if isinstance(payload, dict) else []
-    return {
-        str(item["Key"])
-        for item in contents
-        if isinstance(item, dict) and isinstance(item.get("Key"), str)
-    }
+        if token:
+            command += ["--continuation-token", token]
+        payload = run_json(command)
+        if not isinstance(payload, dict):
+            raise RuntimeError("Lifecycle inventory must be a JSON object")
+        keys.update(
+            item["Key"]
+            for item in payload.get("Contents", [])
+            if isinstance(item, dict) and isinstance(item.get("Key"), str)
+        )
+        if not payload.get("IsTruncated", False):
+            return keys
+        token = payload.get("NextContinuationToken")
+        if not isinstance(token, str) or not token or token in seen:
+            raise RuntimeError("Invalid lifecycle inventory continuation")
+        seen.add(token)
+    raise RuntimeError("Lifecycle inventory exceeded the bounded recovery scan")
 
 
 def load_marker(volume_id: str, key: str) -> dict[str, Any] | None:
@@ -255,6 +271,12 @@ def expected_lifecycle(pod: dict[str, Any]) -> tuple[str, str] | None:
             return "stage1-mixed-finalization", "lifecycle/stage1/mixed-finalization.json"
         return kind, key
     if role in GPU_ROLES:
+        if env.get("RUNPOD_SCOPED_LIFECYCLE") == "1" and role in {"gpu-train", "gpu-validation"}:
+            run_id = env.get("WANDB_RUN_ID", "")
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", run_id) or "--" in run_id:
+                raise ValueError("Scoped Pod has an invalid run ID")
+            kind, _ = GPU_ROLES[role]
+            return kind, f"lifecycle/runs/{run_id}/{kind.removeprefix('stage1-')}.json"
         return GPU_ROLES[role]
     return None
 
@@ -393,10 +415,7 @@ def rearm_guard(pod: dict[str, Any], remaining: int, guard_dir: Path) -> None:
     command_env["RUNPOD_GUARD_RUN_ID"] = run_id
     section_safe = isinstance(env, dict) and env.get("RUNPOD_SECTION_SAFE_STOP") == "1"
     command_env["RUNPOD_GUARD_SECTION_SAFE"] = "1" if section_safe else "0"
-    if lifecycle_key in {
-        "lifecycle/stage1/training.json",
-        "lifecycle/stage1/validation.json",
-    } and remaining > 1:
+    if expected[0] in {"stage1-training", "stage1-validation"} and remaining > 1:
         ready_path = guard_dir / f"{pod['id']}.ready.json"
         try:
             previous_ready = json.loads(ready_path.read_text(encoding="utf-8"))
@@ -414,7 +433,10 @@ def rearm_guard(pod: dict[str, Any], remaining: int, guard_dir: Path) -> None:
             command_env["RUNPOD_GUARD_SOFT_LIMIT_SECONDS"] = str(soft_remaining)
             config = env.get("RUNPOD_CONFIG", "") if isinstance(env, dict) else ""
             digest = env.get("RUNPOD_DATASET_REQUEST_SHA256", "") if isinstance(env, dict) else ""
-            command_env["RUNPOD_GUARD_CHECKPOINT_CONFIG"] = str(ROOT / str(config))
+            snapshot = guard_dir / f"{pod['id']}.config.yaml"
+            command_env["RUNPOD_GUARD_CHECKPOINT_CONFIG"] = str(
+                snapshot if snapshot.is_file() else ROOT / str(config)
+            )
             command_env["RUNPOD_GUARD_DATASET_REQUEST_SHA256"] = str(digest)
             command_env["RUNPOD_GUARD_CHECKPOINT_NOT_BEFORE"] = str(
                 previous_ready.get("checkpoint_not_before", previous_ready.get("armed_at", ""))
@@ -484,12 +506,14 @@ def observe(
                 continue
         elif action == "keep" and runtime == "running" and section_safe:
             reason += "; section_safe_guard_metadata_missing"
-            observations.append({
-                "pod": pod,
-                "action": action,
-                "reason": reason,
-                "rearm_remaining": 2,
-            })
+            observations.append(
+                {
+                    "pod": pod,
+                    "action": action,
+                    "reason": reason,
+                    "rearm_remaining": 2,
+                }
+            )
             continue
         observations.append({"pod": pod, "action": action, "reason": reason})
     return observations
