@@ -554,6 +554,48 @@ Python 套件管理沿用 Poetry，環境固定在雲端專案根目錄
 `<RUN_ID>`／`<POD_ID>` 是需替換的值；不要原樣輸入。
 所有可選參數、預設值與 alias 集中在 [CLI 參考](#cli-reference-zh)。
 
+##### 讓 agent 暫時操作 RunPod：本機 SSH socket
+
+**只有當使用者希望讓 agent 協助部署、啟動訓練或檢查 RunPod 時，才使用
+`runpod-ssh-socket.sh`。** 在專案根目錄執行：
+
+```bash
+bash runpod-ssh-socket.sh
+bash runpod-ssh-socket.sh 8h
+```
+
+腳本只有一個可選參數 `SOCKET_TTL`，預設 `4h`，接受正整數加上 `m`、`h` 或
+`d`，例如 `30m`、`8h`、`1d`；`--help` 顯示說明。專案位置依腳本所在目錄
+動態取得，從其他工作目錄呼叫時也適用。
+
+它使用既有、權限為 `600` 或 `400` 的專案 `.env` 與 REST v2 查詢入口，
+預設可連線到目前 RunPod API key 可存取的所有運行中 Pod，不限制專案名稱、
+network volume 或 workflow 身分，也不需要設定 `RUNPOD_NETWORK_VOLUME_ID`。
+只有一台時自動選取；有多台時在終端選擇。優先使用 direct SSH；沒有 direct
+endpoint 時使用 API 提供的 RunPod SSH proxy。對應的 SSH 公鑰必須已在
+RunPod 設定完成；proxy 連線不支援 SCP／SFTP，詳見
+[RunPod SSH 文件](https://docs.runpod.io/pods/configuration/use-ssh)。
+登入先嘗試 `~/.ssh/id_ed25519_runpod`，失敗或不存在時，再依序嘗試
+`~/.ssh/` 下其他私鑰（包含子目錄）。使用加密私鑰時，先以 `ssh-add` 解鎖；
+腳本不會詢問或保存密碼，也不會修改 SSH 設定。
+
+成功後會印出 socket、到期時間、agent 可使用的 SSH 命令，以及檢查／提前關閉命令。
+將這段輸出提供給 agent 即可；本次連線資訊也會保存於
+`.runpod/ssh-socket/latest.json`，每次執行使用獨立的私有暫存目錄。
+agent 應先檢查 metadata 的 `expires_at_epoch` 及 `check_command`，再使用
+`ssh_command` 執行工作；此命令只重用 socket，失效時直接失敗。
+
+TTL 是 socket 接受新共用連線的期限。到期會執行 `ssh -O stop`，
+已建立的 SSH 工作及 detached tmux 可以繼續；本機睡眠、重啟或網路中斷可能
+讓連線提早失效，睡眠期間到期則於恢復後停止接受新連線。
+這個期限與 Pod runtime／guard 截止時間分開管理。腳本只建立連線，部署與訓練
+仍使用既有 workflow 與 tmux 入口。
+
+此檔案刻意放在專案根目錄，排除於既有上傳 allowlist，因此不會上傳 RunPod、
+不加入 code file manifest，也不參與 SHA 計算；只修改這個腳本不會改變 workflow
+身分或觸發重新同步／準備資料。`.runpod/` 的連線 metadata 也不會上傳。
+README 本身仍遵循既有文件同步規則。
+
 <a id="setup-zh"></a>
 
 #### 1. 建立帳號資源、憑證與儲存
@@ -2843,6 +2885,56 @@ the local guard host must still remain powered and online to terminate its assig
 
 Replace `<RUN_ID>`/`<POD_ID>` with actual values. Supported options, defaults and aliases
 are collected in the [CLI reference](#cli-reference-en).
+
+##### Temporary agent access to RunPod: local SSH socket
+
+**Use `runpod-ssh-socket.sh` only when you want an agent to help deploy, start
+training, or inspect RunPod.** Run it from the project root:
+
+```bash
+bash runpod-ssh-socket.sh
+bash runpod-ssh-socket.sh 8h
+```
+
+The only optional parameter is `SOCKET_TTL`, defaulting to `4h`. It accepts a
+positive integer followed by `m`, `h`, or `d`, such as `30m`, `8h`, or `1d`;
+`--help` prints usage. The project location is derived from the script's directory,
+so invocation from another working directory also works.
+
+The helper uses the existing project `.env` (mode `600` or `400`) and REST v2
+query wrapper. By default it can connect to every running Pod accessible to the
+configured RunPod API key, regardless of project name, network volume, or workflow
+identity. `RUNPOD_NETWORK_VOLUME_ID` is not required. It selects a sole match
+automatically or prompts in the terminal when several match. Direct SSH is preferred;
+when no direct endpoint exists, it uses the API-provided RunPod SSH proxy. The SSH
+public key must already be configured in RunPod. Proxy connections do not support
+SCP/SFTP; see the
+[RunPod SSH documentation](https://docs.runpod.io/pods/configuration/use-ssh).
+Authentication first tries `~/.ssh/id_ed25519_runpod`. If it fails or is absent,
+the helper tries other private keys under `~/.ssh/`, including subdirectories,
+in sequence. Unlock encrypted keys with `ssh-add` beforehand. The helper does
+not prompt for or store passwords or change SSH configuration.
+
+On success it prints the socket, expiration, agent SSH command, and commands to
+check or close access early. Give this output to the agent. Connection metadata
+is also saved in `.runpod/ssh-socket/latest.json`; every invocation creates a
+separate private temporary directory. The agent should check `expires_at_epoch`
+and run `check_command` before using `ssh_command`. That command reuses only
+the socket and fails if it is unavailable.
+
+TTL limits acceptance of new shared connections. Expiration runs `ssh -O stop`,
+allowing established SSH work and detached tmux to continue. Host sleep, reboot,
+or a network interruption can end access early; expiration during sleep stops
+new connections after the host resumes. This deadline is managed separately
+from the Pod runtime and guard deadline. The helper creates access; deployment
+and training still use the existing workflow and tmux entry points.
+
+This file intentionally lives at the project root, outside the existing upload
+allowlist. It is never uploaded to RunPod, added to the code file manifest, or
+included in SHA calculation. Editing only this helper does not change workflow
+identity or require source sync or data preparation. Connection metadata under
+`.runpod/` is also excluded. The README itself retains its existing document
+sync rules.
 
 <a id="setup-en"></a>
 
