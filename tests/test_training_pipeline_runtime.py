@@ -245,8 +245,11 @@ def test_cuda_complete_input_order():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA runner")
-@pytest.mark.parametrize("oom", [False, True])
-def test_cuda_probe_failure_restores_state_and_stops_workers(monkeypatch, oom):
+@pytest.mark.parametrize("failure", ["compute", "injected_oom", "allocator_oom"])
+@pytest.mark.parametrize("worker_count,prefetch,fail_at", [(2, 2, 3), (11, 2, 1)])
+def test_cuda_probe_failure_restores_state_and_stops_workers(
+    monkeypatch, failure, worker_count, prefetch, fail_at,
+):
     import multiprocessing
 
     config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
@@ -265,8 +268,12 @@ def test_cuda_probe_failure_restores_state_and_stops_workers(monkeypatch, oom):
     def fail_after_optimizer_step(*args, **kwargs):
         nonlocal calls
         calls += 1
-        if calls == 3:
-            if oom:
+        if calls == fail_at:
+            if failure == "allocator_oom":
+                total = torch.cuda.get_device_properties(0).total_memory
+                torch.empty(total + 1, dtype=torch.uint8, device="cuda")
+                pytest.fail("Allocation larger than device memory unexpectedly succeeded")
+            if failure == "injected_oom":
                 raise torch.cuda.OutOfMemoryError("injected CUDA OOM")
             raise RuntimeError("injected worker/compute failure")
         return original_forward(*args, **kwargs)
@@ -274,7 +281,10 @@ def test_cuda_probe_failure_restores_state_and_stops_workers(monkeypatch, oom):
     monkeypatch.setattr(training, "forward_batch", fail_after_optimizer_step)
     before = {name: value.clone() for name, value in model.state_dict().items()}
     children = {child.pid for child in multiprocessing.active_children()}
-    context = nullcontext() if oom else pytest.raises(RuntimeError, match="injected")
+    allocated_before = torch.cuda.memory_allocated()
+    context = (
+        nullcontext() if failure != "compute" else pytest.raises(RuntimeError, match="injected")
+    )
     with context:
         result = training._measure_cuda_batch(
             bundle=SimpleNamespace(model=model),
@@ -287,12 +297,16 @@ def test_cuda_probe_failure_restores_state_and_stops_workers(monkeypatch, oom):
             device_memory_limit_bytes=1024**3,
             dataset=source,
             worker_plan=training.plan_dataloader_workers(
-                2,
-                visible_cpu_count=4,
-                available_memory_bytes=16 * 1024**3,
+                worker_count,
+                visible_cpu_count=worker_count + 2,
+                available_memory_bytes=64 * 1024**3,
             ),
+            probe_prefetch_factor=prefetch,
         )
         assert not result.accepted and result.outcome == "cuda_out_of_memory"
+    if failure != "compute":
+        torch.cuda.synchronize()
+        assert torch.cuda.memory_allocated() <= allocated_before + 1024**2
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, before[name], rtol=0, atol=0)
     assert all(parameter.grad is None for parameter in model.parameters())

@@ -11,7 +11,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
-from itertools import islice
+from itertools import islice, pairwise
 from pathlib import Path
 from typing import Any, cast
 
@@ -1592,9 +1592,11 @@ def _batch_candidates(minimum: int, maximum: int) -> tuple[int, ...]:
     return tuple(candidates)
 
 
-def _is_cuda_out_of_memory(error: BaseException) -> bool:
+def _is_cuda_out_of_memory(error: BaseException | None) -> bool:
     return isinstance(error, torch.cuda.OutOfMemoryError) or (
-        isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
+        isinstance(error, RuntimeError)
+        and "cuda" in str(error).lower()
+        and "out of memory" in str(error).lower()
     )
 
 
@@ -1724,6 +1726,9 @@ def _measure_cuda_batch(
     optimizer = None
     loader_iterator = None
     device_iterator = None
+    probe_error = None
+    probe_fetch_failed = False
+    probe_batches = 0
     try:
         accumulation = (
             (
@@ -1786,6 +1791,7 @@ def _measure_cuda_batch(
         measured_batches = math.ceil(minimum / accumulation) * accumulation
         warmup_batches = math.ceil(max(16, 2 * accumulation) / accumulation) * accumulation
         batch_sampler = _ProbeBatchSampler(sampler, batch_size, warmup_batches + measured_batches)
+        probe_batches = len(batch_sampler)
         loader = DataLoader(
             dataset,
             batch_sampler=batch_sampler,
@@ -1810,7 +1816,11 @@ def _measure_cuda_batch(
             started, fetch_seconds, ranking_sum, cpu_before = 0.0, 0.0, None, None
             for index in range(len(batch_sampler)):
                 before_fetch = time.perf_counter()
-                device_batch = next(device_iterator)
+                try:
+                    device_batch = next(device_iterator)
+                except BaseException:
+                    probe_fetch_failed = True
+                    raise
                 if index >= warmup_batches:
                     fetch_seconds += time.perf_counter() - before_fetch
                 context = nullcontext() if training else torch.inference_mode()
@@ -1897,6 +1907,13 @@ def _measure_cuda_batch(
             ),
         )
     except BaseException as error:
+        probe_error = error
+        print(json.dumps({"cuda_pipeline_probe_error": {
+            "training": training,
+            "batch_size": batch_size,
+            "error_type": type(error).__name__,
+            "error": str(error),
+        }}, sort_keys=True), flush=True)
         if not _is_cuda_out_of_memory(error):
             raise
         return BatchProbeMeasurement(
@@ -1909,17 +1926,91 @@ def _measure_cuda_batch(
             outcome="cuda_out_of_memory",
         )
     finally:
+        try:
+            _finish_probe_loader(
+                device_iterator, loader_iterator,
+                max_batches=probe_batches,
+                primary_error=probe_error,
+                drain=not probe_fetch_failed or _is_cuda_out_of_memory(probe_error),
+            )
+        finally:
+            # A recovered exception's traceback can retain this frame and its
+            # CUDA activations. Break that cycle before the next candidate runs.
+            probe_error = None
+            del optimizer
+            del output
+            del device_batch
+            bundle.model.zero_grad(set_to_none=True)
+            torch.cuda.empty_cache()
+
+
+def _finish_probe_loader(
+    device_iterator, loader_iterator, *, max_batches, primary_error, drain=True,
+    timeout_seconds=60.0,
+):
+    """Drain a finite host-only probe before closing its multiprocessing queues."""
+    errors = []
+    deadline = time.monotonic() + timeout_seconds
+    original_timeout = getattr(loader_iterator, "_timeout", None)
+    try:
         if device_iterator is not None:
             device_iterator.close()
-        # DataLoader has no public close API. Explicitly stop this finite probe
-        # pool even on OOM/worker failure before trying another configuration.
-        if loader_iterator is not None and hasattr(loader_iterator, "_shutdown_workers"):
-            loader_iterator._shutdown_workers()
-        del optimizer
-        del output
-        del device_batch
-        bundle.model.zero_grad(set_to_none=True)
-        torch.cuda.empty_cache()
+        if loader_iterator is not None and drain:
+            # An OOM can leave workers producing prefetched tensors. Abruptly
+            # shutting their queues can abort native workers. Consume only the
+            # bounded probe remainder, never the training dataset or CUDA work.
+            # Each fetch retains the DataLoader's existing timeout/error checks.
+            for _ in range(max_batches + 1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Probe DataLoader drain exceeded its cleanup deadline")
+                if original_timeout is not None and original_timeout > 0:
+                    loader_iterator._timeout = min(original_timeout, remaining)
+                try:
+                    batch = next(loader_iterator)
+                except StopIteration:
+                    break
+                del batch
+            else:
+                raise RuntimeError("Probe DataLoader exceeded its finite batch budget")
+    except BaseException as error:
+        errors.append(error)
+    finally:
+        if original_timeout is not None:
+            loader_iterator._timeout = original_timeout
+        try:
+            # DataLoader has no public close API. This is normally a no-op after
+            # StopIteration, but remains necessary on a genuine worker failure.
+            if loader_iterator is not None and hasattr(loader_iterator, "_shutdown_workers"):
+                loader_iterator._shutdown_workers()
+        except BaseException as error:
+            errors.append(error)
+    if errors:
+        # Never hide a real worker failure or replace the original OOM/compute
+        # exception with a secondary exception raised during queue cleanup.
+        if primary_error is not None:
+            errors.insert(0, primary_error)
+        raise BaseExceptionGroup("CUDA probe and/or DataLoader cleanup failed", errors)
+
+
+def _project_next_probe_peak(measurements, batch_size):
+    """Conservatively extrapolate measured memory before allocating a larger batch."""
+    measured = [
+        row for row in measurements if row.accepted and row.projected_peak_bytes is not None
+    ]
+    if len(measured) < 2 or batch_size <= measured[-1].batch_size:
+        return None
+    latest = measured[-1]
+    slopes = [
+        max(0, right.projected_peak_bytes - left.projected_peak_bytes)
+        / (right.batch_size - left.batch_size)
+        for left, right in pairwise(measured)
+        if right.batch_size > left.batch_size
+    ]
+    return math.ceil(max(
+        latest.projected_peak_bytes * batch_size / latest.batch_size,
+        latest.projected_peak_bytes + max(slopes, default=0) * (batch_size - latest.batch_size),
+    ))
 
 
 def _select_batch_measurement(
@@ -2022,6 +2113,20 @@ def _probe_cuda_candidates(
         while candidate_index < len(pending_candidates):
             batch_size = pending_candidates[candidate_index]
             if batch_size > sample_count:
+                break
+            projected_peak = _project_next_probe_peak(measurements, batch_size)
+            if projected_peak is not None and projected_peak > device_memory_limit_bytes:
+                measurement = BatchProbeMeasurement(
+                    batch_size=batch_size, seconds_per_batch=None, samples_per_second=None,
+                    peak_allocated_bytes=None, projected_peak_bytes=projected_peak,
+                    accepted=False, outcome="projected_memory_guard",
+                )
+                measurements.append(measurement)
+                print(json.dumps({"cuda_pipeline_probe_skipped": {
+                    "training": training,
+                    **measurement.as_dict(),
+                    "device_memory_limit_bytes": device_memory_limit_bytes,
+                }}, sort_keys=True), flush=True)
                 break
             measurement = _measure_cuda_batch(
                 bundle=bundle,

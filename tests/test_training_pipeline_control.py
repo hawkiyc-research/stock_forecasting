@@ -15,7 +15,7 @@ import time
 import unittest
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from itertools import islice
+from itertools import islice, pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -316,6 +316,7 @@ class TrainingPipelineControlTests(unittest.TestCase):
                 batch_size=kwargs["batch_size"],
                 samples_per_second=100.0,
                 outcome="accepted" if kwargs["batch_size"] < 16 else "cuda_out_of_memory",
+                projected_peak_bytes=kwargs["batch_size"],
             )
 
         worker_plan = object()
@@ -333,8 +334,12 @@ class TrainingPipelineControlTests(unittest.TestCase):
             "cast": cast,
             "_training_sampler": lambda *_args: dataset,
             "AUTO_BATCH_THROUGHPUT_TOLERANCE": 0.03,
+            "math": math,
+            "pairwise": pairwise,
         }
-        definitions(TRAINING, {"_probe_cuda_candidates", "_select_batch_measurement"}, scope)
+        definitions(TRAINING, {
+            "_probe_cuda_candidates", "_select_batch_measurement", "_project_next_probe_peak",
+        }, scope)
         best, results = scope["_probe_cuda_candidates"](
             bundle=SimpleNamespace(model=SimpleNamespace(modules=lambda: modes)),
             sample=None,
@@ -596,7 +601,8 @@ class TrainingPipelineControlTests(unittest.TestCase):
         self.assertIn("optimizer.step()", probe)
         self.assertIn("loss.backward()", probe)
         self.assertNotIn("[sample] * batch_size", probe)
-        self.assertIn("_shutdown_workers()", probe)
+        self.assertIn("_finish_probe_loader(", probe)
+        self.assertIn("_shutdown_workers()", ast.unparse(functions["_finish_probe_loader"]))
         transfer = ast.unparse(functions["_move_batch_to_device"])
         self.assertIn("non_blocking=non_blocking", transfer)
         self.assertIn("'ranking_group_ids'", transfer)
