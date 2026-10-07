@@ -23,6 +23,7 @@ class QuantForecastModel(nn.Module):
         alpha_head: MultiHorizonAlphaHead,
         ranking_loss_weight: float = 0.0,
         ranking_max_pairs: int = 256,
+        market_loss_weights: list[float] | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -31,6 +32,12 @@ class QuantForecastModel(nn.Module):
         self.alpha_head = alpha_head
         self.ranking_loss_weight = ranking_loss_weight
         self.ranking_max_pairs = ranking_max_pairs
+        self.use_market_loss_weights = market_loss_weights is not None and any(
+            weight != 1.0 for weight in market_loss_weights
+        )
+        self.register_buffer(
+            "market_loss_weights", torch.tensor(market_loss_weights or [1.0] * 4), persistent=False
+        )
 
     def encode_ohlcv(
         self,
@@ -159,6 +166,13 @@ class QuantForecastModel(nn.Module):
             else self.alpha_head.pinball_loss(alpha_quantiles, target_alpha)
         )
         ranking_loss = None
+        weighted_pinball = pinball_loss
+        if self.training and target_alpha is not None and self.use_market_loss_weights:
+            if market_ids is None:
+                raise ValueError("Market-weighted training requires market IDs")
+            weighted_pinball = self.alpha_head.pinball_loss(
+                alpha_quantiles, target_alpha, self.market_loss_weights[market_ids].float()
+            )
         if self.training and self.ranking_loss_weight and target_alpha is not None:
             if ranking_group_ids is None or security_ids is None:
                 raise ValueError(
@@ -174,9 +188,9 @@ class QuantForecastModel(nn.Module):
                 eligible_pairs=ranking_pairs,
             )
         total_loss = (
-            pinball_loss
+            weighted_pinball
             if ranking_loss is None
-            else pinball_loss + self.ranking_loss_weight * ranking_loss
+            else weighted_pinball + self.ranking_loss_weight * ranking_loss
         )
         return QuantForecastOutput(
             loss=total_loss,
@@ -192,4 +206,6 @@ class QuantForecastModel(nn.Module):
             conditioning_gate=gate,
             ranking_loss=ranking_loss,
             ranking_scores=ranking_scores,
+            weighted_pinball_loss=weighted_pinball,
+            scale_features=scales,
         )

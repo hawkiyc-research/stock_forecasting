@@ -265,6 +265,7 @@ class NumericalResidualBranch(nn.Module):
         width = 16 * (
             1 + int(self.scale_projection is not None) + int(self.benchmark_projection is not None)
         )
+        self.encoded_dim = width
         self.fusion = nn.Sequential(nn.Linear(width, 32), nn.GELU(), nn.Linear(32, 3))
         # Zero only the output layer so upstream parameters can learn after the first step.
         output_layer = cast(nn.Linear, self.fusion[-1])
@@ -287,6 +288,10 @@ class NumericalResidualBranch(nn.Module):
         self.feature_scale.copy_(self.feature_scale.new_tensor(validated["scale"]))
 
     def forward(self, hidden: Tensor, scales: Tensor | None, benchmark: Tensor | None) -> Tensor:
+        return self.fusion(self.encode(hidden, scales, benchmark))
+
+    def encode(self, hidden: Tensor, scales: Tensor | None, benchmark: Tensor | None) -> Tensor:
+        """Expose the same past-only features to independent downstream heads."""
         features = [self.hidden_projection(hidden.float())]
         if self.scale_projection is not None:
             if scales is None or self.statistics is None:
@@ -301,4 +306,4 @@ class NumericalResidualBranch(nn.Module):
                 raise ValueError("Benchmark-direct mode requires benchmark latents")
             encoded = self.benchmark_projection(benchmark.float().mean(dim=1))
             features.append(encoded[:, None].expand(-1, hidden.shape[1], -1))
-        return self.fusion(torch.cat(features, dim=-1))
+        return torch.cat(features, dim=-1)

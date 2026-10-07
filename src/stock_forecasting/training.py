@@ -2673,7 +2673,7 @@ def evaluate_loader(
 ) -> dict[str, Any]:
     from tempfile import TemporaryDirectory
 
-    from stock_forecasting.forecast_evaluation import ForecastEvaluationStore
+    from stock_forecasting.forecast_evaluation import ForecastEvaluationStore, market_macro_metrics
 
     if fit_interval_calibration and getattr(loader.dataset, "split", None) != "validation":
         raise ValueError("Interval calibration may only fit the validation split")
@@ -2700,6 +2700,10 @@ def evaluate_loader(
                 list(config.data.alpha_horizons),
                 scales,
                 ranking=config.model.independent_ranking_head,
+                calibration_policy=(
+                    config.validation.interval_calibration.model_dump()
+                    if fit_interval_calibration or interval_calibration is not None else None
+                ),
             )
             try:
                 completed, last_log = 0, started
@@ -2713,6 +2717,11 @@ def evaluate_loader(
                             None
                             if output.ranking_scores is None
                             else output.ranking_scores.detach().float().cpu().numpy()
+                        ),
+                        scale_features=(
+                            output.scale_features.detach().float().cpu().numpy()
+                            if store.volatility is not None and output.scale_features is not None
+                            else None
                         ),
                         symbols=batch["symbols"],
                         dates=batch["cutoff_at"],
@@ -2736,15 +2745,35 @@ def evaluate_loader(
                         last_log = now
                 inference_seconds = time.perf_counter() - started
                 metrics = store.finish(signal_threshold=config.model.postprocess_alpha_threshold)
+                metrics["market_macro"] = market_macro_metrics(metrics)
                 if config.model.independent_ranking_head:
                     metrics["independent_ranking"] = store.ranking_metrics()
                 if fit_interval_calibration:
                     interval_calibration = store.fit_interval_calibration()
+                    if interval_calibration["schema_version"] == 2:
+                        # Fixed split cleaning keeps every validation label before
+                        # this boundary, not merely its forecast cutoff date.
+                        interval_calibration["fit_label_end_exclusive"] = (
+                            config.data.validation_end
+                        )
                     interval_calibration["membership"] = metrics["sample_membership"]
                     metrics["interval_calibration"] = interval_calibration
                 if interval_calibration is not None:
                     metrics["calibrated"] = store.calibrated_metrics(interval_calibration)
                     metrics["calibrated"]["in_sample_fit"] = fit_interval_calibration
+                    if interval_calibration["schema_version"] == 2:
+                        metrics["calibrated_static"] = store.calibrated_metrics(
+                            interval_calibration["static_reference"]
+                        )
+                        metrics["calibrated_static"]["in_sample_fit"] = fit_interval_calibration
+                        if not fit_interval_calibration:
+                            if getattr(loader.dataset, "split", None) != "test":
+                                raise ValueError(
+                                    "Prequential diagnostics require the holdout split"
+                                )
+                            metrics["calibrated_online"] = store.adaptive_metrics(
+                                interval_calibration
+                            )
                 metrics["execution"] = {
                     "full_population": True,
                     "expected_samples": len(loader.dataset),
@@ -2823,16 +2852,30 @@ def _learning_rate_multiplier(step: int, warmup_steps: int, total_steps: int) ->
 
 
 def _scheduler(optimizer: AdamW, warmup_steps: int, total_steps: int, config=None):
-    if config is not None and config.training.learning_rate_schedule == "validation_plateau":
+    if config is not None and config.training.learning_rate_schedule in (
+        "validation_plateau", "sample_plateau"
+    ):
         from stock_forecasting.optimization_policy import ValidationPlateauScheduler
 
-        return ValidationPlateauScheduler(
+        scheduler_type = ValidationPlateauScheduler
+        extra = {}
+        if config.training.learning_rate_schedule == "sample_plateau":
+            from stock_forecasting.forecast_optimization import SamplePlateauScheduler
+
+            scheduler_type = SamplePlateauScheduler
+            extra = {
+                "warmup_samples": config.training.warmup_samples,
+                "decay_start": config.training.sample_decay_start,
+                "decay_end": config.training.sample_decay_end,
+            }
+        return scheduler_type(
             optimizer,
             warmup_steps,
             patience=config.training.plateau_patience_evaluations,
             factor=config.training.plateau_factor,
             min_ratio=config.training.plateau_min_ratio,
             low_lr_evaluations=config.training.plateau_min_low_lr_evaluations,
+            **extra,
         )
     return LambdaLR(
         optimizer,
@@ -3554,8 +3597,13 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 else None
             ),
             "loss_definition": (
-                "train=normalized_pinball+weighted_ranking; validation=normalized_pinball"
+                "train=market_weighted_normalized_pinball+weighted_ranking; "
+                "validation=unweighted_normalized_pinball"
             ),
+            "market_loss_weights_us_twse_tpex_unknown": config.training.market_loss_weights,
+            "learning_rate_schedule": config.training.learning_rate_schedule,
+            "sample_decay_start": config.training.sample_decay_start,
+            "sample_decay_end": config.training.sample_decay_end,
             "ranking_loss_weight": config.model.ranking_loss_weight,
             "warmup_samples": config.training.warmup_samples,
             "yearly_sampling_decay": config.training.yearly_sampling_decay,
@@ -3585,6 +3633,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
     accumulated_loss_sum: Tensor | None = None
     accumulated_pinball_sum: Tensor | None = None
     accumulated_ranking_sum: Tensor | None = None
+    accumulated_weighted_pinball_sum: Tensor | None = None
     accumulated_loss_count = 0
     accumulated_microbatch_samples = 0
     processed_train_samples = 0
@@ -3654,6 +3703,11 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 warmup_steps=runtime_warmup_steps,
                 total_steps=runtime_configured_steps,
             )
+            if (
+                config.training.learning_rate_schedule == "sample_plateau"
+                and scheduler.processed_samples != processed_train_samples
+            ):
+                raise ValueError("Sample scheduler and checkpoint exposure counters disagree")
             stored_metrics = state.get("metrics")
             if not isinstance(stored_metrics, dict) or any(
                 not isinstance(value, int | float)
@@ -3723,6 +3777,14 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                         if accumulated_pinball_sum is None
                         else accumulated_pinball_sum + pinball
                     )
+                    weighted_pinball = (
+                        output.weighted_pinball_loss.detach()
+                        if output.weighted_pinball_loss is not None else pinball
+                    )
+                    accumulated_weighted_pinball_sum = (
+                        weighted_pinball if accumulated_weighted_pinball_sum is None
+                        else accumulated_weighted_pinball_sum + weighted_pinball
+                    )
                     accumulated_ranking_sum = (
                         ranking
                         if accumulated_ranking_sum is None
@@ -3739,7 +3801,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     continue
                 torch.nn.utils.clip_grad_norm_(trainable, config.training.max_grad_norm)
                 optimizer.step()
-                scheduler.step()
+                if config.training.learning_rate_schedule == "sample_plateau":
+                    scheduler.step(samples=accumulated_microbatch_samples)
+                else:
+                    scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 runtime_global_step += 1
                 processed_train_samples += accumulated_microbatch_samples
@@ -3758,6 +3823,9 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                             ),
                             "train/ranking_loss": float(
                                 (accumulated_ranking_sum / accumulated_loss_count).cpu()
+                            ),
+                            "train/weighted_pinball_loss": float(
+                                (accumulated_weighted_pinball_sum / accumulated_loss_count).cpu()
                             ),
                             "train/epoch": float(epoch),
                             "train/epoch_fraction": runtime_global_step / optimizer_steps_per_epoch,
@@ -3795,6 +3863,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     accumulated_loss_sum = None
                     accumulated_pinball_sum = None
                     accumulated_ranking_sum = None
+                    accumulated_weighted_pinball_sum = None
                     accumulated_loss_count = 0
                     throughput_started = time.perf_counter()
                     throughput_start_samples = processed_train_samples

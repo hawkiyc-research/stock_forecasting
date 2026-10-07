@@ -18,10 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA runner")
+@pytest.mark.parametrize("schedule", ["cosine", "sample_plateau"])
 def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
     tmp_path,
     market_frame,
     monkeypatch,
+    schedule,
 ):
     raw = tmp_path / "market.parquet"
     market_frame.to_parquet(raw, index=False)
@@ -62,6 +64,14 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
     config.training.evaluation_batch_size = 64
     config.training.gradient_accumulation_steps = 2
     config.training.target_effective_batch_size = 16
+    if schedule == "sample_plateau":
+        config.training.warmup_samples = 16
+        config.training.sample_decay_start = 32
+        config.training.sample_decay_end = 96
+        config.training.learning_rate_schedule = schedule
+        config.training.market_loss_weights = [1, 2, 2, 1]
+        config.model.market_aware = True
+        config.model.market_residual_hidden_dim = 16
     config.training.evaluations_per_epoch = 2
     config.training.loss_log_points_per_epoch = 4
     config.training.checkpoint_save_top_k = 2

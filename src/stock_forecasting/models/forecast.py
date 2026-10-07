@@ -90,6 +90,8 @@ class MultiHorizonAlphaHead(nn.Module):
         explicit_output_scale: bool = False,
         decoupled_output_scale: bool = False,
         independent_ranking_head: bool = False,
+        market_residual_hidden_dim: int = 0,
+        ranking_numeric_features: bool = False,
     ) -> None:
         super().__init__()
         ordered_horizons = validate_alpha_horizons(horizons)
@@ -142,6 +144,31 @@ class MultiHorizonAlphaHead(nn.Module):
                 hidden_dim, input_dim, feature_mode, extended=explicit_output_scale
             )
         )
+        feature_dim = 0 if self.numeric_branch is None else self.numeric_branch.encoded_dim
+        if ranking_numeric_features and (self.ranking_head is None or not feature_dim):
+            raise ValueError("Ranking feature fusion requires numerical features and ranking head")
+        self.ranking_feature_head = (
+            nn.Sequential(
+                nn.Linear(feature_dim, 32), nn.GELU(), nn.Dropout(dropout), nn.Linear(32, 1)
+            )
+            if ranking_numeric_features else None
+        )
+        if market_residual_hidden_dim and self.market_embedding is None:
+            raise ValueError("Market residual heads require explicit market conditioning")
+        self.market_residual = (
+            nn.Sequential(
+                nn.LayerNorm(hidden_dim + feature_dim),
+                nn.Linear(hidden_dim + feature_dim, market_residual_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(market_residual_hidden_dim, 4 * 3),
+            )
+            if market_residual_hidden_dim else None
+        )
+        for branch in (self.market_residual, self.ranking_feature_head):
+            if branch is not None:
+                nn.init.zeros_(branch[-1].weight)
+                nn.init.zeros_(branch[-1].bias)
         self.register_buffer(
             "robust_scales",
             torch.tensor(scales, dtype=torch.float32),
@@ -206,8 +233,17 @@ class MultiHorizonAlphaHead(nn.Module):
         horizon_inputs = pooled[:, None, :] + self.horizon_embeddings(horizon_ids)[None, :, :]
         hidden = self.trunk(horizon_inputs)
         raw = self.quantile_parameters(hidden)
+        features = None
         if self.numeric_branch is not None:
-            raw = raw + self.numeric_branch(hidden, scale_features, benchmark_tokens)
+            features = self.numeric_branch.encode(hidden, scale_features, benchmark_tokens)
+            raw = raw + self.numeric_branch.fusion(features)
+        if self.market_residual is not None:
+            if market_ids is None:
+                raise ValueError("Market residual heads require market IDs")
+            inputs = hidden if features is None else torch.cat((hidden, features), dim=-1)
+            residual = self.market_residual(inputs).reshape(*hidden.shape[:2], 4, 3)
+            index = market_ids[:, None, None, None].expand(-1, hidden.shape[1], 1, 3)
+            raw = raw + residual.gather(2, index).squeeze(2)
         median = raw[..., 1]
         lower = median - F.softplus(raw[..., 0])
         upper = median + F.softplus(raw[..., 2])
@@ -231,10 +267,14 @@ class MultiHorizonAlphaHead(nn.Module):
                 quantiles = quantiles * anchor[..., None] * multiplier
         if return_ranking:
             scores = None if self.ranking_head is None else self.ranking_head(hidden).squeeze(-1)
+            if self.ranking_feature_head is not None:
+                scores = scores + self.ranking_feature_head(features).squeeze(-1)
             return quantiles, scores
         return quantiles
 
-    def pinball_loss(self, predictions: Tensor, target: Tensor) -> Tensor:
+    def pinball_loss(
+        self, predictions: Tensor, target: Tensor, sample_weights: Tensor | None = None
+    ) -> Tensor:
         predictions = predictions.float()
         expected = (predictions.shape[0], len(self.horizons), len(self.quantiles))
         if tuple(predictions.shape) != expected:
@@ -249,4 +289,9 @@ class MultiHorizonAlphaHead(nn.Module):
         levels = self._quantile_level_bits.view(torch.float32).to(dtype=predictions.dtype)
         losses = torch.maximum(levels * errors, (levels - 1.0) * errors)
         weights = valid[..., None].expand_as(losses).to(dtype=losses.dtype)
-        return (losses * weights).sum() / weights.sum().clamp_min(1.0)
+        denominator = weights.sum().clamp_min(1.0)
+        if sample_weights is not None:
+            if sample_weights.shape != (predictions.shape[0],):
+                raise ValueError("Market weights must contain one value per sample")
+            weights = weights * sample_weights[:, None, None]
+        return (losses * weights).sum() / denominator

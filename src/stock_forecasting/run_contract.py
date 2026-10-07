@@ -46,6 +46,8 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "optimization_policy.py",
     "date_market_sampler.py",
     "forecast_evaluation.py",
+    "forecast_optimization.py",
+    "interval_calibration.py",
     "models/ranking.py",
 )
 

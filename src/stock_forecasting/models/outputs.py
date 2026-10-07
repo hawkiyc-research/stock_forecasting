@@ -63,3 +63,5 @@ class QuantForecastOutput(OutputMapping):
     conditioning_gate: Tensor
     ranking_loss: Tensor | None = None
     ranking_scores: Tensor | None = None
+    weighted_pinball_loss: Tensor | None = None
+    scale_features: Tensor | None = None

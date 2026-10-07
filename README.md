@@ -68,19 +68,17 @@ output schema 會被拒絕載入。
 ```text
 OHLCV through close t (asset + benchmark)
   ├─ normalized windows → Kronos → resampler → benchmark conditioning → head trunk
-  │                                └─ benchmark latent ────┐               │
-  └─ 20 historical numerical features ──────────────────────┤               │
-                                                           ▼               │
-                                                    numerical residual ←───┤
-                                                           │               ├─ ranking head → scores
-                                                           ▼               ▼
-                                                  residual + base quantile parameters
-                                                           │
-                           q50 (train scale) + positive tail widths (past volatility × gates)
-                                                           │
-                                                   raw q10 / q50 / q90
-                                                           │
-                                 validation-fitted tail calibration (q50 unchanged)
+  │                                └─ benchmark latent ────┐
+  └─ 20 historical numerical features ──────────────────────┴─ numerical encoding
+
+head trunk ── base quantile parameters ──┐
+numerical encoding ── quantile residual ─┼─ q50 + positive tail widths → raw q10/q50/q90
+head trunk + encoding ── market residual*┘                                  │
+                                                         frozen validation calibration
+head trunk ── ranking head ─────────────┐                 (+ separate delayed-feedback
+numerical encoding ── ranking residual*─┴─ ranking scores   diagnostic on holdout)
+
+* Additional paths enabled by adaptive64 / adaptive128; calibration keeps q50 unchanged.
 ```
 
 生產設定使用 `NeoQuasar/Kronos-base` 與
@@ -141,6 +139,12 @@ scale 的 0.1–10 倍，再乘上可學習的 0.25–4 倍正值 gate。`decoup
 市場 embedding、residual 輸出層與 scale gate 零初始化；
 gate 的初始倍率為 1。Head、特徵轉換與 pinball loss 使用 FP32，
 Kronos 計算仍沿用 BF16 mixed precision。
+
+`adaptive64`／`adaptive128` 整合實驗另啟用 `market_residual_hidden_dim: 64`：
+head hidden 與上述 48 維特徵串接，經 LayerNorm、64 維 MLP，再由 US／TWSE／TPEx／unknown
+各自的零初始化輸出層修正 location 與上下尾參數；不複製 Kronos backbone。
+`ranking_numeric_features: true` 將同一份 48 維歷史特徵經獨立 `48 → 32 → 1` residual
+送入 ranking score。排序輸出層不直接修改 q50；共享 encoder 仍接受兩種目標的梯度。
 
 Production config 啟用 `explicit_output_scale`，因此 feature mode 必須為 `scales`
 或 `combined`。自訂實驗如需移除尺度路徑，
@@ -460,12 +464,47 @@ ranking 使用獨立 score head，不直接把 q50 當排序分數。
 checkpoint 選擇與 early stopping 仍只看完整 validation 的 normalized pinball，不使用
 ranking loss 或 holdout 來選模。本版本不做 prediction／parameter ensemble。
 
-神經訓練採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
+原 Stage 1/2 與 `lora32`／`lora64`／`partial` 實驗採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
 初始 LR 的 0.09；到達最低 LR 後，必須再完成兩次 validation 間隔的訓練，才允許 early stop。
 checkpoint 保存 plateau 狀態，resume／更換 batch plan 不會把已降低的 LR 重設。
 
-選定 checkpoint 後才用完整 validation 擬合 market/horizon 上下尾區間校準；不改 q50，
-也不使用 test labels fitting。最終 test 保留 raw 與 calibrated 兩組結果；校準不保證未來 coverage。
+整合實驗使用 `sample_plateau`：按實際已處理 windows 計數，在 1,000,000 到 4,000,000
+次呈現之間做 cosine 衰減至初始 LR 的 0.09，同時保留 plateau；兩者取較低倍率，
+不以 A/B 各自的 epoch 長度決定衰減位置。256,000 次呈現 warmup、低 LR 的兩次驗證保障
+及樣本計數都保存在 scheduler/checkpoint，resume 不會重設。設定項為
+`training.sample_decay_start`／`sample_decay_end`，且 `warmup_samples ≤ start < end`。
+task LR 為 `1e-5`、LoRA LR 為 `5e-6`；resampler、conditioner、head 與 LoRA dropout
+均為 `0.10`，AdamW weight decay 為 `0.03`。不增加 epoch 上限。
+
+整合實驗 `training.market_loss_weights: [1, 2, 2, 1]` 的順序是 US、TWSE、TPEx、unknown，
+只加權 training pinball，每筆權重必須在 `(0, 4]`；不在單一市場 microbatch 內重新
+正規化而抵銷權重。Ranking 仍使用 `0.05` 權重。Validation/test 保持未加權的完整集合，
+另報告 `market_macro` 等市場平均診斷；不改 checkpoint monitor 或 baseline 目標。
+
+選定 checkpoint 後才用完整 validation 擬合區間校準，q50 與 ranking score 保持不變。
+原設定的 `validation.interval_calibration.mode: static`（預設）保留 market/horizon 校準。
+整合實驗使用 `regime_adaptive`，輸出分開保存：
+
+| 結果欄位 | 使用規則 |
+| --- | --- |
+| 原有 raw metrics | 未校準預測，仍是 checkpoint／early stop 的唯一依據 |
+| `calibrated_static` | 原 market/horizon validation 校準對照 |
+| `calibrated` | 凍結的市場 × horizon × 歷史波動狀態校準；只 fit validation |
+| `calibrated_online` | 獨立的逐日 prequential 診斷；只用已成熟的過往 test 預測誤差更新寬度 |
+
+波動狀態為截至預測日的相對報酬 `std20/std60`，以 validation 三分位劃分三組。
+每個有效市場日期先給相同權重，再以 `recency_half_life_sessions: 63` 衰減；
+不足 `minimum_group_samples: 128` 或 `minimum_group_dates: 20` 時使用市場／pooled
+係數，其他組以 `有效日期數 / (有效日期數 + shrinkage_dates)` 向母群收縮，預設
+`shrinkage_dates: 60`。這些參數均位於 `validation.interval_calibration`。
+
+線上診斷固定 `online_learning_rate: 0.05`，對每天已成熟的上下尾違約率分別更新
+log-width multiplier，目標單尾 10%；更新幅度再乘 `當日樣本數 / (當日樣本數 + 128)`。
+`online_max_multiplier: 2.0` 限定相對凍結寬度為 0.5–2 倍。到期日採既有離線交易日曆的
+`t+h`，且必須**嚴格早於**當次預測日才可讀取報酬，不以日曆天數或下一筆有效股票資料代替。
+它不回寫 validation 校準檔、不調整模型、不參與選模；不可把這個 online 結果冒充完全
+凍結的 test。各校準結果都有 horizon、市場、月份、市場 × 月份的 coverage、width 與
+pinball。這是經驗性校準，不承諾未來或每個子群必達 80% coverage。
 
 #### 全量 validation／test 與比較方式
 
@@ -962,7 +1001,7 @@ CPU finalization；資料 profile、revision、日期與 universe 須仍指向�
 例如從同資料的 Stage 1 改 Stage 2，重新 configure 時保留原資料參數，只改 `--stage stage2`，
 再依本節同步 selection。不要為此執行 `cpu prepare --max-api-calls 1`。
 
-如果已上傳六份容量 YAML，可直接以 `train --experiment` 選 A/B 與容量；
+如果已上傳實驗 YAML，可直接以 `train --experiment` 選 A/B、容量與整合設定；
 launcher 自動發布該實驗的 immutable selection，不修改全域 active selection，也不再上傳
 原始碼。缺少資料或 baseline 時會在付費建立前報錯；應完成缺少的前置項目，不改 manifest
 或重新下載已有資料。Resume／validate 則以 run ID 還原原 selection，見[接續訓練](#resume-zh)。
@@ -1486,7 +1525,7 @@ baseline 與預訓練模型會直接共用；切換容量實驗不重新下載�
 也不因 Pod 數量而重訓 baseline。每台 Pod 各自使用一張 GPU，不是 DDP 或多 GPU
 聯合訓練。
 
-Stage 2 提供六份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01，資料終點皆為
+Stage 2 提供十份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01，資料終點皆為
 2026-06-01（不含）；兩者共用相同的 validation/test 來源與有效樣本規則。
 `--experiment` 保留 configure 的 profile、universe、revision 與 h_start。
 
@@ -1495,17 +1534,22 @@ Stage 2 提供六份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01�
 | `a-lora32`、`b-lora32` | `a_lora32.yaml`、`b_lora32.yaml` | LoRA rank 32、alpha 64 |
 | `a-lora64`、`b-lora64` | `a_lora64.yaml`、`b_lora64.yaml` | LoRA rank 64、alpha 128 |
 | `a-partial`、`b-partial` | `a_partial.yaml`、`b_partial.yaml` | 前 10 層 LoRA-32；解凍最後 2 層與 final norm，解凍層不重複套 LoRA |
+| `a-adaptive64`、`b-adaptive64` | `a_adaptive64.yaml`、`b_adaptive64.yaml` | 整合市場分支、排序特徵、正則化／樣本排程與適應校準；LoRA rank 64、alpha 128，主要研究線 |
+| `a-adaptive128`、`b-adaptive128` | `a_adaptive128.yaml`、`b_adaptive128.yaml` | 與 adaptive64 相同整合設定；只改 LoRA rank 128、alpha 256 |
 
-六個實驗從相同 pretrained Kronos-base 初始化，不從其他容量實驗的 checkpoint 接續。
-共同 task／LoRA／解凍層學習率為 `3e-5`／`5e-6`／`1e-6`，warmup 固定為
+全部實驗從相同 pretrained Kronos-base 初始化，不從其他實驗的 checkpoint 接續。
+原六份設定保留為對照，`partial` 是次要研究線；新版優先比較 `adaptive64` 與 `adaptive128`。
+省略 `--experiment` 仍使用既有 configure，不會偷偷換成整合版。
+原六份 task／LoRA／解凍層學習率為 `3e-5`／`5e-6`／`1e-6`；整合版差異見
+[訓練目標與校準](#training-zh)。所有實驗 warmup 固定為
 256,000 次樣本呈現。Training 保留動態 sampling；年度權重為
 `0.8 ** (最新訓練年份 − cutoff 年份)`，年度配額按「有效 window 數 × 年度權重」正規化分配並作整數配額調整，
 會記錄配額、loss 與實際處理樣本數。Validation/test 則完整循序遍歷，不使用此 sampler。
 
 q50 location、正值上下區間寬度與獨立 ranking score 分開。Checkpoint／early stop
 使用未校準的完整 validation normalized pinball；選定 checkpoint 後才用完整
-validation 擬合 market/horizon 上下尾校準。Test 同時保留 raw 與 `calibrated` 指標，
-不使用 test labels 擬合，也不保證未來 coverage 永遠等於 80%。
+validation 擬合凍結的上下尾校準。Test 保留 raw 與 `calibrated`；整合版另外保留
+`calibrated_static` 與延遲回饋的 `calibrated_online`，不使用未成熟報酬，也不保證未來 coverage。
 `FORECAST_METRIC_WORKERS` 可限制診斷／校準執行緒（預設上限 4，另受 CPU／記憶體限制）。
 
 ##### 在本機建立單台或多台訓練 Pod
@@ -1523,7 +1567,7 @@ bash scripts/runpod_workflow.sh sync --apply
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-lora32 \
+  --experiment a-adaptive64 \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
@@ -1540,8 +1584,8 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-把上述名稱的 `a-` 改成 `b-` 即可比較 B 組；也可以混合 A/B，最多一次選六個
-不同名稱。可以在其他實驗已執行時另開不同 run。每個實驗先固定自己的 immutable
+把上述名稱的 `a-` 改成 `b-` 即可比較 B 組；也可以混合 A/B，一次最多選十個
+不同名稱，本機啟動並行 worker 上限仍為六。可以在其他實驗已執行時另開不同 run。每個實驗先固定自己的 immutable
 selection，不修改全域 active selection；後續 configure 不會改變已建立 Pod 的設定。
 
 | 參數 | 預設 | 用法與限制 |
@@ -1684,7 +1728,9 @@ bash scripts/runpod_workflow.sh recover --apply --pod-id "<POD_ID>"
 ##### Loss 記錄與 W&B 補傳
 
 每個 run 的 `metrics.jsonl`、`summary.json` 與 W&B 保存 training loss、pinball、
-ranking loss、各學習率、已處理樣本數與完整 validation 指標。`loss_log_points_per_epoch`
+market-weighted pinball、ranking loss、各學習率、已處理樣本數與完整 validation 指標。
+整合實驗的 `train/loss` 不等於未加權 `train/pinball_loss`；加權部分另記為
+`train/weighted_pinball_loss`。`loss_log_points_per_epoch`
 預設 250，另記錄 validation 邊界；`evaluations_per_epoch: 5` 對應每 epoch 的
 20%／40%／60%／80%／100%。W&B 使用 `trainer/global_step` 與
 `benchmark_validation/global_step`，loss 和 validation 的同 step 紀錄不互相覆蓋。
@@ -1788,8 +1834,9 @@ Checkpoint 內的 validation metrics 用於選模；最終 `validation-benchmark
 `interval-calibration.json`。新訓練缺少必需檔案時會明確報錯；歷史 run 未曾產生的
 日誌或未啟用的校準檔不會被要求存在。每筆 loss 紀錄包含
 run/session ID、時間、optimizer step、累計呈現樣本數與 epoch fraction；接續訓練會
-append 新 session，不覆寫舊曲線。`train/loss` 是 normalized pinball 加上加權 ranking，
-另列 `train/pinball_loss`、`train/ranking_loss` 與各參數組 LR；`validation/loss` 是完整
+append 新 session，不覆寫舊曲線。`train/loss` 是 market-weighted normalized pinball
+加上加權 ranking（原設定的市場權重全為 1），另列未加權的 `train/pinball_loss`、
+`train/weighted_pinball_loss`、`train/ranking_loss` 與各參數組 LR；`validation/loss` 是完整
 validation 的 normalized pinball，不含 ranking。判斷 train/validation gap 時應比較
 `train/pinball_loss` 與 `validation/loss`，不能把 training total loss 直接拿來比較。
 loss 日誌依 `loss_log_points_per_epoch` 分段平均記錄（預設每 epoch 250 點），並涵蓋
@@ -1833,6 +1880,8 @@ poetry run stock-forecasting-infer \
 推論輸出包含原始 `forecast`、獨立 `ranking_scores`、資料 provenance、encoder shape
 與 checkpoint metadata。若存在與此 checkpoint 權重相符的 validation 校準，另外回傳
 `calibrated_forecast`；否則為 `null` 並附 `interval_calibration_status`。不生成自然語言解釋。
+整合實驗的單次推論使用凍結的 validation regime 校準，狀態為
+`validation_fitted_frozen_regime`；不暗中載入 test 的 online 回饋狀態。
 
 <a id="probes-zh"></a>
 
@@ -2190,14 +2239,15 @@ pytest 的 `-k EXPR` 篩選測試、`-q` 簡潔輸出、`-h` 顯示全部第三�
    不遺漏最後一個短 batch，不以估計數量或抽樣代替全量評估。
 2. 所有 split 遵守相同的連續 input/output、行情有效性與流動性規則；保留真實極端報酬。
    A/B 評估共用同一份來源，不只核對日期範圍或筆數。
-3. Standard Stage 1/2 的 architecture digest 一致；三種容量實驗則各有自己的架構，
+3. Standard Stage 1/2 的 architecture digest 一致；容量與整合實驗則各有自己的架構，
    均從同一 pretrained base 開始。未完成 run 的接續必須還原原架構、optimizer、RNG 與進度。
 4. Readiness 核對所選 dataset 自身的 manifest 與實際 artifacts；不要求另一份資料最後寫入的
    共用 CPU marker 在 stage/config 上相同，也不能混用不同 profile、universe 或資料內容。
 5. `alpha_quantiles` 為 `[B,15-h_start,3]`、q10 ≤ q50 ≤ q90；
    `ranking_scores` 與中位數報酬分開，不輸出分類機率或自然語言。
 6. 輸入與 train-only 正規化不使用未來資料。Validation 用於選模和選模後的區間校準；
-   test 僅作最終評估，不參與 fitting。完整記錄 train pinball、ranking 與 validation loss。
+   frozen test 不參與 fitting；獨立 online 診斷只使用到期後的過往標籤，不能混為一談。
+   完整記錄 train pinball、market-weighted pinball、ranking 與 validation loss。
 7. 主模型在相同評估集合上讀取已完成 baseline 結果，不重訓 baseline；報告應同時列出
    normalized pinball、correlation、方向一致率、coverage/width、ranking 與市場／月份切片。
 8. 多 Pod 驗收須涵蓋 selection、run ID、checkpoint、log、lease 與 guard 隔離；
@@ -2207,6 +2257,7 @@ Stage 1 證明流程可運作，不證明 alpha。單一 seed、單一 holdout �
 也不能建立穩健的預測優勢；需搭配多 seed、受控比較及未參與調參的後續回測。
 
 工程證據有各自的版本與範圍，不代表後續變更或正式全量訓練已自動通過：
+[整合市場適應驗收](docs/integrated_adaptation_verification.md)、
 [多 Pod 控制與文件驗收](docs/runpod_parallel_verification.md)、
 [清理與容量實驗驗證](docs/cleaning_experiments_verification.md)、
 [tensor 資料管線驗證](docs/baseline_tensor_pipeline_validation.md)、
@@ -2318,19 +2369,17 @@ incompatible output schemas fail closed.
 ```text
 OHLCV through close t (asset + benchmark)
   ├─ normalized windows → Kronos → resampler → benchmark conditioning → head trunk
-  │                                └─ benchmark latent ────┐               │
-  └─ 20 historical numerical features ──────────────────────┤               │
-                                                           ▼               │
-                                                    numerical residual ←───┤
-                                                           │               ├─ ranking head → scores
-                                                           ▼               ▼
-                                                  residual + base quantile parameters
-                                                           │
-                           q50 (train scale) + positive tail widths (past volatility × gates)
-                                                           │
-                                                   raw q10 / q50 / q90
-                                                           │
-                                 validation-fitted tail calibration (q50 unchanged)
+  │                                └─ benchmark latent ────┐
+  └─ 20 historical numerical features ──────────────────────┴─ numerical encoding
+
+head trunk ── base quantile parameters ──┐
+numerical encoding ── quantile residual ─┼─ q50 + positive tail widths → raw q10/q50/q90
+head trunk + encoding ── market residual*┘                                  │
+                                                         frozen validation calibration
+head trunk ── ranking head ─────────────┐                 (+ separate delayed-feedback
+numerical encoding ── ranking residual*─┴─ ranking scores   diagnostic on holdout)
+
+* Additional paths enabled by adaptive64 / adaptive128; calibration keeps q50 unchanged.
 ```
 
 Production configs use `NeoQuasar/Kronos-base` and
@@ -2402,6 +2451,13 @@ volatility. Subtracting/adding positive widths to q50 preserves quantile orderin
 embedding, residual output layer, and scale gate start at zero; the gate initially
 multiplies by one. The head, feature
 transforms and pinball loss use FP32; Kronos retains BF16 mixed precision.
+
+Integrated `adaptive64`/`adaptive128` presets also enable `market_residual_hidden_dim: 64`:
+head hidden states and the 48 encoded features pass through LayerNorm and a 64-unit MLP,
+then separate zero-initialized US/TWSE/TPEx/unknown outputs adjust location and tail parameters
+without copying the backbone. `ranking_numeric_features: true` routes the same 48 past-only
+features through an independent `48 → 32 → 1` residual into ranking scores. Ranking output
+parameters do not directly change q50; shared encoders still receive gradients from both tasks.
 
 Production `explicit_output_scale` requires `scales` or `combined` feature mode.
 Removing the scale branch in a custom configuration also requires disabling
@@ -2788,14 +2844,53 @@ index improves within-group batch membership, with annual-decay dynamic sampling
 over cleaned train windows; it does not modify the prepared bar store. Checkpoint selection remains
 pure full-validation normalized pinball. No prediction ensemble is used.
 
-After warmup, two non-improving validations multiply neural learning rates by 0.3,
+For the original Stage 1/2 and `lora32`/`lora64`/`partial` presets, two non-improving validations after warmup multiply neural learning rates by 0.3,
 down to 0.09 of their original values. Early stopping additionally requires two
 completed training/validation intervals at the minimum rate. Checkpoints preserve
 the plateau state; resuming or changing runtime batch plans never resets reductions.
 
-After checkpoint selection, full validation fits market/horizon lower/upper tail calibration.
-It leaves q50 unchanged and never fits test labels. Final test retains raw and calibrated
-results; calibration does not guarantee future coverage.
+Integrated presets use `sample_plateau`: a cosine multiplier decays from 1 to 0.09 between
+1,000,000 and 4,000,000 actual window presentations, independently of A/B epoch lengths.
+The lower of this multiplier and the existing plateau multiplier is applied. The 256,000-sample
+warmup, sample counter, plateau state and two minimum-LR evaluation safeguard survive resume.
+Configure `training.sample_decay_start`/`sample_decay_end` with `warmup_samples ≤ start < end`.
+Task/LoRA LR are `1e-5`/`5e-6`; resampler, conditioner, head and LoRA dropout are `0.10`,
+and AdamW weight decay is `0.03`. The epoch budget is not extended.
+
+Integrated `training.market_loss_weights: [1, 2, 2, 1]` orders US, TWSE, TPEx, unknown and
+weights training pinball only. Each weight must be in `(0, 4]`; it is not renormalized within
+a single-market microbatch, which would cancel the weighting. Ranking retains weight `0.05`.
+Full validation/test remain unweighted and additionally expose equal-market `market_macro`
+diagnostics. Neither the checkpoint monitor nor baseline objectives change.
+
+After checkpoint selection, full validation fits interval calibration without changing q50
+or ranking scores. `validation.interval_calibration.mode: static` remains the default for
+existing presets. Integrated presets use `regime_adaptive` and keep results distinct:
+
+| Result field | Protocol |
+| --- | --- |
+| Existing raw metrics | Uncalibrated output; still the only checkpoint/early-stop criterion |
+| `calibrated_static` | Original validation-fitted market/horizon reference |
+| `calibrated` | Frozen market × horizon × historical-volatility-regime calibration; fits validation only |
+| `calibrated_online` | Separate daily prequential diagnostic using only matured past prediction errors |
+
+Regimes use historical relative-return `std20/std60`, with validation tertile thresholds.
+Each observed market date initially has equal weight, followed by exponential recency weighting
+with `recency_half_life_sessions: 63`. Groups below `minimum_group_samples: 128` or
+`minimum_group_dates: 20` fall back to market/pooled factors. Other groups shrink toward their
+parent with weight `date_count / (date_count + shrinkage_dates)`, with `shrinkage_dates: 60`.
+All these controls live under `validation.interval_calibration`.
+
+Online diagnostics use `online_learning_rate: 0.05` to update log-width multipliers from
+daily matured lower/upper violation rates, targeting 10% per tail, with update strength
+`daily_sample_count / (daily_sample_count + 128)`. `online_max_multiplier: 2.0` bounds widths
+to 0.5–2 times their frozen values. A label's scheduled exit is the existing offline market
+calendar's `t+h` session and must be **strictly earlier** than the forecast date before the
+label can be read. Calendar-day arithmetic and skipping to an older available stock bar are
+not substitutes. Online feedback never rewrites frozen calibration, updates the model, or
+selects checkpoints. Do not present prequential results as frozen holdout results. Calibrated
+metrics include horizon, market, month and market × month coverage, width and pinball.
+These are empirical procedures, not guaranteed future or subgroup 80% coverage.
 
 #### Full validation/test and comparisons
 
@@ -3366,7 +3461,7 @@ a prepared namespace. For Stage 1 → Stage 2 on the same data, retain the origi
 arguments, change only `--stage stage2`, and synchronize the selection as described here.
 Do not run `cpu prepare --max-api-calls 1` for this switch.
 
-Once all six capacity YAML files are uploaded, choose A/B and capacity with
+Once all capacity and integrated YAML files are uploaded, choose A/B and capacity with
 `train --experiment`. The launcher publishes that experiment's immutable selection without
 changing the global active selection or uploading source again. Missing data/baselines fail
 before paid creation; complete only the missing prerequisite, never rewrite manifests or
@@ -3980,7 +4075,7 @@ main-model Pods. Prepared data, baselines and pretrained models are shared. Chan
 or Pod count does not download market data, split datasets again, or retrain baselines.
 Each Pod runs its own single-GPU model; this is not DDP or distributed model training.
 
-Stage 2 offers six configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
+Stage 2 offers ten configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
 2026-06-01 (exclusive). They share the validation/test source and eligibility rules.
 `--experiment` preserves the configured profile, universe, revision and h_start.
 
@@ -3989,9 +4084,15 @@ Stage 2 offers six configs. A starts on 2021-01-01 and B on 2016-01-01; both end
 | `a-lora32`, `b-lora32` | `a_lora32.yaml`, `b_lora32.yaml` | LoRA rank 32, alpha 64 |
 | `a-lora64`, `b-lora64` | `a_lora64.yaml`, `b_lora64.yaml` | LoRA rank 64, alpha 128 |
 | `a-partial`, `b-partial` | `a_partial.yaml`, `b_partial.yaml` | LoRA-32 on the first 10 blocks; unfreeze the last 2 blocks and final norm without redundant LoRA |
+| `a-adaptive64`, `b-adaptive64` | `a_adaptive64.yaml`, `b_adaptive64.yaml` | Integrated market/ranking paths, regularization, sample scheduling and adaptive calibration; LoRA rank 64, alpha 128, primary research line |
+| `a-adaptive128`, `b-adaptive128` | `a_adaptive128.yaml`, `b_adaptive128.yaml` | Same integrated settings; only LoRA rank/alpha change to 128/256 |
 
-All six initialize from the same pretrained Kronos-base, not another experiment's checkpoint.
-Task/LoRA/unfrozen learning rates are `3e-5`/`5e-6`/`1e-6`, with a fixed 256,000
+All initialize from the same pretrained Kronos-base, not another experiment's checkpoint.
+The original six configs remain controls; partial unfreezing is a secondary research line.
+Use `adaptive64` versus `adaptive128` for the integrated capacity comparison. Omitting
+`--experiment` still uses the configured selection rather than silently switching it.
+Original task/LoRA/unfrozen learning rates are `3e-5`/`5e-6`/`1e-6`; see
+[training objectives](#training-en) for integrated settings. All use a fixed 256,000
 sample-presentation warmup. Training retains dynamic sampling: a window's year weight is
 `0.8 ** (latest_training_year - cutoff_year)`; each year's quota is proportional to eligible
 windows times this weight. Quotas, losses and processed samples are recorded.
@@ -3999,9 +4100,10 @@ Validation/test use full sequential traversal, not this sampler.
 
 The q50 location, positive interval widths and independent ranking score are separate.
 Checkpoint selection and early stopping use uncalibrated full-validation normalized pinball.
-Market/horizon tail calibration is fitted on full validation after checkpoint selection;
-test retains raw and `calibrated` metrics. Test labels never fit calibration, and future
-80% coverage is not guaranteed. `FORECAST_METRIC_WORKERS` caps diagnostic/calibration
+Frozen tail calibration is fitted on full validation after checkpoint selection;
+test retains raw and `calibrated` metrics. Integrated presets also retain `calibrated_static`
+and delayed-feedback `calibrated_online`, never using immature labels. Future 80% coverage
+is not guaranteed. `FORECAST_METRIC_WORKERS` caps diagnostic/calibration
 threads (default cap 4, additionally constrained by CPU and memory).
 
 ##### Create one or multiple training Pods locally
@@ -4019,7 +4121,7 @@ Create one experiment:
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-lora32 \
+  --experiment a-adaptive64 \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
@@ -4036,7 +4138,7 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-Replace `a-` with `b-` for group B, or mix groups; at most six distinct names may be selected
+Replace `a-` with `b-` for group B, or mix groups; at most ten distinct names may be selected
 per command. Additional different runs may be created while experiments are already running.
 Each launch pins its own immutable selection without changing the global active selection.
 Later configure commands do not change a previously created Pod's settings.
@@ -4192,8 +4294,10 @@ An SSH/tmux screen alone is not authoritative completion evidence.
 
 ##### Loss logs and W&B recovery
 
-Each run's `metrics.jsonl`, `summary.json` and W&B record training loss, pinball, ranking
+Each run's `metrics.jsonl`, `summary.json` and W&B record training loss, pinball, market-weighted pinball, ranking
 loss, learning rates, processed samples and full validation metrics.
+`train/pinball_loss` remains unweighted and comparable to `validation/loss`;
+`train/weighted_pinball_loss` records the market-weighted training component.
 `loss_log_points_per_epoch` defaults to 250, plus validation boundaries;
 `evaluations_per_epoch: 5` corresponds to 20%/40%/60%/80%/100% of each epoch.
 W&B uses `trainer/global_step` and `benchmark_validation/global_step`; same-step
@@ -4305,8 +4409,9 @@ for new runs; historical logs that were never produced and calibration files for
 uncalibrated runs are not required. Loss records contain run
 and session IDs, timestamps, optimizer steps, cumulative sample presentations and
 epoch fractions. Resume appends a new session without overwriting old curves.
-`train/loss` is normalized pinball plus weighted ranking; `train/pinball_loss`,
-`train/ranking_loss` and per-group learning rates are logged separately.
+`train/loss` is market-weighted normalized pinball plus weighted ranking (all market
+weights are one for original presets). Unweighted `train/pinball_loss`,
+`train/weighted_pinball_loss`, `train/ranking_loss` and per-group learning rates are logged separately.
 `validation/loss` is full-validation normalized pinball without ranking. Compare
 training pinball against validation loss when diagnosing a generalization gap,
 not training total loss. Losses are averaged between the configured
@@ -4355,6 +4460,8 @@ poetry run stock-forecasting-infer \
 Inference returns raw `forecast`, independent `ranking_scores`, data provenance, encoder
 shapes and checkpoint metadata. Matching validation-fitted checkpoint calibration additionally
 produces `calibrated_forecast`; otherwise it is `null`, with `interval_calibration_status`.
+Integrated single-point inference uses frozen validation-regime calibration with status
+`validation_fitted_frozen_regime`; it never implicitly imports holdout online feedback state.
 No natural-language explanation is generated.
 
 <a id="probes-en"></a>
@@ -4771,8 +4878,9 @@ options. Run these only on the cloud Pod.
 5. `alpha_quantiles` has shape `[B,15-h_start,3]` with q10 ≤ q50 ≤ q90.
    `ranking_scores` is separate from median return; there are no classification probabilities or text.
 6. Inputs and train-only normalization exclude future data. Validation selects checkpoints and
-   subsequently fits interval calibration; test is evaluation-only. Log train pinball, ranking
-   and validation loss separately.
+   subsequently fits frozen interval calibration. Separate online diagnostics may only use
+   matured past labels; never conflate them with frozen test results. Log train pinball,
+   market-weighted pinball, ranking and validation loss separately.
 7. Main evaluation reads completed baselines on identical membership without retraining them.
    Report normalized pinball, correlation, directional agreement, coverage/width, ranking and
    market/month slices.
@@ -4786,6 +4894,7 @@ controlled comparisons and subsequent backtests untouched by tuning.
 
 Engineering evidence is version- and scope-specific; it does not automatically validate later
 changes or production-scale training:
+[integrated market-adaptation verification](docs/integrated_adaptation_verification.md),
 [multi-Pod control and documentation verification](docs/runpod_parallel_verification.md),
 [cleaning/capacity verification](docs/cleaning_experiments_verification.md),
 [tensor-pipeline verification](docs/baseline_tensor_pipeline_validation.md),

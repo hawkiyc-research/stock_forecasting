@@ -102,6 +102,11 @@ gate 控制 benchmark 注入強度。gate 初始 bias 為負值，讓模型從�
 這是「動態條件耦合」：alpha head 直接預測條件 alpha 分布。它不是兩個互相獨立的
 raw-return/alpha heads，也不是把兩個 q50 做算術相減。
 
+Alpha head 同時接收 20 維截至 `t` 的歷史數值特徵與 benchmark latent 的直接路徑。
+`adaptive64`／`adaptive128` 在共享 head trunk 之外，加入零初始化的市場 residual
+輸出，讓 US、TWSE、TPEx 分別調整 location 與上下寬度參數；不複製 Kronos。
+數值分支的 48 維編碼另經獨立 residual 接入 ranking score，排序輸出層不直接改寫 q50。
+
 ### 6. 輸入與輸出 schema
 
 模型輸入：
@@ -115,11 +120,15 @@ asset_timestamps:            int [B,T,5]
 benchmark_timestamps:        int [B,T,5]
 ```
 
-唯一預測輸出：
+報酬分布輸出：
 
 ```text
 alpha_quantiles: float [B,15-h_start,3]
 ```
+
+啟用獨立排序目標時另輸出 `ranking_scores: float [B,15-h_start]`；它是無量綱
+score，不是中位數報酬或機率。診斷欄位 `scale_features` 為 past-only 數值統計；
+`pinball_loss`、`weighted_pinball_loss` 與 `ranking_loss` 分別保留各 loss component。
 
 其中 `h_start` 只能是 1、2 或 3，horizons 是連續的
 `[h_start,h_start+1,...,14]`；quantiles 固定為 `[0.1,0.5,0.9]`，並由
@@ -137,7 +146,7 @@ alpha_quantiles: float [B,15-h_start,3]
 
 ### 7. Loss 與訊號後處理
 
-模型只有一個 objective：所有 horizon 與 q10/q50/q90 的 pinball loss。每個 horizon
+主要預測 objective 是所有 horizon 與 q10/q50/q90 的 pinball loss。每個 horizon
 先除以只由 train split 估計的 robust scale：
 
 ```text
@@ -148,7 +157,20 @@ loss = mean(pinball(alpha_h / scale_h))
 模型輸出維持原始 log-return 單位。q50 location 與正值區間寬度分離；歷史尺度只控制
 上下寬度，不同步放大 q50。training total loss 為 normalized pinball 加上權重 0.05
 的獨立 ranking-head loss；checkpoint selection 只使用未校準的 validation pinball。
+整合設定對 training pinball 使用 US/TWSE/TPEx/unknown = `[1,2,2,1]` 的固定權重，
+不以單一 microbatch 的權重總和抵消市場倍率。未加權 pinball 仍獨立記錄。
+
 最後選定的 checkpoint 以 validation 擬合上下尾校準，test 同時保留原始與校準結果。
+整合設定增加市場／horizon／歷史波動狀態分組、日期等權後的新近衰減及向上層係數
+收縮；凍結係數只讀 validation。`calibrated_online` 是另外標記的逐日診斷，只使用
+`t+h` 出場日已嚴格早於當次預測日的標籤，且不修改 q50、模型或凍結係數。原靜態
+校準結果另存 `calibrated_static`。單筆推論使用凍結的波動狀態校準。
+
+近期加權與延遲回饋的設計參考
+[Conformal prediction beyond exchangeability](https://arxiv.org/abs/2202.13415) 與
+[Adaptive Conformal Inference](https://proceedings.neurips.cc/paper/2021/hash/0d441de75945e5acbc865406fc9a2559-Abstract.html)。
+本專案的 bounded log-width 更新不是這些論文定理的直接實作，不宣稱保證未來或各市場
+80% coverage；需同時比較 coverage、寬度與 pinball。
 
 五級方向訊號完全是推論後處理。對門檻 `tau >= 0`：
 
@@ -165,15 +187,19 @@ loss = mean(pinball(alpha_h / scale_h))
 | 元件 | 狀態 |
 |---|---|
 | Kronos tokenizer | frozen |
-| Kronos base predictor | LoRA-32／64 實驗凍結；partial 實驗解凍最後 2 層與 final norm |
+| Kronos base predictor | LoRA-32／64／128 實驗凍結；partial 實驗解凍最後 2 層與 final norm |
 | Kronos 指定 projection/MLP LoRA | trainable |
 | shared resampler | trainable |
 | benchmark conditioner | trainable |
 | multi-horizon alpha head | trainable |
 | 獨立 ranking head | trainable |
 
-partial 實驗不在已解凍層重複加入 LoRA；前面各層仍使用 LoRA-32。六份 A/B 實驗設定
-與 `train --experiment` 用法見 README。只有 training 採年度遞減動態抽樣。
+partial 實驗不在已解凍層重複加入 LoRA；前面各層仍使用 LoRA-32。原六份設定保留；
+整合設定提供 A/B 各兩份 LoRA-64／128，部分解凍保留為次要研究線。十份設定與
+`train --experiment` 用法見 README。只有 training 採年度遞減動態抽樣。
+整合設定的排程按實際已呈現 windows 計數，在 100 萬至 400 萬間衰減 LR，並保留
+validation plateau、最低 LR 訓練間隔與 early stopping；checkpoint 保存樣本計數，
+換 GPU 重新調校 batch 不會把排程歸零。
 
 `adapter.safetensors` 僅保存上述可訓練參數。trainer state 必須包含
 `model_output_schema_version=5.0`、包含 `h_start` 的 architecture digest、
@@ -321,6 +347,12 @@ contribution. This is dynamic conditional coupling: the model predicts alpha
 directly, rather than training independent raw-return and alpha heads or
 subtracting two q50 values.
 
+The alpha head also receives 20 historical numerical features through `t` and a
+direct benchmark-latent path. `adaptive64`/`adaptive128` add zero-initialized market
+residual outputs for separate US/TWSE/TPEx location and width adjustments without
+copying Kronos. The numerical branch's 48-dimensional encoding additionally feeds
+an independent ranking residual; ranking output layers do not directly overwrite q50.
+
 ### 6. Input and output schemas
 
 Inputs:
@@ -334,11 +366,16 @@ asset_timestamps:            int [B,T,5]
 benchmark_timestamps:        int [B,T,5]
 ```
 
-The sole prediction is:
+The return-distribution prediction is:
 
 ```text
 alpha_quantiles: float [B,15-h_start,3]
 ```
+
+An enabled independent ranking objective also exposes `ranking_scores: float [B,15-h_start]`,
+dimensionless scores rather than median returns or probabilities. Diagnostic
+`scale_features` contains past-only statistics; `pinball_loss`, `weighted_pinball_loss`
+and `ranking_loss` preserve distinct loss components.
 
 `h_start` is restricted to 1, 2, or 3, and horizons are the contiguous sequence
 `[h_start,h_start+1,...,14]`; quantiles are fixed to `[0.1,0.5,0.9]`.
@@ -350,7 +387,7 @@ model state.
 
 ### 7. Loss and signal post-processing
 
-There is one objective: pinball loss across every horizon and quantile. Each
+The primary prediction objective is pinball loss across every horizon and quantile. Each
 horizon is normalized by a train-only robust scale:
 
 ```text
@@ -362,8 +399,26 @@ Predictions remain in original log-return units. The q50 location is separate fr
 positive interval widths; historical scale controls the widths without jointly
 rescaling q50. Training adds an independent ranking-head loss with weight 0.05 to
 normalized pinball; checkpoint selection uses only uncalibrated validation pinball.
+Integrated presets weight training pinball by US/TWSE/TPEx/unknown = `[1,2,2,1]`;
+normalization does not cancel the market multiplier inside a single-market microbatch.
+Unweighted pinball remains separately logged.
+
 The selected checkpoint fits tail calibration on validation, with both raw and
-calibrated test results retained. Five-level signals are deterministic post-processing:
+calibrated test results retained. Integrated presets add market/horizon/historical-volatility
+groups, equal date mass followed by recency decay, and shrinkage toward parent factors.
+Frozen coefficients use validation only. Separate `calibrated_online` daily diagnostics
+use labels only when their `t+h` exit is strictly before the current forecast date; they
+never change q50, model weights or frozen factors. Original static calibration is retained
+as `calibrated_static`; single-point inference uses frozen regime calibration.
+
+Recency weighting and delayed feedback are informed by
+[Conformal prediction beyond exchangeability](https://arxiv.org/abs/2202.13415) and
+[Adaptive Conformal Inference](https://proceedings.neurips.cc/paper/2021/hash/0d441de75945e5acbc865406fc9a2559-Abstract.html).
+The project's bounded log-width controller is not a direct implementation of their
+theorems and provides no future or per-market 80% coverage guarantee. Evaluate coverage
+together with width and pinball.
+
+Five-level signals are deterministic post-processing:
 
 - `q90 < -tau`: strong bearish
 - otherwise `q50 < -tau`: bearish
@@ -379,7 +434,7 @@ checkpoint selection.
 | Component | State |
 |---|---|
 | Kronos tokenizer | frozen |
-| Kronos base predictor | Frozen for LoRA-32/64; final 2 blocks and final norm unfrozen for partial |
+| Kronos base predictor | Frozen for LoRA-32/64/128; final 2 blocks and final norm unfrozen for partial |
 | selected Kronos projection/MLP LoRA | trainable |
 | shared resampler | trainable |
 | benchmark conditioner | trainable |
@@ -387,8 +442,12 @@ checkpoint selection.
 | independent ranking head | trainable |
 
 The partial experiment does not add redundant LoRA to unfrozen blocks; preceding
-blocks use LoRA-32. See README for the six A/B presets and `train --experiment`.
-Only training uses annual-decay dynamic sampling.
+blocks use LoRA-32. The original six presets remain available; integrated A/B presets
+each provide LoRA-64/128, with partial unfreezing a secondary research line. See README
+for all ten presets and `train --experiment`. Only training uses annual-decay dynamic sampling.
+Integrated scheduling decays LR between one and four million actual window presentations
+while retaining validation plateau reductions, minimum-LR intervals and early stopping.
+Checkpoints persist the sample counter; changing GPU and retuning batches cannot reset it.
 
 `adapter.safetensors` stores only the trainable union. Trainer state binds
 `model_output_schema_version=5.0`, the `h_start`-aware architecture digest,

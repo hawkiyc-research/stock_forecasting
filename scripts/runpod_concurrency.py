@@ -125,7 +125,7 @@ def launch(root: Path, experiments: list[str], workers: int) -> int:
     if len(experiments) != len(set(experiments)):
         raise ValueError("Each experiment may be selected only once per launch")
     if len(experiments) > len(selection["EXPERIMENT_CONFIGS"]):
-        raise ValueError("At most six controlled experiments can be launched together")
+        raise ValueError("Launch exceeds the number of distinct configured experiments")
     jobs = []
     for name in experiments or [""]:
         payload = selection["_with_experiment"](original, name, root) if name else original

@@ -1,0 +1,170 @@
+experiment_name: a-adaptive128
+description: A integrated market adaptation with LoRA 128; partial unfreezing is a separate research control.
+
+data:
+  raw_path: ${DATA_ROOT:-/runpod-volume/data}/raw/market.parquet
+  bar_store_path: ${DATA_ROOT:-/runpod-volume/data}/prepared/bar-store
+  manifest_path: ${DATA_ROOT:-/runpod-volume/data}/dataset-manifest.json
+  dataset_profile: ${FIN_TS_DATASET_PROFILE:-us_tw_eodhd}
+  input_length: 128
+  h_start: ${FIN_TS_H_START:-1}
+  train_end: "2025-06-01"
+  validation_end: "2025-12-01"
+  test_end: "2026-06-01"
+  calibration_seed: 59
+  benchmark_mapping_path: null
+  forecast_horizon: 5
+  diagnostic_horizons: [1, 20]
+  stride: 5
+  sample_stride: 1
+  train_fraction: 1.0
+  flat_volatility_multiplier: 0.25
+  max_abs_log_return: 0.5
+  embargo_trading_days: 5
+  effective_embargo_trading_days: 14
+  max_samples: null
+  label_scale_calibration_samples: 50000
+  require_ready_manifest: true
+
+model:
+  time_series_backend: kronos
+  time_series_model_id: NeoQuasar/Kronos-base
+  time_series_tokenizer_id: NeoQuasar/Kronos-Tokenizer-base
+  time_series_model_revision: 2b554741eca47781b64468546e77fef3e85130e6
+  time_series_tokenizer_revision: 0e0117387f39004a9016484a186a908917e22426
+  kronos_source_root: ${RUNPOD_VOLUME_ROOT:-/runpod-volume}/third_party/Kronos
+  kronos_source_revision: 67b630e67f6a18c9e9be918d9b4337c960db1e9a
+  local_files_only: true
+  dtype: bf16
+  gradient_checkpointing: false
+  encoder_dim: 512
+  latent_tokens: 32
+  resampler_layers: 2
+  resampler_heads: 8
+  projector_hidden_multiplier: 2
+  resampler_dropout: 0.10
+  benchmark_conditioner_heads: 8
+  benchmark_conditioner_dropout: 0.10
+  alpha_head_hidden_dim: 512
+  alpha_head_dropout: 0.10
+  alpha_quantiles: [0.1, 0.5, 0.9]
+  postprocess_alpha_threshold: 0.0
+  feature_mode: ${FIN_TS_FEATURE_MODE:-combined}
+  alpha_head_fp32: true
+  market_aware: true
+  explicit_output_scale: true
+  decoupled_output_scale: true
+  independent_ranking_head: true
+  market_residual_hidden_dim: 64
+  ranking_numeric_features: true
+  unfreeze_last_blocks: 0
+  ranking_loss_weight: 0.05
+  ranking_max_pairs: 256
+  lora:
+    enabled: true
+    rank: 128
+    alpha: 256.0
+    dropout: 0.10
+    target_modules: [q_proj, k_proj, v_proj, out_proj, w1, w2, w3]
+
+training:
+  stage: stage2
+  seed: 42
+  epochs: 5
+  batch_size: auto
+  evaluation_batch_size: auto
+  gradient_accumulation_steps: auto
+  target_effective_batch_size: 256
+  auto_batch_min_size: 4
+  auto_batch_max_size: 256
+  auto_evaluation_batch_max_size: 512
+  auto_batch_memory_fraction: 0.72
+  auto_batch_probe_steps: 2
+  dataloader_prefetch_target_seconds: 2.0
+  dataloader_max_prefetch_factor: 16
+  learning_rate: 0.00001
+  lora_learning_rate: 0.000005
+  weight_decay: 0.03
+  warmup_ratio: 0.03
+  warmup_samples: 256000
+  unfrozen_learning_rate: 1.0e-6
+  yearly_sampling_decay: 0.8
+  learning_rate_schedule: sample_plateau
+  sample_decay_start: 1000000
+  sample_decay_end: 4000000
+  market_loss_weights: [1.0, 2.0, 2.0, 1.0]
+  plateau_patience_evaluations: 2
+  plateau_factor: 0.3
+  plateau_min_ratio: 0.09
+  plateau_min_low_lr_evaluations: 2
+  max_grad_norm: 1.0
+  loss_log_points_per_epoch: 250
+  evaluations_per_epoch: 5
+  checkpoint_save_top_k: 5
+  checkpoint_monitor: primary_5d/selection_score
+  checkpoint_mode: min
+  early_stopping_enabled: true
+  early_stopping_patience_evaluations: 5
+  early_stopping_min_delta: 0.0
+  early_stopping_start_epoch: 1
+  output_root: ${SAVED_MODEL_ROOT:-/runpod-volume/savedModel}
+  resume_checkpoint: null
+  mixed_precision: bf16
+  num_workers: auto
+  evaluation_max_samples: null
+
+wandb:
+  enabled: true
+  project: ${WANDB_PROJECT:-stock_forecasting}
+  entity: ${WANDB_ENTITY:-}
+  group: kronos-base-lora
+  name: a-adaptive128
+  tags: [quant-only, kronos-base, lora, stage2, integrated-adaptation, a-adaptive128]
+  directory: ${WANDB_DIR:-/runpod-volume}
+  mode: online
+  allow_offline_fallback: true
+  log_model_artifact: true
+
+validation:
+  calibrate_intervals: true
+  interval_calibration:
+    mode: regime_adaptive
+    recency_half_life_sessions: 63
+    shrinkage_dates: 60
+    minimum_group_samples: 128
+    minimum_group_dates: 20
+    online_learning_rate: 0.05
+    online_max_multiplier: 2.0
+  enabled: true
+  auto_run_after_training: true
+  output_root: ${RUNPOD_VOLUME_ROOT:-/runpod-volume}/evaluations
+  models:
+    - always_buy
+    - zero_return
+    - momentum_5d
+    - reversal_5d
+    - ma_crossover
+    - rsi
+    - macd
+    - volatility_scaled
+    - gbdt
+    - gru
+    - dlinear
+    - patchtst
+    - kronos_full
+  seeds: [42]
+  neural_epochs: 5
+  neural_patience: 5
+  neural_batch_size: 256
+  neural_learning_rate: 0.001
+  recompute_full_model: false
+  resume_completed_models: true
+  baseline_max_samples_per_split: null
+  require_prebuilt_baselines: true
+
+runtime:
+  max_runtime_seconds: ${MAX_RUNTIME_SECONDS:-21600}
+  auto_terminate_pod: true
+  termination_retry_seconds: 15
+  termination_max_attempts: 20
+  log_root: ${LOG_ROOT:-/runpod-volume/logs}

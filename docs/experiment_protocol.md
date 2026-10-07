@@ -133,7 +133,10 @@ subset 與 validation split：
 
 規則 baseline 的 residual quantiles、GBDT／neural 的參數擬合與 robust scales 只使用
 train labels；validation 用來選 model/checkpoint 與決定 early stopping。
-主模型的區間尾部校準在 checkpoint 選定後才使用 validation 擬合；test 不參與調參。
+主模型的凍結區間校準在 checkpoint 選定後才使用 validation 擬合；test 不參與其調參。
+`adaptive64`／`adaptive128` 另提供市場 residual、數值／benchmark ranking 路徑、
+market-weighted training pinball、sample-clock 衰減與較強 dropout／weight decay；
+原六份容量設定保留。細節與預設值見 [README](../README.md#training-zh)。
 
 ### 9. Validation metrics
 
@@ -163,10 +166,13 @@ transaction-cost 假設必須明列；單一 Sharpe 不可解讀為已證明可�
 
 正式 RunPod 訓練以完整 validation 選定最佳 checkpoint；訓練完成後，由同一 Pod
 自動執行完整 test benchmark。若啟用區間校準，先固定該 checkpoint，僅用完整
-validation 擬合校準係數，再套用於 test；raw 與 calibrated 指標均保留。
+validation 擬合凍結校準係數，再套用於 test；raw 與 calibrated 指標均保留。
+整合實驗額外列出 `calibrated_static` 對照和 `calibrated_online` 逐日診斷：
+online 只使用依既有交易日曆已於前一交易日或更早到期的報酬更新上下尾寬度，
+不改 q50、不回寫凍結校準，也不調模型；不能把它冒充完全凍結的 test。
 Baseline 的 test 指標直接讀取已完成的快取，不在這個階段重新訓練或推論。
 同一 run 內所有模型的 test membership 與報酬尺度一致性檢查通過後，才發布
-`test_unlocked=true`；test 不決定 checkpoint、early stopping 或校準係數。
+`test_unlocked=true`；test 不決定 checkpoint、early stopping、凍結係數或 online 超參數。
 若使用 test 結果修改模型，該集合已成為研究迭代用的評估資料；後續獨立泛化主張
 必須以未參與這些決策的新時間區間驗證，不能僅更換 dataset version 就宣稱獨立。
 
@@ -218,7 +224,11 @@ Stage 2：
 
 ### 13. 優先 ablation
 
-在不改 output contract與資料切分下，依序測試：
+主要容量比較使用相同資料組別的 `adaptive64` 與 `adaptive128`；市場分支、排序特徵、
+校準、正則化與排程保持相同，只改 LoRA rank／alpha。原 `partial` 設定保留為次要
+研究線。整合設定與原 `lora64` 的比較是整套方法比較，不能把改進歸因於單一元件。
+
+後續可在不改 output contract 與資料切分下，另作以下單因子消融：
 
 1. gated benchmark conditioner vs asset-only（benchmark gate 固定為 0）。
 2. Kronos LoRA vs frozen Kronos + trainable downstream modules。
@@ -368,8 +378,11 @@ the same train subset and validation split:
 
 Rule residual quantiles, GBDT/neural parameter fitting, and robust scales use train
 labels only. Validation selects models/checkpoints and controls early stopping.
-Main-model interval-tail calibration fits validation only after checkpoint selection;
-test never tunes these parameters.
+Frozen main-model interval-tail calibration fits validation only after checkpoint selection;
+test never tunes these parameters. Integrated `adaptive64`/`adaptive128` add market residuals,
+numerical/benchmark ranking paths, market-weighted training pinball, sample-clock decay and
+stronger dropout/weight decay. The original six capacity presets remain available; defaults
+and boundaries are documented in [README](../README.md#training-en).
 
 ### 9. Validation metrics
 
@@ -390,11 +403,15 @@ proof of tradability.
 Production RunPod training selects the best checkpoint using full validation;
 after training completes, the same Pod automatically runs the full test benchmark. When
 interval calibration is enabled, the selected checkpoint is fixed, calibration
-fits full validation only, and test retains both raw and calibrated metrics.
+fits full validation only, and test retains both raw and calibrated metrics. Integrated
+presets additionally report `calibrated_static` and a separate `calibrated_online` prequential
+diagnostic. Online width updates use only returns whose scheduled exit occurred strictly
+before the forecast date under the existing market calendar; q50, the model and the frozen
+artifact are unchanged. Never present this as a fully frozen holdout result.
 Baseline test scores come from the completed cache without refitting or inference.
 Only after all models within the run pass test-membership and return-scale consistency checks
 is `test_unlocked=true` published. Test never selects checkpoints, controls early
-stopping, or fits calibration. If test results drive model changes, that population
+stopping, frozen calibration or online hyperparameters. If test results drive model changes, that population
 has become an iterative research evaluation set. Independent generalization claims
 then require a new time interval not used in those decisions; a different dataset
 version alone does not restore independence.
@@ -437,7 +454,12 @@ Stronger claims require multiple seeds, dispersion, and predefined ablations.
 
 ### 13. Priority ablations
 
-Without changing outputs or splits, test one factor at a time:
+The primary capacity comparison is `adaptive64` versus `adaptive128` within one data group:
+market/ranking paths, calibration, regularization and scheduling stay fixed; only LoRA
+rank/alpha change. Original `partial` remains a secondary research line. Comparing the
+integrated presets with original `lora64` evaluates a bundle, not the causal effect of one component.
+
+Optional later single-factor ablations, without changing outputs or splits, include:
 
 1. Gated benchmark conditioning versus asset-only (gate fixed to zero).
 2. Kronos LoRA versus frozen Kronos plus trainable downstream modules.

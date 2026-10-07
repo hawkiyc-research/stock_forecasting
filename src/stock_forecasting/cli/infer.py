@@ -331,6 +331,7 @@ def infer_observation(
             calibrate_predictions,
             validate_calibration,
         )
+        from stock_forecasting.interval_calibration import volatility_ratio
 
         path = (
             config.validation.output_root
@@ -348,6 +349,10 @@ def infer_observation(
                 output.alpha_quantiles.detach().float().cpu().numpy(),
                 [observation.metadata["market"]],
                 calibration,
+                volatility=(
+                    volatility_ratio(output.scale_features.detach().float().cpu().numpy())
+                    if calibration["schema_version"] == 2 else None
+                ),
             )
             calibrated_forecast = _forecast_payload(
                 torch.from_numpy(values),
@@ -355,7 +360,10 @@ def infer_observation(
                 quantile_levels=config.model.alpha_quantiles,
                 signal_threshold=config.model.postprocess_alpha_threshold,
             )
-            calibration_status = "validation_fitted"
+            calibration_status = (
+                "validation_fitted_frozen_regime" if calibration["schema_version"] == 2
+                else "validation_fitted"
+            )
     return {
         "model_output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
         "symbol": observation.symbol,

@@ -203,6 +203,8 @@ class ModelConfig(StrictModel):
     explicit_output_scale: bool = False
     decoupled_output_scale: bool = False
     independent_ranking_head: bool = False
+    market_residual_hidden_dim: int = Field(default=0, ge=0, le=256)
+    ranking_numeric_features: bool = False
     unfreeze_last_blocks: int = Field(default=0, ge=0, le=2)
     ranking_loss_weight: float = Field(default=0.0, ge=0.0, le=0.2)
     ranking_max_pairs: int = Field(default=256, ge=1, le=4096)
@@ -226,6 +228,14 @@ class ModelConfig(StrictModel):
             raise ValueError("Partial unfreezing requires LoRA on the lower frozen blocks")
         if self.independent_ranking_head and not self.ranking_loss_weight:
             raise ValueError("The independent ranking head requires a ranking objective")
+        if self.market_residual_hidden_dim and not self.market_aware:
+            raise ValueError("Market residual heads require market_aware=true")
+        if self.ranking_numeric_features and (
+            not self.independent_ranking_head or self.feature_mode != "combined"
+        ):
+            raise ValueError(
+                "Ranking feature fusion requires an independent head and combined features"
+            )
         if self.time_series_backend == "mock" and self.lora.enabled:
             raise ValueError("The mock backbone does not expose Kronos LoRA targets")
         if self.time_series_backend == "kronos":
@@ -271,6 +281,8 @@ class ModelConfig(StrictModel):
             ("explicit_output_scale", False),
             ("decoupled_output_scale", False),
             ("independent_ranking_head", False),
+            ("market_residual_hidden_dim", 0),
+            ("ranking_numeric_features", False),
             ("unfreeze_last_blocks", 0),
             ("ranking_loss_weight", 0.0),
             ("ranking_max_pairs", 256),
@@ -326,7 +338,11 @@ class TrainingConfig(StrictModel):
     mixed_precision: Literal["no", "bf16"] = "bf16"
     num_workers: int | Literal["auto"] = "auto"
     evaluation_max_samples: int | None = Field(default=None, ge=32)
-    learning_rate_schedule: Literal["cosine", "validation_plateau"] = "cosine"
+    learning_rate_schedule: Literal["cosine", "validation_plateau", "sample_plateau"] = "cosine"
+    sample_decay_start: int = Field(default=1_000_000, ge=1)
+    sample_decay_end: int = Field(default=4_000_000, ge=2)
+    # Fixed weights are not normalized inside a potentially single-market microbatch.
+    market_loss_weights: list[float] = Field(default_factory=lambda: [1.0] * 4)
     plateau_patience_evaluations: int = Field(default=2, ge=1)
     plateau_factor: float = Field(default=0.3, gt=0, lt=1)
     plateau_min_ratio: float = Field(default=0.09, gt=0, lt=1)
@@ -357,6 +373,17 @@ class TrainingConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_training_contract(self) -> TrainingConfig:
+        if (
+            len(self.market_loss_weights) != 4
+            or any(not 0 < v <= 4 for v in self.market_loss_weights)
+        ):
+            raise ValueError("market_loss_weights requires four finite weights in (0, 4]")
+        if self.sample_decay_end <= self.sample_decay_start:
+            raise ValueError("sample_decay_end must exceed sample_decay_start")
+        if self.learning_rate_schedule == "sample_plateau" and (
+            self.warmup_samples is None or self.warmup_samples > self.sample_decay_start
+        ):
+            raise ValueError("sample_plateau requires warmup_samples <= sample_decay_start")
         if not self.checkpoint_monitor.startswith("primary_5d/"):
             raise ValueError("checkpoint_monitor must reference a validation primary_5d metric")
         if self.lora_learning_rate > self.learning_rate:
@@ -424,9 +451,24 @@ class WandbConfig(StrictModel):
         return self
 
 
+class IntervalCalibrationConfig(StrictModel):
+    """Frozen validation fit and separately reported delayed-feedback evaluation."""
+
+    mode: Literal["static", "regime_adaptive"] = "static"
+    recency_half_life_sessions: int = Field(default=63, ge=5, le=504)
+    shrinkage_dates: int = Field(default=60, ge=1, le=504)
+    minimum_group_samples: int = Field(default=128, ge=32)
+    minimum_group_dates: int = Field(default=20, ge=5)
+    online_learning_rate: float = Field(default=0.05, gt=0, le=0.2)
+    online_max_multiplier: float = Field(default=2.0, gt=1, le=4)
+
+
 class ValidationConfig(StrictModel):
     enabled: bool = True
     calibrate_intervals: bool = False
+    interval_calibration: IntervalCalibrationConfig = Field(
+        default_factory=IntervalCalibrationConfig
+    )
     auto_run_after_training: bool = True
     output_root: Path = Path("/runpod-volume/evaluations")
     models: list[
@@ -501,6 +543,13 @@ class ExperimentConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_stage_contract(self) -> ExperimentConfig:
+        if self.validation.interval_calibration.mode == "regime_adaptive" and (
+            not self.validation.calibrate_intervals
+            or self.model.feature_mode not in ("scales", "combined")
+        ):
+            raise ValueError(
+                "Regime calibration requires interval calibration and past-only scales"
+            )
         if (
             self.model.unfreeze_last_blocks
             and self.training.unfrozen_learning_rate > self.training.lora_learning_rate
@@ -552,7 +601,7 @@ class ExperimentConfig(StrictModel):
                     "Production Stage 1/2 requires five consecutive non-improving "
                     "validations for early stopping"
                 )
-            if self.training.learning_rate_schedule == "validation_plateau":
+            if self.training.learning_rate_schedule in ("validation_plateau", "sample_plateau"):
                 expected_early_stopping_epoch = 1
             if self.training.early_stopping_start_epoch != expected_early_stopping_epoch:
                 raise ValueError(
