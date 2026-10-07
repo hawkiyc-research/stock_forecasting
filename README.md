@@ -562,16 +562,22 @@ Python 套件管理沿用 Poetry，環境固定在雲端專案根目錄
 ```bash
 bash runpod-ssh-socket.sh
 bash runpod-ssh-socket.sh 8h
+bash runpod-ssh-socket.sh --pod-id "<POD_ID>"
+bash runpod-ssh-socket.sh 8h --pod-id "<POD_ID>"
 ```
 
-腳本只有一個可選參數 `SOCKET_TTL`，預設 `4h`，接受正整數加上 `m`、`h` 或
-`d`，例如 `30m`、`8h`、`1d`；`--help` 顯示說明。專案位置依腳本所在目錄
-動態取得，從其他工作目錄呼叫時也適用。
+`SOCKET_TTL` 為可選的位置參數，預設 `4h`，接受正整數加上 `m`、`h` 或 `d`，
+例如 `30m`、`8h`、`1d`。新增的可選參數 `--pod-id POD_ID` 只連線指定的
+運行中 Pod，可與 TTL 一起使用；若該 Pod 不存在、無權存取或未運行，腳本會
+報錯，不會改連其他 Pod。`--help` 顯示說明。專案位置依腳本所在目錄動態取得，
+從其他工作目錄呼叫時也適用。
 
 它使用既有、權限為 `600` 或 `400` 的專案 `.env` 與 REST v2 查詢入口，
-預設可連線到目前 RunPod API key 可存取的所有運行中 Pod，不限制專案名稱、
+不帶參數時，會自動為目前 RunPod API key 可存取的所有運行中 Pod 建立 socket；
+只提供 TTL 而未指定 `--pod-id` 時，也會連線全部運行中 Pod。不限制專案名稱、
 network volume 或 workflow 身分，也不需要設定 `RUNPOD_NETWORK_VOLUME_ID`。
-只有一台時自動選取；有多台時在終端選擇。優先使用 direct SSH；沒有 direct
+每台 Pod 使用獨立 socket 與到期程序，全程不要求終端選擇。
+優先使用 direct SSH；沒有 direct
 endpoint 時使用 API 提供的 RunPod SSH proxy。對應的 SSH 公鑰必須已在
 RunPod 設定完成；proxy 連線不支援 SCP／SFTP，詳見
 [RunPod SSH 文件](https://docs.runpod.io/pods/configuration/use-ssh)。
@@ -580,10 +586,20 @@ RunPod 設定完成；proxy 連線不支援 SCP／SFTP，詳見
 腳本不會詢問或保存密碼，也不會修改 SSH 設定。
 
 成功後會印出 socket、到期時間、agent 可使用的 SSH 命令，以及檢查／提前關閉命令。
-將這段輸出提供給 agent 即可；本次連線資訊也會保存於
-`.runpod/ssh-socket/latest.json`，每次執行使用獨立的私有暫存目錄。
-agent 應先檢查 metadata 的 `expires_at_epoch` 及 `check_command`，再使用
-`ssh_command` 執行工作；此命令只重用 socket，失效時直接失敗。
+將這段輸出提供給 agent 即可；本次連線索引保存於
+`.runpod/ssh-socket/latest.json`，其中 `connections` 以 Pod ID 為 key，記錄各台
+成功連線的 metadata；`failures` 記錄失敗的 Pod 與原因。每台 Pod 的每次連線
+使用獨立的私有暫存目錄。agent 應先檢查對應 metadata 的 `expires_at_epoch`
+及 `check_command`，再使用 `ssh_command` 執行工作；此命令只重用 socket，
+失效時直接失敗。部分 Pod 連線失敗時，其他成功的 socket 仍可使用，但腳本
+會回傳非零 exit code，避免把部分成功當成全部完成。
+
+多台 Pod 的 API 查詢與 SSH 認證使用 bounded thread pool；待處理 futures
+不超過 worker 數量。worker 數量同時依 Pod 數量、CPU 核心數、可用記憶體與
+服務負載上限決定，最多 `4` 個；可透過環境變數 `RUNPOD_SSH_SOCKET_WORKERS`
+降低並行度。記憶體規劃保留 `512 MiB`，每個存續連線及 active worker 各估算
+`64 MiB`。若無法估算記憶體或不足以安全建立全部連線，會在連線前報錯；
+可使用 `--pod-id` 縮小範圍。同一台 Pod 的私鑰仍依優先順序逐一嘗試。
 
 TTL 是 socket 接受新共用連線的期限。到期會執行 `ssh -O stop`，
 已建立的 SSH 工作及 detached tmux 可以繼續；本機睡眠、重啟或網路中斷可能
@@ -2894,18 +2910,25 @@ training, or inspect RunPod.** Run it from the project root:
 ```bash
 bash runpod-ssh-socket.sh
 bash runpod-ssh-socket.sh 8h
+bash runpod-ssh-socket.sh --pod-id "<POD_ID>"
+bash runpod-ssh-socket.sh 8h --pod-id "<POD_ID>"
 ```
 
-The only optional parameter is `SOCKET_TTL`, defaulting to `4h`. It accepts a
-positive integer followed by `m`, `h`, or `d`, such as `30m`, `8h`, or `1d`;
-`--help` prints usage. The project location is derived from the script's directory,
+`SOCKET_TTL` is an optional positional parameter defaulting to `4h`. It accepts
+a positive integer followed by `m`, `h`, or `d`, such as `30m`, `8h`, or `1d`.
+The new optional `--pod-id POD_ID` parameter connects only to the specified
+running Pod and can be combined with TTL. If that Pod is absent, inaccessible,
+or not running, the helper fails without switching to another Pod. `--help`
+prints usage. The project location is derived from the script's directory,
 so invocation from another working directory also works.
 
 The helper uses the existing project `.env` (mode `600` or `400`) and REST v2
-query wrapper. By default it can connect to every running Pod accessible to the
-configured RunPod API key, regardless of project name, network volume, or workflow
-identity. `RUNPOD_NETWORK_VOLUME_ID` is not required. It selects a sole match
-automatically or prompts in the terminal when several match. Direct SSH is preferred;
+query wrapper. With no arguments, it automatically creates sockets for every
+running Pod accessible to the configured RunPod API key. Providing only TTL
+without `--pod-id` also connects to all running Pods, regardless of project name,
+network volume, or workflow identity. `RUNPOD_NETWORK_VOLUME_ID` is not required.
+Each Pod gets its own socket and expiration process, without terminal selection.
+Direct SSH is preferred;
 when no direct endpoint exists, it uses the API-provided RunPod SSH proxy. The SSH
 public key must already be configured in RunPod. Proxy connections do not support
 SCP/SFTP; see the
@@ -2916,11 +2939,23 @@ in sequence. Unlock encrypted keys with `ssh-add` beforehand. The helper does
 not prompt for or store passwords or change SSH configuration.
 
 On success it prints the socket, expiration, agent SSH command, and commands to
-check or close access early. Give this output to the agent. Connection metadata
-is also saved in `.runpod/ssh-socket/latest.json`; every invocation creates a
-separate private temporary directory. The agent should check `expires_at_epoch`
-and run `check_command` before using `ssh_command`. That command reuses only
-the socket and fails if it is unavailable.
+check or close access early. Give this output to the agent. The invocation index
+is saved in `.runpod/ssh-socket/latest.json`: `connections` maps Pod IDs to
+successful connection metadata, while `failures` records failed Pods and their
+reasons. Every connection gets a separate private temporary directory. The agent
+should check the corresponding `expires_at_epoch` and run `check_command` before
+using `ssh_command`. That command reuses only the socket and fails if unavailable.
+If some Pods fail, successful sockets remain usable, but the helper returns a
+nonzero exit code so partial success is not reported as full completion.
+
+Multi-Pod API queries and SSH authentication use a bounded thread pool with no
+more pending futures than workers. Worker count accounts for Pod count, CPU cores,
+available memory, and service load, capped at `4`. Set the environment variable
+`RUNPOD_SSH_SOCKET_WORKERS` to lower concurrency. Memory planning reserves
+`512 MiB` and estimates `64 MiB` for each retained connection and active worker.
+If memory cannot be estimated or is insufficient for all connections, the helper
+fails before connecting; use `--pod-id` to narrow the scope. Private keys for the
+same Pod are still tried sequentially in priority order.
 
 TTL limits acceptance of new shared connections. Expiration runs `ssh -O stop`,
 allowing established SSH work and detached tmux to continue. Host sleep, reboot,

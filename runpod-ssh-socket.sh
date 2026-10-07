@@ -7,27 +7,10 @@ umask 077
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ $# -gt 1 ]]; then
-    echo "Usage: bash runpod-ssh-socket.sh [SOCKET_TTL]" >&2
-    exit 2
-fi
-if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
-    cat <<'HELP'
-Usage: bash runpod-ssh-socket.sh [SOCKET_TTL]
-
-Create a local shared SSH connection only when you want an agent to operate RunPod.
-The only parameter is the socket TTL: default 4h; examples: 30m, 8h, 1d.
-Connect to any running Pod accessible to the configured RunPod API key.
-Select the Pod interactively when multiple Pods are running.
-Try ~/.ssh/id_ed25519_runpod first, then other private keys under ~/.ssh.
-Encrypted keys must already be unlocked in ssh-agent (ssh-add).
-HELP
-    exit 0
-fi
-
-exec python3 - "${PROJECT_ROOT}" "${1:-4h}" <<'PY'
+exec python3 - "${PROJECT_ROOT}" "$@" <<'PY'
 """Create a bounded-lived SSH master without changing the training workflow."""
 
+import argparse
 import ipaddress
 import json
 import os
@@ -37,7 +20,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,43 +66,8 @@ def write_json(path, payload):
     os.replace(temporary, path)
 
 
-def main():
-    root, duration = Path(sys.argv[1]), sys.argv[2]
-    match = re.fullmatch(r"([1-9][0-9]{0,8})([mhd])", duration)
-    if match is None:
-        raise ValueError("Socket TTL must be a positive duration such as 30m, 4h, or 1d")
-    ttl = int(match[1]) * {"m": 60, "h": 3600, "d": 86400}[match[2]]
-    ssh = shutil.which("ssh")
-    if ssh is None:
-        raise RuntimeError("OpenSSH is required on the local control machine")
+def connect_pod(root, pod, ssh, ttl):
     wrapper = root / "scripts/runpodctl_project.sh"
-    pods = json.loads(command(["bash", str(wrapper), "pod", "list", "--output", "json"]))
-    if not isinstance(pods, list):
-        raise ValueError("RunPod Pod list must be an array")
-    candidates = []
-    for pod in pods:
-        if not isinstance(pod, dict):
-            continue
-        if (pod.get("desiredStatus") == "RUNNING"
-                and re.fullmatch(r"[A-Za-z0-9_-]+", str(pod.get("id", "")))):
-            candidates.append(pod)
-    candidates.sort(key=lambda pod: pod["id"])
-    if not candidates:
-        raise RuntimeError("No running Pod is accessible to the configured RunPod API key")
-    if len(candidates) == 1:
-        pod = candidates[0]
-    else:
-        for index, pod in enumerate(candidates, 1):
-            name = json.dumps(str(pod.get("name", "")), ensure_ascii=False)
-            print("{}: {} {}".format(index, pod["id"], name), flush=True)
-        # Python source occupies stdin, so read selection from the controlling terminal.
-        with open("/dev/tty", "r+") as terminal:
-            terminal.write("Select Pod [1-{}]: ".format(len(candidates)))
-            terminal.flush()
-            selection = terminal.readline().strip()
-        if not selection.isdigit() or not 1 <= int(selection) <= len(candidates):
-            raise ValueError("Invalid Pod selection")
-        pod = candidates[int(selection) - 1]
     # Refresh the selected endpoint immediately before authentication.
     refreshed = json.loads(command(["bash", str(wrapper), "pod", "get", pod["id"], "--output", "json"]))
     if refreshed.get("id") != pod["id"] or refreshed.get("desiredStatus") != "RUNNING":
@@ -169,7 +119,7 @@ def main():
     watcher = None
     try:
         for key in private_keys():
-            print("Trying SSH identity: " + str(key), flush=True)
+            print("Pod {}: trying SSH identity {}".format(pod["id"], key), flush=True)
             with (session / "authentication.log").open("a") as log:
                 try:
                     result = subprocess.run(
@@ -216,18 +166,8 @@ raise SystemExit(result.returncode)
             "check_command": base + ["-O", "check", destination],
             "close_command": base + ["-O", "stop", destination],
         }
-        state = root / ".runpod/ssh-socket"
-        state.mkdir(parents=True, exist_ok=True, mode=0o700)
         write_json(session / "session.json", metadata)
-        write_json(state / "latest.json", metadata)
-        print("Pod: " + pod["id"])
-        print("SSH type: " + connection_type)
-        print("Socket: " + str(socket))
-        print("Expires (UTC): " + metadata["expires_at"])
-        print("Metadata: " + str(state / "latest.json"))
-        print("Agent SSH: " + shlex.join(reuse))
-        print("Check: " + shlex.join(metadata["check_command"]))
-        print("Close new connections: " + shlex.join(metadata["close_command"]))
+        return metadata, watcher
     except BaseException:
         if watcher is not None:
             watcher.terminate()
@@ -237,9 +177,159 @@ raise SystemExit(result.returncode)
         raise
 
 
+def available_memory_bytes():
+    # Budget recoverable host memory, capped by container limits when present.
+    available = None
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        match = re.search(r"(?m)^MemAvailable:\s+(\d+) kB$", meminfo.read_text())
+        if match:
+            available = int(match[1]) * 1024
+    elif sys.platform == "darwin":
+        statistics = command(["/usr/bin/vm_stat"], timeout=5)
+        page_size = re.search(r"page size of (\d+) bytes", statistics)
+        if page_size:
+            pages = sum(int(value) for value in re.findall(
+                r"(?m)^Pages (?:free|inactive|speculative):\s+(\d+)\.", statistics
+            ))
+            available = pages * int(page_size[1])
+    if available is None:
+        raise RuntimeError("Unable to estimate available memory for SSH connection planning")
+    for limit_path, usage_path in (
+        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+    ):
+        limit, usage = Path(limit_path), Path(usage_path)
+        if limit.is_file() and usage.is_file():
+            value = limit.read_text().strip()
+            if value.isdigit():
+                available = min(available, max(0, int(value) - int(usage.read_text())))
+    return available
+
+
+def worker_plan(count):
+    # Reserve 512 MiB and allow 64 MiB each for retained sessions and active work.
+    per_connection = 64 * 1024 * 1024
+    reserve = 512 * 1024 * 1024
+    available = available_memory_bytes()
+    capacity = max(0, (available - reserve) // per_connection - count)
+    if capacity < 1:
+        raise RuntimeError("Insufficient available memory for {} SSH sessions plus working memory; "
+                           "use --pod-id to reduce the connection scope".format(count))
+    value = os.environ.get("RUNPOD_SSH_SOCKET_WORKERS", "")
+    if value and not re.fullmatch(r"[1-9][0-9]{0,3}", value):
+        raise ValueError("RUNPOD_SSH_SOCKET_WORKERS must be a positive integer of at most four digits")
+    # Limit account API/SSH load even on a machine with many CPU cores.
+    service_limit = 4
+    requested = int(value) if value else service_limit
+    workers = min(count, os.cpu_count() or 1, capacity, requested, service_limit)
+    print("SSH workers: {} (Pods: {}, available memory: {} MiB, reserve: 512 MiB, "
+          "session/worker allowance: 64 MiB each)".format(workers, count, available // (1024 * 1024)),
+          flush=True)
+    return workers
+
+
+def close_connection(metadata, watcher):
+    watcher.terminate()
+    watcher.wait(timeout=15)
+    command(metadata["close_command"], timeout=15)
+
+
+def main():
+    root = Path(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        prog="bash runpod-ssh-socket.sh",
+        description="Create local SSH sockets only when you want an agent to operate RunPod. "
+                    "Without --pod-id, connect to all accessible running Pods.",
+        epilog="Try ~/.ssh/id_ed25519_runpod first, then other private keys under ~/.ssh. "
+               "Unlock encrypted keys with ssh-add before connecting.",
+    )
+    parser.add_argument("socket_ttl", nargs="?", default="4h", metavar="SOCKET_TTL",
+                        help="socket TTL (default: 4h; examples: 30m, 8h, 1d)")
+    parser.add_argument("--pod-id", metavar="POD_ID", help="connect only to this running Pod")
+    args = parser.parse_args(sys.argv[2:])
+    match = re.fullmatch(r"([1-9][0-9]{0,8})([mhd])", args.socket_ttl)
+    if match is None:
+        parser.error("Socket TTL must be a positive duration such as 30m, 4h, or 1d")
+    if args.pod_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", args.pod_id):
+        parser.error("Pod ID contains invalid characters")
+    ttl = int(match[1]) * {"m": 60, "h": 3600, "d": 86400}[match[2]]
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        raise RuntimeError("OpenSSH is required on the local control machine")
+    wrapper = root / "scripts/runpodctl_project.sh"
+    pods = json.loads(command(["bash", str(wrapper), "pod", "list", "--output", "json"]))
+    if not isinstance(pods, list):
+        raise ValueError("RunPod Pod list must be an array")
+    candidates = {}
+    for pod in pods:
+        if (isinstance(pod, dict) and pod.get("desiredStatus") == "RUNNING"
+                and re.fullmatch(r"[A-Za-z0-9_-]+", str(pod.get("id", "")))
+                and (args.pod_id is None or pod["id"] == args.pod_id)):
+            candidates[pod["id"]] = pod
+    if not candidates:
+        raise RuntimeError("Requested Pod is not running or accessible to this API key" if args.pod_id
+                           else "No running Pod is accessible to the configured RunPod API key")
+    workers = worker_plan(len(candidates))
+    state = root / ".runpod/ssh-socket"
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    connections, failures, watchers = {}, {}, {}
+    result_lock = threading.Lock()
+
+    def connect_and_record(pod):
+        metadata, watcher = connect_pod(root, pod, ssh, ttl)
+        with result_lock:
+            connections[pod["id"]] = metadata
+            watchers[pod["id"]] = watcher
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    pending = {}
+    iterator = iter(candidates.values())
+    try:
+        # Never submit more than workers futures; replenish only after completion.
+        for _ in range(workers):
+            pod = next(iterator)
+            pending[pool.submit(connect_and_record, pod)] = pod["id"]
+        while pending:
+            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                pod_id = pending.pop(future)
+                try:
+                    future.result()
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                    failures[pod_id] = str(error)
+                    print("Pod {}: FAILED: {}".format(pod_id, error), file=sys.stderr, flush=True)
+                pod = next(iterator, None)
+                if pod is not None:
+                    pending[pool.submit(connect_and_record, pod)] = pod["id"]
+        pool.shutdown(wait=True)
+        index = {"schema_version": 2, "project_root": str(root), "requested_pod_id": args.pod_id,
+                 "connections": dict(sorted(connections.items())), "failures": dict(sorted(failures.items()))}
+        write_json(state / "latest.json", index)
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)
+        for pod_id, metadata in connections.items():
+            try:
+                close_connection(metadata, watchers[pod_id])
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                print("Pod {}: cleanup failed: {}".format(pod_id, error), file=sys.stderr)
+        raise
+    for pod_id, metadata in sorted(connections.items()):
+        print("\nPod: " + pod_id)
+        print("SSH type: " + metadata["connection_type"])
+        print("Socket: " + metadata["control_path"])
+        print("Expires (UTC): " + metadata["expires_at"])
+        print("Agent SSH: " + shlex.join(metadata["ssh_command"]))
+        print("Check: " + shlex.join(metadata["check_command"]))
+        print("Close new connections: " + shlex.join(metadata["close_command"]))
+    print("\nMetadata: " + str(state / "latest.json"))
+    print("Connected: {}; failed: {}".format(len(connections), len(failures)))
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main())
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print("runpod-ssh-socket: " + str(error), file=sys.stderr)
         raise SystemExit(1)
