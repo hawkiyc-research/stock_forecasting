@@ -8,13 +8,13 @@ import os
 from pathlib import Path
 
 from stock_forecasting.checkpointing import validate_checkpoint_selection
-from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.run_contract import validate_training_resume_contract
 from stock_forecasting.run_paths import (
     canonical_network_volume_root,
     validate_run_environment_ids,
     validate_training_resume_path,
 )
+from stock_forecasting.runpod.configuration import load_run_config
 from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested
 from stock_forecasting.training import train, write_training_result
 
@@ -29,7 +29,7 @@ def main() -> None:
     args = parse_args()
     config_path = Path(args.config)
     source_config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
-    config = ExperimentConfig.from_yaml(args.config)
+    config = load_run_config(args.config)
     if config.training.resume_checkpoint is not None:
         raise ValueError(
             "training.resume_checkpoint must not be set in YAML; use the RunPod resume contract"

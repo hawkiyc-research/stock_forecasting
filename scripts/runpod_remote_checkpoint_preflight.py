@@ -165,6 +165,9 @@ def _validate_run_manifest(
     resume_contract = manifest.get("training_resume_contract")
     if not isinstance(resume_contract, dict):
         raise ValueError("Run manifest has no current training resume contract snapshot")
+    seed = os.environ.get("RUNPOD_TRAINING_SEED", "")
+    if seed and resume_contract.get("training", {}).get("seed") != int(seed):
+        raise ValueError("Run checkpoint training seed differs from its pinned selection")
     encoded_contract = json.dumps(
         resume_contract,
         ensure_ascii=False,

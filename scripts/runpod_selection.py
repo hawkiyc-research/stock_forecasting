@@ -131,6 +131,7 @@ EXPORT_KEYS = (
     "RUNPOD_STAGE",
     "RUNPOD_CONFIG",
     "RUNPOD_STAGE_CONFIG_SHA256",
+    "RUNPOD_TRAINING_SEED",
     "DATA_ROOT",
     "FIN_TS_DATASET_PROFILE",
     "FIN_TS_H_START",
@@ -152,6 +153,7 @@ OPTIONAL_EMPTY_ENVIRONMENT_KEYS = frozenset(
         "STAGE1_US_SYMBOLS",
         "STAGE1_US_ETF_SYMBOLS",
         "STAGE1_SYMBOL_LIMIT",
+        "RUNPOD_TRAINING_SEED",
     }
 )
 
@@ -353,6 +355,8 @@ def _validate_selection(
     stage = payload.get("stage")
     if not isinstance(stage, dict) or stage.get("name") not in STAGE_CONFIGS:
         _fail("Training selection stage is unsupported")
+    if "training_seed" in stage:
+        _validate_training_seed(stage["training_seed"])
     expected_config_path = STAGE_CONFIGS[stage["name"]]
     experiment = stage.get("experiment")
     if experiment is not None:
@@ -657,6 +661,7 @@ def _selection_exports(selection_path: Path, payload: Dict[str, Any]) -> Dict[st
         "RUNPOD_STAGE": payload["stage"]["name"],
         "RUNPOD_CONFIG": payload["stage"]["config_path"],
         "RUNPOD_STAGE_CONFIG_SHA256": payload["stage"]["config_sha256"],
+        "RUNPOD_TRAINING_SEED": str(payload["stage"].get("training_seed", "")),
         "DATA_ROOT": f"/runpod-volume/datasets/{digest}",
         "FIN_TS_DATASET_PROFILE": request["profile"],
         "FIN_TS_H_START": str(request["preparation"]["h_start"]),
@@ -869,6 +874,7 @@ def _verify_environment(
             "RUNPOD_STAGE",
             "RUNPOD_CONFIG",
             "RUNPOD_STAGE_CONFIG_SHA256",
+            "RUNPOD_TRAINING_SEED",
             "FIN_TS_DATASET_PROFILE",
             "FIN_TS_H_START",
             "FIN_TS_FEATURE_MODE",
@@ -886,6 +892,7 @@ def _verify_environment(
             "RUNPOD_STAGE",
             "RUNPOD_CONFIG",
             "RUNPOD_STAGE_CONFIG_SHA256",
+            "RUNPOD_TRAINING_SEED",
             "FIN_TS_FEATURE_MODE",
         ):
             expected.pop(key)
@@ -947,6 +954,24 @@ def command_create(arguments: argparse.Namespace) -> int:
     print(f"Dataset request SHA-256: {payload['dataset_request_sha256']}")
     print(f"Selection file: {path}")
     return 0
+
+
+def _validate_training_seed(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2**32:
+        _fail("Training seed must be an integer from 0 through 4294967295")
+    return value
+
+
+def _with_training_seed(payload: dict, seed: int, project_root: Path) -> dict:
+    """Pin a run-only override without changing YAML or the dataset identity."""
+    import copy
+
+    payload = copy.deepcopy(payload)
+    payload["stage"]["training_seed"] = _validate_training_seed(seed)
+    payload["created_at"] = datetime.now(timezone.utc).isoformat()
+    payload["selection_sha256"] = _payload_sha256(_selection_core(payload))
+    payload["selection_id"] = f"selection-{payload['selection_sha256'][:16]}"
+    return _validate_selection(payload, project_root=project_root)
 
 
 def _with_experiment(payload: dict, experiment: str, project_root: Path) -> dict:

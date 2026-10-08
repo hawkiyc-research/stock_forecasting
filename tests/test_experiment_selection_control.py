@@ -60,6 +60,34 @@ class ExperimentSelectionTests(unittest.TestCase):
         pointer = json.loads((self.project / ".runpod/active-selection.json").read_text())
         self.assertEqual(pointer["selection_id"], a["selection_id"])
 
+    def test_seed_overrides_change_only_run_identity_not_data_or_baseline(self):
+        before = {path: path.read_bytes() for path in self.project.glob("configs/**/*.yaml")}
+        for name in ("a-adaptive64", "b-adaptive64"):
+            selected = SELECTION["_with_experiment"](self.original, name, self.project)
+            baseline = BASELINE["baseline_contract"](ROOT, selected)
+            identities = set()
+            for seed in (0, 42, 43, 44, 2**32 - 1):
+                pinned = SELECTION["_with_training_seed"](selected, seed, self.project)
+                self.assertEqual(pinned["stage"]["training_seed"], seed)
+                self.assertEqual(
+                    pinned["dataset_request_sha256"], selected["dataset_request_sha256"]
+                )
+                self.assertEqual(pinned["dataset_request"], selected["dataset_request"])
+                self.assertEqual(BASELINE["baseline_contract"](ROOT, pinned), baseline)
+                identities.add(pinned["selection_id"])
+                exports = SELECTION["_selection_exports"](Path("selection.json"), pinned)
+                self.assertEqual(exports["RUNPOD_TRAINING_SEED"], str(seed))
+            self.assertEqual(len(identities), 5)
+            self.assertNotIn("training_seed", selected["stage"])
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
+
+    def test_training_seed_validation_and_legacy_default(self):
+        exports = SELECTION["_selection_exports"](Path("selection.json"), self.original)
+        self.assertEqual(exports["RUNPOD_TRAINING_SEED"], "")
+        for invalid in (-1, 2**32, True, None, 1.5, "42"):
+            with self.subTest(seed=invalid), self.assertRaises(ValueError):
+                SELECTION["_with_training_seed"](self.original, invalid, self.project)
+
     def test_reject_wrong_dates_and_config_path(self):
         selected = SELECTION["_with_experiment"](self.original, "a-lora64", self.project)
         for key, value in (("experiment", "b-lora64"), ("config_path", "../outside.yaml")):

@@ -18,12 +18,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA runner")
-@pytest.mark.parametrize("schedule", ["cosine", "sample_plateau"])
+@pytest.mark.parametrize(
+    "schedule,seed",
+    [("cosine", 42), ("sample_plateau", 42), ("sample_plateau", 43), ("sample_plateau", 44)],
+)
 def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
     tmp_path,
     market_frame,
     monkeypatch,
     schedule,
+    seed,
 ):
     raw = tmp_path / "market.parquet"
     market_frame.to_parquet(raw, index=False)
@@ -57,6 +61,7 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
     config.model.benchmark_conditioner_dropout = 0.1
     config.model.alpha_head_dropout = 0.1
     config.training.stage = "stage2"
+    config.training.seed = seed
     config.training.yearly_sampling_decay = 0.8
     config.training.epochs = 2
     config.training.num_workers = 2
@@ -85,6 +90,8 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
 
     select_run("qa-continuous")
     continuous = training.train(config)
+    recorded = json.loads((continuous.run_directory / "run-manifest.json").read_text())
+    assert recorded["training_resume_contract"]["training"]["seed"] == seed
     assert continuous.global_step == 8 and continuous.processed_train_samples == 128
     expected = load_file(continuous.completion_result / "adapter.safetensors")
 

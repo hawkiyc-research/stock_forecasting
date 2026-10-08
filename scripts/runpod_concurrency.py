@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_LAUNCH_RUNS = 30
 
 
 @contextlib.contextmanager
@@ -115,7 +116,7 @@ def admit(root: Path, mode: str, run_id: str = "") -> None:
             check_admission(list(pool.map(details, pods[start : start + 16])), volume, mode, run_id)
 
 
-def launch(root: Path, experiments: list[str], workers: int) -> int:
+def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | None = None) -> int:
     selection = runpy.run_path(str(root / "scripts/runpod_selection.py"))
     _, original = selection["_resolve_selection_path"](
         root,
@@ -126,17 +127,38 @@ def launch(root: Path, experiments: list[str], workers: int) -> int:
         raise ValueError("Each experiment may be selected only once per launch")
     if len(experiments) > len(selection["EXPERIMENT_CONFIGS"]):
         raise ValueError("Launch exceeds the number of distinct configured experiments")
+    seeds = [] if seeds is None else list(seeds)
+    for seed in seeds:
+        selection["_validate_training_seed"](seed)
+    if len(seeds) != len(set(seeds)):
+        raise ValueError("Each training seed may be selected only once per launch")
+    count = max(1, len(experiments)) * max(1, len(seeds))
+    if count > MAX_LAUNCH_RUNS:
+        raise ValueError(f"At most {MAX_LAUNCH_RUNS} experiment/seed runs can be launched together")
     jobs = []
     for name in experiments or [""]:
-        payload = selection["_with_experiment"](original, name, root) if name else original
-        selected = selection["_store_selection"](root, payload)
-        env = os.environ.copy()
-        env["RUNPOD_LAUNCH_SELECTION_FILE"] = str(selected)
-        env["RUNPOD_GPU_WORKFLOW"] = "train"
-        env["RUNPOD_LAUNCH_CONTROL_LOCK_HELD"] = "1"
-        if name:
-            env["RUNPOD_POD_NAME"] = "stock-forecasting-" + name
-        jobs.append((name or "configured", env))
+        base = selection["_with_experiment"](original, name, root) if name else original
+        for seed in seeds or [None]:
+            payload = (
+                selection["_with_training_seed"](base, seed, root) if seed is not None else base
+            )
+            selected = selection["_store_selection"](root, payload)
+            env = os.environ.copy()
+            env["RUNPOD_LAUNCH_SELECTION_FILE"] = str(selected)
+            env["RUNPOD_GPU_WORKFLOW"] = "train"
+            env["RUNPOD_LAUNCH_CONTROL_LOCK_HELD"] = "1"
+            label = name or "configured"
+            if seed is not None:
+                label += f"-seed{seed}"
+                env["RUNPOD_POD_NAME"] = "stock-forecasting-" + label
+            elif name:
+                env["RUNPOD_POD_NAME"] = "stock-forecasting-" + name
+            jobs.append((label, env))
+    print(
+        f"Training launch plan: {len(jobs)} independent run(s): "
+        + ", ".join(name for name, _env in jobs),
+        flush=True,
+    )
 
     def command(job, script, *, preflight=False):
         name, env = job
@@ -165,7 +187,7 @@ def launch(root: Path, experiments: list[str], workers: int) -> int:
             return name, 127, str(error)
         return name, completed.returncode, completed.stdout
 
-    # Six tiny control jobs are a strict submission bound. These I/O workers do
+    # A bounded batch of tiny control jobs is submitted. These I/O workers do
     # not load datasets/models. A conservative default of two limits API traffic.
     with (
         control_lock(root, exclusive=False),
@@ -175,7 +197,7 @@ def launch(root: Path, experiments: list[str], workers: int) -> int:
             ("publish_runpod_selection.sh", False),
             ("create_runpod_pod.sh", True),
         ):
-            if script == "publish_runpod_selection.sh" and not experiments:
+            if script == "publish_runpod_selection.sh" and not experiments and not seeds:
                 continue
             results = list(
                 pool.map(
@@ -213,6 +235,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     train = sub.add_parser("launch")
     train.add_argument("--experiment", action="append", default=[])
+    train.add_argument("--seed", action="append", type=int, default=[])
     train.add_argument("--launchWorkers", type=int, default=2)
     admission = sub.add_parser("admit")
     admission.add_argument(
@@ -244,7 +267,7 @@ def main(argv=None):
             )
     if not 1 <= args.launchWorkers <= 6:
         raise ValueError("--launchWorkers must be between 1 and 6")
-    return launch(root, args.experiment, args.launchWorkers)
+    return launch(root, args.experiment, args.launchWorkers, args.seed)
 
 
 if __name__ == "__main__":

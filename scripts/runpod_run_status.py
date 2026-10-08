@@ -119,10 +119,15 @@ def configuration(selection, manifest):
     universe = request.get("universe") or {}
     contract = manifest.get("training_resume_contract") or {}
     model = contract.get("model") or {}
+    saved_seed = (contract.get("training") or {}).get("seed")
+    selected_seed = stage.get("training_seed")
+    if saved_seed is not None and selected_seed is not None and saved_seed != selected_seed:
+        raise ValueError("Run manifest seed does not match its recorded selection")
     return {
         "source": "run_selection" if selection else "run_manifest" if provenance else "unrecorded",
         "selection_id": selection.get("selection_id") or provenance.get("selection_id"),
         "experiment": stage.get("experiment"),
+        "seed": selected_seed if selected_seed is not None else saved_seed,
         "stage": stage.get("name") or provenance.get("selected_stage"),
         "config_path": stage.get("config_path") or provenance.get("stage_config_path"),
         "feature_mode": stage.get("feature_mode"),
@@ -315,7 +320,7 @@ def worker_count(reader, requested):
     return workers
 
 
-def inventory(reader, *, limit, offset, experiment, state, workers):
+def inventory(reader, *, limit, offset, experiment, state, workers, seed=None):
     runs = discover(reader)
     selected, errors, matched, scanned = [], [], 0, 0
 
@@ -334,6 +339,8 @@ def inventory(reader, *, limit, offset, experiment, state, workers):
                 if item["state"] == "error":
                     errors.append({"run_id": item["run_id"], "error": item["error"]})
                 if experiment and item["configuration"].get("experiment") != experiment:
+                    continue
+                if seed is not None and item["configuration"].get("seed") != seed:
                     continue
                 if state and item["state"] != state:
                     continue
@@ -367,7 +374,8 @@ def print_run(item, zone, *, detail=False):
 
     config = item["configuration"]
     print(
-        f"{item['run_id']}  {item['state'].upper()}  experiment={value(config.get('experiment'))}"
+        f"{item['run_id']}  {item['state'].upper()}  experiment={value(config.get('experiment'))} "
+        f"seed={value(config.get('seed'))}"
     )
     if item.get("error"):
         print(f"  Error: {item['error']}")
@@ -445,6 +453,7 @@ def main(reader, command, argv):
     parser.add_argument("--timezone", default="Asia/Taipei")
     if command == "list":
         parser.add_argument("--experiment")
+        parser.add_argument("--seed", type=int)
         parser.add_argument("--state", choices=STATES)
         parser.add_argument("--limit", type=int, default=20)
         parser.add_argument("--offset", type=int, default=0)
@@ -466,6 +475,9 @@ def main(reader, command, argv):
         return 0 if item["state"] == "complete" else 1
     if command == "status":
         args.limit, args.offset, args.experiment, args.state, args.workers = 20, 0, None, None, 2
+        args.seed = None
+    if args.seed is not None and not 0 <= args.seed < 2**32:
+        parser.error("--seed must be 0..4294967295")
     if not 1 <= args.limit <= 200 or args.offset < 0 or not 1 <= args.workers <= 8:
         parser.error("--limit must be 1..200, --offset >= 0, --workers 1..8")
     result = inventory(
@@ -475,6 +487,7 @@ def main(reader, command, argv):
         experiment=args.experiment,
         state=args.state,
         workers=worker_count(reader, args.workers),
+        seed=args.seed,
     )
     if args.output == "json":
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))

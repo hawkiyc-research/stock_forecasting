@@ -520,10 +520,13 @@ payload = {
     "env": json.loads(os.environ["POD_ENV_JSON"]),
 }
 payload["env"]["RUNPOD_SCOPED_LIFECYCLE"] = os.environ["RUNPOD_SCOPED_LIFECYCLE"]
+if os.environ.get("RUNPOD_TRAINING_SEED"):
+    payload["env"]["RUNPOD_TRAINING_SEED"] = os.environ["RUNPOD_TRAINING_SEED"]
 print(json.dumps(payload, separators=(",", ":")))
 ')"
 
 if [[ "${RUNPOD_CREATE_DRY_RUN:-0}" == "1" || "${RUNPOD_TEST_MODE:-0}" == "1" ]]; then
+    POD_ENV_JSON="$(printf '%s' "${POD_CREATE_JSON}" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["env"], separators=(",", ":")))')"
     printf 'DRY RUN: POST https://api.runpod.io/v2/pods --name %q --gpu-id %q --gpu-count %q --image %q --min-cuda-version %q --cloud-type %q --data-center-ids %q --container-disk-in-gb %q --network-volume-id %q --volume-mount-path %q --env %q\n' \
         "${RUNPOD_POD_NAME}" "${RUNPOD_GPU_ID}" "${RUNPOD_GPU_COUNT}" \
         "${RUNPOD_IMAGE}" "${RUNPOD_MIN_CUDA_VERSION}" "${RUNPOD_CLOUD_TYPE}" \
@@ -569,6 +572,9 @@ GUARD_PID="$(RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}" \
 
 printf 'Created Pod: %s\n' "${POD_ID}"
 printf 'Run ID: %s\n' "${WANDB_RUN_ID}"
+if [[ -n "${RUNPOD_TRAINING_SEED:-}" ]]; then
+    printf 'Training seed: %s\n' "${RUNPOD_TRAINING_SEED}"
+fi
 printf 'Experiment config: %s\n' "${RUNPOD_CONFIG}"
 printf 'External hard-limit guard PID: %s\n' "${GUARD_PID}"
 printf 'Guard log: %s\n' "${GUARD_LOG}"

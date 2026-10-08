@@ -290,6 +290,28 @@ class RunStatusTests(unittest.TestCase):
         )
         self.assertEqual([row["run_id"] for row in json.loads(output)["runs"]], [RUN_A])
 
+    def test_seed_display_and_filter_use_run_records_including_zero(self):
+        data = {**fixtures(), **fixtures(RUN_B, "a-lora32", complete=False)}
+        data[f"savedModel/{RUN_A}/run-manifest.json"]["training_resume_contract"]["training"] = {
+            "seed": 42,
+        }
+        data[f"lifecycle/runs/{RUN_B}/selection.json"]["stage"]["training_seed"] = 0
+        for seed, run in ((42, RUN_A), (0, RUN_B)):
+            _, output, _ = self.invoke("list", ["--seed", str(seed), "--output", "json"], data)
+            self.assertEqual([row["run_id"] for row in json.loads(output)["runs"]], [run])
+            _, output, _ = self.invoke("status", [run], data)
+            self.assertIn(f"seed={seed}", output)
+
+    def test_conflicting_recorded_seed_reports_an_error(self):
+        data = fixtures()
+        data[f"lifecycle/runs/{RUN_A}/selection.json"]["stage"]["training_seed"] = 43
+        data[f"savedModel/{RUN_A}/run-manifest.json"]["training_resume_contract"]["training"] = {
+            "seed": 42,
+        }
+        code, output, _ = self.invoke("list", ["--output", "json"], data)
+        self.assertEqual(code, 2)
+        self.assertIn("seed does not match", json.loads(output)["errors"][0]["error"])
+
     def test_list_reports_errors_instead_of_silently_hiding_failed_reads(self):
         data = fixtures()
         data[f"savedModel/{RUN_A}/run-manifest.json"]["run_id"] = RUN_B
@@ -356,6 +378,8 @@ class RunStatusTests(unittest.TestCase):
             ["--workers", "0"],
             ["--workers", "9"],
             ["--offset", "-1"],
+            ["--seed", "-1"],
+            ["--seed", "4294967296"],
         ):
             with self.subTest(options=options), self.assertRaises(SystemExit):
                 self.invoke("list", options)

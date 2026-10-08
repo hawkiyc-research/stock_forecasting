@@ -20,6 +20,7 @@ from stock_forecasting.evaluation_paths import (
 from stock_forecasting.factory import build_model_bundle
 from stock_forecasting.preflight import run_preflight
 from stock_forecasting.run_paths import validate_checkpoint_path, validate_run_id
+from stock_forecasting.runpod.configuration import load_run_config
 from stock_forecasting.training import (
     RuntimeBatchPlan,
     _checkpoint_runtime_execution_plan,
@@ -214,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.split == "test" and not args.confirm_test:
         raise SystemExit("--split test requires --confirm-test")
-    config = ExperimentConfig.from_yaml(args.config)
+    config = load_run_config(args.config)
     resolved_checkpoint = resolve_checkpoint(
         args.checkpoint,
         saved_model_root=config.training.output_root,

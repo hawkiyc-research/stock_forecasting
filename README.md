@@ -1556,7 +1556,7 @@ validation 擬合凍結的上下尾校準。Test 保留 raw 與 `calibrated`；�
 
 首次部署或修改程式／YAML 後，上傳一次全部設定；**同一個 volume 尚有 Pod 時不可
 執行 `sync --apply` 或更新共用環境**。同步會在覆寫檔案前檢查，避免影響正在執行的工作。
-只切換已上傳的實驗名稱，不需要再次同步。
+只切換已上傳的實驗名稱或訓練 seed，不需要再次同步。
 
 ```bash
 bash scripts/runpod_workflow.sh sync --dry-run
@@ -1588,9 +1588,33 @@ bash scripts/runpod_workflow.sh train \
 不同名稱，本機啟動並行 worker 上限仍為六。可以在其他實驗已執行時另開不同 run。每個實驗先固定自己的 immutable
 selection，不修改全域 active selection；後續 configure 不會改變已建立 Pod 的設定。
 
+同一組設定比較三個 training seed：
+
+```bash
+bash scripts/runpod_workflow.sh train \
+  --experiment a-adaptive64 \
+  --seed 42 --seed 43 --seed 44 \
+  --launchWorkers 2 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+這會建立三台 Pod，分別使用 seed 42、43、44，各有獨立 run ID、結果與 guard。
+每個 `--seed` 只帶一個整數；若需要不同 GPU 型號，分開執行三次 `train`，每次只指定
+一個 `--seed` 與所需的 `--gpuId`。同時重複 `--experiment` 與 `--seed` 會建立所有組合，
+例如兩種容量 × 三個 seed＝六台 Pod；每次最多 30 個組合，建立前會列出數量與名稱。
+
+Seed 只覆寫該 run 的 `training.seed`，不修改 YAML、active selection、資料切分、
+完整 validation/test 集合或獨立的尺度校準 seed。資料規則與 baseline 設定不變時，
+不同 training seed 共用已完成的 baseline，不需重做 CPU prepare 或 baseline。
+`resume RUN_ID` 自動保留原 seed，不接受 seed 變更；要換 seed 必須建立新 run。
+Seed 控制初始化與訓練取樣；不同 GPU 或非確定性運算仍可能造成細微數值差異，
+相同 seed 不代表跨硬體逐位元相同。
+
 | 參數 | 預設 | 用法與限制 |
 | --- | --- | --- |
-| `--experiment NAME` | 省略時固定目前 active selection，建立一台 | 可重複指定；同一次命令不得重複名稱 |
+| `--experiment NAME` | 省略時使用目前 active selection | 可重複指定；同一次命令不得重複名稱；與 seeds 組合建立各自的 run |
+| `--seed N` | 省略時沿用所選 YAML／run 設定的 training seed | 可重複指定不同整數，範圍 0–4294967295；每個實驗各建立一台對應 seed 的 Pod；省略實驗與 seed 時維持單台流程 |
 | `--launchWorkers N`／`--launch-workers N` | `2` | 同時進行本機 API／preflight 的 worker 數，範圍 1–6；不是 GPU 數或 DataLoader worker 數 |
 | `--maxRuntime DURATION`／`--max-runtime DURATION` | `12h` | 每台 Pod 各自的停止請求時間；接受正整數加 `m`、`h`、`d` 後綴，例如 `30m`、`12h` |
 | `--gpuId GPU_ID`／`--gpu-id GPU_ID` | `NVIDIA GeForce RTX 5090` | 這批 Pod 使用同一型號；完整 ID 應加引號。要不同 GPU 型號，分開執行建立命令 |
@@ -1600,7 +1624,7 @@ Pod 因缺貨或 API 錯誤建立失敗，指令會回報各實驗結果並以�
 Pod 保留自己的 guard，不會被一起刪除，也不會自動重試租用。只重試失敗的實驗。
 
 費用按各台 Pod 累加。`--launchWorkers 1` 只限制建立請求並行度，不會讓已建立的
-訓練 Pod 排隊或降低同時租用數量。建立輸出會列出各 Pod ID、run ID 與 guard log；
+訓練 Pod 排隊或降低同時租用數量。建立輸出會列出各 Pod ID、run ID、明確指定的 seed 與 guard log；
 也可隨時用 [`runs` 查詢 run ID 與執行設定](#run-status-zh)，再指定下載、接續與驗證。
 
 ##### 在每台 Pod 內啟動訓練
@@ -1656,6 +1680,13 @@ bash scripts/runpod_workflow.sh runs
 bash scripts/runpod_workflow.sh runs --experiment a-lora32
 ```
 
+同一實驗的 seed 查詢；`runs` 與 `status RUN_ID` 會顯示保存的 training seed，
+歷史紀錄未保存時顯示 `unknown`，不以目前 YAML 補值：
+
+```bash
+bash scripts/runpod_workflow.sh runs --experiment a-adaptive64 --seed 43
+```
+
 ```bash
 bash scripts/runpod_workflow.sh runs --state complete
 ```
@@ -1684,6 +1715,7 @@ resume 的 GPU 開始運算時間；`Last activity` 是最近一筆保存的狀�
 | --- | --- | --- |
 | `RUN_ID`／`--run-id RUN_ID` | `status`；兩者擇一 | 指定 run 詳情；不要填 Pod ID 或 baseline ID |
 | `--experiment NAME` | `runs`；不篩選 | 依保存的實驗名稱精確篩選，如 `a-lora32`、`a-lora64`、`a-partial`；歷史未記錄名稱的 run 仍可在不篩選的清單查到 |
+| `--seed N` | `runs`；不篩選 | 依保存的 training seed 篩選，範圍 0–4294967295；可與 `--experiment`、`--state` 併用 |
 | `--state STATE` | `runs`；不篩選 | `complete`、`trained`、`training`、`evaluating`、`incomplete`、`not_started`、`unknown`、`error` |
 | `--limit N` | `runs`；`20` | 每頁 1–200 筆，以 run 配發時間由新到舊排列，不依後來的 resume 時間排序 |
 | `--offset N` | `runs`；`0` | 跳過 N 筆符合篩選的 run；有更多候選時輸出下一頁 offset，翻頁須保留相同篩選 |
@@ -2124,10 +2156,10 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
 | `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
 | `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 同時核對當前資料篩選規則與 baseline 完成結果，不要求主模型 HF cache；完成為 exit 0、尚未完成／待整理為 1、驗證錯誤為 2 |
-| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。僅 `train` 接受可重複的 `--experiment NAME` 與 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；省略實驗時固定 active selection 建立一台。Baseline 完成快取在本機檢查，命中即跳過。兩者無 run ID 位置參數 |
+| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。僅 `train` 接受可重複的 `--experiment NAME`、`--seed N`（0–4294967295；省略沿用 training seed），以及 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；實驗 × seeds 最多 30 個組合；兩者皆省略時固定 active selection 建立一台。Baseline 完成快取在本機檢查，命中即跳過。兩者無 run ID 位置參數 |
 | `resume [RUN_ID]` | 接續未完成訓練；省略 ID 時須只有唯一可接續候選，多個候選拒絕猜測。自動讀取原 run 的 selection，不需 configure。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是 best checkpoint |
 | `validate [RUN_ID]` | 省略 ID 選最新完成 training 的 run，自動讀取原 selection。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設沿用完成工作；`--no-resume` 停用續評估；`--force` 重算主模型並停用續評估；三者擇一，不重訓 baseline |
-| `runs` | `--experiment NAME`、`--state STATE`、`--limit N`、`--offset N`、`--workers N`、`--output table\|json`、`--timezone ZONE`；列出 run ID、執行時間與固定設定，詳見[查詢 run](#run-status-zh) |
+| `runs` | `--experiment NAME`、`--seed N`、`--state STATE`、`--limit N`、`--offset N`、`--workers N`、`--output table\|json`、`--timezone ZONE`；列出 run ID、seed、執行時間與固定設定，詳見[查詢 run](#run-status-zh) |
 | `status [RUN_ID]` | 指定 run 時可用 `--run-id RUN_ID` 取代位置參數，另有 `--output table\|json`、`--timezone ZONE`；無參數保留專案總覽，指定 ID 則查該 run 是否完整完成 |
 | `cpu-logs` | 無參數；下載 CPU 工作紀錄 |
 | `recover` | 預設僅診斷；`--apply` 才恢復 guard／終止已確認可終止的 Pod；`--pod-id ID` 限定一個 Pod；`--confirmations N` 預設 `2`，至少 2；`--confirmation-delay-seconds N` 預設 `5`，不可負數；`--guard-dir PATH` 為進階控制端紀錄位置，預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help` 顯示說明 |
@@ -4110,7 +4142,7 @@ threads (default cap 4, additionally constrained by CPU and memory).
 
 Upload all configs once on initial deployment or after editing source/YAML.
 **Do not run `sync --apply` or modify the shared runtime while a Pod still owns the volume.**
-Sync checks before overwriting files. Selecting another already-uploaded experiment needs no sync.
+Sync checks before overwriting files. Selecting another uploaded experiment or training seed needs no sync.
 
 ```bash
 bash scripts/runpod_workflow.sh sync --dry-run
@@ -4143,9 +4175,35 @@ per command. Additional different runs may be created while experiments are alre
 Each launch pins its own immutable selection without changing the global active selection.
 Later configure commands do not change a previously created Pod's settings.
 
+Compare three training seeds with the same configuration:
+
+```bash
+bash scripts/runpod_workflow.sh train \
+  --experiment a-adaptive64 \
+  --seed 42 --seed 43 --seed 44 \
+  --launchWorkers 2 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+This creates three Pods for seeds 42, 43 and 44, each with its own run ID, results and guard.
+Each `--seed` takes one integer. For different GPUs, issue three separate `train` commands,
+each with one `--seed` and the desired `--gpuId`. Repeating both `--experiment` and `--seed`
+launches their Cartesian product: two capacities × three seeds means six Pods. A command
+accepts at most 30 combinations and prints the count and names before creation.
+
+The override changes only that run's `training.seed`, not YAML, active selection, data splits,
+full validation/test membership or the independent scale-calibration seed. When data rules and
+baseline settings are unchanged, training seeds reuse completed baselines without CPU preparation
+or baseline retraining. `resume RUN_ID` restores the original seed and does not accept seed changes;
+use a new run for a new seed. Seed controls initialization and training sampling, but different
+GPUs or nondeterministic operations can still introduce small numerical differences; identical
+seeds do not guarantee bitwise equality across hardware.
+
 | Option | Default | Behavior |
 | --- | --- | --- |
-| `--experiment NAME` | Pin the active selection and create one Pod if omitted | Repeatable; duplicate names in one command are rejected |
+| `--experiment NAME` | Use the active selection if omitted | Repeatable; duplicate names in one command are rejected; combine with seeds into independent runs |
+| `--seed N` | Keep the selected YAML/run training seed if omitted | Repeatable distinct integers, 0–4294967295; create one Pod per experiment/seed pair; omitting both experiment and seed retains the single-Pod workflow |
 | `--launchWorkers N` / `--launch-workers N` | `2` | Concurrent local API/preflight workers, 1–6; not GPU count or DataLoader worker count |
 | `--maxRuntime DURATION` / `--max-runtime DURATION` | `12h` | Independent stop-request time for each Pod; positive integer with an `m`, `h`, `d` suffix, e.g. `30m` or `12h` |
 | `--gpuId GPU_ID` / `--gpu-id GPU_ID` | `NVIDIA GeForce RTX 5090` | One model for the batch; quote the complete ID. Use separate launch commands for different GPUs |
@@ -4156,7 +4214,7 @@ reports each result and exits nonzero. Successfully created Pods retain their ow
 they are not deleted or automatically rented again. Retry only failed experiments.
 
 Costs add across Pods. `--launchWorkers 1` serializes creation requests, not the training
-workloads or number of rented Pods. Output includes each Pod ID, run ID and guard log.
+workloads or number of rented Pods. Output includes each Pod ID, run ID, explicit seed and guard log.
 Use [`runs` to look up run IDs and recorded settings](#run-status-en) at any time before
 downloading, resuming or validating a particular run.
 
@@ -4215,6 +4273,13 @@ Find a specific capacity experiment, or list only fully completed runs:
 bash scripts/runpod_workflow.sh runs --experiment a-lora32
 ```
 
+Filter a specific experiment by seed. `runs` and `status RUN_ID` display the recorded training
+seed, or `unknown` for historical records without one, never the current YAML's value:
+
+```bash
+bash scripts/runpod_workflow.sh runs --experiment a-adaptive64 --seed 43
+```
+
 ```bash
 bash scripts/runpod_workflow.sh runs --state complete
 ```
@@ -4246,6 +4311,7 @@ completion results instead of interpreting one label alone.
 | --- | --- | --- |
 | `RUN_ID` / `--run-id RUN_ID` | `status`; use one form | Inspect one run, not a Pod ID or baseline ID |
 | `--experiment NAME` | `runs`; no filter | Exact recorded experiment, e.g. `a-lora32`, `a-lora64`, `a-partial`; older unnamed runs remain visible without this filter |
+| `--seed N` | `runs`; no filter | Recorded training seed, 0–4294967295; can be combined with `--experiment` and `--state` |
 | `--state STATE` | `runs`; no filter | `complete`, `trained`, `training`, `evaluating`, `incomplete`, `not_started`, `unknown`, `error` |
 | `--limit N` | `runs`; `20` | 1–200 entries per page, newest run allocation first, not ordered by a later resume time |
 | `--offset N` | `runs`; `0` | Skip N matching runs; use the printed next-page offset with the same filters when more candidates remain |
@@ -4746,10 +4812,10 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
 | `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
 | `readiness` | Choose exactly one: `--code-only` verifies uploaded code; `--gpu` verifies main-model training dependencies; `--baseline` checks both current data-cleaning rules and completed baseline results without the main model's HF cache; exit 0 means complete, 1 means incomplete/pending finalization, and 2 means a verification error |
-| `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Only `train` accepts repeated `--experiment NAME` and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`). Omitted experiment pins active selection for one Pod. Baseline cache hits skip creation locally. Neither accepts a positional run ID |
+| `train`, `baseline` | `--maxRuntime D` defaults to `12h`; `--gpuId ID` defaults to `NVIDIA GeForce RTX 5090`. Only `train` accepts repeated `--experiment NAME`, repeated `--seed N` (0–4294967295; keep training seed if omitted), and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`). Experiment × seed combinations are capped at 30. Omitting both pins active selection for one Pod. Baseline cache hits skip creation locally. Neither accepts a positional run ID |
 | `resume [RUN_ID]` | Resume unfinished training. Without an ID, exactly one eligible candidate is required. Restore the original selection without configure. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above; resume the latest usable checkpoint, not the best |
 | `validate [RUN_ID]` | Without an ID, select the latest completed training run and its stored selection. `--maxRuntime D` defaults to `12h`, `--gpuId ID` as above. `--resume` (default) reuses completed work; `--no-resume` disables continuation; `--force` recomputes the main model and disables resume. Choose one; no baseline retraining |
-| `runs` | `--experiment NAME`, `--state STATE`, `--limit N`, `--offset N`, `--workers N`, `--output table\|json`, `--timezone ZONE`; list run IDs, execution times and frozen settings; see [run queries](#run-status-en) |
+| `runs` | `--experiment NAME`, `--seed N`, `--state STATE`, `--limit N`, `--offset N`, `--workers N`, `--output table\|json`, `--timezone ZONE`; list run IDs, seeds, execution times and frozen settings; see [run queries](#run-status-en) |
 | `status [RUN_ID]` | `--run-id RUN_ID` is an alternative to the positional ID; also `--output table\|json`, `--timezone ZONE`; no arguments retain the project overview, an ID checks that run's full completion |
 | `cpu-logs` | No options; download CPU workflow logs |
 | `recover` | Diagnostic-only by default; `--apply` restores guards/terminates Pods confirmed safe to terminate; `--pod-id ID` restricts scope; `--confirmations N` defaults to `2`, minimum 2; `--confirmation-delay-seconds N` defaults to `5`, nonnegative; `--guard-dir PATH` is an advanced control-host log location, defaulting to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help` shows help |

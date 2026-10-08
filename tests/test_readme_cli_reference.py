@@ -72,6 +72,7 @@ class ReadmeCliReferenceTests(unittest.TestCase):
             ("scripts/recover_runpod_after_wake.py", "parser"),
             ("scripts/runpod_rest_v2_control.py", "gpu_list"),
             ("scripts/runpod_run_status.py", "parser"),
+            ("scripts/runpod_concurrency.py", "train"),
         ):
             self.assert_documented(parser_options(relative, receiver), relative)
 
@@ -120,6 +121,17 @@ class ReadmeCliReferenceTests(unittest.TestCase):
     def test_examples_alone_do_not_satisfy_documentation(self) -> None:
         example = "```bash\ncommand --undocumented VALUE\n```\nDocument `--documented VALUE`."
         self.assertEqual(set(OPTION.findall(prose(example))), {"--documented"})
+
+    def test_training_seed_launch_and_query_are_documented_separately(self) -> None:
+        for language, text in self.languages.items():
+            with self.subTest(language=language):
+                self.assertRegex(text, r"(?m)^\| `--seed N` \|[^\n]*4294967295")
+                query = text.split(f'<a id="run-status-{language}"></a>', 1)[1].split(
+                    "\n##### ", 2
+                )[1]
+                self.assertIn("`--seed N`", query)
+                self.assertIn("4294967295", query)
+        self.assertEqual(self.markdown.count("--seed 42 --seed 43 --seed 44"), 2)
 
     def test_baseline_readiness_documents_both_existing_capabilities(self) -> None:
         for text in self.languages.values():

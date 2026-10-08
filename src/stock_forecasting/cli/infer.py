@@ -26,6 +26,7 @@ from stock_forecasting.metrics import POSTPROCESS_SIGNAL_NAMES, postprocess_alph
 from stock_forecasting.models import MODEL_OUTPUT_SCHEMA_VERSION
 from stock_forecasting.models.ranking import market_ids
 from stock_forecasting.preflight import run_preflight
+from stock_forecasting.runpod.configuration import load_run_config
 from stock_forecasting.training import _autocast_context, set_global_seed
 
 Float32Array = NDArray[np.float32]
@@ -449,7 +450,7 @@ def _write_payload(payload: dict[str, Any], output: Path | None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    config = ExperimentConfig.from_yaml(args.config)
+    config = load_run_config(args.config)
     payload = infer_file(
         config,
         args.checkpoint,

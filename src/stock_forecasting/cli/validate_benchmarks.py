@@ -9,12 +9,12 @@ from pathlib import Path
 
 import torch
 
-from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.run_paths import (
     canonical_network_volume_root,
     validate_validation_lifecycle_path,
     validate_wandb_directory,
 )
+from stock_forecasting.runpod.configuration import load_run_config
 from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested
 from stock_forecasting.validation_benchmark import (
     ALL_VALIDATION_MODELS,
@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not args.allow_cpu and not torch.cuda.is_available():
         raise SystemExit("Complete validation must run inside a CUDA-enabled GPU Pod")
-    config = ExperimentConfig.from_yaml(args.config)
+    config = load_run_config(args.config)
     if not args.disable_wandb and config.wandb.enabled and config.wandb.mode != "disabled":
         validate_wandb_directory(config.wandb.directory)
     volume_root = canonical_network_volume_root()

@@ -135,7 +135,21 @@ class ParallelControlTests(unittest.TestCase):
             self.assertEqual(json.loads((self.root / (name + "-preflight")).read_text()), saved)
 
     def test_full_creator_binds_two_pods_guards_and_selections(self):
+        self.assert_creator_launch(["a-lora32", "b-partial"])
+
+    def test_full_creator_binds_three_seed_pods_and_original_configuration(self):
+        self.assert_creator_launch(["a-adaptive64"], [42, 43, 44])
+
+    def test_full_creator_cartesian_product_and_zero_seed(self):
+        self.assert_creator_launch(["a-adaptive64", "b-adaptive64"], [0, 43])
+
+    def test_full_creator_seed_only_uses_configured_experiment(self):
+        self.assert_creator_launch([], [42, 43, 44])
+
+    def assert_creator_launch(self, experiments, seeds=None):
         self.selection()
+        pointer = self.root / ".runpod/active-selection.json"
+        before = pointer.read_bytes()
         shutil.copytree(
             ROOT / "scripts",
             self.root / "scripts",
@@ -194,17 +208,32 @@ class ParallelControlTests(unittest.TestCase):
             RUNPOD_ENV_FILE=str(env_file),
             RUNPOD_GUARD_LOG_DIR=str(self.root / "guards"),
         )
-        with patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
-            result = CONTROL["launch"](self.root, ["a-lora32", "b-partial"], 2)
+        output = io.StringIO()
+        with patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(output):
+            result = CONTROL["launch"](self.root, experiments, 2, seeds)
         self.assertEqual(result, 0)
+        self.assertEqual(pointer.read_bytes(), before)
+        expected = {
+            "stock-forecasting-" + name + (f"-seed{seed}" if seed is not None else "")
+            for name in experiments or ["configured"] for seed in seeds or [None]
+        }
         pods = [json.loads(p.read_text()) for p in writes.glob("pod-*.json")]
-        self.assertEqual(len(pods), 2)
-        self.assertEqual(len({p["env"]["WANDB_RUN_ID"] for p in pods}), 2)
-        self.assertEqual(
-            {p["name"] for p in pods}, {"stock-forecasting-a-lora32", "stock-forecasting-b-partial"}
-        )
+        self.assertEqual(len(pods), len(expected))
+        self.assertEqual(len({p["env"]["WANDB_RUN_ID"] for p in pods}), len(expected))
+        self.assertEqual(len({p["env"]["RUNPOD_SELECTION_ID"] for p in pods}), len(expected))
+        self.assertEqual({p["name"] for p in pods}, expected)
         for record in pods:
             run_id = record["env"]["WANDB_RUN_ID"]
+            self.assertIn(f"Run ID: {run_id}", output.getvalue())
+            if seeds:
+                seed = int(record["env"]["RUNPOD_TRAINING_SEED"])
+                self.assertIn(seed, seeds)
+                self.assertIn(f"Training seed: {seed}", output.getvalue())
+                selected = json.loads((self.root / ".runpod/selections" / (
+                    record["env"]["RUNPOD_SELECTION_ID"] + ".json"
+                )).read_text())
+                self.assertEqual(selected["stage"]["training_seed"], seed)
+                self.assertEqual(selected["stage"]["config_path"], record["env"]["RUNPOD_CONFIG"])
             guard = json.loads((writes / ("guard-" + record["id"] + ".json")).read_text())
             self.assertEqual(record["env"]["RUNPOD_SCOPED_LIFECYCLE"], "1")
             self.assertEqual(
@@ -215,6 +244,14 @@ class ParallelControlTests(unittest.TestCase):
                     "key": f"lifecycle/runs/{run_id}/training.json",
                 },
             )
+
+    def test_duplicate_invalid_or_unbounded_seeds_never_create_pods(self):
+        self.selection()
+        for seeds in ([42, 42], [-1], [2**32], [True], list(range(31))):
+            with self.subTest(seeds=seeds), self.assertRaises(ValueError):
+                CONTROL["launch"](self.root, ["a-adaptive64"], 2, seeds)
+        with self.assertRaises(ValueError):
+            CONTROL["launch"](self.root, ["a-adaptive64", "b-adaptive64"], 2, list(range(16)))
 
     def test_real_lifecycle_writer_keeps_two_runs_separate(self):
         volume = self.root / "volume"
