@@ -248,3 +248,6 @@ summarize_marker lifecycle/stage1/validation.json validation
 printf '\nRun-scoped training and validation workflows:\n'
 python3 "${SCRIPT_DIR}/runpod_runs.py" status
 summarize_wandb
+printf '\nLocal GPU telemetry (separate from training completion):\n'
+python3 "${SCRIPT_DIR}/runpod_gpu_monitor.py" status || \
+    echo "Local GPU monitor status is unavailable; lifecycle results above are unchanged." >&2

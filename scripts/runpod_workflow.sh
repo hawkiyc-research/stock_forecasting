@@ -28,6 +28,8 @@ Usage:
   bash scripts/runpod_workflow.sh validate [VALIDATION OPTIONS]
   bash scripts/runpod_workflow.sh runs [--experiment NAME] [--seed N] [--state STATE] [--limit N] [--offset N] [--workers N] [--output table|json] [--timezone ZONE]
   bash scripts/runpod_workflow.sh status [RUN_ID] [--output table|json] [--timezone ZONE]
+  bash scripts/runpod_workflow.sh gpu-status [--pod-id POD_ID] [--run-id RUN_ID] [--output table|json] [--guard-dir PATH]
+  bash scripts/runpod_workflow.sh gpu-notify-test
   bash scripts/runpod_workflow.sh recover [--apply] [--pod-id POD_ID]
   bash scripts/runpod_workflow.sh download [--resume] [--checkpointScope all|best] [RUN_ID]
   bash scripts/runpod_workflow.sh download-probes [PROBE_RUN_ID]
@@ -442,6 +444,13 @@ EOF
         query_command="${COMMAND}"
         [[ "${query_command}" != runs ]] || query_command=list
         exec python3 "${SCRIPT_DIR}/runpod_runs.py" "${query_command}" "$@"
+        ;;
+    gpu-status)
+        exec python3 "${SCRIPT_DIR}/runpod_gpu_monitor.py" status "$@"
+        ;;
+    gpu-notify-test)
+        [[ $# -eq 0 ]] || { usage; exit 2; }
+        exec python3 "${SCRIPT_DIR}/runpod_gpu_monitor.py" test-notification
         ;;
     recover)
         exec python3 "${SCRIPT_DIR}/recover_runpod_after_wake.py" "$@"

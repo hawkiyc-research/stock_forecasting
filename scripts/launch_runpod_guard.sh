@@ -212,6 +212,18 @@ raise SystemExit(0 if payload.get("state") == "armed" and payload.get("pod_id") 
                 "$(uname -s)" "${GUARD_PID}" > "${keep_awake_tmp}"
             mv "${keep_awake_tmp}" "${KEEP_AWAKE_FILE}"
         fi
+        # Telemetry is optional and independent: failures must never disarm the
+        # billing/lifecycle guard or trigger its emergency Pod-deletion path.
+        case "${LIFECYCLE_KIND}" in
+            stage1-training|stage1-validation|stage1-baseline)
+                if ! python3 "${SCRIPT_DIR}/runpod_gpu_monitor.py" start \
+                    --pod-id "${POD_ID}" --run-id "${RUNPOD_GUARD_RUN_ID}" \
+                    --guard-pid "${GUARD_PID}" --guard-log "${LOG_FILE}" \
+                    >> "${LOG_FILE}" 2>&1; then
+                    echo "GPU monitor unavailable; the existing lifecycle guard remains armed. See ${LOG_FILE}" >&2
+                fi
+                ;;
+        esac
         printf '%s\n' "${GUARD_PID}"
         exit 0
     fi

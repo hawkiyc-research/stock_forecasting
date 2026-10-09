@@ -73,6 +73,7 @@ class ReadmeCliReferenceTests(unittest.TestCase):
             ("scripts/runpod_rest_v2_control.py", "gpu_list"),
             ("scripts/runpod_run_status.py", "parser"),
             ("scripts/runpod_concurrency.py", "train"),
+            ("scripts/runpod_gpu_monitor.py", "status"),
         ):
             self.assert_documented(parser_options(relative, receiver), relative)
 

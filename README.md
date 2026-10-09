@@ -1857,6 +1857,61 @@ bash scripts/runpod_workflow.sh recover --apply --pod-id "<POD_ID>"
 或終止已核實完成的 Pod。恢復不重置原本期限；狀態不明、查詢失敗或 lifecycle
 不符合 Pod/run 身分時，不會把它當成已完成。SSH/tmux 畫面不是完成狀態的唯一依據。
 
+##### 本機 GPU 降頻監控與通知
+
+新建或重新啟用訓練、baseline 或 validation 的 GPU guard 時，會自動啟動獨立的
+本機 GPU 監視器；CPU preparation 不啟用它。不需額外監控終端或 agent SSH socket。
+監視器使用自己的 SSH 連線，
+唯讀執行 `nvidia-smi -q -x`，預設每 30 秒記錄 GPU UUID、SM／graphics／memory 時脈、
+負載、溫度、功耗／上限、降頻原因與累計計時。它不修改 GPU 設定、不停止訓練，
+也不建立／刪除 Pod；連線失敗不影響原 guard。更新程式不會替既有 guard 自動補上
+監控或重設期限。SSH 預設使用 `~/.ssh/id_ed25519_runpod`；加密金鑰先用 `ssh-add`
+解鎖。監視器不保存密碼、不轉送 SSH agent，也不延長／關閉 agent socket。
+
+判讀參考 [NVIDIA Clock Event Reasons／Counters](https://docs.nvidia.com/deploy/nvidia-smi/index.html)：
+溫度／硬體供電降頻旗標或**本次監控期間新增**的相關計時立即警示；歷史累計值不算。
+`SW Power Cap` 單獨出現為 `power_limited`，不是故障判定。高負載時，時脈較同 GPU
+正常觀測基準低 20% 且持續兩分鐘，提示 `suspected_low_clock`；這是工程預設，
+不是 NVIDIA 故障門檻。功耗上限低於裝置回報預設值的 90% 另列設定警示。
+`P2`、低於最大時脈、閒置／checkpoint 保存期間降頻不單獨判異常。
+必要欄位缺失為 `limited_telemetry`，持續兩分鐘會提示無法完整監控；未建立正常基準時，
+不能排除從啟動就存在的不明低時脈。SSH 啟動寬限內為 `waiting_for_ssh`，逾時為
+`unavailable`，不是正常。
+
+```bash
+bash scripts/runpod_workflow.sh gpu-status
+bash scripts/runpod_workflow.sh gpu-status --pod-id "<POD_ID>"
+bash scripts/runpod_workflow.sh gpu-status --run-id "<RUN_ID>" --output json
+bash scripts/runpod_workflow.sh gpu-notify-test
+```
+
+`gpu-status` 只讀本機紀錄，不呼叫雲端 API；`--pod-id`、`--run-id` 預設不篩選，
+可同時使用。`--output` 為 `table`（預設）或 `json`；`--guard-dir PATH` 預設
+`RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help` 顯示說明。
+`gpu-notify-test` 無參數，送出明確標為測試的 macOS 通知。`status` 無參數的原有
+總覽保留並附上 GPU 狀態；不改變 `status RUN_ID` 的訓練／最終評估完成判定。
+
+通知包含 Pod、run、GPU 與原因；同事件預設 15 分鐘冷卻，確認恢復後再通知。
+`submitted` 只代表已交給系統，不保證在專注模式下顯示。紀錄保存於 guard log 旁的
+`<pod-id>.gpu-events.jsonl`（5 MiB、兩份輪替備份）及 `<pod-id>.gpu-monitor.json`。
+`stale`／`stopped` 不能解讀成 GPU 正常。本機仍需開機、連網；非 macOS 保留
+紀錄及 CLI 查詢。每個 Pod 使用獨立、有逾時的監控程序，不共用 GPU 判定狀態。
+
+進階設定於啟動 workflow 前以環境變數傳入，不修改模型 YAML 或資料／baseline 身分：
+
+| 環境變數 | 預設／允許值 |
+| --- | --- |
+| `RUNPOD_GPU_MONITOR` | `1` 啟用；`0` 只停用 GPU 監控，不停用原 guard |
+| `RUNPOD_GPU_MONITOR_SSH_KEY` | `~/.ssh/id_ed25519_runpod`；可指定替代私鑰檔案路徑 |
+| `RUNPOD_GPU_MONITOR_NOTIFICATIONS` | `auto`（macOS 通知）；`0` 停用；`1` 要求通知，非 macOS 回報不支援 |
+| `RUNPOD_GPU_MONITOR_POLL_SECONDS` | `30`；10–300 秒 |
+| `RUNPOD_GPU_MONITOR_CONFIRM_SECONDS` | `120`；30–3600 秒，疑似低時脈／資料缺失／斷線／恢復確認 |
+| `RUNPOD_GPU_MONITOR_COOLDOWN_SECONDS` | `900`；60–86400 秒 |
+| `RUNPOD_GPU_MONITOR_STARTUP_GRACE_SECONDS` | `300`；0–1800 秒 |
+| `RUNPOD_GPU_MONITOR_HIGH_UTILIZATION_PCT` | `80`；10–100 |
+| `RUNPOD_GPU_MONITOR_CLOCK_DROP_FRACTION` | `0.20`；0.05–0.8 |
+| `RUNPOD_GPU_MONITOR_QUERY_TIMEOUT_SECONDS` | `15`；3–30 秒，逾時只中止監視器自己的查詢 |
+
 ##### Loss 記錄與 W&B 補傳
 
 每個 run 的 `metrics.jsonl`、`summary.json` 與 W&B 保存 training loss、pinball、
@@ -2262,6 +2317,8 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `runs` | `--experiment NAME`、`--seed N`、`--state STATE`、`--limit N`、`--offset N`、`--workers N`、`--output table\|json`、`--timezone ZONE`；列出 run ID、seed、執行時間與固定設定，詳見[查詢 run](#run-status-zh) |
 | `status [RUN_ID]` | 指定 run 時可用 `--run-id RUN_ID` 取代位置參數，另有 `--output table\|json`、`--timezone ZONE`；無參數保留專案總覽，指定 ID 則查該 run 是否完整完成 |
 | `cpu-logs` | 無參數；下載 CPU 工作紀錄 |
+| `gpu-status` | 只讀本機 GPU 紀錄；`--pod-id ID`、`--run-id ID` 為可合併的可選篩選；`--output table\|json` 預設 `table`；`--guard-dir PATH` 預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help` 顯示說明 |
+| `gpu-notify-test` | 無參數；送出明確標示為測試的 macOS 桌面通知，不查詢／操作 Pod |
 | `recover` | 預設僅診斷；`--apply` 才恢復 guard／終止已確認可終止的 Pod；`--pod-id ID` 限定一個 Pod；`--confirmations N` 預設 `2`，至少 2；`--confirmation-delay-seconds N` 預設 `5`，不可負數；`--guard-dir PATH` 為進階控制端紀錄位置，預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help` 顯示說明 |
 | `download [RUN_ID]` | 省略 ID 選最新完成結果的 run；`--checkpointScope all` 預設下載 retained checkpoints，`best` 只取最佳；`--resume` 補齊／更新本機下載，**不是接續訓練**；`-h`／`--help` 顯示說明 |
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
@@ -4559,6 +4616,66 @@ guards or terminating verified-completed Pods. Recovery does not reset the origi
 Unknown state, transport errors or a mismatched Pod/run lifecycle are not treated as completion.
 An SSH/tmux screen alone is not authoritative completion evidence.
 
+##### Local GPU throttling monitoring and notifications
+
+New or re-armed training, baseline and validation GPU guards automatically start an independent
+local GPU monitor; CPU preparation does not. No extra terminal or agent SSH socket is required.
+Every 30 seconds by default, its own
+SSH connection runs only `nvidia-smi -q -x`, recording GPU UUID, SM/graphics/memory clocks, load,
+temperature, power/limits, clock-event reasons and duration counters. It never changes GPU settings,
+stops training, or creates/deletes Pods. Connection failures do not affect the lifecycle guard.
+Updating files does not retrofit running guards or reset deadlines. The default SSH identity is
+`~/.ssh/id_ed25519_runpod`; unlock encrypted keys with `ssh-add`. The monitor never stores passwords,
+forwards the SSH agent, or extends/closes agent sockets.
+
+Interpretation follows [NVIDIA Clock Event Reasons/Counters](https://docs.nvidia.com/deploy/nvidia-smi/index.html):
+thermal/hardware-power flags or **newly accumulated** durations trigger immediate alerts, not historical
+counter totals. `SW Power Cap` alone means `power_limited`, not a hardware fault. A high-load clock
+drop of 20% below the same GPU's observed normal reference must persist for two minutes before
+`suspected_low_clock` is raised. These are engineering defaults, not NVIDIA fault thresholds.
+A power limit below 90% of the device's reported default gets a separate settings warning.
+P2, clocks below maximum, idle periods and checkpoint pauses do not individually imply abnormal
+throttling. Missing fields produce `limited_telemetry`, with an incomplete-monitoring alert after two
+minutes; without a normal reference the monitor cannot rule out unexplained low clocks from startup.
+SSH boot grace reports `waiting_for_ssh`; subsequent
+failure reports `unavailable`, never healthy.
+
+```bash
+bash scripts/runpod_workflow.sh gpu-status
+bash scripts/runpod_workflow.sh gpu-status --pod-id "<POD_ID>"
+bash scripts/runpod_workflow.sh gpu-status --run-id "<RUN_ID>" --output json
+bash scripts/runpod_workflow.sh gpu-notify-test
+```
+
+`gpu-status` only reads local records, with no cloud calls. Optional `--pod-id` and `--run-id` filters
+can be combined; neither filters by default. `--output` accepts `table` (default) or `json`.
+`--guard-dir PATH` defaults to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`;
+`-h`/`--help` shows help. `gpu-notify-test` takes no options and submits an explicitly labelled macOS
+test notification. No-argument `status` retains the original overview and appends GPU telemetry;
+the training/final-evaluation completion verdict of `status RUN_ID` is unchanged.
+
+Notifications identify the Pod, run, GPU and reason. Identical events have a default 15-minute
+cooldown; confirmed recovery generates another notification. `submitted` means handed to the OS,
+not guaranteed visible under Focus mode. Logs sit beside the guard log as `<pod-id>.gpu-events.jsonl`
+(5 MiB with two rotated backups) and `<pod-id>.gpu-monitor.json`. `stale`/`stopped` is not a healthy
+GPU verdict. The local host must stay powered and online; other platforms retain logs and CLI queries.
+Each Pod has an independent, timeout-bounded monitor and separate detection state.
+
+Set optional environment variables before the workflow; they do not modify model YAML or data/baseline identity:
+
+| Environment variable | Default / allowed values |
+| --- | --- |
+| `RUNPOD_GPU_MONITOR` | `1` enables; `0` disables GPU monitoring only, not the lifecycle guard |
+| `RUNPOD_GPU_MONITOR_SSH_KEY` | `~/.ssh/id_ed25519_runpod`; alternative identity file path |
+| `RUNPOD_GPU_MONITOR_NOTIFICATIONS` | `auto` enables macOS notifications; `0` disables; `1` requests them, reporting unsupported on other platforms |
+| `RUNPOD_GPU_MONITOR_POLL_SECONDS` | `30`; 10–300 seconds |
+| `RUNPOD_GPU_MONITOR_CONFIRM_SECONDS` | `120`; 30–3600 seconds for low-clock, missing-data, disconnect and recovery confirmation |
+| `RUNPOD_GPU_MONITOR_COOLDOWN_SECONDS` | `900`; 60–86400 seconds |
+| `RUNPOD_GPU_MONITOR_STARTUP_GRACE_SECONDS` | `300`; 0–1800 seconds |
+| `RUNPOD_GPU_MONITOR_HIGH_UTILIZATION_PCT` | `80`; 10–100 |
+| `RUNPOD_GPU_MONITOR_CLOCK_DROP_FRACTION` | `0.20`; 0.05–0.8 |
+| `RUNPOD_GPU_MONITOR_QUERY_TIMEOUT_SECONDS` | `15`; 3–30 seconds; only the monitor's query is killed on timeout |
+
 ##### Loss logs and W&B recovery
 
 Each run's `metrics.jsonl`, `summary.json` and W&B record training loss, pinball, market-weighted pinball, ranking
@@ -5019,6 +5136,8 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `runs` | `--experiment NAME`, `--seed N`, `--state STATE`, `--limit N`, `--offset N`, `--workers N`, `--output table\|json`, `--timezone ZONE`; list run IDs, seeds, execution times and frozen settings; see [run queries](#run-status-en) |
 | `status [RUN_ID]` | `--run-id RUN_ID` is an alternative to the positional ID; also `--output table\|json`, `--timezone ZONE`; no arguments retain the project overview, an ID checks that run's full completion |
 | `cpu-logs` | No options; download CPU workflow logs |
+| `gpu-status` | Read local GPU records; optional, combinable `--pod-id ID` and `--run-id ID`; `--output table\|json` defaults to `table`; `--guard-dir PATH` defaults to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help` shows help |
+| `gpu-notify-test` | No options; submit an explicitly labelled macOS notification test without querying/modifying Pods |
 | `recover` | Diagnostic-only by default; `--apply` restores guards/terminates Pods confirmed safe to terminate; `--pod-id ID` restricts scope; `--confirmations N` defaults to `2`, minimum 2; `--confirmation-delay-seconds N` defaults to `5`, nonnegative; `--guard-dir PATH` is an advanced control-host log location, defaulting to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help` shows help |
 | `download [RUN_ID]` | Without an ID, select the latest completed results. `--checkpointScope all` (default) downloads retained checkpoints; `best` selects the best. `--resume` fills/refreshes a local download, **not training continuation**; `-h`/`--help` shows help |
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
