@@ -396,6 +396,11 @@ def test_complete_baseline_builder_and_cache_reuse(small_lazy_config, tmp_path, 
     parameters.update(epochs=1, batch_size=32, label_scale_calibration_samples=32)
     parameters["resources"]["auto_batch"] = False
     parameters["gbdt"].update(max_iter=2, validation_every=1, max_leaf_nodes=3)
+    from stock_forecasting.config import DirectionConfig
+
+    config.model.direction = DirectionConfig(**parameters["direction"])
+    config.model.direction.loss_reference_samples = 32
+    parameters["direction"]["loss_reference_samples"] = 32
     config.data.label_scale_calibration_samples = 32
     config.training.learning_rate_schedule = "validation_plateau"
     config.training.evaluation_max_samples = None
@@ -421,6 +426,7 @@ def test_complete_baseline_builder_and_cache_reuse(small_lazy_config, tmp_path, 
             "dataset_request": {
                 "synthetic": True,
                 "date_range": {"start_inclusive": "2016-01-01", "end_exclusive": "2026-06-01"},
+                "preparation": {"h_start": min(config.data.alpha_horizons)},
             }
         },
     )
@@ -445,6 +451,13 @@ def test_complete_baseline_builder_and_cache_reuse(small_lazy_config, tmp_path, 
     neural = [row for row in execution if row["job"] in ("gru", "dlinear", "patchtst")]
     assert len({row["pid"] for row in neural}) == 3
     assert all(row["peak_gpu_bytes"] > 0 for row in neural)
+    if json.loads((root / "resource-plan.json").read_text())["gpu_slots"] > 1:
+        assert any(
+            max(first["started_at"], second["started_at"])
+            < min(first["finished_at"], second["finished_at"])
+            for index, first in enumerate(neural)
+            for second in neural[index + 1 :]
+        )
 
     # A completed cache must not initialize another dataset, CUDA plan or worker.
     def forbidden(*args, **kwargs):
@@ -455,7 +468,10 @@ def test_complete_baseline_builder_and_cache_reuse(small_lazy_config, tmp_path, 
     assert build.build_baselines(config) == first
 
 
-def test_main_testing_reuses_baseline_metrics_without_fit_or_inference(tmp_path, monkeypatch):
+@pytest.mark.parametrize("directional", [False, True])
+def test_main_testing_reuses_baseline_metrics_without_fit_or_inference(
+    tmp_path, monkeypatch, directional
+):
     import stock_forecasting.baseline_contract as contract
     import stock_forecasting.validation_benchmark as benchmark
 
@@ -476,6 +492,20 @@ def test_main_testing_reuses_baseline_metrics_without_fit_or_inference(tmp_path,
         "aggregate": {"normalized_pinball": 0.4},
         "primary_5d": {"selection_score": 0.4},
     }
+    if directional:
+        runner.config.model.direction.enabled = True
+        metrics["direction"] = {
+            "samples": 12,
+            "task_order": ["absolute", "alpha"],
+            "class_order": ["down", "neutral", "up"],
+            "cost_scenario": runner.config.model.direction.costs.model_dump(),
+            "overall": {
+                task: {
+                    "horizons": {str(h): {"count": 12} for h in runner.config.data.alpha_horizons}
+                }
+                for task in ("absolute", "alpha")
+            },
+        }
     cached = {
         "robust_scales": [0.03],
         "identity": {"baseline_id": "fixture"},
@@ -502,6 +532,12 @@ def test_main_testing_reuses_baseline_metrics_without_fit_or_inference(tmp_path,
     monkeypatch.setattr(benchmark, "evaluate_checkpoint", evaluate)
     assert runner._run_prebuilt()["state"] == "ready"
     assert calls == ["test"]
+    if directional:
+        comparison = runner.payload["comparison"]["direction"]
+        assert (
+            comparison["models"]["zero_return"]["single"]["overall"]
+            == (metrics["direction"]["overall"])
+        )
     runner._run_prebuilt()
     assert calls == ["test"]
     runner.payload["models"]["kronos_full"]["metrics"] = {
@@ -669,6 +705,7 @@ def _tabular_fixture(root):
 def test_full_cpu_baselines_persist_weights_and_resume(tmp_path):
     _tabular_fixture(tmp_path)
     parameters = json.loads((ROOT / "configs/baseline.json").read_text())
+    parameters["direction"]["enabled"] = False
     parameters["gbdt"].update(max_iter=2, validation_every=1, max_leaf_nodes=3)
     directory = tmp_path / "gbdt"
     directory.mkdir()
@@ -694,6 +731,7 @@ def test_gbdt_mid_round_resume_skips_committed_quantile(tmp_path, monkeypatch):
 
     _tabular_fixture(tmp_path)
     parameters = json.loads((ROOT / "configs/baseline.json").read_text())
+    parameters["direction"]["enabled"] = False
     parameters["gbdt"].update(max_iter=2, validation_every=1, max_leaf_nodes=3)
     directory = tmp_path / "interrupted-gbdt"
     directory.mkdir()

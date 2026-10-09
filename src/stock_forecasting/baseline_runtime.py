@@ -9,8 +9,8 @@ from itertools import islice
 
 import torch
 
+from stock_forecasting.baseline_direction import DirectionalBaseline, forward_loss
 from stock_forecasting.baseline_input import close_neural_loader, neural_loader
-from stock_forecasting.baselines import _normalized_pinball_torch
 from stock_forecasting.data.dataset import BlockwisePermutationSampler
 from stock_forecasting.evaluation_store import Moments
 
@@ -80,7 +80,7 @@ def _cuda_probe(model, context, horizons, *, training, maximum, budget, repetiti
                     > budget
                 ):
                     break
-                x = prediction = loss = None
+                x = prediction = loss = outputs = None
                 try:
                     torch.cuda.reset_peak_memory_stats()
                     x = torch.randn(size, 2, context, 5, device="cuda")
@@ -93,7 +93,11 @@ def _cuda_probe(model, context, horizons, *, training, maximum, budget, repetiti
                         )
                         begin.record()
                         with torch.set_grad_enabled(training):
-                            prediction = model(x)
+                            if isinstance(model, DirectionalBaseline):
+                                outputs = model.forward_tasks(x, x.new_zeros((size, 2)))
+                                prediction = torch.cat(outputs, -1)
+                            else:
+                                prediction = model(x)
                             if training:
                                 loss = prediction.square().mean()
                                 loss.backward()
@@ -101,7 +105,7 @@ def _cuda_probe(model, context, horizons, *, training, maximum, budget, repetiti
                         end.synchronize()
                         if iteration:
                             timings.append(begin.elapsed_time(end) / 1000)
-                        prediction = loss = None
+                        prediction = loss = outputs = None
                     peak = torch.cuda.max_memory_allocated() + optimizer_reserve
                     seconds = sum(timings) / len(timings)
                     rows.append(
@@ -119,7 +123,7 @@ def _cuda_probe(model, context, horizons, *, training, maximum, budget, repetiti
                     rows.append({"batch_size": size, "accepted": False, "outcome": "oom"})
                     break
                 finally:
-                    x = prediction = loss = None
+                    x = prediction = loss = outputs = None
                     model.zero_grad(set_to_none=True)
                     torch.cuda.empty_cache()
                 if size == maximum:
@@ -152,6 +156,7 @@ def _pipeline_probe(model, source, parameters, scales, *, training, batch_size, 
         batch_sampler=batches,
         prefetch=prefetch,
         metadata=not training,
+        direction_costs=model.config.costs if isinstance(model, DirectionalBaseline) else None,
     )
     iterator = None
     original_mode = model.training
@@ -196,12 +201,11 @@ def _pipeline_probe(model, source, parameters, scales, *, training, batch_size, 
                 )
                 begin.record()
                 with torch.set_grad_enabled(training):
-                    prediction = probe(batch["sequences"].cuda(non_blocking=True))
+                    prediction, _logits, loss, _losses = forward_loss(
+                        probe, batch, scale_tensor, "cuda"
+                    )
                     if training:
                         optimizer.zero_grad(set_to_none=True)
-                        loss = _normalized_pinball_torch(
-                            prediction, batch["target_alpha"].cuda(non_blocking=True), scale_tensor
-                        )
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(probe.parameters(), 1.0)
                         optimizer.step()
@@ -256,6 +260,8 @@ def tune_baseline_runtime(model, source, parameters, plan, *, scales=None, evalu
         shared = shutil.disk_usage("/dev/shm").free
     shared //= slots
     per_sample = 2 * source.window_size * 5 * (4 + 8) + len(source.horizons) * 4
+    if isinstance(model, DirectionalBaseline):
+        per_sample += len(source.horizons) * 4 + 8
 
     def host_limits(workers):
         host = plan.get("gpu_job_host_bytes", 4 * 1024**3) - (

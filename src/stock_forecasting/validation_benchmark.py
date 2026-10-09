@@ -729,8 +729,8 @@ class ValidationBenchmark:
                 "model_selection": (
                     "Validation direction/selection_loss: normalized pinball plus "
                     "absolute/alpha three-class CE with frozen train-only reference weights."
-                    if self.config.model.direction.enabled else
-                    "Validation primary_5d/selection_score compatibility path; "
+                    if self.config.model.direction.enabled
+                    else "Validation primary_5d/selection_score compatibility path; "
                     "the value aggregates normalized pinball over horizons "
                     f"{self.config.data.h_start} through {self.config.data.max_horizon}."
                 ),
@@ -746,8 +746,8 @@ class ValidationBenchmark:
                 "classification": (
                     "Two cost-aware down/neutral/up classifiers supervise absolute and alpha "
                     "returns. Existing five-level signals remain quantile post-processing."
-                    if self.config.model.direction.enabled else
-                    "No classifier is trained; signals are distribution post-processing."
+                    if self.config.model.direction.enabled
+                    else "No classifier is trained; signals are distribution post-processing."
                 ),
             },
             "model_definitions": {name: MODEL_DEFINITIONS[name] for name in self.models},
@@ -1112,6 +1112,51 @@ class ValidationBenchmark:
                     for seed, metrics in scores.items()
                 }
         self.payload["comparison"]["full_minus_baseline_date_paired"] = comparisons
+        if full and "direction" in full:
+            self.payload["comparison"]["direction"] = _direction_comparison(results)
+
+
+def _direction_comparison(results):
+    """Compare task metrics, never rank models by model-specific reference losses."""
+    full = results[FULL_MODEL_NAME]["metrics"]["direction"]
+    table = {}
+    for name, result in results.items():
+        scores = result.get("seed_results") or {"single": result.get("metrics", {})}
+        table[name] = {}
+        for seed, metrics in scores.items():
+            direction = metrics.get("direction")
+            if not direction or any(
+                direction.get(key) != full.get(key)
+                for key in (
+                    "cost_scenario",
+                    "class_order",
+                    "task_order",
+                    "samples",
+                )
+            ):
+                raise ValueError(f"{name} has no matching complete dual-direction evaluation")
+            for task in ("absolute", "alpha"):
+                if set(direction["overall"][task]["horizons"]) != set(
+                    full["overall"][task]["horizons"]
+                ):
+                    raise ValueError(f"{name} used different direction horizons")
+            table[name][seed] = {
+                "prediction_source": direction.get("prediction_source", "supervised"),
+                "overall": direction["overall"],
+                "market": direction.get("market", {}),
+                "month": direction.get("month", {}),
+            }
+    return {
+        "class_order": full["class_order"],
+        "cost_scenario": full["cost_scenario"],
+        "samples": full["samples"],
+        "models": table,
+        "role": (
+            "Descriptive paired full-holdout classification; "
+            "regression sign agreement is separate; "
+            "model-specific selection losses are not comparable."
+        ),
+    }
 
 
 def log_validation_to_wandb(

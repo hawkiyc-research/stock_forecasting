@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from stock_forecasting.baselines import (
     BaselineBatchDataset,
+    _absolute_rule_signals,
     _relative_rule_signals,
     collate_baseline_batch,
 )
@@ -93,13 +94,18 @@ def build_tabular_cache(
             for split, source in sources.items()
         },
     }
+    direction = config.model.direction
+    if direction.enabled:
+        identity["direction"] = {"schema": 1, "costs": direction.costs.model_dump()}
     done = root / "complete.json"
     if done.is_file():
         existing = json.loads(done.read_text())
         if existing["identity"] != identity:
             raise ValueError("Baseline input cache does not match the immutable bar store")
         for split, count in existing["counts"].items():
-            validate_tabular(root, split, count, len(config.data.alpha_horizons))
+            validate_tabular(
+                root, split, count, len(config.data.alpha_horizons), direction=direction.enabled
+            )
         return existing
     counts = {}
     for split in ("train", "validation", "test"):
@@ -113,13 +119,19 @@ def build_tabular_cache(
             "identity": identity,
             "count": count,
         }:
-            validate_tabular(root, split, count, len(source.horizons))
+            validate_tabular(root, split, count, len(source.horizons), direction=direction.enabled)
             continue
         shapes = {
-            "features": (count, 30),
+            "features": (count, 32 if direction.enabled else 30),
             "targets": (count, len(source.horizons)),
             "signals": (count, 6),
         }
+        if direction.enabled:
+            shapes.update(
+                absolute_targets=(count, len(source.horizons)),
+                direction_bands=(count, 2),
+                absolute_signals=(count, 6),
+            )
         progress_path = directory / "resume.json"
         offset = 0
         if progress_path.is_file():
@@ -129,7 +141,7 @@ def build_tabular_cache(
             offset = progress["committed_rows"]
             if type(offset) is not int or not 0 <= offset <= count:
                 raise ValueError("Invalid baseline input resume cursor")
-            validate_tabular(root, split, count, len(source.horizons))
+            validate_tabular(root, split, count, len(source.horizons), direction=direction.enabled)
         required = sum(np.prod(shape) * 4 for shape in shapes.values())
         if split != "train":
             required += count * META_DTYPE.itemsize
@@ -156,7 +168,7 @@ def build_tabular_cache(
             )
         _commit_tabular_progress(directory, arrays, identity, count, offset)
         loader = DataLoader(
-            BaselineBatchDataset(source),
+            BaselineBatchDataset(source, direction.costs if direction.enabled else None),
             batch_size=batch_size,
             sampler=range(offset, count),
             collate_fn=collate_baseline_batch,
@@ -171,12 +183,23 @@ def build_tabular_cache(
         try:
             for batch in iterator:
                 stop = offset + len(batch.targets)
-                arrays["features"][offset:stop] = batch.features
+                arrays["features"][offset:stop] = (
+                    np.column_stack((batch.features, batch.direction_bands * 100))
+                    if direction.enabled
+                    else batch.features
+                )
                 arrays["targets"][offset:stop] = batch.targets
                 signals = _relative_rule_signals(batch)
                 arrays["signals"][offset:stop] = np.column_stack(
                     [signals[name] for name in SIGNAL_NAMES]
                 )
+                if direction.enabled:
+                    arrays["absolute_targets"][offset:stop] = batch.absolute_targets
+                    arrays["direction_bands"][offset:stop] = batch.direction_bands
+                    absolute_signals = _absolute_rule_signals(batch)
+                    arrays["absolute_signals"][offset:stop] = np.column_stack(
+                        [absolute_signals[name] for name in SIGNAL_NAMES]
+                    )
                 if "metadata" in arrays:
                     for name, values in (
                         ("symbol", batch.symbols),
@@ -232,15 +255,30 @@ def _commit_tabular_progress(directory, arrays, identity, count, offset):
 
 def open_tabular(root: Path, split: str) -> dict:
     names = ["features", "targets", "signals"] + ([] if split == "train" else ["metadata"])
+    direction = ["absolute_targets", "direction_bands", "absolute_signals"]
+    present = [(root / split / f"{name}.npy").is_file() for name in direction]
+    if any(present):
+        if not all(present):
+            raise ValueError("Incomplete baseline direction input cache")
+        names += direction
     return {name: np.load(root / split / f"{name}.npy", mmap_mode="r") for name in names}
 
 
-def validate_tabular(root: Path, split: str, count: int, horizons: int) -> None:
+def validate_tabular(root: Path, split: str, count: int, horizons: int, *, direction=False) -> None:
     shapes = {"features": (count, 30), "targets": (count, horizons), "signals": (count, 6)}
     if split != "train":
         shapes["metadata"] = (count,)
     arrays = open_tabular(root, split)
     try:
+        if direction and "absolute_targets" not in arrays:
+            raise ValueError("Missing baseline direction input cache")
+        if "absolute_targets" in arrays:
+            shapes["features"] = (count, 32)
+            shapes.update(
+                absolute_targets=(count, horizons),
+                direction_bands=(count, 2),
+                absolute_signals=(count, 6),
+            )
         for name, shape in shapes.items():
             expected_dtype = META_DTYPE if name == "metadata" else np.dtype("float32")
             if arrays[name].shape != shape or arrays[name].dtype != expected_dtype:

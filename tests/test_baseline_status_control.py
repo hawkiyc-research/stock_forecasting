@@ -50,6 +50,16 @@ def completed_fixture(project, selected, objects):
         "sample_membership": membership,
         "samples": counts["test"],
         "evaluation_robust_scales": [1.0] * 14,
+        "direction": {
+            "samples": counts["test"],
+            "class_order": ["down", "neutral", "up"],
+            "task_order": ["absolute", "alpha"],
+            "cost_scenario": identity["contract"]["parameters"]["direction"]["costs"],
+            "overall": {
+                task: {"horizons": {str(h): {"count": counts["test"]} for h in range(1, 15)}}
+                for task in ("absolute", "alpha")
+            },
+        },
     }
     payload = {
         "state": "complete",
@@ -91,6 +101,8 @@ def completed_fixture(project, selected, objects):
                 "validation-metrics.json",
                 "validation/predictions.npy",
                 "test/predictions.npy",
+                f"validation/direction-{'probabilities' if learned else 'classes'}.npy",
+                f"test/direction-{'probabilities' if learned else 'classes'}.npy",
             ):
                 artifact(f"{job}/{suffix}")
     for paths in payload["evaluation_data"].values():
@@ -160,12 +172,18 @@ class BaselineStatusTests(unittest.TestCase):
     def test_complete_requires_both_clean_inputs_and_all_saved_results(self):
         code, text, reader = self.status()
         self.assertEqual(code, 0)
-        self.assertIn("Baseline: COMPLETE (12 models; 52 artifacts verified).", text)
+        self.assertIn(
+            f"Baseline: COMPLETE (12 models; {len(self.payload['artifacts'])} artifacts verified).",
+            text,
+        )
         self.assertIn("Data rules: PASS", text)
         self.assertIn("train=180, validation=60, test=70", text)
         self.assertLessEqual(len(text.splitlines()), 6)
         self.assertNotIn('"sources":', text)
-        self.assertEqual(len([call for call in self.calls if "head-object" in call]), 52)
+        self.assertEqual(
+            len([call for call in self.calls if "head-object" in call]),
+            len(self.payload["artifacts"]),
+        )
         self.assertTrue(FIXTURES["ReadinessReuseTests"].artifact_heads(reader))
 
     def test_missing_completion_is_not_reported_as_successful_training(self):

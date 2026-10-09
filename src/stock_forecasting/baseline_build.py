@@ -23,6 +23,13 @@ from stock_forecasting.baseline_contract import (
     runtime_contract,
     validate_complete,
 )
+from stock_forecasting.baseline_direction import (
+    BaselineDirectionEvaluation,
+    DirectionalBaseline,
+    calibrate_references,
+    forward_loss,
+    reference_head,
+)
 from stock_forecasting.baseline_input import close_neural_loader, neural_loader
 from stock_forecasting.baseline_runtime import SampleCursorBatchSampler, tune_baseline_runtime
 from stock_forecasting.baseline_storage import (
@@ -36,7 +43,6 @@ from stock_forecasting.baselines import (
     CausalGRUBaseline,
     DLinearBaseline,
     PatchTSTBaseline,
-    _normalized_pinball_torch,
     _seed_baseline,
 )
 from stock_forecasting.config import ExperimentConfig
@@ -91,6 +97,7 @@ def _loader(
         batch_sampler=sampler,
         prefetch=prefetch,
         metadata=split != "train",
+        direction_costs=config.model.direction.costs if config.model.direction.enabled else None,
     )
 
 
@@ -98,10 +105,15 @@ def _loader(
 def _neural_validation(model, loader, horizons, scales):
     model.eval()
     moments = Moments(horizons, scales)
+    direction = _direction_evaluation(model, horizons, len(loader.dataset))
+    scale_tensor = torch.tensor(scales, device="cuda")
     count, reported = 0, time.monotonic()
     for batch in loader:
-        prediction = model(_sequence(batch, "cuda")).float().cpu().numpy()
+        q, logits, _, losses = forward_loss(model, batch, scale_tensor, "cuda")
+        prediction = q.float().cpu().numpy()
         moments.add(batch["target_alpha"].numpy(), prediction)
+        if direction is not None:
+            _append_direction(direction, logits, batch, float(losses[0]))
         count += len(prediction)
         if time.monotonic() - reported >= 30:
             print(f"Baseline full validation: {count}/{len(loader.dataset)}", flush=True)
@@ -109,27 +121,85 @@ def _neural_validation(model, loader, horizons, scales):
     if count != len(loader.dataset):
         raise RuntimeError("Baseline validation did not enumerate every window")
     model.train()
-    return moments.result()["aggregate"]["selection_score"]
+    metrics = moments.result()
+    if direction is not None:
+        metrics["direction"] = direction.finish()
+    return metrics
+
+
+def _direction_evaluation(model, horizons, count, output=None):
+    if not isinstance(model, DirectionalBaseline):
+        return None
+    return BaselineDirectionEvaluation(
+        horizons, model.config.costs, count, head=model, output=output
+    )
+
+
+def _append_direction(evaluation, logits, batch, pinball):
+    log_probabilities = (
+        torch.stack([value.log_softmax(-1) for value in logits], 1).float().cpu().numpy()
+    )
+    evaluation.append(
+        np.exp(log_probabilities),
+        torch.stack((batch["target_absolute"], batch["target_alpha"]), 1).numpy(),
+        batch["direction_bands"].numpy(),
+        batch["markets"],
+        batch["cutoff_at"],
+        pinball=pinball,
+        log_probabilities=log_probabilities,
+    )
+
+
+def _selection_score(metrics):
+    return metrics.get("direction", {}).get(
+        "selection_loss", metrics["aggregate"]["selection_score"]
+    )
+
+
+def _history(directory, record):
+    losses = record.get(
+        "task_losses",
+        record.get("training_task_losses", record.get("training", {}).get("task_losses", [])),
+    )
+    record["task_loss_order"] = [
+        "normalized_pinball",
+        "absolute_cross_entropy",
+        "alpha_cross_entropy",
+    ][: len(losses)]
+    with (directory / "metrics.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, allow_nan=False) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 @torch.inference_mode()
 def _neural_test(model, loader, output, horizons, scales):
     model.eval()
     store = EvaluationStore(output, len(loader.dataset), horizons, scales)
+    direction = _direction_evaluation(model, horizons, len(loader.dataset), output)
+    scale_tensor = torch.tensor(scales, device="cuda")
     try:
         for batch in loader:
+            q, logits, _, losses = forward_loss(model, batch, scale_tensor, "cuda")
             store.append(
                 batch["target_alpha"].numpy(),
-                model(_sequence(batch, "cuda")).float().cpu().numpy(),
+                q.float().cpu().numpy(),
                 symbols=batch["symbols"],
                 dates=batch["cutoff_at"],
                 markets=batch["markets"],
                 asset_types=batch["asset_types"],
                 providers=batch["providers"],
             )
-        return store.finish()
+            if direction is not None:
+                _append_direction(direction, logits, batch, float(losses[0]))
+        metrics = store.finish()
+        if direction is not None:
+            metrics["direction"] = direction.finish()
+        return metrics
     finally:
         store.close()
+        if direction is not None:
+            direction.close()
 
 
 def _close_loader(loader):
@@ -152,7 +222,10 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
         "gru": lambda: CausalGRUBaseline(horizons=horizons),
         "dlinear": lambda: DLinearBaseline(config.data.input_length, horizons=horizons),
         "patchtst": lambda: PatchTSTBaseline(horizons=horizons),
-    }[name]().cuda()
+    }[name]()
+    if config.model.direction.enabled:
+        model = DirectionalBaseline(model, config.model.direction)
+    model = model.cuda()
     source_root = plan.get("validated_bar_store_roots")
     source = lazy_dataset(config, "train", relative=True, validated_root=source_root)
     count = len(source)
@@ -221,7 +294,16 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
         torch.set_rng_state(state["torch_rng"])
         torch.cuda.set_rng_state(state["cuda_rng"])
     scale_tensor = torch.tensor(scales, device="cuda")
+    if isinstance(model, DirectionalBaseline) and not last.is_file():
+        calibrate_references(model, source, config, runtime, scale_tensor)
     settings = parameters["resources"]
+    loss_sums = torch.zeros(
+        3 if isinstance(model, DirectionalBaseline) else 1, dtype=torch.float64, device="cuda"
+    )
+    loss_count = 0
+    if last.is_file():
+        loss_sums.copy_(state.get("training_loss_sums", torch.zeros_like(loss_sums)))
+        loss_count = state.get("training_loss_count", 0)
     saved_at = reported_at = time.monotonic()
     reported_cursor = start_epoch * count + cursor
 
@@ -246,12 +328,14 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
                 "numpy_rng": np.random.get_state(),
                 "torch_rng": torch.get_rng_state(),
                 "cuda_rng": torch.cuda.get_rng_state(),
+                "training_loss_sums": loss_sums.detach().cpu(),
+                "training_loss_count": loss_count,
             },
         )
         saved_at = time.monotonic()
 
     def validate(epoch):
-        nonlocal best, stale, validated_cursor, finished
+        nonlocal best, stale, validated_cursor, finished, loss_count
         # A pending full validation is replayed after interruption, never skipped.
         save(epoch)
         atomic_write_json(
@@ -268,7 +352,8 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
         # Only the active phase owns workers, metadata caches and pinned queues.
         _close_loader(train)
         try:
-            score = _neural_validation(model, validation, list(horizons), scales)
+            validation_metrics = _neural_validation(model, validation, list(horizons), scales)
+            score = _selection_score(validation_metrics)
         finally:
             _close_loader(validation)
         improved = score < best - parameters["early_stopping_min_delta"]
@@ -283,9 +368,26 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
                     "context_length": config.data.input_length,
                     "scales": scales,
                     "seed": seed,
+                    "direction": config.model.direction.model_dump(),
                 },
             )
         schedule.observe(score, parameters["early_stopping_min_delta"])
+        _history(
+            directory,
+            {
+                "phase": "validation",
+                "epoch": epoch + 1,
+                "sample_cursor": cursor,
+                "selection_loss": score,
+                "training_samples_since_validation": loss_count,
+                "training_task_losses": (loss_sums / max(loss_count, 1)).cpu().tolist(),
+                "learning_rates": schedule.get_last_lr(),
+                "pinball": validation_metrics["aggregate"]["selection_score"],
+                "direction": validation_metrics.get("direction"),
+            },
+        )
+        loss_sums.zero_()
+        loss_count = 0
         finished = (
             stale >= parameters["early_stopping_patience_evaluations"]
             and epoch + 1 >= parameters["early_stopping_start_epoch"]
@@ -330,13 +432,16 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
             for batch in train:
                 input_wait += time.monotonic() - consumed_at
                 optimizer.zero_grad(set_to_none=True)
-                prediction = model(_sequence(batch, "cuda"))
-                loss = _normalized_pinball_torch(
-                    prediction, batch["target_alpha"].cuda(non_blocking=True), scale_tensor
+                _prediction, _logits, loss, task_losses = forward_loss(
+                    model, batch, scale_tensor, "cuda"
                 )
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
+                loss_sums += torch.stack([item.detach() for item in task_losses]).double() * len(
+                    batch["target_alpha"]
+                )
+                loss_count += len(batch["target_alpha"])
                 cursor += len(batch["target_alpha"])
                 schedule.realign(epoch * count + cursor, schedule.warmup_steps)
                 boundary = cursor in sampler.boundaries
@@ -351,6 +456,19 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
                     save(epoch)
                 now = time.monotonic()
                 if now - reported_at >= settings.get("progress_seconds", 30):
+                    _history(
+                        directory,
+                        {
+                            "phase": "training",
+                            "epoch": epoch + 1,
+                            "sample_cursor": cursor,
+                            "loss": float(loss.detach()),
+                            "task_losses": [float(value.detach()) for value in task_losses],
+                            "loss_reference": model.reference_state()
+                            if isinstance(model, DirectionalBaseline)
+                            else None,
+                        },
+                    )
                     rate = (epoch * count + cursor - reported_cursor) / max(now - reported_at, 1e-9)
                     atomic_write_json(
                         directory / "progress.json",
@@ -405,18 +523,55 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
     return metrics
 
 
-def _tabular_score(arrays, predict, horizons, scales, output: Path | None = None):
+def _tabular_score(
+    arrays,
+    predict,
+    horizons,
+    scales,
+    output: Path | None = None,
+    *,
+    direction_predict=None,
+    direction_parameters=None,
+    direction_head=None,
+    direction_source="supervised",
+):
     moments = Moments(horizons, scales)
     store = (
         None
         if output is None
         else EvaluationStore(output, len(arrays["targets"]), horizons, scales)
     )
+    direction = None
+    if direction_predict is not None:
+        from stock_forecasting.config import DirectionCostConfig
+
+        direction = BaselineDirectionEvaluation(
+            horizons,
+            DirectionCostConfig.model_validate(direction_parameters["costs"]),
+            len(arrays["targets"]),
+            head=direction_head,
+            output=output,
+            source=direction_source,
+        )
     try:
         for start in range(0, len(arrays["targets"]), CHUNK_ROWS):
             stop = min(start + CHUNK_ROWS, len(arrays["targets"]))
             predictions = np.sort(predict(start, stop), axis=-1)
             targets = arrays["targets"][start:stop]
+            if direction is not None:
+                batch_moments = Moments(horizons, scales)
+                batch_moments.add(targets, predictions)
+                meta = arrays["metadata"][start:stop]
+                values = direction_predict(start, stop)
+                direction.append(
+                    values if direction_source == "supervised" else None,
+                    np.stack((arrays["absolute_targets"][start:stop], targets), 1),
+                    arrays["direction_bands"][start:stop],
+                    meta["market"],
+                    meta["date"],
+                    pinball=batch_moments.result()["aggregate"]["selection_score"],
+                    classes=values if direction_source != "supervised" else None,
+                )
             if store is None:
                 moments.add(targets, predictions)
             else:
@@ -430,17 +585,40 @@ def _tabular_score(arrays, predict, horizons, scales, output: Path | None = None
                     asset_types=meta["asset_type"],
                     providers=meta["provider"],
                 )
-        return moments.result() if store is None else store.finish()
+        metrics = moments.result() if store is None else store.finish()
+        if direction is not None:
+            metrics["direction"] = direction.finish()
+        return metrics
     finally:
         if store is not None:
             store.close()
+        if direction is not None:
+            direction.close()
 
 
 def _train_gbdt(root, directory, seed, parameters, horizons, scales):
+    from stock_forecasting.baseline_direction_tree import (
+        ConstantDirectionClassifier,
+        full_labels,
+        initial_references,
+        make_classifiers,
+        predict_probabilities,
+    )
+
     arrays = {
         split: open_tabular(root / "inputs", split) for split in ("train", "validation", "test")
     }
     settings = parameters["gbdt"]
+    direction_parameters = parameters.get("direction", {})
+    directional = bool(direction_parameters.get("enabled"))
+    classifiers = make_classifiers(horizons, settings, seed) if directional else None
+    references = (
+        initial_references(
+            arrays["train"], horizons, scales, direction_parameters, parameters["calibration_seed"]
+        )
+        if directional
+        else None
+    )
     models = [
         [
             HistGradientBoostingRegressor(
@@ -478,6 +656,8 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
                     "next_model",
                 )
             )
+            if directional:
+                classifiers, references = state["direction_models"], state["direction_references"]
 
     def save_gbdt(iteration, active, cursor):
         _save_pickle(
@@ -491,6 +671,8 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
                 "finished": finished,
                 "active_iteration": active,
                 "next_model": cursor,
+                "direction_models": classifiers,
+                "direction_references": references,
             },
         )
 
@@ -502,6 +684,67 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
             ],
             axis=1,
         )
+
+    def score_split(split, output=None):
+        return _tabular_score(
+            arrays[split],
+            lambda a, b: prediction(split, a, b),
+            horizons,
+            scales,
+            output,
+            direction_predict=(
+                lambda a, b: predict_probabilities(classifiers, arrays[split]["features"][a:b])
+            )
+            if directional
+            else None,
+            direction_parameters=direction_parameters,
+            direction_head=reference_head(references, direction_parameters)
+            if directional
+            else None,
+        )
+
+    def allocated_cpu_threads():
+        allocation = root / "live-resources.json"
+        if not allocation.is_file():
+            return None
+        limit = json.loads(allocation.read_text())["gbdt_threads"]
+        if type(limit) is not int or not 1 <= limit <= max(1, detect_visible_cpu_count() - 2):
+            raise ValueError("Invalid live GBDT CPU allocation")
+        return limit
+
+    def training_diagnostics():
+        # A bounded training-only diagnostic does not change full fitting/evaluation.
+        size = min(
+            len(arrays["train"]["targets"]),
+            parameters.get("direction", {}).get("loss_reference_samples", 1024),
+        )
+        indices = random.Random(parameters["calibration_seed"]).sample(
+            range(len(arrays["train"]["targets"])), size
+        )
+        selected = {key: value[indices] for key, value in arrays["train"].items()}
+        predictions = np.stack(
+            [
+                np.column_stack([model.predict(selected["features"]) for model in row])
+                for row in models
+            ],
+            1,
+        )
+        moments = Moments(horizons, scales)
+        moments.add(selected["targets"], predictions)
+        losses = [moments.result()["aggregate"]["selection_score"]]
+        if directional:
+            from stock_forecasting.baseline_direction_data import numpy_direction_labels
+
+            probabilities = predict_probabilities(classifiers, selected["features"])
+            for task, field in enumerate(("absolute_targets", "targets")):
+                labels = numpy_direction_labels(selected[field], selected["direction_bands"])
+                correct = np.take_along_axis(probabilities[:, task], labels[..., None], -1)[..., 0]
+                losses.append(float(-np.log(np.maximum(correct, 1e-30)).mean()))
+        return {
+            "scope": "fixed_train_diagnostic_not_training_subsampling",
+            "samples": size,
+            "task_losses": losses,
+        }
 
     for iteration in range(
         start_iteration + settings["validation_every"],
@@ -516,14 +759,7 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
                 if iteration == active_iteration and h * 3 + q < next_model:
                     continue
                 model.set_params(max_iter=iteration)
-                allocation = root / "live-resources.json"
-                thread_limit = None
-                if allocation.is_file():
-                    thread_limit = json.loads(allocation.read_text())["gbdt_threads"]
-                    if type(thread_limit) is not int or not 1 <= thread_limit <= max(
-                        1, detect_visible_cpu_count() - 2
-                    ):
-                        raise ValueError("Invalid live GBDT CPU allocation")
+                thread_limit = allocated_cpu_threads()
                 with threadpool_limits(limits=thread_limit):
                     model.fit(arrays["train"]["features"], arrays["train"]["targets"][:, h])
                 save_gbdt(iteration - settings["validation_every"], iteration, h * 3 + q + 1)
@@ -533,19 +769,64 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
                         "phase": "fitting",
                         "iteration": iteration,
                         "completed_models": h * 3 + q + 1,
-                        "total_models": len(horizons) * 3,
+                        "total_models": len(horizons) * (5 if directional else 3),
                         "cpu_threads": thread_limit,
                     },
                 )
-        score = _tabular_score(
-            arrays["validation"], lambda a, b: prediction("validation", a, b), horizons, scales
-        )["aggregate"]["selection_score"]
+        if directional:
+            for task, row in enumerate(classifiers):
+                for h, model in enumerate(row):
+                    index = len(horizons) * 3 + task * len(horizons) + h
+                    if iteration == active_iteration and index < next_model:
+                        continue
+                    labels = full_labels(arrays["train"], task, h)
+                    present = np.unique(labels)
+                    thread_limit = allocated_cpu_threads()
+                    if len(present) == 1:
+                        classifiers[task][h] = ConstantDirectionClassifier(int(present[0]))
+                    else:
+                        model.set_params(max_iter=iteration)
+                        with threadpool_limits(limits=thread_limit):
+                            model.fit(arrays["train"]["features"], labels)
+                    del labels
+                    save_gbdt(iteration - settings["validation_every"], iteration, index + 1)
+                    atomic_write_json(
+                        directory / "progress.json",
+                        {
+                            "phase": "fitting-direction",
+                            "iteration": iteration,
+                            "completed_models": index + 1,
+                            "total_models": len(horizons) * 5,
+                            "cpu_threads": thread_limit,
+                        },
+                    )
+        validation_metrics = score_split("validation")
+        score = _selection_score(validation_metrics)
+        _history(
+            directory,
+            {
+                "phase": "validation",
+                "iteration": iteration,
+                "training": training_diagnostics(),
+                "selection_loss": score,
+                "pinball": validation_metrics["aggregate"]["selection_score"],
+                "direction": validation_metrics.get("direction"),
+            },
+        )
         improved = score < best - parameters["early_stopping_min_delta"]
         best, stale = (score, 0) if improved else (best, stale + 1)
         if improved:
             _save_pickle(
                 directory / "model.pkl",
-                {"models": models, "horizons": horizons, "scales": scales, "seed": seed},
+                {
+                    "models": models,
+                    "horizons": horizons,
+                    "scales": scales,
+                    "seed": seed,
+                    "direction_models": classifiers,
+                    "direction_references": references,
+                    "direction": direction_parameters,
+                },
             )
         finished = stale >= parameters["early_stopping_patience_evaluations"]
         save_gbdt(iteration, None, 0)
@@ -561,21 +842,20 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
         )
         print(f"gbdt/{seed} trees={iteration} full_validation={score:.8f}", flush=True)
     with (directory / "model.pkl").open("rb") as stream:
-        models = pickle.load(stream)["models"]
-    validation_metrics = _tabular_score(
-        arrays["validation"],
-        lambda a, b: prediction("validation", a, b),
-        horizons,
-        scales,
-        directory / "validation",
-    )
+        saved = pickle.load(stream)
+        models = saved["models"]
+        if directional:
+            classifiers, references = saved["direction_models"], saved["direction_references"]
+    validation_metrics = score_split("validation", directory / "validation")
     atomic_write_json(directory / "validation-metrics.json", validation_metrics)
-    return _tabular_score(
-        arrays["test"], lambda a, b: prediction("test", a, b), horizons, scales, directory / "test"
-    )
+    return score_split("test", directory / "test")
 
 
-def _train_rules(root, directory, horizons, scales):
+def _train_rules(root, directory, horizons, scales, parameters=None):
+    from stock_forecasting.baseline_direction_data import numpy_direction_labels
+
+    direction_parameters = (parameters or {}).get("direction", {})
+    directional = bool(direction_parameters.get("enabled"))
     train = open_tabular(root / "inputs", "train")
     validation = open_tabular(root / "inputs", "validation")
     test = open_tabular(root / "inputs", "test")
@@ -608,6 +888,8 @@ def _train_rules(root, directory, horizons, scales):
                 "locations": locations.tolist(),
                 "residual_quantiles": offsets.tolist(),
                 "scales": scales,
+                "direction": direction_parameters,
+                "direction_rule": "past_signal_times_horizon_over_five_with_cost_band",
             },
         )
 
@@ -620,16 +902,46 @@ def _train_rules(root, directory, horizons, scales):
                 )
             return medians[..., None] + offsets
 
+        def direction_prediction(arrays, start, stop, name=name):
+            shape = (stop - start, 2, len(horizons))
+            if name in ("always_buy", "zero_return"):
+                return np.full(shape, 2 if name == "always_buy" else 1, dtype=np.uint8)
+            column = SIGNAL_NAMES.index(name)
+            return np.stack(
+                [
+                    numpy_direction_labels(
+                        arrays[key][start:stop, column, None] * (np.asarray(horizons)[None] / 5),
+                        arrays["direction_bands"][start:stop],
+                    )
+                    for key in ("absolute_signals", "signals")
+                ],
+                1,
+            )
+
         validation_metrics = _tabular_score(
             validation,
             lambda a, b: prediction(validation, a, b),
             horizons,
             scales,
             child / "validation",
+            direction_predict=(lambda a, b: direction_prediction(validation, a, b))
+            if directional
+            else None,
+            direction_parameters=direction_parameters,
+            direction_source="deterministic_rule",
         )
         atomic_write_json(child / "validation-metrics.json", validation_metrics)
         metrics = _tabular_score(
-            test, lambda a, b: prediction(test, a, b), horizons, scales, child / "test"
+            test,
+            lambda a, b: prediction(test, a, b),
+            horizons,
+            scales,
+            child / "test",
+            direction_predict=(lambda a, b: direction_prediction(test, a, b))
+            if directional
+            else None,
+            direction_parameters=direction_parameters,
+            direction_source="deterministic_rule",
         )
         result[name] = {
             "state": "complete",
@@ -667,7 +979,9 @@ def run_job(config_payload, root_string, name, seed, parameters, scales, plan):
                     progress_seconds=parameters["resources"].get("progress_seconds", 30),
                 )
             elif name == "rules":
-                payload = _train_rules(root, directory, list(config.data.alpha_horizons), scales)
+                payload = _train_rules(
+                    root, directory, list(config.data.alpha_horizons), scales, parameters
+                )
             elif name == "gbdt":
                 payload = _train_gbdt(
                     root, directory, seed, parameters, list(config.data.alpha_horizons), scales
@@ -796,6 +1110,9 @@ def resource_plan(parameters, train_count, horizons, context_length=128):
         )
     host_budget = int(memory * settings["host_memory_fraction"])
     gbdt_bytes = train_count * (30 * 12 + len(horizons) * 8 + 64) * 2 + 2 * 1024**3
+    if parameters.get("direction", {}).get("enabled"):
+        # Two additional features, one live label column, classifier tree/binning reserves.
+        gbdt_bytes += train_count * (2 * 12 + len(horizons) * 8 + 24) * 2 + 512 * 1024**2
     if gbdt_bytes > host_budget:
         raise MemoryError(
             f"Full GBDT requires estimated {gbdt_bytes} host bytes; budget is {host_budget}. "
@@ -940,6 +1257,12 @@ def build_baselines(config):
         * (len(RULE_BASELINE_NAMES) + learned_count)
         + (learned_count + 2) * 1024**3
     )
+    if parameters.get("direction", {}).get("enabled"):
+        expected_disk += sum(counts.values()) * (
+            horizon_count + 10
+        ) * 4 + evaluation_count * horizon_count * (
+            24 * learned_count + 2 * len(RULE_BASELINE_NAMES)
+        )
     existing_disk = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
     remaining_disk = max(0, expected_disk - existing_disk)
     if shutil.disk_usage(root).free < remaining_disk:
@@ -1070,6 +1393,15 @@ def build_baselines(config):
         )
         for directory in directories:
             metrics = json.loads((directory / "validation-metrics.json").read_text())
+            if parameters.get("direction", {}).get("enabled"):
+                from stock_forecasting.baseline_contract import validate_direction_metrics
+
+                validate_direction_metrics(
+                    metrics.get("direction"),
+                    parameters["direction"],
+                    cache["counts"]["validation"],
+                    horizons=config.data.alpha_horizons,
+                )
             current = metrics["sample_membership"]
             if (
                 metrics["samples"] != cache["counts"]["validation"]
@@ -1094,6 +1426,12 @@ def build_baselines(config):
         for path in (root / "jobs").rglob("*")
         if path.is_file() and path.name not in ("resume.pt", "resume.pkl")
     )
+    if parameters.get("direction", {}).get("enabled"):
+        files += [
+            root / "inputs" / split / f"{name}.npy"
+            for split in ("validation", "test")
+            for name in ("absolute_targets", "direction_bands")
+        ]
 
     def artifact(path):
         return path.relative_to(root).as_posix(), {

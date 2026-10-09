@@ -637,11 +637,33 @@ Holdout 排名僅描述結果，不可再用來挑 checkpoint、反覆調參或�
 #### Baseline 前置建置與快取
 
 baseline 是主模型之前的獨立流程，所有 rule、GBDT、GRU、DLinear、PatchTST 使用完整
-train／validation／test。神經模型每 epoch 做五次完整 validation，以相同 normalized pinball
-與五次未改善 patience 選擇 checkpoint；最多五個 epochs。GBDT 每八輪新增樹後，評估完整
-validation 的跨 horizon／quantile 平均 normalized pinball，最多 200 輪；停用 sklearn 內部
-validation 抽樣。固定規則沒有可 early-stop 的 optimizer，其 residual quantiles 以完整 train
-校準。完整資料相同不代表不同架構的 FLOPs 或訓練時間相同。
+train／validation／test。GRU、DLinear、PatchTST 保留 alpha 分位數，另以共享表徵訓練
+個股絕對方向與 alpha 方向兩組三分類；GBDT 保留分位數 regressors，並增加每個 horizon
+的兩組 classifiers。標籤、進出場時點與成本門檻和 `direction64` 相同。神經模型每 epoch
+做五次完整 validation，最多五個 epochs；GBDT 每八輪新增樹後做完整 validation，最多
+200 輪，停用 sklearn 內部 validation 抽樣。兩者使用固定 train-only reference 加權的
+normalized pinball＋雙 CE 選擇 checkpoint，五次未改善 patience；神經模型另保留
+validation-plateau 與最低學習率觀察規則。固定規則不訓練分類器，不適用 early stopping；
+其 alpha residual quantiles 仍以完整 train 校準。完整資料相同不代表 FLOPs 或訓練時間相同。
+
+方向設定由 `configs/baseline.json` 的 `direction` 獨立管理：`enabled` 預設 `true`，
+`loss_reference_samples` 預設 1,024（32–8,192），`absolute_weight`／`alpha_weight` 預設
+各 1.0（大於 0、不超過 10）。`costs` 使用與主模型相同的市場別成本欄位，台股 1,000 股、
+美股 50 股；只用截止預測日已知的價格估算門檻。神經模型在更新前估計固定 reference，
+GBDT 使用固定 train 子集的平滑類別先驗與 intercept-only 分位數 reference；正式 fitting、
+validation、test 均不抽樣。Reference 及其加權係數隨 checkpoint 保存並於續訓恢復。
+`metrics.jsonl` 記錄訓練／validation loss；神經模型記錄實際訓練 batch／區間平均，
+GBDT 另以固定 train reference 子集記錄訓練診斷（明列筆數），不減少正式 fitting 或完整評估。
+不同模型的 reference 不同，不能以加權
+`selection_loss` 跨架構排名，應比較各任務指標。
+
+完整評估另輸出 `direction`：兩任務的 accuracy、balanced accuracy、macro-F1、混淆矩陣、
+majority accuracy、up precision／recall、signal fraction、joint-up precision，均有
+horizon／市場／月份切面。有機率的模型另列 CE。規則以各自的歷史個股／相對訊號配合成本
+門檻輸出 hard classes；`always_buy` 固定 up、`zero_return` 固定 neutral，不捏造機率或 CE。
+原有 q50 正負號一致率仍保留，不能和成本敏感三分類 accuracy 混為同一指標。
+主模型 testing 的 `comparison.direction` 直接彙整快取結果；成本、horizons 或樣本集合
+不一致就拒絕比較。方向模型啟動前也在本機檢查成本一致性，不因此把 baseline 綁定 Kronos 容量。
 
 Baseline 的神經模型維持全 train 動態排列；目前不套主模型的年度衰減權重。
 比較時應同時揭露候選資料範圍、sampling policy、樣本呈現次數與訓練成本。
@@ -658,6 +680,11 @@ baseline 建置收尾會共用既有 `inputs/<split>/metadata.npy`（樣本 memb
 不保留重複的 `membership.npy`／`targets.npy`。收尾先串流驗證內容一致，再原子更新
 檔案引用，最後移除副本；若清理被中斷，重跑 baseline 流程只完成收尾，不重訓。
 這項儲存整理不改資料期間、標籤、模型參數或 baseline 數值身分。
+方向標籤 `inputs/<split>/absolute_targets.npy` 與 `direction_bands.npy` 同樣每個 split
+只存一份；每個模型只保存自己的 `direction-probabilities.npy`（`N×2×H×3`）或規則的
+`direction-classes.npy`（`N×2×H`）。任務順序為 absolute、alpha，類別順序為 down、neutral、up。
+只有 alpha 分位數的舊 baseline 不能視為雙方向任務已完成；此任務變更需建置一次新 baseline，
+之後相同資料與成本情境的不同主模型 seed 共用它，不重做 CPU prepare 或下載行情。
 結果 schema 為 `6.0`，明列 `selection_split=validation`、`evaluation_split=test`；只有
 完成配對檢查後才發布 `test_unlocked=true`。舊 schema 的完成結果不能直接續用。
 
@@ -1869,12 +1896,18 @@ bash scripts/runpod_workflow.sh recover --apply --pod-id "<POD_ID>"
 解鎖。監視器不保存密碼、不轉送 SSH agent，也不延長／關閉 agent socket。
 
 判讀參考 [NVIDIA Clock Event Reasons／Counters](https://docs.nvidia.com/deploy/nvidia-smi/index.html)：
-溫度／硬體供電降頻旗標或**本次監控期間新增**的相關計時立即警示；歷史累計值不算。
-`SW Power Cap` 單獨出現為 `power_limited`，不是故障判定。高負載時，時脈較同 GPU
-正常觀測基準低 20% 且持續兩分鐘，提示 `suspected_low_clock`；這是工程預設，
-不是 NVIDIA 故障門檻。功耗上限低於裝置回報預設值的 90% 另列設定警示。
+溫度／硬體供電降頻旗標或**本次監控期間新增**的相關計時立即記錄，歷史累計值不算。
+`SW Power Cap` 單獨出現為 `power_limited`，不是故障判定。降頻推播採最近五分鐘滾動窗口：
+時脈**低於同 GPU 正常觀測基準的 80%** 的有效高負載時間**嚴格超過窗口的一半**，
+才提示 `suspected_low_clock`；不要求連續低時脈，恰好 80% 或恰好一半都不觸發。
+基準為同 GPU 無異常高負載觀測的 SM 時脈中位數，不是規格表的最大 Boost 時脈。
+窗口須走完且至少一半窗口有有效高負載資料；依觀測間隔秒數加權，不以採樣筆數代替時間。
+分母固定為整個窗口（預設 300 秒），低時脈須累計超過 150 秒；閒置／低負載不算
+低時脈時間，也不縮小分母。資料缺口重置窗口；這是抽樣估計，不是連續硬體 trace。
+偶發降頻旗標或低功耗上限仍記錄在 `gpu-status`，不單獨推送降頻通知。
+這些是工程預設，不是 NVIDIA 故障門檻。功耗上限低於裝置回報預設值的 90% 另列設定警示。
 `P2`、低於最大時脈、閒置／checkpoint 保存期間降頻不單獨判異常。
-必要欄位缺失為 `limited_telemetry`，持續兩分鐘會提示無法完整監控；未建立正常基準時，
+必要欄位缺失為 `limited_telemetry`，持續兩分鐘會記錄無法完整監控；未建立正常基準時，
 不能排除從啟動就存在的不明低時脈。SSH 啟動寬限內為 `waiting_for_ssh`，逾時為
 `unavailable`，不是正常。
 
@@ -1891,7 +1924,9 @@ bash scripts/runpod_workflow.sh gpu-notify-test
 `gpu-notify-test` 無參數，送出明確標為測試的 macOS 通知。`status` 無參數的原有
 總覽保留並附上 GPU 狀態；不改變 `status RUN_ID` 的訓練／最終評估完成判定。
 
-通知包含 Pod、run、GPU 與原因；同事件預設 15 分鐘冷卻，確認恢復後再通知。
+通知包含 Pod、run、GPU、正常時脈基準與低時脈時間占比；同事件預設 15 分鐘冷卻，
+只有先前已推播的降頻事件，確認恢復後才再通知。SSH 監控無法取得資料／連線恢復的
+通知獨立保留，不將監控故障誤報為 GPU 降頻。
 `submitted` 只代表已交給系統，不保證在專注模式下顯示。紀錄保存於 guard log 旁的
 `<pod-id>.gpu-events.jsonl`（5 MiB、兩份輪替備份）及 `<pod-id>.gpu-monitor.json`。
 `stale`／`stopped` 不能解讀成 GPU 正常。本機仍需開機、連網；非 macOS 保留
@@ -1905,11 +1940,12 @@ bash scripts/runpod_workflow.sh gpu-notify-test
 | `RUNPOD_GPU_MONITOR_SSH_KEY` | `~/.ssh/id_ed25519_runpod`；可指定替代私鑰檔案路徑 |
 | `RUNPOD_GPU_MONITOR_NOTIFICATIONS` | `auto`（macOS 通知）；`0` 停用；`1` 要求通知，非 macOS 回報不支援 |
 | `RUNPOD_GPU_MONITOR_POLL_SECONDS` | `30`；10–300 秒 |
-| `RUNPOD_GPU_MONITOR_CONFIRM_SECONDS` | `120`；30–3600 秒，疑似低時脈／資料缺失／斷線／恢復確認 |
+| `RUNPOD_GPU_MONITOR_CONFIRM_SECONDS` | `120`；30–3600 秒，資料缺失／斷線／恢復確認 |
+| `RUNPOD_GPU_MONITOR_CLOCK_WINDOW_SECONDS` | `300`；60–3600 秒，低時脈時間占比的滾動窗口 |
 | `RUNPOD_GPU_MONITOR_COOLDOWN_SECONDS` | `900`；60–86400 秒 |
 | `RUNPOD_GPU_MONITOR_STARTUP_GRACE_SECONDS` | `300`；0–1800 秒 |
 | `RUNPOD_GPU_MONITOR_HIGH_UTILIZATION_PCT` | `80`；10–100 |
-| `RUNPOD_GPU_MONITOR_CLOCK_DROP_FRACTION` | `0.20`；0.05–0.8 |
+| `RUNPOD_GPU_MONITOR_CLOCK_DROP_FRACTION` | `0.20`；0.05–0.8；低於 0.20 仍以 80% 時脈為推播上限，更大值要求更深跌幅 |
 | `RUNPOD_GPU_MONITOR_QUERY_TIMEOUT_SECONDS` | `15`；3–30 秒，逾時只中止監視器自己的查詢 |
 
 ##### Loss 記錄與 W&B 補傳
@@ -3220,13 +3256,36 @@ and do not establish coverage of every future market regime.
 
 #### Prerequisite baseline building and reuse
 
-Baselines are an independent prerequisite. Rules, GBDT, GRU, DLinear and PatchTST
-use full train/validation/test. Neural models validate five times per epoch with
-the same normalized-pinball criterion and five-evaluation patience, for at most
-five epochs. GBDT evaluates full validation jointly across horizons/quantiles every
-eight added boosting rounds, up to 200, with sklearn's internal validation split
-disabled. Fixed rules have no iterative optimizer to early-stop; their residual
-quantiles use all train rows. Equal data is not equal FLOPs or wall-clock cost.
+Baselines are an independent prerequisite. Rules, GBDT, GRU, DLinear and PatchTST use
+full train/validation/test. GRU, DLinear and PatchTST retain alpha quantiles and train
+absolute-stock and alpha three-class heads on their shared representations. GBDT retains
+quantile regressors and adds two classifiers per horizon. Labels, execution timing and cost
+bands match `direction64`. Neural models validate five times per epoch for at most five epochs;
+GBDT validates every eight boosting rounds, up to 200, without sklearn's internal validation
+subsampling. Both select on fixed train-reference-weighted normalized pinball plus both CEs,
+with five-evaluation patience. Neural models also retain validation-plateau and minimum-LR
+observation rules. Fixed rules have no trained classifiers or early stopping; their alpha
+residual quantiles still use all train rows. Equal data is not equal FLOPs or wall-clock cost.
+
+`configs/baseline.json` independently owns `direction`: `enabled` defaults to `true`,
+`loss_reference_samples` to 1,024 (32–8,192), and `absolute_weight`/`alpha_weight` to 1.0 each
+(greater than zero, at most 10). `costs` uses the same market-specific fields as the main model,
+with 1,000 Taiwan shares and 50 US shares and only cutoff-known prices. Neural models measure
+fixed references before updates; GBDT uses smoothed class priors and intercept-only quantiles
+on a fixed training subset. Actual fitting, validation and testing are not subsampled.
+References and weights persist through resume. `metrics.jsonl` records training/validation losses:
+neural models log actual training batches/interval means, while GBDT logs a fixed reference-sized
+training diagnostic with its sample count, without reducing fitting or full evaluation populations.
+Reference-weighted `selection_loss` is not comparable across architectures; compare task metrics.
+
+Full evaluation adds `direction` metrics for both tasks: accuracy, balanced accuracy, macro-F1,
+confusion, majority accuracy, up precision/recall, signal fraction and joint-up precision, by
+horizon/market/month. Probabilistic models also report CE. Rules apply cost bands to their past-only
+absolute/relative signals; `always_buy` always predicts up and `zero_return` neutral. Hard rules do
+not pretend to provide probabilities or CE. Existing q50 sign agreement remains separate from
+cost-sensitive three-class accuracy. Main testing assembles cached metrics in `comparison.direction`
+and rejects mismatched costs, horizons or membership. Local main-model admission also verifies cost
+alignment; this does not bind baseline identity to Kronos capacity.
 
 Neural baselines dynamically permute the full training population; they currently do not use
 the main model's annual-decay weights. Comparisons should disclose candidate data, sampling
@@ -3252,6 +3311,12 @@ streams checksum verification, atomically publishes shared references, then remo
 redundant copies. If cleanup is interrupted, the baseline workflow finishes publication
 without retraining. This storage change does not alter periods, labels, parameters
 or baseline numerical identity.
+
+Direction labels `inputs/<split>/absolute_targets.npy` and `direction_bands.npy` also have one
+copy per split. Each model retains only its `direction-probabilities.npy` (`N×2×H×3`) or rule
+`direction-classes.npy` (`N×2×H`), ordered absolute/alpha and down/neutral/up.
+An alpha-quantile-only baseline is not a completed dual-direction baseline. Build the new task once;
+subsequent main-model seeds with matching data/costs share it, without CPU preparation or market downloads.
 
 <a id="operations-en"></a>
 
@@ -4629,13 +4694,21 @@ Updating files does not retrofit running guards or reset deadlines. The default 
 forwards the SSH agent, or extends/closes agent sockets.
 
 Interpretation follows [NVIDIA Clock Event Reasons/Counters](https://docs.nvidia.com/deploy/nvidia-smi/index.html):
-thermal/hardware-power flags or **newly accumulated** durations trigger immediate alerts, not historical
-counter totals. `SW Power Cap` alone means `power_limited`, not a hardware fault. A high-load clock
-drop of 20% below the same GPU's observed normal reference must persist for two minutes before
-`suspected_low_clock` is raised. These are engineering defaults, not NVIDIA fault thresholds.
+thermal/hardware-power flags or **newly accumulated** durations are recorded immediately, not historical
+counter totals. `SW Power Cap` alone means `power_limited`, not a hardware fault. Clock notifications
+use a rolling five-minute window: valid high-load time **below 80% of the same GPU's normal clock
+reference** must total **strictly more than half of the window**. Dips need not be consecutive; exactly 80%
+or exactly half does not trigger. The reference is the median of healthy high-load SM clocks, not
+the specification's maximum Boost clock. A full window must elapse with at least half of it covered
+by valid high-load intervals. Fractions are time-weighted, not sample-count-weighted. The denominator is
+the full window (300 seconds by default), requiring more than 150 seconds of low clocks. Idle/low-load
+intervals do not count as low-clock time and do not shrink the denominator. Missing-data gaps reset
+the window. This is sampled estimation, not a continuous
+hardware trace. Isolated flags or low configured power limits remain in `gpu-status` without independently
+pushing clock alerts. These are engineering defaults, not NVIDIA fault thresholds.
 A power limit below 90% of the device's reported default gets a separate settings warning.
 P2, clocks below maximum, idle periods and checkpoint pauses do not individually imply abnormal
-throttling. Missing fields produce `limited_telemetry`, with an incomplete-monitoring alert after two
+throttling. Missing fields produce `limited_telemetry`, with an incomplete-monitoring record after two
 minutes; without a normal reference the monitor cannot rule out unexplained low clocks from startup.
 SSH boot grace reports `waiting_for_ssh`; subsequent
 failure reports `unavailable`, never healthy.
@@ -4654,8 +4727,10 @@ can be combined; neither filters by default. `--output` accepts `table` (default
 test notification. No-argument `status` retains the original overview and appends GPU telemetry;
 the training/final-evaluation completion verdict of `status RUN_ID` is unchanged.
 
-Notifications identify the Pod, run, GPU and reason. Identical events have a default 15-minute
-cooldown; confirmed recovery generates another notification. `submitted` means handed to the OS,
+Notifications identify the Pod, run, GPU, normal clock reference and low-clock time fraction.
+Identical events have a default 15-minute cooldown; confirmed recovery is only pushed for an event
+previously pushed. SSH monitoring-unavailable/recovered notifications remain separate; monitoring
+failure is not GPU throttling. `submitted` means handed to the OS,
 not guaranteed visible under Focus mode. Logs sit beside the guard log as `<pod-id>.gpu-events.jsonl`
 (5 MiB with two rotated backups) and `<pod-id>.gpu-monitor.json`. `stale`/`stopped` is not a healthy
 GPU verdict. The local host must stay powered and online; other platforms retain logs and CLI queries.
@@ -4669,11 +4744,12 @@ Set optional environment variables before the workflow; they do not modify model
 | `RUNPOD_GPU_MONITOR_SSH_KEY` | `~/.ssh/id_ed25519_runpod`; alternative identity file path |
 | `RUNPOD_GPU_MONITOR_NOTIFICATIONS` | `auto` enables macOS notifications; `0` disables; `1` requests them, reporting unsupported on other platforms |
 | `RUNPOD_GPU_MONITOR_POLL_SECONDS` | `30`; 10–300 seconds |
-| `RUNPOD_GPU_MONITOR_CONFIRM_SECONDS` | `120`; 30–3600 seconds for low-clock, missing-data, disconnect and recovery confirmation |
+| `RUNPOD_GPU_MONITOR_CONFIRM_SECONDS` | `120`; 30–3600 seconds for missing-data, disconnect and recovery confirmation |
+| `RUNPOD_GPU_MONITOR_CLOCK_WINDOW_SECONDS` | `300`; 60–3600 seconds for the rolling low-clock time fraction |
 | `RUNPOD_GPU_MONITOR_COOLDOWN_SECONDS` | `900`; 60–86400 seconds |
 | `RUNPOD_GPU_MONITOR_STARTUP_GRACE_SECONDS` | `300`; 0–1800 seconds |
 | `RUNPOD_GPU_MONITOR_HIGH_UTILIZATION_PCT` | `80`; 10–100 |
-| `RUNPOD_GPU_MONITOR_CLOCK_DROP_FRACTION` | `0.20`; 0.05–0.8 |
+| `RUNPOD_GPU_MONITOR_CLOCK_DROP_FRACTION` | `0.20`; 0.05–0.8; values below 0.20 cannot raise the notification threshold above 80%; larger values require a deeper drop |
 | `RUNPOD_GPU_MONITOR_QUERY_TIMEOUT_SECONDS` | `15`; 3–30 seconds; only the monitor's query is killed on timeout |
 
 ##### Loss logs and W&B recovery

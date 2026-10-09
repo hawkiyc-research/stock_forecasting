@@ -228,9 +228,9 @@ class StorageIdentityTests(unittest.TestCase):
             if getattr(node, "name", None) in names or (
                 isinstance(node, ast.Assign)
                 and any(
-                    isinstance(target, ast.Name) and target.id in {
-                        "TRAINING_IMPLEMENTATION_PATHS", "DIRECTION_IMPLEMENTATION_PATHS"
-                    }
+                    isinstance(target, ast.Name)
+                    and target.id
+                    in {"TRAINING_IMPLEMENTATION_PATHS", "DIRECTION_IMPLEMENTATION_PATHS"}
                     for target in node.targets
                 )
             ):
@@ -305,6 +305,8 @@ class BaselineStorageEntryTests(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve() / "baselines/baseline-fixture"
         self.payload = fixture(self.root)
         parameters = json.loads((ROOT / "configs/baseline.json").read_text())
+        # This fixture exercises publication of the retained quantile-only schema.
+        parameters["direction"]["enabled"] = False
         parameters.update(self.payload["identity"]["contract"]["parameters"])
         self.payload["identity"]["contract"]["parameters"] = parameters
         policy = runpy.run_path(str(ROOT / "src/stock_forecasting/data_policy.py"))[
@@ -393,6 +395,7 @@ class BaselineStorageEntryTests(unittest.TestCase):
     def gate(self, command="check"):
         real_run_path = runpy.run_path
         selected = {
+            "stage": {"config_path": "configs/stage2_kronos_base_lora.yaml"},
             "dataset_request_sha256": "fixture-data",
             "dataset_request": {"preparation": {"h_start": 1, "window_size": 128}},
         }

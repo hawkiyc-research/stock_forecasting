@@ -145,7 +145,7 @@ class RuntimeTests(unittest.TestCase):
             )
 
     def test_full_size_mixed_admission_and_live_cpu_reallocation(self):
-        memory = 52.4 * 1024**3
+        memory = 63 * 1024**3
         namespace = {
             "Path": Path,
             "detect_visible_cpu_count": lambda: 13,
@@ -171,7 +171,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(allocation(plan, running, [("patchtst", 42)])["gbdt_threads"], 8)
         tail = allocation(plan, running, [])
         self.assertEqual((tail["phase"], tail["gbdt_threads"]), ("cpu_tail", 11))
-        memory = 43 * 1024**3
+        memory = 56 * 1024**3
         with self.assertRaisesRegex(MemoryError, "overlap"):
             namespace["resource_plan"](parameters, 30_224_227, list(range(1, 15)))
 

@@ -30,6 +30,8 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
             "configs/data_cleaning.json",
             "configs/baseline_execution_compatibility.json",
             "src/stock_forecasting/training.py",
+            "src/stock_forecasting/models/direction.py",
+            "src/stock_forecasting/direction_runtime.py",
         ):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,7 +53,7 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
     def test_unrelated_code_never_invalidates_baseline(self):
         before = self.identity()
         path = self.root / "src/stock_forecasting/models/forecast.py"
-        path.parent.mkdir(parents=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# A different main model\n")
         (self.root / "README.md").write_text("New documentation")
         self.assertEqual(before, self.identity())

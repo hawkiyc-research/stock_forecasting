@@ -12,9 +12,10 @@ from stock_forecasting.baseline_storage import loader_options
 class NeuralBatchDataset(Dataset):
     """Keep windows lazy and emit only tensors consumed by neural baselines."""
 
-    def __init__(self, source, *, metadata=False):
+    def __init__(self, source, *, metadata=False, direction_costs=None):
         self.source = source
         self.metadata = metadata
+        self.direction_costs = direction_costs
 
     def __len__(self):
         return len(self.source)
@@ -23,9 +24,14 @@ class NeuralBatchDataset(Dataset):
         return self.__getitems__([index])
 
     def __getitems__(self, indices):
-        arrays = self.source.array_batch(
-            indices, include_metadata=self.metadata, include_timestamps=False
-        )
+        if self.direction_costs is None:
+            arrays = self.source.array_batch(
+                indices, include_metadata=self.metadata, include_timestamps=False
+            )
+        else:
+            from stock_forecasting.baseline_direction_data import direction_array_batch
+
+            arrays = direction_array_batch(self.source, indices, self.direction_costs)
         streams = []
         for key in ("asset", "benchmark"):
             # Preserve the existing float32 preprocessing and reduction order.
@@ -42,6 +48,9 @@ class NeuralBatchDataset(Dataset):
             "sequences": torch.from_numpy(np.stack(streams, axis=1)),
             "target_alpha": torch.from_numpy(arrays["targets"].astype(np.float32)),
         }
+        if self.direction_costs is not None:
+            batch["target_absolute"] = torch.from_numpy(arrays["absolute_targets"])
+            batch["direction_bands"] = torch.from_numpy(arrays["direction_bands"])
         if self.metadata:
             metadata = arrays["metadata"]
             batch.update(
@@ -60,7 +69,14 @@ def collate_neural_batch(batch):
 
 
 def neural_loader(
-    source, *, workers, batch_size=None, batch_sampler=None, prefetch=2, metadata=False
+    source,
+    *,
+    workers,
+    batch_size=None,
+    batch_sampler=None,
+    prefetch=2,
+    metadata=False,
+    direction_costs=None,
 ):
     options = (
         {"batch_sampler": batch_sampler}
@@ -68,7 +84,7 @@ def neural_loader(
         else {"batch_size": batch_size, "shuffle": False, "drop_last": False}
     )
     return DataLoader(
-        NeuralBatchDataset(source, metadata=metadata),
+        NeuralBatchDataset(source, metadata=metadata, direction_costs=direction_costs),
         **options,
         collate_fn=collate_neural_batch,
         pin_memory=True,

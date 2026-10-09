@@ -188,13 +188,81 @@ class DetectionTests(unittest.TestCase):
             result = self.detector.observe(sample(), now)
             self.assertEqual(result["alerts"], [])
 
-    def test_all_hardware_and_thermal_reasons_alert_immediately(self):
+    def test_hardware_reasons_are_recorded_but_not_pushed_without_clock_evidence(self):
         for reason in monitor.THERMAL_HARDWARE:
             value = sample()
             value["reasons"][reason] = True
             result = monitor.Detector(monitor.Settings()).observe(value, 0)
             self.assertIn(reason, result["alerts"])
+            self.assertEqual(result["notification_alerts"], [])
             self.assertEqual(result["state"], "throttling_detected")
+
+    def test_notification_requires_strictly_below_eighty_percent_for_most_window(self):
+        self.warm()
+        for index, clock in enumerate((2700, 2400, 2160)):
+            for now in range(180 + index * 180, 360 + index * 180, 30):
+                value = sample(clock=clock)
+                value["reasons"]["hw_thermal_slowdown"] = True
+                result = self.detector.observe(value, now)
+                self.assertEqual(result["notification_alerts"], [])
+        for now in range(720, 900, 30):
+            result = self.detector.observe(sample(clock=2159), now)
+            self.assertEqual(result["notification_alerts"], [])
+        self.assertEqual(result["clock_low_fraction"], 0.5)
+        result = self.detector.observe(sample(clock=2159), 900)
+        self.assertEqual(result["notification_alerts"], ["suspected_low_clock"])
+        self.assertLess(result["clock_ratio"], 0.8)
+        self.assertEqual(result["reference_sm_mhz"], 2700)
+
+    def test_mild_threshold_override_cannot_push_above_eighty_percent(self):
+        self.detector = monitor.Detector(monitor.Settings(clock_drop_fraction=0.05))
+        self.warm()
+        for now in range(180, 420, 30):
+            result = self.detector.observe(sample(clock=2400), now)
+        self.assertEqual(result["notification_alerts"], [])
+        self.assertEqual(result["notification_clock_ratio"], 0.8)
+
+    def test_minority_short_dips_do_not_notify(self):
+        self.warm()
+        for now in range(180, 900, 30):
+            result = self.detector.observe(sample(clock=1700 if now % 120 == 0 else 2700), now)
+            self.assertEqual(result["notification_alerts"], [])
+
+    def test_nonconsecutive_majority_dips_do_notify(self):
+        self.warm()
+        for now in range(180, 900, 30):
+            result = self.detector.observe(sample(clock=1700 if now % 120 else 2700), now)
+        self.assertGreater(result["clock_low_fraction"], 0.5)
+        self.assertEqual(result["notification_alerts"], ["suspected_low_clock"])
+
+    def test_sparse_activity_cannot_inflate_the_fraction_by_excluding_idle_time(self):
+        self.warm()
+        for now in range(180, 510, 30):
+            result = self.detector.observe(sample(clock=300, util=0), now)
+        for now in range(510, 690, 30):
+            result = self.detector.observe(sample(clock=1700), now)
+        self.assertEqual(result["clock_observed_seconds"], 150)
+        self.assertEqual(result["clock_low_seconds"], 150)
+        self.assertEqual(result["clock_low_fraction"], 0.5)
+        self.assertEqual(result["notification_alerts"], [])
+        result = self.detector.observe(sample(clock=1700), 690)
+        self.assertEqual(result["notification_alerts"], ["suspected_low_clock"])
+
+    def test_time_weighted_fraction_not_fraction_of_sample_count(self):
+        self.warm()
+        now = 180
+        self.detector.observe(sample(), now)
+        for _ in range(8):
+            now += 15
+            result = self.detector.observe(sample(), now)
+        self.detector.observe(sample(clock=1700), now + 1)
+        now += 1
+        for _ in range(4):
+            now += 45
+            result = self.detector.observe(sample(clock=1700), now)
+        self.assertAlmostEqual(result["clock_low_fraction"], 0.6)
+        self.assertEqual(result["clock_observed_seconds"], 300)
+        self.assertEqual(result["notification_alerts"], ["suspected_low_clock"])
 
     def test_counter_increment_catches_events_between_polls(self):
         value = sample()
@@ -216,15 +284,16 @@ class DetectionTests(unittest.TestCase):
 
     def test_sustained_low_clock_alert_and_recovery_confirmation(self):
         self.warm()
-        for now in range(180, 300, 30):
+        for now in range(180, 360, 30):
             result = self.detector.observe(sample(clock=1700), now)
             self.assertEqual(result["state"], "observing_low_clock")
             self.assertNotIn("suspected_low_clock", result["alerts"])
-        result = self.detector.observe(sample(clock=1700), 300)
+        result = self.detector.observe(sample(clock=1700), 360)
         self.assertIn("suspected_low_clock", result["alerts"])
-        for now in range(330, 450, 30):
-            self.assertEqual(self.detector.observe(sample(), now)["recovered"], [])
-        self.assertIn("suspected_low_clock", self.detector.observe(sample(), 450)["recovered"])
+        recovered = []
+        for now in range(390, 900, 30):
+            recovered.extend(self.detector.observe(sample(), now)["recovered"])
+        self.assertIn("suspected_low_clock", recovered)
 
     def test_short_dip_and_disconnect_reset_confirmation(self):
         self.warm()
@@ -246,7 +315,7 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(result["state"], "power_limited")
         self.assertEqual(result["alerts"], [])
         value["sm_mhz"] = 1700
-        for now in range(210, 360, 30):
+        for now in range(210, 420, 30):
             result = self.detector.observe(value, now)
         self.assertIn("suspected_low_clock", result["alerts"])
 
@@ -380,7 +449,7 @@ class LocalControlTests(unittest.TestCase):
                 keys = [call.args[0] for call in alerts.call_args_list]
                 self.assertIn("monitor_unavailable", keys)
                 self.assertIn("connection_recovered", keys)
-                self.assertIn("GPU-fixture:hw_thermal_slowdown", keys)
+                self.assertNotIn("GPU-fixture:hw_thermal_slowdown", keys)
                 transport.return_value.close.assert_called_once()
             result = monitor.read_json(monitor.paths(log)["status"])
             self.assertEqual(result["state"], "stopped")

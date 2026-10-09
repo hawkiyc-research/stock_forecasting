@@ -37,8 +37,12 @@ class DirectionControlTests(unittest.TestCase):
         low = COST(10, "TPEX", "stock", "1234.TWO", config)
         self.assertAlmostEqual(low["round_trip_fraction"], 0.008)
         for kind, symbol in (
-            ("etf", "0050.TW"), ("stock", "910322.TW"), ("stock", "9103.TW"),
-            ("stock", "9105.TW"), ("stock", "9110.TW"), ("stock", "9136.TW"),
+            ("etf", "0050.TW"),
+            ("stock", "910322.TW"),
+            ("stock", "9103.TW"),
+            ("stock", "9105.TW"),
+            ("stock", "9110.TW"),
+            ("stock", "9136.TW"),
         ):
             value = COST(100, "TWSE", kind, symbol, config)
             self.assertAlmostEqual(value["round_trip_fraction"], 0.00485)
@@ -62,9 +66,10 @@ class DirectionControlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             COST(20, "OTHER", "stock", "X", defaults())
 
-    def test_direction_is_main_model_only(self):
+    def test_direction_baselines_remain_independent_of_kronos_capacity(self):
         contract = runpy.run_path(str(ROOT / "src/stock_forecasting/baseline_contract.py"))
-        self.assertFalse(any("direction" in path for path in contract["BASELINE_SOURCES"]))
+        self.assertIn("src/stock_forecasting/baseline_direction.py", contract["BASELINE_SOURCES"])
+        self.assertNotIn("src/stock_forecasting/models/quant.py", contract["BASELINE_SOURCES"])
         self.assertNotIn("calibrate_direction_references", contract["SHARED_TRAINING_DEFINITIONS"])
         configs = runpy.run_path(str(ROOT / "scripts/runpod_selection.py"))["EXPERIMENT_CONFIGS"]
         for group in ("a", "b"):

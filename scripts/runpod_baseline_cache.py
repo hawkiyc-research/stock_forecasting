@@ -65,6 +65,10 @@ def check_baseline(project, selection, *, command="check"):
     contract_tools["validate_local_configuration"](
         project, selection, identity["contract"]["parameters"]
     )
+    if command == "require":
+        contract_tools["validate_direction_comparison_config"](
+            project, selection, identity["contract"]["parameters"]
+        )
     if command == "identity":
         return identity
     if os.environ.get("RUNPOD_POD_ID") and os.environ.get("RUNPOD_TEST_MODE") != "1":

@@ -301,10 +301,16 @@ class BaselineIndependenceTests(unittest.TestCase):
         self.assertIsNone(payload["data"]["max_samples"])
         CONTRACT["validate_optimization_alignment"](
             SimpleNamespace(
+                model=SimpleNamespace(
+                    direction=SimpleNamespace(
+                        enabled=True,
+                        costs=SimpleNamespace(model_dump=lambda: parameters["direction"]["costs"]),
+                    )
+                ),
                 **{
                     name: SimpleNamespace(**payload[name])
                     for name in ("data", "training", "validation")
-                }
+                },
             ),
             parameters,
         )
@@ -384,6 +390,16 @@ class BaselineIndependenceTests(unittest.TestCase):
             "sample_membership": membership,
             "samples": counts["test"],
             "evaluation_robust_scales": scales,
+            "direction": {
+                "samples": counts["test"],
+                "class_order": ["down", "neutral", "up"],
+                "task_order": ["absolute", "alpha"],
+                "cost_scenario": identity["contract"]["parameters"]["direction"]["costs"],
+                "overall": {
+                    task: {"horizons": {str(h): {"count": counts["test"]} for h in range(1, 15)}}
+                    for task in ("absolute", "alpha")
+                },
+            },
         }
         payload = {
             "state": "complete",
@@ -411,6 +427,8 @@ class BaselineIndependenceTests(unittest.TestCase):
                     "validation-metrics.json",
                     "test/predictions.npy",
                     "validation/predictions.npy",
+                    f"validation/direction-{'probabilities' if learned else 'classes'}.npy",
+                    f"test/direction-{'probabilities' if learned else 'classes'}.npy",
                 ):
                     payload["artifacts"][f"{job}/{suffix}"] = {"bytes": 1}
         payload["evaluation_data"] = CONTRACT["shared_evaluation_paths"]()
@@ -467,8 +485,11 @@ class BaselineIndependenceTests(unittest.TestCase):
                     resolve_bar_store_path=lambda path: path
                 ),
             }
-            # A consumer with no optimizer/model fields can reuse completed baselines.
-            config = SimpleNamespace(data=SimpleNamespace(bar_store_path=bar))
+            # Main optimizer/capacity are irrelevant; the direction task costs must match.
+            config = SimpleNamespace(
+                data=SimpleNamespace(bar_store_path=bar),
+                model=SimpleNamespace(direction=SimpleNamespace(enabled=False)),
+            )
             with (
                 patch.dict(os.environ, {"NETWORK_VOLUME_ROOT": str(volume)}),
                 patch.dict(sys.modules, dependencies),
@@ -582,11 +603,15 @@ else:
             self.assertNotIn("Baseline gate passed", result.stdout)
 
             def artifact_head_count():
-                requests = [json.loads(line) for line in
-                            (volume / "requests.jsonl").read_text().splitlines()]
-                return sum(args[:2] == ["s3api", "head-object"]
-                           and args[args.index("--key") + 1].endswith(".parquet")
-                           for args in requests)
+                requests = [
+                    json.loads(line)
+                    for line in (volume / "requests.jsonl").read_text().splitlines()
+                ]
+                return sum(
+                    args[:2] == ["s3api", "head-object"]
+                    and args[args.index("--key") + 1].endswith(".parquet")
+                    for args in requests
+                )
 
             before = artifact_head_count()
             self.assertEqual(before, 6)

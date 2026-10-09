@@ -142,6 +142,11 @@ subset 與 validation split：
 
 規則 baseline 的 residual quantiles、GBDT／neural 的參數擬合與 robust scales 只使用
 train labels；validation 用來選 model/checkpoint 與決定 early stopping。
+Baseline 的神經模型與 GBDT 另訓練個股絕對方向／alpha 方向三分類，成本、horizons
+與完整評估集合須和方向主模型一致；固定規則只提供 hard classes，不捏造 CE。
+它們以各自固定 train reference 加權的 pinball＋雙 CE 選模，保留原分位數指標。
+跨架構比較使用各任務 accuracy、balanced accuracy、macro-F1、up precision／recall
+與訊號比例，不用 reference 不同的加權 selection loss 排名。
 主模型的凍結區間校準在 checkpoint 選定後才使用 validation 擬合；test 不參與其調參。
 `adaptive64`／`adaptive128` 另提供市場 residual、數值／benchmark ranking 路徑、
 market-weighted training pinball、sample-clock 衰減與較強 dropout／weight decay；
@@ -402,6 +407,12 @@ the same train subset and validation split:
 
 Rule residual quantiles, GBDT/neural parameter fitting, and robust scales use train
 labels only. Validation selects models/checkpoints and controls early stopping.
+Neural and GBDT baselines also train absolute-stock/alpha three-class tasks with costs,
+horizons and full evaluation membership matching the directional main model. Rules supply
+hard classes without fictitious CE. Learned baselines select by their own fixed-training-reference
+pinball-plus-dual-CE objective while retaining quantile metrics. Cross-architecture comparisons
+use task accuracy, balanced accuracy, macro-F1, up precision/recall and signal fraction,
+not reference-dependent weighted selection losses.
 Frozen main-model interval-tail calibration fits validation only after checkpoint selection;
 test never tunes these parameters. Integrated `adaptive64`/`adaptive128` add market residuals,
 numerical/benchmark ranking paths, market-weighted training pinball, sample-clock decay and

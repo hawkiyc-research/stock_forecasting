@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -47,6 +48,7 @@ class Settings:
     startup_grace_seconds: float = 300
     high_utilization_pct: float = 80
     clock_drop_fraction: float = 0.20
+    clock_window_seconds: float = 300
     query_timeout_seconds: float = 15
     notifications: str = "auto"
 
@@ -60,6 +62,7 @@ class Settings:
             "startup_grace_seconds": (0, 1800),
             "high_utilization_pct": (10, 100),
             "clock_drop_fraction": (0.05, 0.8),
+            "clock_window_seconds": (60, 3600),
             "query_timeout_seconds": (3, 30),
         }
         for name, (low, high) in ranges.items():
@@ -158,7 +161,10 @@ class Detector:
                 "last_time": None,
                 "counters": {},
                 "baseline": deque(maxlen=20),
-                "low_since": None,
+                "clock_history": deque(maxlen=math.ceil(self.settings.clock_window_seconds) + 2),
+                "clock_window_start": now,
+                "previous_clock_low": False,
+                "previous_high_load": False,
                 "clear_since": None,
                 "missing_since": None,
                 "alerts": set(),
@@ -173,7 +179,7 @@ class Detector:
                 deltas[key] = value - previous
         state["last_time"], state["counters"] = now, sample["counters_us"]
         if not contiguous:
-            state["low_since"] = state["clear_since"] = None
+            state["clear_since"] = None
             state["missing_since"] = None
         reasons = sample["reasons"]
         confirmed = [
@@ -188,15 +194,30 @@ class Detector:
         reference = (
             statistics.median(value for _, value in baseline) if len(baseline) >= 4 else None
         )
-        low = bool(
-            high_load and reference and clock < reference * (1 - self.settings.clock_drop_fraction)
+        clock_ratio = clock / reference if clock is not None and reference else None
+        notification_ratio = min(0.80, 1 - self.settings.clock_drop_fraction)
+        low = bool(high_load and clock_ratio is not None and clock_ratio < notification_ratio)
+        history = state["clock_history"]
+        window = self.settings.clock_window_seconds
+        if not contiguous or elapsed > self.settings.poll_seconds * 1.5:
+            history.clear()
+            state["clock_window_start"] = now
+        elif high_load and state["previous_high_load"]:
+            # Time-weight samples, not poll counts; exclude idle and unknown intervals.
+            history.append((now - elapsed, now, state["previous_clock_low"]))
+        state["previous_clock_low"], state["previous_high_load"] = low, high_load
+        cutoff = now - window
+        while history and history[0][1] <= cutoff:
+            history.popleft()
+        observed_seconds = sum(end - max(start, cutoff) for start, end, _ in history)
+        low_seconds = sum(end - max(start, cutoff) for start, end, is_low in history if is_low)
+        window_ready = (
+            now - state["clock_window_start"] >= window and observed_seconds >= window / 2
         )
-        if low:
-            if state["low_since"] is None:
-                state["low_since"] = now
-        else:
-            state["low_since"] = None
-        suspected = low and now - state["low_since"] >= self.settings.confirm_seconds
+        # Keep the full monitoring window as denominator; sparse activity must not
+        # turn a brief dip into a majority-time notification.
+        low_fraction = low_seconds / window
+        suspected = bool(high_load and window_ready and low_seconds > window / 2)
         alerts = set(confirmed)
         if suspected:
             alerts.add("suspected_low_clock")
@@ -223,7 +244,7 @@ class Detector:
         recovered = []
         can_recover = core_available and reasons_available
         if "suspected_low_clock" in state["alerts"]:
-            can_recover = can_recover and high_load and not low
+            can_recover = can_recover and high_load and window_ready and not suspected
         if "configured_power_limit_below_default" in state["alerts"]:
             can_recover = can_recover and power is not None and bool(default_power)
         if state["alerts"] - alerts and can_recover:
@@ -257,6 +278,15 @@ class Detector:
             "alerts": sorted(alerts),
             "recovered": recovered,
             "reference_sm_mhz": reference,
+            "clock_ratio": clock_ratio,
+            "notification_clock_ratio": notification_ratio,
+            "clock_window_seconds": window,
+            "clock_observed_seconds": observed_seconds,
+            "clock_low_seconds": low_seconds,
+            "clock_low_fraction": low_fraction,
+            "clock_window_ready": window_ready,
+            # Hardware flags remain visible; only material time-weighted clock loss is pushed.
+            "notification_alerts": ["suspected_low_clock"] if suspected else [],
             "counter_deltas_us": deltas,
             "counter_interval_seconds": elapsed if contiguous else None,
         }
@@ -393,7 +423,7 @@ def monitor(args):
                         reporter.last_alerts.pop("monitor_unavailable", None)
                     error_since, was_unavailable = None, False
                     for gpu in snapshot["gpus"]:
-                        for reason in gpu["alerts"]:
+                        for reason in gpu["notification_alerts"]:
                             reporter.alert(
                                 gpu["uuid"] + ":" + reason,
                                 "RunPod GPU 警示",
@@ -401,12 +431,21 @@ def monitor(args):
                                     f"{transport.name} | {gpu['name']}\n"
                                     f"Pod: {args.pod_id}\nRun: {args.run_id}\n"
                                     f"{reason}; SM={gpu['sm_mhz']} MHz; "
+                                    f"normal={gpu['reference_sm_mhz']:.0f} MHz; "
+                                    f"ratio={gpu['clock_ratio']:.1%}; "
+                                    f"low-clock time={gpu['clock_low_seconds']:.0f}/"
+                                    f"{gpu['clock_window_seconds']:.0f}s "
+                                    f"({gpu['clock_low_fraction']:.1%}); "
+                                    f"valid high-load={gpu['clock_observed_seconds']:.0f}s; "
                                     f"GPU={gpu['utilization_pct']}%; {gpu['temperature_c']} C; "
                                     f"{gpu['power_w']}/{gpu['power_limit_w']} W"
                                 ),
                                 now,
                             )
                         for reason in gpu["recovered"]:
+                            # Do not send recovery messages for observations never pushed.
+                            if gpu["uuid"] + ":" + reason not in reporter.last_alerts:
+                                continue
                             reporter.alert(
                                 gpu["uuid"] + ":recovered:" + reason,
                                 "GPU 降頻警示已解除",

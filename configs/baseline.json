@@ -17,6 +17,30 @@
   "plateau_min_low_lr_evaluations": 2,
   "label_scale_calibration_samples": 50000,
   "calibration_seed": 59,
+  "direction": {
+    "enabled": true,
+    "loss_reference_samples": 1024,
+    "absolute_weight": 1.0,
+    "alpha_weight": 1.0,
+    "costs": {
+      "scenario": "listed_cash_2026_10_09",
+      "taiwan_shares": 1000,
+      "us_shares": 50,
+      "taiwan_commission_rates": [0.001425, 0.001425],
+      "taiwan_minimum_commission": 20.0,
+      "taiwan_stock_sell_tax": 0.003,
+      "taiwan_etf_tdr_sell_tax": 0.001,
+      "us_ibkr_per_share": 0.005,
+      "us_ibkr_minimum": 1.0,
+      "us_ibkr_maximum_rate": 0.01,
+      "us_schwab_commission": 0.0,
+      "us_sec_sell_rate": 0.0000206,
+      "us_taf_per_share": 0.0,
+      "us_taf_cap": 9.79,
+      "us_cat_per_share": 0.000003,
+      "slippage_bps_per_side": 5.0
+    }
+  },
   "gbdt": {"max_iter": 200, "validation_every": 8, "learning_rate": 0.05, "max_leaf_nodes": 31, "l2_regularization": 1.0},
   "resources": {
     "max_gpu_experiments": 2,

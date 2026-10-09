@@ -14,6 +14,10 @@ BASELINE_SOURCES = (
     "src/stock_forecasting/baseline_storage.py",
     "src/stock_forecasting/baseline_runtime.py",
     "src/stock_forecasting/baseline_input.py",
+    "src/stock_forecasting/baseline_direction.py",
+    "src/stock_forecasting/baseline_direction_data.py",
+    "src/stock_forecasting/baseline_direction_tree.py",
+    "src/stock_forecasting/direction_costs.py",
     "src/stock_forecasting/baselines.py",
     "src/stock_forecasting/evaluation_store.py",
     "src/stock_forecasting/metrics.py",
@@ -129,6 +133,20 @@ def baseline_contract(project: Path, selection: dict) -> dict:
         "data_cleaning": policy,
         "evaluation_request": policy_tools["evaluation_request"](selection, policy),
     }
+    if parameters.get("direction", {}).get("enabled"):
+        definitions = {}
+        for relative, names in (
+            ("models/direction.py", {"direction_labels", "classification_loss"}),
+            ("direction_runtime.py", {"DirectionMetrics"}),
+        ):
+            tree = ast.parse((project / "src/stock_forecasting" / relative).read_text())
+            nodes = [node for node in tree.body if getattr(node, "name", None) in names]
+            if len(nodes) != len(names):
+                raise ValueError("Missing shared direction definitions")
+            # Source segments are Python-version-independent, excluding unrelated main-model code.
+            source = (project / "src/stock_forecasting" / relative).read_text()
+            definitions[relative] = [ast.get_source_segment(source, node) for node in nodes]
+        core["direction_semantics"] = digest(definitions)
     return {"baseline_id": "baseline-" + digest(core), "contract": core}
 
 
@@ -216,6 +234,11 @@ def validate_complete(payload: dict, expected: dict, *, require_shared: bool = F
                     raise ValueError(
                         f"Baseline completion lacks required reusable artifact: {relative}"
                     )
+            if expected["contract"]["parameters"].get("direction", {}).get("enabled"):
+                filename = "direction-probabilities.npy" if learned else "direction-classes.npy"
+                for split in ("validation", "test"):
+                    if f"{directory}/{split}/{filename}" not in payload["artifacts"]:
+                        raise ValueError("Baseline completion lacks full direction predictions")
     counts = payload.get("sample_counts", {})
     if set(counts) != {"train", "validation", "test"} or any(
         type(v) is not int or v < 1 for v in counts.values()
@@ -237,6 +260,33 @@ def validate_complete(payload: dict, expected: dict, *, require_shared: bool = F
                 raise ValueError("Baseline metrics do not match the complete test population")
             if metrics.get("evaluation_robust_scales") != payload.get("robust_scales"):
                 raise ValueError("Baseline metric calibration differs between experiments")
+            direction = expected["contract"]["parameters"].get("direction", {})
+            if direction.get("enabled"):
+                start = expected["contract"]["data"].get("preparation", {}).get("h_start", 1)
+                validate_direction_metrics(
+                    metrics.get("direction"), direction, counts["test"], horizons=range(start, 15)
+                )
+
+
+def validate_direction_metrics(metrics, parameters, samples, *, horizons=None):
+    """A quantile-only completion cannot satisfy a dual-direction contract."""
+    if (
+        not isinstance(metrics, dict)
+        or metrics.get("samples") != samples
+        or metrics.get("class_order") != ["down", "neutral", "up"]
+        or metrics.get("task_order") != ["absolute", "alpha"]
+        or metrics.get("cost_scenario") != parameters["costs"]
+    ):
+        raise ValueError("Baseline direction population or cost scenario is incomplete")
+    for task in ("absolute", "alpha"):
+        scores = metrics.get("overall", {}).get(task, {})
+        actual = scores.get("horizons", {})
+        if (
+            not actual
+            or (horizons is not None and set(actual) != {str(h) for h in horizons})
+            or any(row.get("count") != samples for row in scores["horizons"].values())
+        ):
+            raise ValueError("Baseline direction horizons are incomplete")
 
 
 def validate_optimization_alignment(config, parameters):
@@ -270,6 +320,13 @@ def validate_optimization_alignment(config, parameters):
         or config.validation.seeds != parameters["seeds"]
     ):
         raise ValueError("Baseline runtime differs from its own model/seed manifest")
+    direction = parameters.get("direction", {})
+    if not isinstance(direction, dict) or type(direction.get("enabled", False)) is not bool:
+        raise ValueError("Baseline direction.enabled must be a boolean")
+    if config.model.direction.enabled != bool(direction.get("enabled")):
+        raise ValueError("Baseline runtime differs from its direction task configuration")
+    if direction.get("enabled") and config.model.direction.costs.model_dump() != direction["costs"]:
+        raise ValueError("Baseline runtime direction costs differ from its own configuration")
 
 
 def validate_local_configuration(project: Path, selection: dict, parameters: dict) -> None:
@@ -298,9 +355,81 @@ def validate_local_configuration(project: Path, selection: dict, parameters: dic
         values = parameters.get(name)
         if not isinstance(values, list) or not values or len(values) != len(set(values)):
             raise ValueError(f"Invalid baseline parameter: {name}")
+    direction = parameters.get("direction", {})
+    if not isinstance(direction, dict) or type(direction.get("enabled", False)) is not bool:
+        raise ValueError("Baseline direction.enabled must be a boolean")
+    if direction.get("enabled"):
+        for name in ("absolute_weight", "alpha_weight"):
+            value = direction.get(name)
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 10:
+                raise ValueError(f"Invalid baseline direction parameter: {name}")
+        size = direction.get("loss_reference_samples")
+        if (
+            type(size) is not int
+            or not 32 <= size <= 8192
+            or not isinstance(direction.get("costs"), dict)
+        ):
+            raise ValueError("Invalid baseline direction references or cost scenario")
     preparation = selection["dataset_request"]["preparation"]
     if preparation["h_start"] not in (1, 2, 3) or preparation["window_size"] < 32:
         raise ValueError("Invalid baseline data horizon or context length")
+
+
+def validate_direction_comparison_config(project: Path, selection: dict, parameters: dict) -> None:
+    """Check only the shared task's costs before a paid main-model launch.
+
+    This does not participate in baseline identity or baseline creation. Read the
+    repository's explicit, indented scalar YAML contract without importing ML.
+    """
+    path = project / selection["stage"]["config_path"]
+    active = section = None
+    enabled = False
+    overrides = {}
+    for line in path.read_text().splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
+            active = stripped == "model:"
+            section = None
+        elif active and indent == 2:
+            section = "direction" if stripped == "direction:" else None
+        elif active and section and indent == 4:
+            if stripped.startswith("enabled:"):
+                enabled = stripped.split(":", 1)[1].strip().lower() == "true"
+            section = "costs" if stripped == "costs:" else "direction"
+        elif active and section == "costs" and indent == 6:
+            key, value = stripped.split(":", 1)
+            try:
+                overrides[key] = ast.literal_eval(value.strip())
+            except (ValueError, SyntaxError):
+                if key != "scenario":
+                    raise ValueError(f"Unsupported direction cost literal: {key}") from None
+                overrides[key] = value.strip()
+    if not enabled:
+        return
+    tree = ast.parse((project / "src/stock_forecasting/config.py").read_text())
+    definition = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "DirectionCostConfig"
+    )
+    defaults = {}
+    for node in definition.body:
+        if not isinstance(node, ast.AnnAssign):
+            continue
+        value = node.value
+        if isinstance(value, ast.Call):
+            keywords = {item.arg: item.value for item in value.keywords}
+            value = keywords.get("default") or keywords["default_factory"].body
+        defaults[node.target.id] = ast.literal_eval(value)
+    direction = parameters.get("direction", {})
+    if not direction.get("enabled") or {**defaults, **overrides} != direction.get("costs"):
+        raise ValueError(
+            "Main model and baseline direction cost scenarios differ; align configs/baseline.json "
+            "before building the matching baseline. No Pod was created."
+        )
 
 
 def baseline_runtime_payload(selection: dict, parameters: dict, volume: Path) -> dict:
@@ -347,7 +476,15 @@ def baseline_runtime_payload(selection: dict, parameters: dict, volume: Path) ->
             "calibration_seed": parameters["calibration_seed"],
             "label_scale_calibration_samples": parameters["label_scale_calibration_samples"],
         },
-        "model": {"time_series_backend": "mock", "lora": {"enabled": False}},
+        "model": {
+            "time_series_backend": "mock",
+            "lora": {"enabled": False},
+            "direction": {
+                **parameters.get("direction", {}),
+                "technical_channels": False,
+                "representation_weight": 0.0,
+            },
+        },
         "training": {
             **training,
             "stage": "stage2",
@@ -383,6 +520,13 @@ def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
         raise ValueError("Build matching baselines first: bash scripts/runpod_workflow.sh baseline")
     payload = json.loads(path.read_text())
     validate_complete(payload, identity, require_shared=True)
+    if config.model.direction.enabled:
+        direction = identity["contract"]["parameters"].get("direction", {})
+        if (
+            not direction.get("enabled")
+            or direction.get("costs") != config.model.direction.costs.model_dump()
+        ):
+            raise ValueError("Main model and baseline require identical direction cost scenarios")
     from stock_forecasting.data.manifest import sha256_file
     from stock_forecasting.data.sample_universe import open_clean_dataset, validated_split_roots
 

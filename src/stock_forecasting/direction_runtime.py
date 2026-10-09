@@ -79,6 +79,7 @@ class DirectionMetrics:
         self.slices = {}
         self.pinball_sum = 0.0
         self.samples = 0
+        self.has_probabilities = None
 
     def append(self, output, batch):
         logits = torch.stack([output.absolute_direction_logits, output.alpha_direction_logits], 1)
@@ -97,13 +98,28 @@ class DirectionMetrics:
             values[..., 1].astype(int),
             values[..., 2],
         )
+        self.append_arrays(
+            truth,
+            predicted,
+            losses,
+            batch["markets"],
+            batch["cutoff_at"],
+            pinball=float(output.pinball_loss),
+        )
+
+    def append_arrays(self, truth, predicted, losses, markets, dates, *, pinball=0.0):
+        """Share exact classification semantics with supervised and rule baselines."""
         size = len(truth)
+        has_probabilities = losses is not None
+        if self.has_probabilities is not None and self.has_probabilities != has_probabilities:
+            raise ValueError("Cannot mix probabilistic and hard-only direction predictions")
+        self.has_probabilities = has_probabilities
         self.samples += size
-        self.pinball_sum += float(output.pinball_loss) * size
+        self.pinball_sum += pinball * size
         groups = {"overall": np.arange(size)}
         for key, entries in (
-            ("market", batch["markets"]),
-            ("month", [str(v)[:7] for v in batch["cutoff_at"]]),
+            ("market", markets),
+            ("month", [str(v)[:7] for v in dates]),
         ):
             entries = np.asarray(entries)
             for entry in np.unique(entries):
@@ -122,7 +138,8 @@ class DirectionMetrics:
             state["confusion"] += np.bincount(
                 encoded.ravel(), minlength=2 * len(self.horizons) * 9
             ).reshape(state["confusion"].shape)
-            state["ce"] += losses[indices].sum(0)
+            if losses is not None:
+                state["ce"] += losses[indices].sum(0)
             joint = (predicted[indices, 0] == 2) & (predicted[indices, 1] == 2)
             state["joint"][:, 0] += joint.sum(0)
             state["joint"][:, 1] += (joint & (truth[indices, 0] == 2)).sum(0)
@@ -146,7 +163,7 @@ class DirectionMetrics:
             "balanced_accuracy": float(recall[support > 0].mean()) if total else 0.0,
             "macro_f1": float(f1.mean()),
             "majority_accuracy": float(support.max() / max(total, 1)),
-            "cross_entropy": float(ce / max(total, 1)),
+            "cross_entropy": float(ce / max(total, 1)) if ce is not None else None,
             "confusion": matrix.tolist(),
             "classes": {
                 name: {
@@ -166,16 +183,24 @@ class DirectionMetrics:
         result = {
             "schema_version": 1,
             "class_order": list(DIRECTION_CLASSES),
+            "task_order": ["absolute", "alpha"],
+            "samples": self.samples,
             "cost_scenario": costs.model_dump(),
-            "loss_reference": head.reference_state(),
+            "loss_reference": head.reference_state() if head is not None else None,
         }
         for name, state in self.slices.items():
             summary = {}
             for i, task in enumerate(("absolute", "alpha")):
                 summary[task] = {
-                    "aggregate": self.summarize(state["confusion"][i].sum(0), state["ce"][i].sum()),
+                    "aggregate": self.summarize(
+                        state["confusion"][i].sum(0),
+                        state["ce"][i].sum() if self.has_probabilities else None,
+                    ),
                     "horizons": {
-                        str(h): self.summarize(state["confusion"][i, j], state["ce"][i, j])
+                        str(h): self.summarize(
+                            state["confusion"][i, j],
+                            state["ce"][i, j] if self.has_probabilities else None,
+                        )
                         for j, h in enumerate(self.horizons)
                     },
                 }
@@ -192,10 +217,11 @@ class DirectionMetrics:
                 result.setdefault(group, {})[key] = summary
             else:
                 result[name] = summary
-        weights = head.weights().detach().cpu().tolist()
         result["pinball_loss"] = self.pinball_sum / self.samples
-        result["selection_loss"] = result["pinball_loss"] + sum(
-            weights[i] * result["overall"][task]["aggregate"]["cross_entropy"]
-            for i, task in enumerate(("absolute", "alpha"))
-        )
+        if head is not None and self.has_probabilities:
+            weights = head.weights().detach().cpu().tolist()
+            result["selection_loss"] = result["pinball_loss"] + sum(
+                weights[i] * result["overall"][task]["aggregate"]["cross_entropy"]
+                for i, task in enumerate(("absolute", "alpha"))
+            )
         return result

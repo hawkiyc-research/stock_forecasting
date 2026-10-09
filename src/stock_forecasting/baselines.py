@@ -64,6 +64,8 @@ class BaselineArrays:
     horizons: tuple[int, ...]
     markets: list[str]
     providers: list[str]
+    absolute_targets: NDArray[np.float32] | None = None
+    direction_bands: NDArray[np.float32] | None = None
 
 
 class BaselineRecordDataset(Dataset[dict[str, Any]]):
@@ -82,8 +84,9 @@ class BaselineRecordDataset(Dataset[dict[str, Any]]):
 class BaselineBatchDataset(Dataset):
     """Transform bounded numerical batches in workers without per-window pandas."""
 
-    def __init__(self, dataset):
+    def __init__(self, dataset, direction_costs=None):
         self.dataset = dataset
+        self.direction_costs = direction_costs
 
     def __len__(self):
         return len(self.dataset)
@@ -92,6 +95,12 @@ class BaselineBatchDataset(Dataset):
         return self.__getitems__([index])
 
     def __getitems__(self, indices):
+        if self.direction_costs is not None:
+            from stock_forecasting.baseline_direction_data import direction_array_batch
+
+            return baseline_arrays_from_windows(
+                direction_array_batch(self.dataset, indices, self.direction_costs)
+            )
         return baseline_arrays_from_windows(self.dataset.array_batch(indices))
 
 
@@ -157,6 +166,8 @@ def baseline_arrays_from_windows(batch):
         asset_types=[str(m[3]["asset_type"]) for m in metadata],
         markets=[str(m[3]["market"]) for m in metadata],
         providers=[str(m[3]["provider"]) for m in metadata],
+        absolute_targets=batch.get("absolute_targets"),
+        direction_bands=batch.get("direction_bands"),
     )
 
 
@@ -171,6 +182,10 @@ def concatenate_baseline_batches(batches: Iterable[BaselineArrays]) -> BaselineA
         parts = [getattr(batch, field.name) for batch in collected]
         if field.name == "horizons":
             values[field.name] = parts[0]
+        elif parts[0] is None:
+            if any(part is not None for part in parts):
+                raise ValueError("Baseline direction fields differ between batches")
+            values[field.name] = None
         elif isinstance(parts[0], np.ndarray):
             values[field.name] = np.concatenate(parts, axis=0)
         else:
@@ -454,6 +469,17 @@ def _relative_rule_signals(arrays: BaselineArrays) -> dict[str, NDArray[np.float
     }
 
 
+def _absolute_rule_signals(arrays: BaselineArrays) -> dict[str, NDArray[np.float64]]:
+    """Apply the same past-only indicators against a flat, neutral reference."""
+    from dataclasses import replace
+
+    sequences = arrays.sequences.copy()
+    sequences[:, 1] = 0
+    features = arrays.features.copy()
+    features[:, len(OHLCV_SUMMARY_FEATURES) + OHLCV_SUMMARY_FEATURES.index("rsi14")] = 50
+    return _relative_rule_signals(replace(arrays, sequences=sequences, features=features))
+
+
 def _rule_medians(
     train: BaselineArrays,
     arrays: BaselineArrays,
@@ -562,6 +588,7 @@ class CausalGRUBaseline(nn.Module):
         self.horizons = validate_alpha_horizons(horizons)
         self.robust_scales: tuple[float, ...] | None = None
         self.encoder = nn.GRU(input_size=5, hidden_size=hidden_dim, batch_first=True)
+        self.representation_dimension = hidden_dim * 3
         self.head = nn.Sequential(
             nn.LayerNorm(hidden_dim * 3),
             nn.Linear(hidden_dim * 3, hidden_dim),
@@ -570,13 +597,18 @@ class CausalGRUBaseline(nn.Module):
         )
 
     def forward(self, sequences: Tensor) -> Tensor:
+        return self.decode(self.encode(sequences))
+
+    def encode(self, sequences: Tensor) -> Tensor:
         batch, instruments, steps, fields = sequences.shape
         if instruments != 2 or fields != 5:
             raise ValueError("GRU requires [batch, asset_and_benchmark, time, five_fields]")
         _output, hidden = self.encoder(sequences.reshape(batch * instruments, steps, fields))
         encoded = hidden[-1].reshape(batch, instruments, -1)
-        fused = torch.cat([encoded[:, 0], encoded[:, 1], encoded[:, 0] - encoded[:, 1]], dim=-1)
-        raw = self.head(fused).reshape(batch, len(self.horizons), 3)
+        return torch.cat([encoded[:, 0], encoded[:, 1], encoded[:, 0] - encoded[:, 1]], dim=-1)
+
+    def decode(self, encoded: Tensor) -> Tensor:
+        raw = self.head(encoded).reshape(len(encoded), len(self.horizons), 3)
         return _ordered_quantiles(raw)
 
 
@@ -592,19 +624,25 @@ class DLinearBaseline(nn.Module):
         self.horizons = validate_alpha_horizons(horizons)
         self.trend = nn.AvgPool1d(kernel_size=25, stride=1, padding=12)
         self.linear = nn.Linear(context_length * 4, len(self.horizons) * 3)
+        self.representation_dimension = context_length * 4
 
     def forward(self, sequences: Tensor) -> Tensor:
+        return self.decode(self.encode(sequences))
+
+    def encode(self, sequences: Tensor) -> Tensor:
         relative_close = sequences[:, 0, :, 3] - sequences[:, 1, :, 3]
         relative_volume = sequences[:, 0, :, 4] - sequences[:, 1, :, 4]
         trend_close = self.trend(relative_close[:, None, :]).squeeze(1)
         trend_volume = self.trend(relative_volume[:, None, :]).squeeze(1)
         seasonal_close = relative_close - trend_close
         seasonal_volume = relative_volume - trend_volume
-        features = torch.cat(
+        return torch.cat(
             [trend_close, seasonal_close, trend_volume, seasonal_volume],
             dim=-1,
         )
-        raw = self.linear(features).reshape(-1, len(self.horizons), 3)
+
+    def decode(self, encoded: Tensor) -> Tensor:
+        raw = self.linear(encoded).reshape(-1, len(self.horizons), 3)
         return _ordered_quantiles(raw)
 
 
@@ -630,13 +668,19 @@ class PatchTSTBaseline(nn.Module):
         )
         self.encoder = nn.TransformerEncoder(layer, num_layers=2)
         self.head = nn.Linear(hidden_dim, len(self.horizons) * 3)
+        self.representation_dimension = hidden_dim
 
     def forward(self, sequences: Tensor) -> Tensor:
+        return self.decode(self.encode(sequences))
+
+    def encode(self, sequences: Tensor) -> Tensor:
         batch, instruments, steps, fields = sequences.shape
         values = sequences.permute(0, 1, 3, 2).reshape(batch, instruments * fields, steps)
         patches = self.patch(values).transpose(1, 2)
-        encoded = self.encoder(patches).mean(dim=1)
-        raw = self.head(encoded).reshape(batch, len(self.horizons), 3)
+        return self.encoder(patches).mean(dim=1)
+
+    def decode(self, encoded: Tensor) -> Tensor:
+        raw = self.head(encoded).reshape(len(encoded), len(self.horizons), 3)
         return _ordered_quantiles(raw)
 
 
