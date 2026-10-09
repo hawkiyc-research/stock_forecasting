@@ -65,3 +65,15 @@ class QuantForecastOutput(OutputMapping):
     ranking_scores: Tensor | None = None
     weighted_pinball_loss: Tensor | None = None
     scale_features: Tensor | None = None
+
+
+@dataclass(frozen=True)
+class DirectionForecastOutput(QuantForecastOutput):
+    """Additive opt-in direction schema; legacy quantile mappings stay unchanged."""
+
+    absolute_direction_logits: Tensor | None = None
+    alpha_direction_logits: Tensor | None = None
+    absolute_direction_loss: Tensor | None = None
+    alpha_direction_loss: Tensor | None = None
+    representation_loss: Tensor | None = None
+    direction_weighted_loss: Tensor | None = None

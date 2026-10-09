@@ -1848,7 +1848,9 @@ def _validated_checkpoint_leaderboard(leaderboard, run_id):
     )
     monitor = leaderboard.get("monitor")
     mode = leaderboard.get("mode")
-    if not isinstance(monitor, str) or not monitor.startswith("primary_5d/"):
+    if not isinstance(monitor, str) or (
+        not monitor.startswith("primary_5d/") and monitor != "direction/selection_loss"
+    ):
         raise ValueError("Checkpoint leaderboard has an invalid validation monitor")
     if mode not in {"min", "max"}:
         raise ValueError("Checkpoint leaderboard has an invalid selection mode")

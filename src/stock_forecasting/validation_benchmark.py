@@ -727,6 +727,9 @@ class ValidationBenchmark:
             "protocol": {
                 "causality": "All inputs end at cutoff_at; forward labels are never features.",
                 "model_selection": (
+                    "Validation direction/selection_loss: normalized pinball plus "
+                    "absolute/alpha three-class CE with frozen train-only reference weights."
+                    if self.config.model.direction.enabled else
                     "Validation primary_5d/selection_score compatibility path; "
                     "the value aggregates normalized pinball over horizons "
                     f"{self.config.data.h_start} through {self.config.data.max_horizon}."
@@ -741,6 +744,9 @@ class ValidationBenchmark:
                     else "Legacy fraction-split report: validation only, not a holdout result."
                 ),
                 "classification": (
+                    "Two cost-aware down/neutral/up classifiers supervise absolute and alpha "
+                    "returns. Existing five-level signals remain quantile post-processing."
+                    if self.config.model.direction.enabled else
                     "No classifier is trained; signals are distribution post-processing."
                 ),
             },

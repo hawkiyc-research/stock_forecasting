@@ -69,6 +69,7 @@ class DeterministicTimeSeriesBackbone(nn.Module):
         self.input_dim = input_dim
         self.hidden_size = hidden_size
         self.max_context = max_context
+        self.technical_adapter: nn.Module | None = None
 
         indices = torch.arange(input_dim * hidden_size, dtype=torch.float32)
         projection = torch.sin(indices + 1.0).reshape(input_dim, hidden_size)
@@ -108,6 +109,8 @@ class DeterministicTimeSeriesBackbone(nn.Module):
         local_change = values - torch.cat([values[:, :1], values[:, :-1]], dim=1)
         features = values + 0.5 * causal_mean + 0.25 * local_change
         hidden = torch.tanh(features @ self.projection.to(dtype=features.dtype))
+        if self.technical_adapter is not None:
+            hidden = hidden + self.technical_adapter(ohlcv)
         hidden = hidden * valid
         return TimeSeriesBackboneOutput(last_hidden_state=hidden, attention_mask=mask)
 
@@ -163,6 +166,7 @@ class KronosBackbone(nn.Module):
         self.feature_names = tuple(feature_names)
         self._predictor_trainable = False
         self.lora_module_names: tuple[str, ...] = ()
+        self.technical_adapter: nn.Module | None = None
 
     @classmethod
     def from_pretrained(
@@ -319,6 +323,14 @@ class KronosBackbone(nn.Module):
             raise ModelCapabilityError(
                 "KronosTokenizer.encode(..., half=True) did not return two token streams"
             )
+        if self.technical_adapter is not None:
+            # Mirror the pinned decode_s1 path with a residual before the predictor.
+            context = self.model.embedding(token_ids)
+            context = context + self.technical_adapter(samples).to(context.dtype)
+            context = self.model.token_drop(context + self.model.time_emb(stamps))
+            for layer in self.model.transformer:
+                context = layer(context, key_padding_mask=None)
+            return self.model.norm(context)
         decoded = self.model.decode_s1(token_ids[0], token_ids[1], stamps)
         if not isinstance(decoded, (tuple, list)) or len(decoded) < 2:
             raise ModelCapabilityError("Kronos.decode_s1 did not return (logits, context)")

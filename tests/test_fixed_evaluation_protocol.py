@@ -165,15 +165,21 @@ def test_each_exclusive_boundary_rejects_labels_ending_on_or_after_it() -> None:
     assert dropped["after_test_end"] > 0
 
 
-def test_historical_readonly_does_not_accept_changed_data_or_new_feature_mode() -> None:
-    config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
+@pytest.mark.parametrize(
+    "preset", ["local_mock", "experiments/a_lora64", "experiments/a_direction64"]
+)
+def test_historical_readonly_does_not_accept_changed_data_or_new_feature_mode(preset) -> None:
+    config = ExperimentConfig.from_yaml(ROOT / f"configs/{preset}.yaml")
     historical = training_resume_contract(config)
     files = historical["training_implementation"]["files"]
     files["models/forecast.py"] = "0" * 64
     historical["training_implementation"]["sha256"] = _canonical_payload_digest(files)
     historical["data"].pop("calibration_seed")
-    historical["model"].pop("feature_mode")
-    historical["model"].pop("alpha_head_fp32")
+    if preset == "local_mock":
+        historical["model"].pop("feature_mode")
+        historical["model"].pop("alpha_head_fp32")
+    if not config.model.direction.enabled:
+        historical["model"].pop("direction")
     digest = _canonical_payload_digest(historical)
     manifest = {"training_resume_contract": historical, "training_resume_contract_sha256": digest}
     assert readonly_checkpoint_contract_digest(config, manifest) == digest
@@ -181,3 +187,10 @@ def test_historical_readonly_does_not_accept_changed_data_or_new_feature_mode() 
     changed.data.input_length += 1
     with pytest.raises(ValueError, match="settings differ"):
         readonly_checkpoint_contract_digest(changed, manifest)
+    changed = config.model_copy(deep=True)
+    changed.model.direction.enabled = not changed.model.direction.enabled
+    with pytest.raises(ValueError, match="settings differ"):
+        readonly_checkpoint_contract_digest(changed, manifest)
+    manifest["training_resume_contract_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="inconsistent"):
+        readonly_checkpoint_contract_digest(config, manifest)

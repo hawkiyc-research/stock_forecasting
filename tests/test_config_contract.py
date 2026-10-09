@@ -350,7 +350,11 @@ def test_training_resume_contract_binds_bounded_implementation_sources() -> None
     assert contract["schema_version"] == TRAINING_RESUME_CONTRACT_VERSION == "6.0"
     assert contract["model_output_schema_version"] == MODEL_OUTPUT_SCHEMA_VERSION == "5.0"
     assert contract["training_implementation"] == implementation
-    assert set(implementation["files"]) == set(TRAINING_IMPLEMENTATION_PATHS)
+    from stock_forecasting.run_contract import DIRECTION_IMPLEMENTATION_PATHS
+
+    assert set(implementation["files"]) == (
+        set(TRAINING_IMPLEMENTATION_PATHS) | set(DIRECTION_IMPLEMENTATION_PATHS)
+    )
     assert len(implementation["sha256"]) == 64
     assert all(
         len(digest) == 64 and set(digest) <= set("0123456789abcdef")

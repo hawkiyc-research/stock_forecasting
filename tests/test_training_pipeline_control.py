@@ -156,17 +156,18 @@ class TrainingPipelineControlTests(unittest.TestCase):
         scope = {"json": json, "hashlib": hashlib, "CHECKPOINT_RETENTION_MIGRATIONS": registry}
         contract_path = ROOT / "src/stock_forecasting/run_contract.py"
         tree = ast.parse(contract_path.read_text())
-        scope["TRAINING_IMPLEMENTATION_PATHS"] = ast.literal_eval(
-            next(
-                node.value
-                for node in tree.body
-                if isinstance(node, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name) and target.id == "TRAINING_IMPLEMENTATION_PATHS"
-                    for target in node.targets
+        for name in ("TRAINING_IMPLEMENTATION_PATHS", "DIRECTION_IMPLEMENTATION_PATHS"):
+            scope[name] = ast.literal_eval(
+                next(
+                    node.value
+                    for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name) and target.id == name
+                        for target in node.targets
+                    )
                 )
             )
-        )
         definitions(
             contract_path,
             {

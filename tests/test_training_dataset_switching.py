@@ -466,7 +466,9 @@ else:
             if (isinstance(node, ast.FunctionDef) and node.name in names) or (
                 isinstance(node, ast.Assign)
                 and any(
-                    isinstance(target, ast.Name) and target.id == "TRAINING_IMPLEMENTATION_PATHS"
+                    isinstance(target, ast.Name) and target.id in {
+                        "TRAINING_IMPLEMENTATION_PATHS", "DIRECTION_IMPLEMENTATION_PATHS"
+                    }
                     for target in node.targets
                 )
             ):

@@ -159,6 +159,7 @@ class HistoricalScaleDataset(Dataset[dict[str, Any]]):
             "symbol": symbol,
             "benchmark_symbol": benchmark_symbol,
             "market": str(index_row["market"]),
+            "asset_type": str(index_row["asset_type"]),
             "cutoff_at": cutoff_at.isoformat(),
         }
 
@@ -272,6 +273,23 @@ def extract_probe_split(
                 else nullcontext()
             )
             timestamps = batch["timestamps"].to(device, non_blocking=True)
+            direction_arguments = {}
+            head = getattr(model, "direction_head", None)
+            if head is not None:
+                from stock_forecasting.direction_costs import direction_cost_band
+
+                # Direction inference needs only cutoff-known costs, never forward labels.
+                bands = [
+                    direction_cost_band(float(price), market, kind, symbol, head.config.costs)
+                    for price, market, kind, symbol in zip(
+                        batch["asset_series"][:, -1, 3], batch["market"],
+                        batch["asset_type"], batch["symbol"], strict=True,
+                    )
+                ]
+                direction_arguments["direction_bands"] = torch.tensor(
+                    [[band["lower_log_return"], band["upper_log_return"]] for band in bands],
+                    dtype=torch.float32, device=device,
+                )
             with autocast:
                 output = model(
                     batch["asset_series"].to(device, non_blocking=True),
@@ -280,6 +298,7 @@ def extract_probe_split(
                     benchmark_timestamps=timestamps,
                     target_alpha=None,
                     market_ids=market_ids(batch["market"], device),
+                    **direction_arguments,
                 )
             readouts = representation_readouts(output)
             count = len(batch["sample_id"])

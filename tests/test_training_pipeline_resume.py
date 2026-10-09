@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA runner")
 @pytest.mark.parametrize(
     "schedule,seed",
-    [("cosine", 42), ("sample_plateau", 42), ("sample_plateau", 43), ("sample_plateau", 44)],
+    [("cosine", 42), ("sample_plateau", 42), ("sample_plateau", 43),
+     ("sample_plateau", 44), ("direction", 42)],
 )
 def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
     tmp_path,
@@ -78,6 +79,11 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
         config.model.market_aware = True
         config.model.market_residual_hidden_dim = 16
     config.training.evaluations_per_epoch = 2
+    if schedule == "direction":
+        from stock_forecasting.config import DirectionConfig
+
+        config.model.direction = DirectionConfig(enabled=True, loss_reference_samples=32)
+        config.training.checkpoint_monitor = "direction/selection_loss"
     config.training.loss_log_points_per_epoch = 4
     config.training.checkpoint_save_top_k = 2
     config.training.output_root = tmp_path / "savedModel"
@@ -109,6 +115,8 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
         interruption.setattr(training, "save_ranked_checkpoint", interrupt_after_commit)
         with pytest.raises(RuntimeError, match="injected interruption"):
             training.train(config)
+    # Read the interruption snapshot before resumed validation can retire it.
+    saved_state = json.loads((checkpoints[0] / "trainer-state.json").read_text())
     config.training.resume_checkpoint = checkpoints[0]
     measured = []
     original_measure = training._measure_cuda_batch
@@ -130,6 +138,17 @@ def test_training_checkpoint_resume_after_reprobe_preserves_final_weights(
     assert resumed.processed_train_samples == continuous.processed_train_samples
     assert resumed.completed_epochs == continuous.completed_epochs == 2
     assert resumed.validation_evaluations == continuous.validation_evaluations == 4
+    if schedule == "direction":
+        records = [
+            json.loads(line)
+            for line in (resumed.run_directory / "metrics.jsonl").read_text().splitlines()
+        ]
+        assert any("train/absolute_direction_loss" in row for row in records)
+        assert saved_state["runtime_direction_loss"]["samples"] == 32
+        completed_state = json.loads(
+            (resumed.completion_result / "training-result.json").read_text()
+        )
+        assert completed_state["runtime_direction_loss"] == saved_state["runtime_direction_loss"]
     actual = load_file(resumed.completion_result / "adapter.safetensors")
     assert actual.keys() == expected.keys()
     for name in expected:

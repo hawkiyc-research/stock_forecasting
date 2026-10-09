@@ -112,6 +112,16 @@ def _model_runtime_scale_features(model: torch.nn.Module) -> dict[str, Any] | No
     return validate_scale_feature_statistics(branch.statistics)
 
 
+def _model_direction_references(model: torch.nn.Module) -> dict[str, Any] | None:
+    head = getattr(model, "direction_head", None)
+    if head is None:
+        return None
+    state = head.reference_state()
+    if state["samples"] <= 0:
+        raise ValueError("Direction checkpoints require train-calibrated loss references")
+    return state
+
+
 def _restore_runtime_scale_features(
     model: torch.nn.Module, trainer_state: dict[str, Any], *, require_match: bool,
 ) -> None:
@@ -166,13 +176,16 @@ def _validate_validation_selection(payload: Any, label: str) -> dict[str, Any]:
     if (
         payload["source"] != "validation"
         or not isinstance(payload["metric"], str)
-        or not payload["metric"].startswith("primary_5d/")
+        or (
+            not payload["metric"].startswith("primary_5d/")
+            and payload["metric"] != "direction/selection_loss"
+        )
         or payload["mode"] not in {"min", "max"}
         or not isinstance(value, int | float)
         or isinstance(value, bool)
         or not math.isfinite(float(value))
     ):
-        raise ValueError(f"{label} was not selected from a validation primary_5d metric")
+        raise ValueError(f"{label} was not selected from a supported validation metric")
     return payload
 
 
@@ -654,8 +667,11 @@ def _stage_checkpoint(
     if run_manifest.get("run_id") != run_id or run_manifest.get("run_key") != run_id:
         raise ValueError("Run manifest identity does not match its canonical run directory")
     contract_digest = compatible_training_resume_contract_digest(config, run_manifest)
-    if not selection_metric_name.startswith("primary_5d/"):
-        raise ValueError("Checkpoint selection must use a validation primary_5d metric")
+    if (
+        not selection_metric_name.startswith("primary_5d/")
+        and selection_metric_name != "direction/selection_loss"
+    ):
+        raise ValueError("Checkpoint selection must use a supported validation metric")
     if (
         not isinstance(selection_metric_value, int | float)
         or isinstance(selection_metric_value, bool)
@@ -696,6 +712,7 @@ def _stage_checkpoint(
         "kronos_source_revision": config.model.kronos_source_revision,
         "runtime_robust_scales": _model_runtime_robust_scales(model),
         "runtime_scale_features": _model_runtime_scale_features(model),
+        "runtime_direction_loss": _model_direction_references(model),
         "selection": selection,
         "rng_state": _capture_rng_state(),
     }
@@ -843,6 +860,7 @@ def save_training_completion_result(
             "metrics": metrics,
             "runtime_robust_scales": _model_runtime_robust_scales(model),
             "runtime_scale_features": _model_runtime_scale_features(model),
+            "runtime_direction_loss": _model_direction_references(model),
             "created_at": datetime.now(UTC).isoformat(),
             "artifact_files": {
                 "adapter.safetensors": _file_integrity(adapter_path),
@@ -1075,8 +1093,8 @@ def _ranked_checkpoint_rows(
 
 
 def _validate_checkpoint_policy(*, monitor: str, mode: str, save_top_k: Any) -> None:
-    if not monitor.startswith("primary_5d/"):
-        raise ValueError("Checkpoint monitor must be a validation primary_5d metric")
+    if not monitor.startswith("primary_5d/") and monitor != "direction/selection_loss":
+        raise ValueError("Checkpoint monitor must be a supported validation metric")
     if (
         mode not in {"min", "max"}
         or not isinstance(save_top_k, int)
@@ -1703,6 +1721,11 @@ def load_checkpoint(
         require_match=optimizer is not None,
     )
     _restore_runtime_scale_features(model, trainer_state, require_match=optimizer is not None)
+    direction = getattr(model, "direction_head", None)
+    if direction is not None:
+        direction.restore_references(trainer_state.get("runtime_direction_loss") or {})
+    elif trainer_state.get("runtime_direction_loss") is not None:
+        raise ValueError("Direction checkpoint cannot be loaded without its direction heads")
     missing = _load_trainable_model_state(
         model,
         load_file(source / "adapter.safetensors"),

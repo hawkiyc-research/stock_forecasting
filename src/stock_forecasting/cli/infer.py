@@ -313,6 +313,21 @@ def infer_observation(
         allow_historical_inference=True,
     )
     bundle.model.eval()
+    direction_costs = None
+    direction_bands = None
+    if config.model.direction.enabled:
+        from stock_forecasting.direction_costs import direction_cost_band
+
+        length = int(observation.asset_attention_mask.sum())
+        direction_costs = direction_cost_band(
+            float(observation.asset_series[0, length - 1, 3]),
+            observation.metadata["market"], observation.asset_type, observation.symbol,
+            config.model.direction.costs,
+        )
+        direction_bands = torch.tensor(
+            [[direction_costs["lower_log_return"], direction_costs["upper_log_return"]]],
+            device=device, dtype=torch.float32,
+        )
     with _autocast_context(config, device):
         output = bundle.model(
             observation.asset_series.to(device),
@@ -322,6 +337,7 @@ def infer_observation(
             asset_timestamps=observation.asset_timestamp_features.to(device),
             benchmark_timestamps=observation.benchmark_timestamp_features.to(device),
             market_ids=market_ids([observation.metadata.get("market", "")], device),
+            direction_bands=direction_bands,
         )
     training_data = provenance_summary(config.data.resolved_manifest_path)
     calibrated_forecast = None
@@ -385,6 +401,28 @@ def infer_observation(
             signal_threshold=config.model.postprocess_alpha_threshold,
         ),
         "calibrated_forecast": calibrated_forecast,
+        "direction": (
+            {
+                "schema_version": 1,
+                "class_order": ["down", "neutral", "up"],
+                "costs": direction_costs,
+                "absolute_probabilities": dict(zip(
+                    map(str, config.data.alpha_horizons),
+                    output.absolute_direction_logits.softmax(-1)[0].float().cpu().tolist(),
+                    strict=True,
+                )),
+                "alpha_probabilities": dict(zip(
+                    map(str, config.data.alpha_horizons),
+                    output.alpha_direction_logits.softmax(-1)[0].float().cpu().tolist(),
+                    strict=True,
+                )),
+                "interpretation": (
+                    "Absolute up exceeds the estimated cash round-trip hurdle; alpha up is "
+                    "relative outperformance, not guaranteed absolute profit. "
+                    "Down is not a short-sale recommendation."
+                ),
+            } if getattr(output, "absolute_direction_logits", None) is not None else None
+        ),
         "interval_calibration_status": calibration_status,
         "ranking_scores": (
             None

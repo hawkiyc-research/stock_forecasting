@@ -523,6 +523,13 @@ class ParallelControlTests(unittest.TestCase):
             "hashlib": hashlib,
             "json": json,
             "TRAINING_IMPLEMENTATION_PATHS": paths,
+            "DIRECTION_IMPLEMENTATION_PATHS": next(
+                ast.literal_eval(node.value) for node in tree.body
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "DIRECTION_IMPLEMENTATION_PATHS"
+                    for t in node.targets
+                )
+            ),
             "CHECKPOINT_RETENTION_MIGRATIONS": (),
         }
         exec(compile(ast.fix_missing_locations(module), "<contract-test>", "exec"), namespace)

@@ -135,6 +135,12 @@ def build_model_bundle(
             checkpointing_enable()
         backbone = kronos
 
+    if config.model.direction.enabled and config.model.direction.technical_channels:
+        from stock_forecasting.models.technical_channels import TechnicalTokenAdapter
+
+        with torch.random.fork_rng(devices=[]):
+            backbone.technical_adapter = TechnicalTokenAdapter(backbone.hidden_size)
+
     resampler = CausalPerceiverResampler(
         input_dim=int(backbone.hidden_size),
         output_dim=config.model.encoder_dim,
@@ -173,6 +179,14 @@ def build_model_bundle(
         market_residual_hidden_dim=config.model.market_residual_hidden_dim,
         ranking_numeric_features=config.model.ranking_numeric_features,
     )
+    direction_head = None
+    if config.model.direction.enabled:
+        from stock_forecasting.models.direction import DualDirectionHead
+
+        direction_head = DualDirectionHead(
+            config.model.encoder_dim, len(config.data.alpha_horizons),
+            config.model.direction, config.model.alpha_head_dropout,
+        )
     model = QuantForecastModel(
         backbone,
         resampler,
@@ -181,10 +195,17 @@ def build_model_bundle(
         ranking_loss_weight=config.model.ranking_loss_weight,
         ranking_max_pairs=config.model.ranking_max_pairs,
         market_loss_weights=config.training.market_loss_weights,
+        direction_head=direction_head,
     )
     target_dtype = _dtype(config.model.dtype) if device.type == "cuda" else torch.float32
     model.to(device=device, dtype=target_dtype)
     _promote_trainable_parameters_to_fp32(model)
+    if direction_head is not None:
+        import math
+
+        direction_head.loss_references = torch.tensor(
+            [1.0, math.log(3), math.log(3)], device=device, dtype=torch.float32
+        )
     model.market_loss_weights = torch.tensor(
         config.training.market_loss_weights, device=device, dtype=torch.float32
     )

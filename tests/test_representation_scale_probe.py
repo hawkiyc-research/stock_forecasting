@@ -308,11 +308,16 @@ def test_invalid_settings_fail_before_execution(kwargs: dict[str, Any]) -> None:
         ScaleProbeSettings(**kwargs)
 
 
+@pytest.mark.parametrize("direction", [False, True])
 def test_mock_checkpoint_extraction_preserves_weights_and_checkpoint_files(
     tmp_path: Path,
     scale_store: Path,
+    direction: bool,
 ) -> None:
     config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
+    config.model.direction.enabled = direction
+    monitor = "direction/selection_loss" if direction else "primary_5d/selection_score"
+    config.training.checkpoint_monitor = monitor
     config.data.input_length = 64
     config.data.bar_store_path = scale_store
     config.data.manifest_path = tmp_path / "not-required-mock-manifest.json"
@@ -335,6 +340,10 @@ def test_mock_checkpoint_extraction_preserves_weights_and_checkpoint_files(
     )
     torch.manual_seed(8)
     model = build_model_bundle(config, torch.device("cpu")).model
+    if direction:
+        model.direction_head.restore_references(
+            {"schema_version": 1, "samples": 32, "references": [0.3, 1.1, 1.1]}
+        )
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     checkpoint, _ = save_ranked_checkpoint(
         model=model,
@@ -345,11 +354,11 @@ def test_mock_checkpoint_extraction_preserves_weights_and_checkpoint_files(
         global_step=1,
         epoch=0,
         batch_index=1,
-        selection_metric_name="primary_5d/selection_score",
+        selection_metric_name=monitor,
         selection_metric_value=0.1,
         selection_metric_mode="min",
         save_top_k=1,
-        metrics={"primary_5d/selection_score": 0.1},
+        metrics={monitor: 0.1},
     )
     assert checkpoint is not None
     assert resolve_probe_checkpoint(run, saved_model_root=config.training.output_root) == checkpoint

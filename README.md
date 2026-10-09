@@ -59,11 +59,13 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 - `ranking_scores`：啟用獨立 ranking head 時為 `[batch, 15-h_start]`；是無量綱排序分數，
   不是報酬、機率，也不能當成 q50。
 
-模型沒有 `forecast_logits`、分類 head、分類 loss 或方向機率。推論時可由每個
-horizon 的 q10/q50/q90，使用固定閾值後處理成 `strong_bearish`、`bearish`、
-`neutral`、`bullish`、`strong_bullish`；這些訊號不是額外訓練目標，也不會增加
-loss 權重。Checkpoint 必須符合 `model_output_schema_version=5.0`；不相容的
-output schema 會被拒絕載入。
+原有容量與 adaptive 實驗沒有分類 head。`direction64` 另輸出個股絕對方向與 alpha
+方向 logits，各為 `[batch, 15-h_start, 3]`，順序固定為 `down, neutral, up`；推論的
+`direction` 欄位包含兩者機率、成本情境及門檻，不能將 alpha up 解讀為個股一定上漲。
+既有 alpha 輸出契約及 `model_output_schema_version=5.0` 保留，方向欄位另以 schema 1
+描述。所有實驗仍可由 q10/q50/q90 後處理成 `strong_bearish`、`bearish`、`neutral`、
+`bullish`、`strong_bullish`；這套五級訊號不是方向分類器，也不是額外訓練目標。
+不相容的 output schema 會被拒絕載入。
 
 ```text
 OHLCV through close t (asset + benchmark)
@@ -80,6 +82,12 @@ numerical encoding ── ranking residual*─┴─ ranking scores   diagnostic
 
 * Additional paths enabled by adaptive64 / adaptive128; calibration keeps q50 unchanged.
 ```
+
+`direction64` 在 tokenizer 的 token embedding 與 Kronos transformer 之間加入零初始化的
+技術通道 projection；個股、benchmark 各五個通道。三組 resampler／conditioned tokens
+由各 horizon 的獨立 query 做 cross-attention，再交給兩個三分類 head。CE 梯度經共享
+resampler 回傳 Kronos／LoRA；不 detach 表徵，也不以指標規則替代 backbone。
+新增路徑不開啟 adaptive 的 market residual、ranking numeric residual 或適應式校準。
 
 生產設定使用 `NeoQuasar/Kronos-base` 與
 `NeoQuasar/Kronos-Tokenizer-base`。預設 LoRA 實驗凍結 Kronos predictor 基礎權重，只在
@@ -150,6 +158,64 @@ Production config 啟用 `explicit_output_scale`，因此 feature mode 必須為
 或 `combined`。自訂實驗如需移除尺度路徑，
 必須同步關閉明確尺度控制。切換 mode 不改變 dataset namespace，但必須建立新的 training run。
 是否改善預測必須由新訓練的評估結果證明，加入尺度資訊本身不等於已提升 alpha 能力。
+
+#### 方向任務與十個技術通道
+
+`a-direction64`／`b-direction64` 以 `lora64` 設定為基礎：rank 64、alpha 128、無部分解凍，
+task／LoRA LR 為 `3e-5`／`5e-6`，dropout `0.05`、weight decay `0.01`、validation plateau
+排程及靜態區間校準。舊容量與 adaptive 設定仍保留；新實驗重新由固定 pretrained
+Kronos 初始化，不把舊 checkpoint 當作可直接接續的新架構。
+
+兩個方向 label 使用同一個 next-open／h-th-close 的 adjusted execution return：
+絕對方向用個股 log return；alpha 方向用個股減 benchmark log return。假設 ex-ante
+round-trip 成本比例為 `c`，`r < log(1-c)` 為 down，`r > log(1+c)` 為 up，邊界及中間
+皆為 neutral。Alpha 的成本帶代表要求相對優勢至少超過個股成本，不是兩腿避險的淨損益。
+大盤跌 8%、個股跌 4% 會得到 absolute down、alpha up；做多篩選不能只看 alpha up。
+Down 只表示不利變動，不表示已計入借券成本或可獲利放空。
+
+成本設定在 `model.direction.costs`，不在訓練時查詢券商網站：
+
+| 市場／參數 | 預設情境 |
+| --- | --- |
+| `taiwan_shares`／`us_shares` | 台股 1,000 股（整張倍數）；美股 50 股（50 股倍數），直接海外券商帳戶 |
+| 台股佣金 | 元大、富邦公開一般牌告各 `0.1425%`、每邊至少 NT$20，先各算費用再等權平均；不是議價後的市場加權平均 |
+| 台股賣出稅 | 股票 `0.3%`；本專案准入的股票型 ETF／TDR `0.1%`；不假設當沖減稅 |
+| 美股佣金 | IBKR Pro Fixed `max(0.005 × 股數, US$1)`、上限成交額 1%，與 Schwab 線上上市股票 US$0 等權平均，每邊各算一次 |
+| 美股規費 | SEC 賣出比例 `0.0000206`；TAF `0`（2026 Q4 暫停情境）；CAT 每股每邊 `0.000003` 作保守通用預留，並非每家都另收 |
+| `slippage_bps_per_side` | 每邊 5 bps 的價差／滑價合併假設，不是券商平均手續費；可設 0 或壓力情境 |
+
+所有名目金額以預測日已知的最後 raw-close 等值價格 × 股數估算，絕不以未來進出場價
+決定 label 門檻。以台股 NT$100、1,000 股為例，總成本帶約 `0.685%`；美股 US$20、
+50 股約 `0.20303%`，均含上述滑價假設。這是固定的 `listed_cash_2026_10_09` 成本情境，
+不是 2016–2026 的歷史費率重建，也不含換匯、股息預扣稅、ADR 保管費或融券成本。
+費率變更須建立新 run，不能在既有 run 內改變 label 定義。
+費率來源：[元大](https://www.yuanta.com.tw/eYuanta/agent/Node/Index?C1=2021102007380647&C2=2021102008672547&ID=2021102008672547&Level=2&MainId=00415)、
+[富邦](https://www.fbs.com.tw/DomesticStocks/DomesticStocks)、[證交所](https://www.twse.com.tw/zh/about/company/guide.html)、
+[IBKR](https://www.interactivebrokers.com/en/pricing/commissions-stocks.php)、[Schwab](https://www.schwab.com/pricing)。
+規費情境依據 [SEC 2026 費率公告](https://www.sec.gov/rules-regulations/fee-rate-advisories/2026-2)
+及 [FINRA 2026 Q4 TAF 暫停公告](https://www.govinfo.gov/content/pkg/FR-2026-09-23/html/2026-19392.htm)；
+CAT 預留參考 IBKR 公開規費表，並非所有券商的統一收費。
+TDR 辨識涵蓋 `91XX` 與 `91XXXX` 兩種代碼，依據
+[證交所證券分類](https://isin.twse.com.tw/isin/class_main.jsp?chklike=Y&issuetype=J&market=1)。
+
+下列五個通道分別作用於個股與 benchmark，合計十個，使用 point-in-time OHLCV。
+`SMA_n` 包含當前 bar；prior20 範圍不含當前 bar；每一個 token 都只能讀其歷史前綴。
+
+| 每個 stream 的通道 | 精確定義 |
+| --- | --- |
+| close／MA 趨勢 | `log(C_t / SMA20_t)` |
+| 短期 MA 趨勢 | `log(SMA5_t / SMA20_t)` |
+| 中期 MA 趨勢 | `log(SMA20_t / SMA60_t)` |
+| 前期區間位置 | `(2*C_t - max(H_{t-20:t-1}) - min(L_{t-20:t-1})) / (max(H) - min(L))`；零範圍輸出 0 |
+| 成交量確認 | 最近 20 次 `sign(C_j-C_{j-1})*V_j` 總和除以同段成交量總和；無成交量輸出 0 |
+
+不足完整 lookback 的通道輸出 0，不延伸輸入或補缺成交日；通道值限於 `[-5,5]` 只限制
+feature leverage，不裁切 target 或排除真實極端報酬。MA／區間突破參考
+[Brock et al. (1992)](https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1540-6261.1992.tb04681.x)，
+趨勢及成交量確認參考 [Neely et al.](https://files.stlouisfed.org/files/htdocs/wp/2010/2010-008.pdf)。
+5／20／60 日與連續值表示是本專案的可驗證設計，不宣稱是原論文在本資料上已證實的最佳值。
+持有期 query 的動機參考 [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363)，
+但本模型保留 Kronos，不複製其完整架構。
 
 #### Backbone 選擇
 
@@ -414,7 +480,7 @@ manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-25
 | Training sampling | 年度衰減動態取樣；不是固定 5% 商品—日期集合 | 年度衰減動態取樣；不保證每個 window 恰好一次 |
 | Epoch 上限 | 2 | 5 |
 | Validation cadence | 每 epoch 的 20%／40%／60%／80%／100%，共 5 次完整 validation | 同左 |
-| Early stopping | normalized pinball 連續 5 次未改善，且完成最低 LR 的兩個間隔；第 1 epoch 起生效 | 同左 |
+| Early stopping | 設定的 validation monitor 連續 5 次未改善，且完成最低 LR 的兩個間隔；第 1 epoch 起生效。原有實驗用 normalized pinball，`direction64` 用固定加權 pinball＋雙 CE | 同左 |
 | 保存結果 | validation 最佳 5 個完整 checkpoints，加上完成時的精簡權重 | 同左 |
 | Validation / test | 完整有效集合，不抽樣、不 padding、不 drop_last | 同左 |
 | 標準設定 | `configs/stage1_kronos_base_lora.yaml` | `configs/stage2_kronos_base_lora.yaml` |
@@ -461,8 +527,40 @@ ranking 使用獨立 score head，不直接把 q50 當排序分數。
 排序只比較同一截止日、同一市場的不同股票，排除重複 padding 與近乎相同的標籤；
 每個 microbatch 最多 256 對，loss 仍涵蓋所有 forecast horizons。runtime-only date/market
 索引改善同組股票在 batch 中相遇的機會，對清理後 train windows 做年度衰減動態抽樣；不改 bar-store。
-checkpoint 選擇與 early stopping 仍只看完整 validation 的 normalized pinball，不使用
-ranking loss 或 holdout 來選模。本版本不做 prediction／parameter ensemble。
+原有實驗的 checkpoint／early stop 看完整 validation 的 normalized pinball；
+`direction64` 則使用下述固定多任務分數。所有版本均不以 ranking regularizer 或 holdout
+選模，也不做 prediction／parameter ensemble。
+
+`direction64` 的初始 loss 加權採 training-only reference normalization：先以固定 seed 59
+讀取最多 1,024 筆 train windows，量測未更新模型的平均 `sQ, sAbs, sAlpha`，之後凍結。
+預設 `absolute_weight=alpha_weight=1`，實際公式為：
+
+```text
+L = pinball + (sQ/sAbs)*CE_absolute + (sQ/sAlpha)*CE_alpha
+    + 0.05*ranking + 0.05*sQ*representation_regularization
+```
+
+每個 CE 對所有樣本與 t1–t14 等權平均；不因較遠 horizon 而改權重。初始化時三個主任務
+在各自 reference 尺度上權重為 1:1:1，**不是把原始 loss 直接相加，也不保證梯度相等**。
+這借鑑 [GradNorm](https://proceedings.mlr.press/v80/chen18a.html) 的初始 loss 比例思想，
+不是完整 GradNorm 動態權重演算法；1:1:1 是需驗證的中性起點，並非金融預測通用最佳值。
+各 loss、實際 CE 係數、validation 子任務 loss 都寫入 `metrics.jsonl`／W&B，reference
+另保存在 checkpoint 與 completion result，resume 不重算。
+
+表徵正則化借鑑 [Feng et al. 的股票方向 adversarial training](https://arxiv.org/abs/1810.09936)：
+在方向 head 的 LayerNorm 後隱向量上，沿兩個 CE 梯度的單位方向加入 `0.01*sqrt(hidden_dim)`
+的 L2 擾動，再計算兩個 reference-normalized CE 的平均。擾動方向 stop-gradient；
+不修改原 OHLCV、不增加第二次 Kronos forward，不在 validation/test 加擾動。
+`representation_weight=0.05`／`representation_radius=0.01` 是保守初值，不是原論文最優超參數。
+
+新版 checkpoint monitor 為 `direction/selection_loss`：完整 validation 的前三項 loss，
+使用同一組凍結 reference，不含 ranking／adversarial regularizer。既有 `primary_5d/selection_score`
+仍只表示 pinball，不偷偷改它的語意。方向結果分絕對／alpha，包含每個 horizon、市場、月份
+的 confusion matrix、accuracy、balanced accuracy、macro-F1、majority baseline、up precision／recall
+及訊號比例，避免大量預測 neutral 製造高準確率。`joint_up` 另記錄兩者同時 up 的命中數及 precision。
+Balanced accuracy 平均該切片中有真實樣本的類別 recall；macro-F1 固定以三個類別平均，
+缺少真實樣本的類別仍可由 confusion matrix／support 識別。
+這些分類 accuracy 不可直接與舊 q50 sign agreement 當成同一指標比較。
 
 原 Stage 1/2 與 `lora32`／`lora64`／`partial` 實驗採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
 初始 LR 的 0.09；到達最低 LR 後，必須再完成兩次 validation 間隔的訓練，才允許 early stop。
@@ -487,7 +585,7 @@ task LR 為 `1e-5`、LoRA LR 為 `5e-6`；resampler、conditioner、head 與 LoR
 
 | 結果欄位 | 使用規則 |
 | --- | --- |
-| 原有 raw metrics | 未校準預測，仍是 checkpoint／early stop 的唯一依據 |
+| 原有 raw metrics | 未校準預測；adaptive 對照以此選 checkpoint／early stop，不使用校準後的指標 |
 | `calibrated_static` | 原 market/horizon validation 校準對照 |
 | `calibrated` | 凍結的市場 × horizon × 歷史波動狀態校準；只 fit validation |
 | `calibrated_online` | 獨立的逐日 prequential 診斷；只用已成熟的過往 test 預測誤差更新寬度 |
@@ -1525,7 +1623,7 @@ baseline 與預訓練模型會直接共用；切換容量實驗不重新下載�
 也不因 Pod 數量而重訓 baseline。每台 Pod 各自使用一張 GPU，不是 DDP 或多 GPU
 聯合訓練。
 
-Stage 2 提供十份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01，資料終點皆為
+Stage 2 提供十二份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01，資料終點皆為
 2026-06-01（不含）；兩者共用相同的 validation/test 來源與有效樣本規則。
 `--experiment` 保留 configure 的 profile、universe、revision 與 h_start。
 
@@ -1534,11 +1632,12 @@ Stage 2 提供十份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01�
 | `a-lora32`、`b-lora32` | `a_lora32.yaml`、`b_lora32.yaml` | LoRA rank 32、alpha 64 |
 | `a-lora64`、`b-lora64` | `a_lora64.yaml`、`b_lora64.yaml` | LoRA rank 64、alpha 128 |
 | `a-partial`、`b-partial` | `a_partial.yaml`、`b_partial.yaml` | 前 10 層 LoRA-32；解凍最後 2 層與 final norm，解凍層不重複套 LoRA |
-| `a-adaptive64`、`b-adaptive64` | `a_adaptive64.yaml`、`b_adaptive64.yaml` | 整合市場分支、排序特徵、正則化／樣本排程與適應校準；LoRA rank 64、alpha 128，主要研究線 |
+| `a-adaptive64`、`b-adaptive64` | `a_adaptive64.yaml`、`b_adaptive64.yaml` | 市場分支、排序特徵、正則化／樣本排程與適應校準對照；LoRA rank 64、alpha 128 |
 | `a-adaptive128`、`b-adaptive128` | `a_adaptive128.yaml`、`b_adaptive128.yaml` | 與 adaptive64 相同整合設定；只改 LoRA rank 128、alpha 256 |
+| `a-direction64`、`b-direction64` | `a_direction64.yaml`、`b_direction64.yaml` | A-LoRA64 基礎，加雙三分類、十技術通道、horizon query 與表徵正則化；rank 64、alpha 128 |
 
 全部實驗從相同 pretrained Kronos-base 初始化，不從其他實驗的 checkpoint 接續。
-原六份設定保留為對照，`partial` 是次要研究線；新版優先比較 `adaptive64` 與 `adaptive128`。
+舊設定保留為對照，`partial` 是次要研究線；新版方向模型選用 `direction64`。
 省略 `--experiment` 仍使用既有 configure，不會偷偷換成整合版。
 原六份 task／LoRA／解凍層學習率為 `3e-5`／`5e-6`／`1e-6`；整合版差異見
 [訓練目標與校準](#training-zh)。所有實驗 warmup 固定為
@@ -1546,8 +1645,9 @@ Stage 2 提供十份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01�
 `0.8 ** (最新訓練年份 − cutoff 年份)`，年度配額按「有效 window 數 × 年度權重」正規化分配並作整數配額調整，
 會記錄配額、loss 與實際處理樣本數。Validation/test 則完整循序遍歷，不使用此 sampler。
 
-q50 location、正值上下區間寬度與獨立 ranking score 分開。Checkpoint／early stop
-使用未校準的完整 validation normalized pinball；選定 checkpoint 後才用完整
+q50 location、正值上下區間寬度與獨立 ranking score 分開。原有 checkpoint／early stop
+使用完整 validation normalized pinball；`direction64` 使用固定 reference 加權的 pinball＋雙 CE。
+選定 checkpoint 後才用完整
 validation 擬合凍結的上下尾校準。Test 保留 raw 與 `calibrated`；整合版另外保留
 `calibrated_static` 與延遲回饋的 `calibrated_online`，不使用未成熟報酬，也不保證未來 coverage。
 `FORECAST_METRIC_WORKERS` 可限制診斷／校準執行緒（預設上限 4，另受 CPU／記憶體限制）。
@@ -1567,7 +1667,7 @@ bash scripts/runpod_workflow.sh sync --apply
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-adaptive64 \
+  --experiment a-direction64 \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
@@ -1584,7 +1684,7 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-把上述名稱的 `a-` 改成 `b-` 即可比較 B 組；也可以混合 A/B，一次最多選十個
+把上述名稱的 `a-` 改成 `b-` 即可比較 B 組；也可以混合 A/B，一次最多選十二個
 不同名稱，本機啟動並行 worker 上限仍為六。可以在其他實驗已執行時另開不同 run。每個實驗先固定自己的 immutable
 selection，不修改全域 active selection；後續 configure 不會改變已建立 Pod 的設定。
 
@@ -1592,7 +1692,7 @@ selection，不修改全域 active selection；後續 configure 不會改變已�
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-adaptive64 \
+  --experiment a-direction64 \
   --seed 42 --seed 43 --seed 44 \
   --launchWorkers 2 \
   --maxRuntime 12h \
@@ -1684,7 +1784,7 @@ bash scripts/runpod_workflow.sh runs --experiment a-lora32
 歷史紀錄未保存時顯示 `unknown`，不以目前 YAML 補值：
 
 ```bash
-bash scripts/runpod_workflow.sh runs --experiment a-adaptive64 --seed 43
+bash scripts/runpod_workflow.sh runs --experiment a-direction64 --seed 43
 ```
 
 ```bash
@@ -2276,7 +2376,7 @@ pytest 的 `-k EXPR` 篩選測試、`-q` 簡潔輸出、`-h` 顯示全部第三�
 4. Readiness 核對所選 dataset 自身的 manifest 與實際 artifacts；不要求另一份資料最後寫入的
    共用 CPU marker 在 stage/config 上相同，也不能混用不同 profile、universe 或資料內容。
 5. `alpha_quantiles` 為 `[B,15-h_start,3]`、q10 ≤ q50 ≤ q90；
-   `ranking_scores` 與中位數報酬分開，不輸出分類機率或自然語言。
+   `ranking_scores` 與中位數報酬分開；`direction64` 另輸出兩組三分類機率，不生成自然語言。
 6. 輸入與 train-only 正規化不使用未來資料。Validation 用於選模和選模後的區間校準；
    frozen test 不參與 fitting；獨立 online 診斷只使用到期後的過往標籤，不能混為一談。
    完整記錄 train pinball、market-weighted pinball、ranking 與 validation loss。
@@ -2391,12 +2491,14 @@ architecture and report snapshots.
 - `ranking_scores`: `[batch, 15-h_start]` when the independent ranking head is enabled;
   dimensionless ordering scores, not returns, probabilities, or replacements for q50.
 
-There is no `forecast_logits`, classification head, classification loss, or
-direction probability. Inference may post-process each horizon's q10/q50/q90
-with a fixed threshold into `strong_bearish`, `bearish`, `neutral`, `bullish`,
-or `strong_bullish`. These signals are not extra training targets and introduce
-no loss weights. Checkpoints must use `model_output_schema_version=5.0`;
-incompatible output schemas fail closed.
+Original capacity and adaptive presets have no classifier. `direction64` adds absolute-stock
+and alpha direction logits, each `[batch, 15-h_start, 3]` in `down, neutral, up` order.
+Inference includes probabilities and the cost scenario/bands under `direction`; alpha up
+does not imply an absolute gain. Core alpha schema `model_output_schema_version=5.0`
+is retained; additive direction output has its own schema version 1.
+Every preset retains five-level quantile post-processing (`strong_bearish` through
+`strong_bullish`), which is not the new classifier or a separate training objective.
+Incompatible output schemas fail closed.
 
 ```text
 OHLCV through close t (asset + benchmark)
@@ -2413,6 +2515,12 @@ numerical encoding ── ranking residual*─┴─ ranking scores   diagnostic
 
 * Additional paths enabled by adaptive64 / adaptive128; calibration keeps q50 unchanged.
 ```
+
+`direction64` injects a zero-initialized technical projection between tokenizer embeddings
+and the Kronos transformer: five channels per instrument/benchmark stream. Horizon-specific
+queries cross-attend instrument, benchmark and conditioned latent tokens, feeding two
+three-class heads. CE gradients reach Kronos/LoRA through shared resamplers; representations
+are not detached. This preset does not enable adaptive market/ranking residuals or adaptive calibration.
 
 Production configs use `NeoQuasar/Kronos-base` and
 `NeoQuasar/Kronos-Tokenizer-base`. Standard LoRA experiments freeze the base weights. LoRA is
@@ -2496,6 +2604,64 @@ Removing the scale branch in a custom configuration also requires disabling
 explicit scale control. Changing the mode preserves the dataset namespace but requires a new run.
 Predictive improvement must be demonstrated by new evaluation results; adding
 scale information alone is not evidence of improved alpha forecasting.
+
+#### Direction supervision and ten technical channels
+
+`a-direction64`/`b-direction64` build on `lora64`: rank 64, alpha 128, no partial unfreezing,
+task/LoRA LR `3e-5`/`5e-6`, dropout `0.05`, weight decay `0.01`, validation plateau scheduling
+and static interval calibration. Original capacity/adaptive presets remain reproducible.
+New runs start from pinned pretrained Kronos, not an old checkpoint with a different architecture.
+
+Both labels retain next-open to h-th-close adjusted execution returns. Absolute direction
+uses the stock log return; alpha direction subtracts the benchmark log return. With estimated
+round-trip fraction `c`, returns below `log(1-c)` are down, above `log(1+c)` are up; boundaries
+and the interior are neutral. The alpha band is a minimum relative-edge hurdle, not a hedged
+portfolio P&L. A stock losing 4% against a benchmark losing 8% is absolute down but alpha up.
+Long screening must not rely on alpha up alone; down is not a profitable-short recommendation.
+
+`model.direction.costs` freezes the scenario without brokerage API calls during training:
+
+| Market / parameter | Default scenario |
+| --- | --- |
+| `taiwan_shares` / `us_shares` | 1,000-share Taiwan lots / 50-share US units through a direct US brokerage account |
+| Taiwan commission | Equal average of Yuanta/Fubon published standard `0.1425%`, minimum NT$20 per side; compute each bill first, not a negotiated volume-weighted industry average |
+| Taiwan sell tax | Stocks `0.3%`, admitted equity ETFs/TDRs `0.1%`; no assumed day-trading concession |
+| US commission | Average IBKR Pro Fixed `max(0.005*shares, US$1)`, capped at 1% of value, and Schwab US$0 online listed-equity commission; applied to each leg |
+| US regulatory allowance | SEC sell rate `0.0000206`, TAF `0` in the 2026 Q4 suspension scenario, conservative CAT allowance `0.000003` per share per leg, not necessarily separately charged by every broker |
+| `slippage_bps_per_side` | Assumed combined spread/slippage of 5 bps per side; configurable, not an observed average brokerage fee |
+
+Known cutoff-price-equivalent raw close times quantity estimates both legs, never future entry
+or exit prices. At NT$100/1,000 shares, the default band is approximately `0.685%`; at US$20/50
+shares it is `0.20303%`, including assumed slippage. `listed_cash_2026_10_09` is a fixed scenario,
+not historical 2016–2026 fee reconstruction. FX, dividend withholding, ADR custody and stock-borrow
+costs are excluded. A changed scenario needs a new run. Sources:
+[Yuanta](https://www.yuanta.com.tw/eYuanta/agent/Node/Index?C1=2021102007380647&C2=2021102008672547&ID=2021102008672547&Level=2&MainId=00415),
+[Fubon](https://www.fbs.com.tw/DomesticStocks/DomesticStocks), [TWSE](https://www.twse.com.tw/en/about/company/guide.html),
+[IBKR](https://www.interactivebrokers.com/en/pricing/commissions-stocks.php), [Schwab](https://www.schwab.com/pricing).
+The regulatory scenario follows the [SEC 2026 fee advisory](https://www.sec.gov/rules-regulations/fee-rate-advisories/2026-2)
+and [FINRA 2026 Q4 TAF suspension notice](https://www.govinfo.gov/content/pkg/FR-2026-09-23/html/2026-19392.htm).
+The CAT allowance follows IBKR's published regulatory-fee table, not a uniform charge at every broker.
+TDR detection covers both `91XX` and `91XXXX`, following the
+[TWSE security classification](https://isin.twse.com.tw/isin/class_main.jsp?chklike=Y&issuetype=J&market=1).
+
+Each stream uses these five point-in-time channels, ten total. Moving averages include the
+current bar; the prior range excludes it. Each token uses its prefix only.
+
+| Channel per stream | Definition |
+| --- | --- |
+| Price trend | `log(C_t / SMA20_t)` |
+| Short MA trend | `log(SMA5_t / SMA20_t)` |
+| Medium MA trend | `log(SMA20_t / SMA60_t)` |
+| Prior range position | `(2*C_t - max(H_{t-20:t-1}) - min(L_{t-20:t-1})) / (max(H)-min(L))`; zero for a zero-width range |
+| Volume confirmation | Sum of the last 20 `sign(C_j-C_{j-1})*V_j` values divided by volume over the same period; zero for zero volume |
+
+Incomplete lookbacks produce zero; no context extension or missing-day filling occurs.
+Clipping channels to `[-5,5]` limits feature leverage, not labels or genuine extreme returns.
+MA/range motivation follows [Brock et al. (1992)](https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1540-6261.1992.tb04681.x);
+trend/volume motivation follows [Neely et al.](https://files.stlouisfed.org/files/htdocs/wp/2010/2010-008.pdf).
+The 5/20/60-day continuous adaptation is an engineering choice, not a proven optimum for this dataset.
+Horizon queries are motivated by [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363),
+without replacing Kronos with TFT.
 
 #### Backbone choice
 
@@ -2818,7 +2984,7 @@ Training, evaluation, and inference never call EODHD, TWSE, TPEx, or Massive.
 | Training sampler | Annual-decay dynamic sampling, not one fixed 5% membership | Annual-decay dynamic sampling, not exactly-once traversal |
 | Epoch limit | 2 | 5 |
 | Validation cadence | Full validation at 20%/40%/60%/80%/100% of each epoch | Same |
-| Early stopping | Five non-improving normalized-pinball evaluations plus two minimum-LR intervals, active from epoch 1 | Same |
+| Early stopping | Five non-improving evaluations of the configured monitor plus two minimum-LR intervals, active from epoch 1. Original presets use normalized pinball; `direction64` uses fixed-weight pinball plus both CEs | Same |
 | Stored results | Best five validation-ranked full checkpoints plus compact completion weights | Same |
 | Validation / test | Full eligible populations, no sampling, padding or drop_last | Same |
 | Standard config | `configs/stage1_kronos_base_lora.yaml` | `configs/stage2_kronos_base_lora.yaml` |
@@ -2873,8 +3039,41 @@ score. Pairs must share the cutoff date and market and represent different
 securities; duplicate padding and nearly tied labels are excluded. Each microbatch
 uses at most 256 pairs across all forecast horizons. A runtime-only date/market
 index improves within-group batch membership, with annual-decay dynamic sampling
-over cleaned train windows; it does not modify the prepared bar store. Checkpoint selection remains
-pure full-validation normalized pinball. No prediction ensemble is used.
+over cleaned train windows; it does not modify the prepared bar store. Original presets select
+by full-validation normalized pinball; `direction64` uses the fixed multitask score below.
+Ranking regularization and holdout never select checkpoints. No prediction ensemble is used.
+
+`direction64` first estimates untrained-model mean losses `sQ, sAbs, sAlpha` from at most 1,024
+training windows with seed 59, then freezes these references. Default task multipliers are 1:
+
+```text
+L = pinball + (sQ/sAbs)*CE_absolute + (sQ/sAlpha)*CE_alpha
+    + 0.05*ranking + 0.05*sQ*representation_regularization
+```
+
+CE averages all samples and t1–t14 equally. Initial task contributions are 1:1:1 on their own
+reference scales, not an unscaled sum or a guarantee of equal gradients. This borrows the
+initial-loss-ratio idea from [GradNorm](https://proceedings.mlr.press/v80/chen18a.html), not the
+complete dynamic GradNorm algorithm. Equal multipliers are a neutral starting hypothesis,
+not a universal finance optimum. Raw component losses, CE coefficients and validation losses
+are logged to `metrics.jsonl`/W&B. Checkpoints/completion results persist references; resume
+does not refit them.
+
+Following the representation perturbation idea in [Feng et al.](https://arxiv.org/abs/1810.09936),
+the direction hidden vector after LayerNorm receives an L2 perturbation of
+`0.01*sqrt(hidden_dim)` along the unit joint-CE gradient, and the two reference-normalized
+adversarial CEs are averaged. Perturbation direction is detached, not the underlying features.
+No raw OHLCV alteration or second Kronos forward is required; evaluation has no perturbation.
+Weight `0.05` and radius `0.01` are conservative engineering initial values, not published optima.
+
+`direction/selection_loss` monitors the first three loss terms on full validation with frozen
+references, excluding ranking/adversarial terms. `primary_5d/selection_score` retains its original
+pinball meaning. Direction results include per-horizon, market and month confusion matrices,
+accuracy, balanced accuracy, macro-F1, majority baseline, up precision/recall and signal fraction,
+so neutral collapse is visible. `joint_up` records precision/counts when both heads predict up.
+Balanced accuracy averages recall over classes present in that slice; macro-F1 averages all
+three fixed classes. Confusion matrices and supports expose absent classes.
+Three-class accuracy is not interchangeable with the old q50 sign agreement.
 
 For the original Stage 1/2 and `lora32`/`lora64`/`partial` presets, two non-improving validations after warmup multiply neural learning rates by 0.3,
 down to 0.09 of their original values. Early stopping additionally requires two
@@ -2901,7 +3100,7 @@ existing presets. Integrated presets use `regime_adaptive` and keep results dist
 
 | Result field | Protocol |
 | --- | --- |
-| Existing raw metrics | Uncalibrated output; still the only checkpoint/early-stop criterion |
+| Existing raw metrics | Uncalibrated output; adaptive controls select checkpoints/early stopping from these, never calibrated metrics |
 | `calibrated_static` | Original validation-fitted market/horizon reference |
 | `calibrated` | Frozen market × horizon × historical-volatility-regime calibration; fits validation only |
 | `calibrated_online` | Separate daily prequential diagnostic using only matured past prediction errors |
@@ -4107,7 +4306,7 @@ main-model Pods. Prepared data, baselines and pretrained models are shared. Chan
 or Pod count does not download market data, split datasets again, or retrain baselines.
 Each Pod runs its own single-GPU model; this is not DDP or distributed model training.
 
-Stage 2 offers ten configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
+Stage 2 offers twelve configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
 2026-06-01 (exclusive). They share the validation/test source and eligibility rules.
 `--experiment` preserves the configured profile, universe, revision and h_start.
 
@@ -4116,12 +4315,13 @@ Stage 2 offers ten configs. A starts on 2021-01-01 and B on 2016-01-01; both end
 | `a-lora32`, `b-lora32` | `a_lora32.yaml`, `b_lora32.yaml` | LoRA rank 32, alpha 64 |
 | `a-lora64`, `b-lora64` | `a_lora64.yaml`, `b_lora64.yaml` | LoRA rank 64, alpha 128 |
 | `a-partial`, `b-partial` | `a_partial.yaml`, `b_partial.yaml` | LoRA-32 on the first 10 blocks; unfreeze the last 2 blocks and final norm without redundant LoRA |
-| `a-adaptive64`, `b-adaptive64` | `a_adaptive64.yaml`, `b_adaptive64.yaml` | Integrated market/ranking paths, regularization, sample scheduling and adaptive calibration; LoRA rank 64, alpha 128, primary research line |
+| `a-adaptive64`, `b-adaptive64` | `a_adaptive64.yaml`, `b_adaptive64.yaml` | Market/ranking paths, regularization, sample scheduling and adaptive calibration control; LoRA rank 64, alpha 128 |
 | `a-adaptive128`, `b-adaptive128` | `a_adaptive128.yaml`, `b_adaptive128.yaml` | Same integrated settings; only LoRA rank/alpha change to 128/256 |
+| `a-direction64`, `b-direction64` | `a_direction64.yaml`, `b_direction64.yaml` | A-LoRA64 base plus dual three-class heads, ten technical channels, horizon queries and representation regularization; rank 64, alpha 128 |
 
 All initialize from the same pretrained Kronos-base, not another experiment's checkpoint.
 The original six configs remain controls; partial unfreezing is a secondary research line.
-Use `adaptive64` versus `adaptive128` for the integrated capacity comparison. Omitting
+Use `direction64` for the new direction model. Omitting
 `--experiment` still uses the configured selection rather than silently switching it.
 Original task/LoRA/unfrozen learning rates are `3e-5`/`5e-6`/`1e-6`; see
 [training objectives](#training-en) for integrated settings. All use a fixed 256,000
@@ -4131,7 +4331,8 @@ windows times this weight. Quotas, losses and processed samples are recorded.
 Validation/test use full sequential traversal, not this sampler.
 
 The q50 location, positive interval widths and independent ranking score are separate.
-Checkpoint selection and early stopping use uncalibrated full-validation normalized pinball.
+Original presets select by full-validation normalized pinball; `direction64` uses fixed-reference
+pinball plus both CEs on the same full validation set.
 Frozen tail calibration is fitted on full validation after checkpoint selection;
 test retains raw and `calibrated` metrics. Integrated presets also retain `calibrated_static`
 and delayed-feedback `calibrated_online`, never using immature labels. Future 80% coverage
@@ -4153,7 +4354,7 @@ Create one experiment:
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-adaptive64 \
+  --experiment a-direction64 \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
@@ -4170,7 +4371,7 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-Replace `a-` with `b-` for group B, or mix groups; at most ten distinct names may be selected
+Replace `a-` with `b-` for group B, or mix groups; at most twelve distinct names may be selected
 per command. Additional different runs may be created while experiments are already running.
 Each launch pins its own immutable selection without changing the global active selection.
 Later configure commands do not change a previously created Pod's settings.
@@ -4179,7 +4380,7 @@ Compare three training seeds with the same configuration:
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-adaptive64 \
+  --experiment a-direction64 \
   --seed 42 --seed 43 --seed 44 \
   --launchWorkers 2 \
   --maxRuntime 12h \
@@ -4277,7 +4478,7 @@ Filter a specific experiment by seed. `runs` and `status RUN_ID` display the rec
 seed, or `unknown` for historical records without one, never the current YAML's value:
 
 ```bash
-bash scripts/runpod_workflow.sh runs --experiment a-adaptive64 --seed 43
+bash scripts/runpod_workflow.sh runs --experiment a-direction64 --seed 43
 ```
 
 ```bash
@@ -4942,7 +5143,7 @@ options. Run these only on the cloud Pod.
    last-written CPU summary need not match stage/config, but profile, universe and content cannot
    be silently substituted.
 5. `alpha_quantiles` has shape `[B,15-h_start,3]` with q10 ≤ q50 ≤ q90.
-   `ranking_scores` is separate from median return; there are no classification probabilities or text.
+   `ranking_scores` is separate from median return; `direction64` adds dual three-class probabilities, not generated text.
 6. Inputs and train-only normalization exclude future data. Validation selects checkpoints and
    subsequently fits frozen interval calibration. Separate online diagnostics may only use
    matured past labels; never conflate them with frozen test results. Log train pinball,

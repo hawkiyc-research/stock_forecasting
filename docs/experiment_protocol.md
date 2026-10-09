@@ -11,8 +11,8 @@
 相對市場 benchmark 的 alpha 條件分布？
 
 本協定不把 validation Sharpe 或單次回測視為「可交易 alpha」的充分證據，也不把模型
-輸出直接當交易規則。技術指標 baseline 只用來衡量模型增量，不會加入 production
-model input 或 quant head。
+輸出直接當交易規則。技術指標 baseline 保留為對照；`direction64` 另將十個有定義的
+歷史技術通道輸入 Kronos predictor，不用 baseline 規則取代 backbone。
 
 ### 2. 固定假設與範圍
 
@@ -24,7 +24,7 @@ model input 或 quant head。
 - `h_start` 可設定為 1、2 或 3；horizons 是 `h_start` 到固定第 14 日。
 - label 固定為 benchmark-relative adjusted execution log return。
 - CAPM abnormal return 只作未來 diagnostic/ablation。
-- quantile 預測用 pinball；獨立 ranking score head 用同日排序輔助 loss。方向訊號只作後處理。
+- quantile 用 pinball，獨立 ranking head 用同日排序 loss；`direction64` 另有個股絕對／alpha 三分類 CE，原五級方向後處理仍保留。
 
 ### 3. 模型假說
 
@@ -88,7 +88,7 @@ validation/test 來源，完整循序評估。詳細清理門檻及年度衰減�
 | train 樣本 | 動態年度加權取樣；每 epoch 呈現有效數的 5%，上限 500,000 | 動態年度加權取樣；每 epoch 呈現次數等於有效 train 數 |
 | epoch 上限 | 2 | 5 |
 | validation cadence | 每個 epoch 的 20%／40%／60%／80%／100% | 同左 |
-| early stopping | normalized pinball validation loss 連續 5 次未改善，且完成最低 LR 的兩個訓練間隔；第 1 epoch 起生效 | 同左 |
+| early stopping | 設定的 validation monitor 連續 5 次未改善，且完成最低 LR 的兩個訓練間隔；第 1 epoch 起生效。原有實驗用 normalized pinball，`direction64` 用固定加權的 pinball＋雙 CE | 同左 |
 | retention | validation 最佳 5 個完整 checkpoints，加上 completion result | 同左 |
 | validation/test | 完整有效 windows，不抽樣 | 同左 |
 | 模型架構 | Kronos-base + LoRA + shared resampler + conditioner + alpha head | 完全相同 |
@@ -105,7 +105,7 @@ script smoke 當成額外訓練資料。
 
 主 objective 是 q10/q50/q90 pinball loss。每個 horizon 以 train-only robust scale
 正規化後等權平均；training 另加獨立 ranking head 的同日排序 loss（預設權重 0.05），
-不直接把 q50 當排序 score。validation selection 只使用未校準的 normalized pinball：
+不直接把 q50 當排序 score。原有實驗的 validation selection 使用未校準 normalized pinball：
 
 ```text
 scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
@@ -114,7 +114,16 @@ selection_score = mean_h(normalized_pinball_h), h=h_start,...,14
 
 為保留既有 RunPod checkpoint monitor 路徑，aggregate score 同時寫在
 `primary_5d/selection_score`；它仍涵蓋全部 horizons，不是只有 5 日。checkpoint
-selection mode 固定為 `min`。沒有 classification loss 或 loss-weight search。
+selection mode 固定為 `min`。
+
+`direction64` 以原 LoRA64 設定為基礎，加成本帶三分類、horizon query、十技術通道與
+表徵擾動 regularization。台股 1,000 股、美股直接券商 50 股；成本只依 cutoff 已知價格
+估計。完整公式、文獻與費率來源見 [README 模型架構](../README.md#model-zh)。
+先用最多 1,024 筆 train-only windows 量測 `sQ,sAbs,sAlpha`，固定後訓練：
+`pinball + (sQ/sAbs)*CE_abs + (sQ/sAlpha)*CE_alpha + 0.05*ranking + 0.05*sQ*adversarial`。
+各 horizon 等權。Checkpoint monitor 改為 `direction/selection_loss`，只含前三項，
+在完整 validation 上計算，不含擾動或 ranking regularizer。舊 pinball 監控欄位語意不變；
+reference 存 checkpoint，resume 不重新估計。Baseline 不更換 label 或目標、不需因此重訓。
 
 A/B 的 robust scales 各自由其 training labels 估計，數值可能不同；normalized
 pinball 適合各 run 內的選模，不能只憑其跨組大小判定 A/B 優劣。跨組報告須同時
@@ -142,7 +151,11 @@ market-weighted training pinball、sample-clock 衰減與較強 dropout／weight
 
 主要 selection metric：
 
-- all-horizon mean normalized pinball，lower is better。
+- 原有實驗：all-horizon mean normalized pinball；`direction64`：固定 reference 加權的 pinball＋雙 CE，皆越低越好。
+
+`direction64` 另報每個 horizon／市場／月份的兩個三分類 confusion matrix、accuracy、
+balanced accuracy、macro-F1、majority accuracy、up precision／recall／訊號比例。
+分類 precision 不等同回測獲利，三分類 accuracy 也不是舊 q50 二元方向一致率。
 
 每個 `h_start`–14 日 horizon 另報告：
 
@@ -182,7 +195,7 @@ Production Stage 1/2 不允許 `max_steps` 或固定 step cadence。optimizer bu
 target set、batch size、gradient accumulation 與 epoch 數推導，每個 epoch 固定做
 5 次 validation。每個可接受 checkpoint 必須：
 
-1. 由 validation `primary_5d/selection_score` 選出。
+1. 由完整 validation 選出：原有實驗看 `primary_5d/selection_score`；`direction64` 看 `direction/selection_loss`。
 2. 保存 trainable parameter union、optimizer、scheduler、RNG state 與 resolved config。
 3. 綁定 run ID、dataset artifacts、model architecture、Kronos source/model/tokenizer
    revisions 與 bounded training-source digest。
@@ -260,7 +273,8 @@ baselines?
 
 Validation Sharpe or one backtest is not sufficient proof of tradable alpha,
 and model output is not a complete trading rule. Technical baselines measure
-incremental model value; they do not enter production inputs or the alpha head.
+incremental model value. `direction64` separately injects ten explicitly defined historical
+technical channels into the Kronos predictor without replacing it with baseline rules.
 
 ### 2. Fixed assumptions and scope
 
@@ -272,7 +286,7 @@ incremental model value; they do not enter production inputs or the alpha head.
 - `h_start` is configurable as 1, 2, or 3; horizons run through fixed day 14.
 - Label fixed to benchmark-relative adjusted execution log return.
 - CAPM abnormal return reserved for a diagnostic/ablation.
-- Pinball trains quantiles; an independent score head receives same-day ranking loss. Direction is post-processing.
+- Pinball trains quantiles and an independent score head receives ranking loss; `direction64` adds absolute/alpha three-class CE while retaining five-level quantile post-processing.
 
 ### 3. Model hypothesis
 
@@ -330,7 +344,7 @@ no full windows/labels are stored and genuine extreme returns remain.
 | Train samples | Dynamic annual weighting; 5% of eligible count per epoch, capped at 500,000 | Dynamic annual weighting; presentations equal the full eligible count |
 | Epoch limit | 2 | 5 |
 | Validation cadence | 20%/40%/60%/80%/100% of every epoch | Same |
-| Early stopping | Five consecutive non-improving normalized-pinball validations and two training intervals at the minimum LR; active from epoch 1 | Same |
+| Early stopping | Five consecutive non-improving validations of the configured monitor and two training intervals at the minimum LR; active from epoch 1. Original presets use normalized pinball; `direction64` uses fixed-weight pinball plus both CEs | Same |
 | Retention | Best five full validation-ranked checkpoints plus completion result | Same |
 | Validation/test | Every eligible window, without subsampling | Same |
 | Architecture | Kronos-base + LoRA + shared resampler + conditioner + alpha head | Identical |
@@ -348,7 +362,7 @@ pretrained revisions so the Stage 1 smoke run is not hidden extra training.
 The primary objective is q10/q50/q90 pinball loss, equally averaged after
 train-only per-horizon normalization. Training adds same-day ranking loss through
 an independent score head (default weight 0.05), not directly through q50.
-Validation selection uses uncalibrated normalized pinball alone:
+Original presets select by uncalibrated normalized pinball:
 
 ```text
 scale_h = max(IQR_h, 1.4826 * MAD_h, 1e-4)
@@ -357,7 +371,17 @@ selection_score = mean_h(normalized_pinball_h), h=h_start,...,14
 
 The aggregate is also exposed at `primary_5d/selection_score` to preserve the
 stable RunPod checkpoint-monitor path. It still covers every horizon.
-Checkpoint mode is `min`. There is no classification loss or loss-weight search.
+Checkpoint mode is `min`.
+
+`direction64` starts from LoRA64 settings and adds cost-band classification, horizon queries,
+ten technical channels and representation regularization. Costs assume Taiwan 1,000-share
+lots and US direct-broker 50-share units, using cutoff-known prices only. Definitions and
+primary references are in [README architecture](../README.md#model-en).
+At most 1,024 train-only windows establish frozen `sQ,sAbs,sAlpha`. Training uses
+`pinball + (sQ/sAbs)*CE_abs + (sQ/sAlpha)*CE_alpha + 0.05*ranking + 0.05*sQ*adversarial`,
+with equal horizon weights. Full-validation `direction/selection_loss` includes only the
+first three terms; old pinball fields retain their meaning. Checkpoints persist references
+without refitting on resume. Baseline labels/objectives and cache validity do not change.
 
 A/B estimate robust scales from their own training labels, so those scales may
 differ. Normalized pinball supports within-run checkpoint selection, but its
@@ -386,7 +410,11 @@ and boundaries are documented in [README](../README.md#training-en).
 
 ### 9. Validation metrics
 
-Primary selection metric: all-horizon mean normalized pinball, lower is better.
+Selection metric: original presets minimize all-horizon normalized pinball; `direction64`
+minimizes fixed-reference pinball plus both CEs. It additionally reports absolute/alpha
+confusion matrices, accuracy, balanced accuracy, macro-F1, majority accuracy, up precision,
+recall and signal fraction by horizon, market and month. Classification precision is not
+realized trading profit, and three-class accuracy is not the old binary q50 sign agreement.
 
 For every horizon report raw/normalized pinball, q50 raw/normalized MAE, q50
 Pearson correlation, q50 sign agreement, q10–q90 coverage, width, and coverage

@@ -1068,7 +1068,12 @@ def build_lazy_datasets(
         validated_root=roots["test"],
         symbol_cache_size=worker_plan.symbol_cache_size_per_worker,
     )
-    return train_source, validation_dataset, test_dataset
+    from stock_forecasting.direction_data import with_direction_targets
+
+    return tuple(
+        with_direction_targets(source, config)
+        for source in (train_source, validation_dataset, test_dataset)
+    )
 
 
 def _explicit_runtime_batch_plan(config: ExperimentConfig) -> RuntimeBatchPlan:
@@ -1418,11 +1423,15 @@ def _uses_full_length_context(batch: dict[str, Any], prefix: str) -> bool:
 class ModelBatchCollator(FinancialBatchCollator):
     """Validate inputs and prepare deterministic membership before pinning/H2D."""
 
-    def __init__(self, *, validate_scales=False, extended_scales=False, prepare_ranking=True):
+    def __init__(
+        self, *, validate_scales=False, extended_scales=False,
+        prepare_ranking=True, direction_costs=None,
+    ):
         super().__init__()
         self.validate_scales = validate_scales
         self.extended_scales = extended_scales
         self.prepare_ranking = prepare_ranking
+        self.direction_costs = direction_costs
 
     @classmethod
     def for_model(cls, config, *, training):
@@ -1430,6 +1439,9 @@ class ModelBatchCollator(FinancialBatchCollator):
             validate_scales=config.model.feature_mode in ("scales", "combined"),
             extended_scales=config.model.explicit_output_scale,
             prepare_ranking=training and bool(config.model.ranking_loss_weight),
+            direction_costs=(
+                config.model.direction.costs if config.model.direction.enabled else None
+            ),
         )
 
     def estimated_batch_bytes(self, sample, batch_size):
@@ -1451,6 +1463,22 @@ class ModelBatchCollator(FinancialBatchCollator):
         from stock_forecasting.models.scale_features import validate_scale_feature_inputs
 
         batch = super().__call__(samples)
+        if self.direction_costs is not None:
+            from stock_forecasting.direction_costs import direction_cost_band
+
+            batch["target_absolute"] = torch.stack(
+                [sample["target_absolute"] for sample in samples]
+            )
+            bands = [
+                direction_cost_band(
+                    float(sample["asset_series"][-1, 3]), sample["market"],
+                    sample["asset_type"], sample["symbol"], self.direction_costs,
+                ) for sample in samples
+            ]
+            batch["direction_bands"] = torch.tensor(
+                [[band["lower_log_return"], band["upper_log_return"]] for band in bands],
+                dtype=torch.float32,
+            )
         if self.validate_scales:
             if not torch.equal(batch["asset_attention_mask"], batch["benchmark_attention_mask"]):
                 raise ValueError("Scale branch requires aligned asset and benchmark masks")
@@ -1491,7 +1519,10 @@ def _move_batch_to_device(
             device,
             non_blocking=non_blocking,
         )
-    for key in ("market_ids", "ranking_group_ids", "security_ids", "ranking_pairs"):
+    for key in (
+        "market_ids", "ranking_group_ids", "security_ids", "ranking_pairs",
+        "target_absolute", "direction_bands",
+    ):
         if key in batch:
             moved[key] = batch[key].to(device, non_blocking=non_blocking)
     for prefix in ("asset", "benchmark"):
@@ -1576,6 +1607,8 @@ def forward_batch(
         security_ids=securities,
         ranking_pairs=batch.get("ranking_pairs"),
         scale_inputs_validated=batch.get("scale_inputs_validated", False),
+        target_absolute=batch.get("target_absolute"),
+        direction_bands=batch.get("direction_bands"),
     )
 
 
@@ -2599,6 +2632,9 @@ def build_evaluation_loader(
         split,
         symbol_cache_size=workers.symbol_cache_size_per_worker,
     )
+    from stock_forecasting.direction_data import with_direction_targets
+
+    dataset = with_direction_targets(dataset, config)
     sample = dataset[0]
     plan = resolve_runtime_batch_plan(
         config,
@@ -2673,7 +2709,12 @@ def evaluate_loader(
 ) -> dict[str, Any]:
     from tempfile import TemporaryDirectory
 
+    from stock_forecasting.direction_runtime import DirectionMetrics
     from stock_forecasting.forecast_evaluation import ForecastEvaluationStore, market_macro_metrics
+
+    direction_metrics = (
+        DirectionMetrics(config.data.alpha_horizons) if config.model.direction.enabled else None
+    )
 
     if fit_interval_calibration and getattr(loader.dataset, "split", None) != "validation":
         raise ValueError("Interval calibration may only fit the validation split")
@@ -2710,6 +2751,8 @@ def evaluate_loader(
                 for batch in iter_device_batches(loader, device):
                     with _autocast_context(config, device):
                         output = forward_batch(bundle, batch, config, device)
+                    if direction_metrics is not None:
+                        direction_metrics.append(output, batch)
                     store.append(
                         batch["target_alpha"].detach().float().cpu().numpy(),
                         output.alpha_quantiles.detach().float().cpu().numpy(),
@@ -2746,6 +2789,10 @@ def evaluate_loader(
                 inference_seconds = time.perf_counter() - started
                 metrics = store.finish(signal_threshold=config.model.postprocess_alpha_threshold)
                 metrics["market_macro"] = market_macro_metrics(metrics)
+                if direction_metrics is not None:
+                    metrics["direction"] = direction_metrics.finish(
+                        bundle.model.direction_head, config.model.direction.costs
+                    )
                 if config.model.independent_ranking_head:
                     metrics["independent_ranking"] = store.ranking_metrics()
                 if fit_interval_calibration:
@@ -3597,6 +3644,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 else None
             ),
             "loss_definition": (
+                "train=normalized_pinball+reference_scaled_absolute_CE+reference_scaled_alpha_CE"
+                "+weighted_ranking+representation_regularization; "
+                "validation=normalized_pinball+fixed_reference_scaled_direction_CE"
+                if config.model.direction.enabled else
                 "train=market_weighted_normalized_pinball+weighted_ranking; "
                 "validation=unweighted_normalized_pinball"
             ),
@@ -3634,6 +3685,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
     accumulated_pinball_sum: Tensor | None = None
     accumulated_ranking_sum: Tensor | None = None
     accumulated_weighted_pinball_sum: Tensor | None = None
+    direction_loss_sums: dict[str, Tensor] = {}
     accumulated_loss_count = 0
     accumulated_microbatch_samples = 0
     processed_train_samples = 0
@@ -3725,6 +3777,15 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
         if runtime_global_step > runtime_configured_steps:
             raise ValueError("Mapped resume checkpoint exceeds the runtime training budget")
 
+        if bundle.model.direction_head is not None and config.training.resume_checkpoint is None:
+            from stock_forecasting.direction_runtime import calibrate_direction_references
+
+            calibrate_direction_references(
+                bundle, config, train_dataset, device, worker_plan, batch_plan
+            )
+            tracking.log(
+                {"direction/loss_reference": bundle.model.direction_head.reference_state()}, step=0
+            )
         optimizer.zero_grad(set_to_none=True)
         bundle.model.train()
         stop_training = (
@@ -3766,6 +3827,16 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                         else accumulated_loss_sum + detached_loss
                     )
                     accumulated_loss_count += 1
+                    if bundle.model.direction_head is not None:
+                        for name in (
+                            "absolute_direction_loss", "alpha_direction_loss",
+                            "direction_weighted_loss", "representation_loss",
+                        ):
+                            value = getattr(output, name)
+                            if value is not None:
+                                direction_loss_sums[name] = (
+                                    direction_loss_sums.get(name, 0) + value.detach()
+                                )
                     pinball = output.pinball_loss.detach()
                     ranking = (
                         output.ranking_loss.detach()
@@ -3817,6 +3888,18 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     throughput_seconds = time.perf_counter() - throughput_started
                     tracking.log(
                         {
+                            **{
+                                f"train/{name}": float((value / accumulated_loss_count).cpu())
+                                for name, value in direction_loss_sums.items()
+                            },
+                            **({
+                                f"train/direction_weight_{name}": float(value)
+                                for name, value in zip(
+                                    ("absolute", "alpha"),
+                                    bundle.model.direction_head.weights().detach().cpu().tolist(),
+                                    strict=True,
+                                )
+                            } if bundle.model.direction_head is not None else {}),
                             "train/loss": logged_loss,
                             "train/pinball_loss": float(
                                 (accumulated_pinball_sum / accumulated_loss_count).cpu()
@@ -3864,6 +3947,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     accumulated_pinball_sum = None
                     accumulated_ranking_sum = None
                     accumulated_weighted_pinball_sum = None
+                    direction_loss_sums.clear()
                     accumulated_loss_count = 0
                     throughput_started = time.perf_counter()
                     throughput_start_samples = processed_train_samples

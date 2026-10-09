@@ -51,13 +51,18 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "models/ranking.py",
 )
 
+DIRECTION_IMPLEMENTATION_PATHS = (
+    "direction_costs.py", "direction_data.py", "direction_runtime.py",
+    "models/direction.py", "models/technical_channels.py",
+)
+
 
 def training_implementation_contract() -> dict[str, Any]:
     """Fingerprint the bounded source set that defines quant training semantics."""
 
     package_root = Path(__file__).resolve().parent
     files: dict[str, str] = {}
-    for relative_path in TRAINING_IMPLEMENTATION_PATHS:
+    for relative_path in (*TRAINING_IMPLEMENTATION_PATHS, *DIRECTION_IMPLEMENTATION_PATHS):
         source = package_root / relative_path
         if not source.is_file():
             raise FileNotFoundError(f"Training implementation file is missing: {source}")
@@ -148,6 +153,7 @@ def _validated_implementation_files(
         or not set(TRAINING_IMPLEMENTATION_PATHS) <= set(files)
         or set(files)
         - set(TRAINING_IMPLEMENTATION_PATHS)
+        - set(DIRECTION_IMPLEMENTATION_PATHS)
         - {"baseline_contract.py", "run_contract.py", "run_paths.py"}
         or any(
             not isinstance(path, str)
@@ -164,7 +170,11 @@ def _validated_implementation_files(
     # Historical snapshots included control-plane path validators/readers. Their storage
     # layout/validation code does not define model, data, loss or optimizer math.
     # Validate the original snapshot above, then compare only numerical sources.
-    return {path: files[path] for path in TRAINING_IMPLEMENTATION_PATHS}
+    return {
+        path: files[path]
+        for path in (*TRAINING_IMPLEMENTATION_PATHS, *DIRECTION_IMPLEMENTATION_PATHS)
+        if path in files
+    }
 
 
 def _checkpoint_retention_migration_matches(
@@ -187,7 +197,10 @@ def _checkpoint_retention_migration_matches(
         current_contract.get("training_implementation"),
         label="Current training resume contract",
     )
-    changed_files = {path for path in stored_files if stored_files[path] != current_files[path]}
+    changed_files = {
+        path for path in set(stored_files) | set(current_files)
+        if stored_files.get(path) != current_files.get(path)
+    }
     if not changed_files:
         return True
     for migration in CHECKPOINT_RETENTION_MIGRATIONS:
@@ -255,15 +268,12 @@ def readonly_checkpoint_contract_digest(
     config: ExperimentConfig,
     run_manifest: dict[str, Any],
 ) -> str:
-    """Permit legacy inference/probes without authorizing a training-code migration.
+    """Validate saved semantics for read-only loading, never authorize resume.
 
-    The original model, data, stage, artifacts, and resolved settings must still
-    match. Only a legacy baseline can use this compatibility path; new fixed-date
-    runs retain the strict implementation contract.
+    Source fingerprints describe the original training, not a ban on loading its
+    unchanged architecture after an additive opt-in model release. Optimizer
+    loading still uses the strict training-resume contract in load_checkpoint.
     """
-
-    if config.data.fixed_split is not None or config.model.feature_mode != "baseline":
-        return compatible_training_resume_contract_digest(config, run_manifest)
     stored = run_manifest.get("training_resume_contract")
     digest = run_manifest.get("training_resume_contract_sha256")
     if not isinstance(stored, dict) or _canonical_payload_digest(stored) != digest:

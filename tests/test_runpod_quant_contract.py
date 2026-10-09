@@ -1049,8 +1049,9 @@ def test_download_defaults_to_all_retained_checkpoints_and_can_select_best() -> 
     assert "list-objects-v2" not in download
 
 
+@pytest.mark.parametrize("monitor", ["primary_5d/selection_score", "direction/selection_loss"])
 def test_checkpoint_download_names_follow_validated_retention_manifest(
-    tmp_path: Path,
+    tmp_path: Path, monitor: str,
 ) -> None:
     run_id = "download-contract-run"
     contract_digest = "a" * 64
@@ -1075,7 +1076,7 @@ def test_checkpoint_download_names_follow_validated_retention_manifest(
         "run_key": run_id,
         "training_resume_contract_sha256": contract_digest,
         "selection_source": "validation",
-        "monitor": "primary_5d/selection_score",
+        "monitor": monitor,
         "mode": "min",
         "save_top_k": 2,
         "transaction_id": transaction_id,
@@ -1088,7 +1089,7 @@ def test_checkpoint_download_names_follow_validated_retention_manifest(
         "run_key": run_id,
         "training_resume_contract_sha256": contract_digest,
         "selection_source": "validation",
-        "monitor": "primary_5d/selection_score",
+        "monitor": monitor,
         "mode": "min",
         "value": 0.4,
         "transaction_id": transaction_id,

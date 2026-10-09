@@ -21,7 +21,7 @@ def test_six_experiments_are_valid_and_controlled():
     configs = [
         ExperimentConfig.from_yaml(path)
         for path in sorted((ROOT / "configs/experiments").glob("[ab]_*.yaml"))
-        if "adaptive" not in path.name
+        if path.stem.split("_", 1)[1] in ("lora32", "lora64", "partial")
     ]
     assert len(configs) == 6
     assert len({c.model_architecture_digest() for c in configs}) == 3

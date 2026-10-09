@@ -6,14 +6,14 @@ import torch
 from torch import Tensor, nn
 
 from .forecast import GatedBenchmarkConditioner, MultiHorizonAlphaHead
-from .outputs import QuantEncoderOutput, QuantForecastOutput
+from .outputs import DirectionForecastOutput, QuantEncoderOutput, QuantForecastOutput
 from .projector import CausalPerceiverResampler
 from .ranking import same_date_ranking_loss
 from .scale_features import historical_scale_features
 
 
 class QuantForecastModel(nn.Module):
-    """Encode paired OHLCV histories and emit only continuous alpha quantiles."""
+    """Encode paired histories for alpha quantiles and optional direction supervision."""
 
     def __init__(
         self,
@@ -24,12 +24,14 @@ class QuantForecastModel(nn.Module):
         ranking_loss_weight: float = 0.0,
         ranking_max_pairs: int = 256,
         market_loss_weights: list[float] | None = None,
+        direction_head: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.resampler = resampler
         self.benchmark_conditioner = benchmark_conditioner
         self.alpha_head = alpha_head
+        self.direction_head = direction_head
         self.ranking_loss_weight = ranking_loss_weight
         self.ranking_max_pairs = ranking_max_pairs
         self.use_market_loss_weights = market_loss_weights is not None and any(
@@ -79,6 +81,8 @@ class QuantForecastModel(nn.Module):
         security_ids: Tensor | None = None,
         ranking_pairs: Tensor | None = None,
         scale_inputs_validated: bool = False,
+        target_absolute: Tensor | None = None,
+        direction_bands: Tensor | None = None,
     ) -> QuantForecastOutput:
         scales = None
         branch = self.alpha_head.numeric_branch
@@ -192,7 +196,44 @@ class QuantForecastModel(nn.Module):
             if ranking_loss is None
             else weighted_pinball + self.ranking_loss_weight * ranking_loss
         )
-        return QuantForecastOutput(
+        absolute_logits = alpha_logits = absolute_loss = alpha_loss = None
+        representation_loss = direction_weighted_loss = None
+        if self.direction_head is not None:
+            if market_ids is None or direction_bands is None:
+                raise ValueError("Direction predictions require market IDs and ex-ante cost bands")
+            head = self.direction_head
+            hidden = head.read(
+                asset_encoded.latent_tokens, benchmark_encoded.latent_tokens,
+                conditioned, market_ids, direction_bands,
+            )
+            absolute_logits, alpha_logits = head.logits(hidden)
+            if (target_alpha is None) != (target_absolute is None):
+                raise ValueError("Direction supervision requires both absolute and alpha labels")
+            if target_absolute is not None:
+                absolute_loss, alpha_loss, representation_loss = head.losses(
+                    hidden, (absolute_logits, alpha_logits),
+                    (target_absolute, target_alpha), direction_bands,
+                )
+                weights = head.weights()
+                direction_weighted_loss = weights[0] * absolute_loss + weights[1] * alpha_loss
+                total_loss = total_loss + direction_weighted_loss
+                if representation_loss is not None:
+                    total_loss = total_loss + (
+                        head.config.representation_weight
+                        * head.loss_references[0] * representation_loss
+                    )
+        direction_fields = {} if self.direction_head is None else {
+            "absolute_direction_logits": absolute_logits,
+            "alpha_direction_logits": alpha_logits,
+            "absolute_direction_loss": absolute_loss,
+            "alpha_direction_loss": alpha_loss,
+            "representation_loss": representation_loss,
+            "direction_weighted_loss": direction_weighted_loss,
+        }
+        output_type = (
+            QuantForecastOutput if self.direction_head is None else DirectionForecastOutput
+        )
+        return output_type(
             loss=total_loss,
             pinball_loss=pinball_loss,
             alpha_quantiles=alpha_quantiles,
@@ -208,4 +249,5 @@ class QuantForecastModel(nn.Module):
             ranking_scores=ranking_scores,
             weighted_pinball_loss=weighted_pinball,
             scale_features=scales,
+            **direction_fields,
         )

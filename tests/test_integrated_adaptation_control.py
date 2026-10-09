@@ -68,8 +68,8 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
 
     def test_new_presets_keep_old_presets_and_baseline_identity(self):
         names = SELECTION["EXPERIMENT_CONFIGS"]
-        expected = {f"{g}-{v}" for g in ("a", "b")
-                    for v in ("lora32", "lora64", "partial", "adaptive64", "adaptive128")}
+        variants = ("lora32", "lora64", "partial", "adaptive64", "adaptive128", "direction64")
+        expected = {f"{g}-{v}" for g in ("a", "b") for v in variants}
         self.assertEqual(set(names), expected)
         args = argparse.Namespace(stage="stage2", data_profile="us_tw_eodhd", dataset_revision="v1",
                                   start="2021-01-01", end="2026-06-01", h_start=1, universe="all",
@@ -77,7 +77,7 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
         original = SELECTION["_build_selection"](args, ROOT)
         for group in ("a", "b"):
             identities, datasets = set(), set()
-            for variant in ("lora32", "lora64", "partial", "adaptive64", "adaptive128"):
+            for variant in variants:
                 selected = SELECTION["_with_experiment"](original, f"{group}-{variant}", ROOT)
                 identities.add(BASELINE["baseline_contract"](ROOT, selected)["baseline_id"])
                 datasets.add(selected["dataset_request_sha256"])

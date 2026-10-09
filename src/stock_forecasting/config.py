@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -172,6 +173,48 @@ class KronosLoRAConfig(StrictModel):
         return targets
 
 
+class DirectionCostConfig(StrictModel):
+    """Frozen ex-ante fee scenario, not reconstructed historical brokerage bills."""
+
+    scenario: str = "listed_cash_2026_10_09"
+    taiwan_shares: int = Field(default=1000, ge=1000, multiple_of=1000)
+    us_shares: int = Field(default=50, ge=50, multiple_of=50)
+    taiwan_commission_rates: list[float] = Field(default_factory=lambda: [0.001425, 0.001425])
+    taiwan_minimum_commission: float = Field(default=20.0, ge=0.0)
+    taiwan_stock_sell_tax: float = Field(default=0.003, ge=0.0, lt=0.1)
+    taiwan_etf_tdr_sell_tax: float = Field(default=0.001, ge=0.0, lt=0.1)
+    us_ibkr_per_share: float = Field(default=0.005, ge=0.0)
+    us_ibkr_minimum: float = Field(default=1.0, ge=0.0)
+    us_ibkr_maximum_rate: float = Field(default=0.01, gt=0.0, lt=1.0)
+    us_schwab_commission: float = Field(default=0.0, ge=0.0)
+    us_sec_sell_rate: float = Field(default=0.0000206, ge=0.0, lt=0.1)
+    us_taf_per_share: float = Field(default=0.0, ge=0.0)
+    us_taf_cap: float = Field(default=9.79, ge=0.0)
+    us_cat_per_share: float = Field(default=0.000003, ge=0.0)
+    slippage_bps_per_side: float = Field(default=5.0, ge=0.0, le=100.0)
+
+    @field_validator("taiwan_commission_rates")
+    @classmethod
+    def validate_commissions(cls, values: list[float]) -> list[float]:
+        if not values or any(not math.isfinite(v) or not 0 <= v < 0.1 for v in values):
+            raise ValueError("Commission scenarios require finite non-negative rates below 10%")
+        return values
+
+
+class DirectionConfig(StrictModel):
+    """Opt-in dual three-class supervision on the A-LoRA64 architecture."""
+
+    enabled: bool = False
+    technical_channels: bool = True
+    attention_heads: int = Field(default=8, ge=1)
+    loss_reference_samples: int = Field(default=1024, ge=32, le=8192)
+    absolute_weight: float = Field(default=1.0, gt=0.0, le=10.0)
+    alpha_weight: float = Field(default=1.0, gt=0.0, le=10.0)
+    representation_weight: float = Field(default=0.05, ge=0.0, le=1.0)
+    representation_radius: float = Field(default=0.01, gt=0.0, le=0.1)
+    costs: DirectionCostConfig = Field(default_factory=DirectionCostConfig)
+
+
 class ModelConfig(StrictModel):
     """Shared Kronos encoder, benchmark conditioner, and alpha quantile head."""
 
@@ -209,9 +252,12 @@ class ModelConfig(StrictModel):
     ranking_loss_weight: float = Field(default=0.0, ge=0.0, le=0.2)
     ranking_max_pairs: int = Field(default=256, ge=1, le=4096)
     lora: KronosLoRAConfig = Field(default_factory=KronosLoRAConfig)
+    direction: DirectionConfig = Field(default_factory=DirectionConfig)
 
     @model_validator(mode="after")
     def validate_model_contract(self) -> ModelConfig:
+        if self.direction.enabled and self.encoder_dim % self.direction.attention_heads:
+            raise ValueError("encoder_dim must be divisible by direction.attention_heads")
         if self.encoder_dim % self.resampler_heads != 0:
             raise ValueError("encoder_dim must be divisible by resampler_heads")
         if self.encoder_dim % self.benchmark_conditioner_heads != 0:
@@ -271,6 +317,8 @@ class ModelConfig(StrictModel):
         """Hash only model semantics so Stage 1 and Stage 2 can be compared."""
 
         semantics = json.loads(self.model_dump_json())
+        if not self.direction.enabled:
+            semantics.pop("direction")
         # Preserve the architecture digest of existing baseline checkpoints.
         if self.feature_mode == "baseline":
             semantics.pop("feature_mode")
@@ -384,8 +432,13 @@ class TrainingConfig(StrictModel):
             self.warmup_samples is None or self.warmup_samples > self.sample_decay_start
         ):
             raise ValueError("sample_plateau requires warmup_samples <= sample_decay_start")
-        if not self.checkpoint_monitor.startswith("primary_5d/"):
-            raise ValueError("checkpoint_monitor must reference a validation primary_5d metric")
+        if (
+            not self.checkpoint_monitor.startswith("primary_5d/")
+            and self.checkpoint_monitor != "direction/selection_loss"
+        ):
+            raise ValueError(
+                "checkpoint_monitor must reference primary_5d or direction/selection_loss"
+            )
         if self.lora_learning_rate > self.learning_rate:
             raise ValueError("lora_learning_rate cannot exceed learning_rate")
         if self.early_stopping_enabled and self.early_stopping_start_epoch > self.epochs:
@@ -583,13 +636,17 @@ class ExperimentConfig(StrictModel):
                 raise ValueError("Production Stage 1/2 requires five validations per epoch")
             if self.training.checkpoint_save_top_k != 5:
                 raise ValueError("Production Stage 1/2 must retain the best five checkpoints")
+            expected_monitor = (
+                "direction/selection_loss" if self.model.direction.enabled
+                else "primary_5d/selection_score"
+            )
             if (
-                self.training.checkpoint_monitor != "primary_5d/selection_score"
+                self.training.checkpoint_monitor != expected_monitor
                 or self.training.checkpoint_mode != "min"
             ):
                 raise ValueError(
-                    "Production Stage 1/2 early stopping must minimize validation "
-                    "normalized pinball loss"
+                    f"Production Stage 1/2 early stopping must minimize {expected_monitor} "
+                    "(normalized pinball loss, plus fixed-weight direction CE when enabled)"
                 )
             if not self.training.early_stopping_enabled:
                 raise ValueError("Production Stage 1/2 requires validation-loss early stopping")
