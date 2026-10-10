@@ -161,6 +161,49 @@ class TelemetryTests(unittest.TestCase):
             self.assertIn("ControlPersist=90", command)
             self.assertTrue(command[command.index("-S") + 1].startswith("/tmp/rpg-"))
 
+    def test_invalid_proxy_reply_refreshes_to_direct_without_polling_api_each_time(self):
+        for raw in ("Error: Your SSH client doesn't support PTY", "<not_gpu/>"):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as name:
+                key = Path(name) / "key"
+                key.write_text("fixture, never read as a private key")
+                proxy = {
+                    "id": "pod-a", "desiredStatus": "RUNNING", "name": "experiment",
+                    "ssh": {"proxy": {
+                        "host": "ssh.runpod.io", "port": 22, "username": "pod-a",
+                    }},
+                }
+                direct = copy.deepcopy(proxy)
+                direct["ssh"]["direct"] = {
+                    "host": "127.0.0.1", "port": 12345, "username": "root",
+                }
+                replies = iter((proxy, direct))
+                now = [100.0]
+
+                def reply(command, **kwargs):
+                    if command[0] == "bash":
+                        return json.dumps(next(replies))
+                    if command[-1] == "nvidia-smi -q -x":
+                        return raw if command[-2].endswith("@ssh.runpod.io") else nvidia_xml()
+                    self.assertEqual(command[-3:-1], ["-O", "exit"])
+                    return ""
+
+                with patch.object(telemetry, "bounded_call", side_effect=reply) as call, \
+                        patch.object(telemetry.time, "monotonic", side_effect=lambda: now[0]):
+                    connection = telemetry.TelemetrySSH(ROOT, "pod-a", key)
+                    try:
+                        for elapsed in (0, 59, 60):
+                            now[0] = 100.0 + elapsed
+                            with self.assertRaises((ValueError, telemetry.ET.ParseError)):
+                                connection.sample()
+                            self.assertEqual(connection.base is None, elapsed == 60)
+                        self.assertEqual(connection.sample()[0]["uuid"], "GPU-fixture")
+                        self.assertEqual(connection.base[-1], "root@127.0.0.1")
+                        self.assertEqual(
+                            sum(item.args[0][0] == "bash" for item in call.call_args_list), 2
+                        )
+                    finally:
+                        connection.close()
+
 
 class DetectionTests(unittest.TestCase):
     def setUp(self):

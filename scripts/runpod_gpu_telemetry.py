@@ -279,8 +279,10 @@ class TelemetrySSH:
                     stop=self.stop,
                 )
             )
-        except (RuntimeError, TimeoutError):
+        except (RuntimeError, TimeoutError, ValueError, ET.ParseError):
             # Refresh a stale endpoint at most once per minute, not on every poll.
+            # A boot-time proxy may return a PTY error with exit status zero.
+            # Invalid telemetry must also allow switching to the ready direct port.
             if time.monotonic() - self.last_endpoint >= 60:
                 self.disconnect()
             raise
