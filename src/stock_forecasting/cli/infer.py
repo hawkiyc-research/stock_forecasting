@@ -316,17 +316,20 @@ def infer_observation(
     direction_costs = None
     direction_bands = None
     if config.model.direction.enabled:
-        from stock_forecasting.direction_costs import direction_cost_band
+        from stock_forecasting.direction_costs import direction_band_values, direction_cost_band
 
         length = int(observation.asset_attention_mask.sum())
         direction_costs = direction_cost_band(
             float(observation.asset_series[0, length - 1, 3]),
-            observation.metadata["market"], observation.asset_type, observation.symbol,
+            observation.metadata["market"],
+            observation.asset_type,
+            observation.symbol,
             config.model.direction.costs,
         )
         direction_bands = torch.tensor(
-            [[direction_costs["lower_log_return"], direction_costs["upper_log_return"]]],
-            device=device, dtype=torch.float32,
+            [direction_band_values(direction_costs)],
+            device=device,
+            dtype=torch.float32,
         )
     with _autocast_context(config, device):
         output = bundle.model(

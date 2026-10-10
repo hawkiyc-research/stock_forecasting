@@ -51,10 +51,13 @@ def direction_cost_band(
     else:
         raise ValueError(f"No direction cost scenario for market {market!r}")
     fraction = (2 * commission + regulatory) / notional + 2 * costs.slippage_bps_per_side / 10000
-    if not 0 <= fraction < 1:
-        raise ValueError("Round-trip cost must be below the entire order notional")
+    if not math.isfinite(fraction) or fraction < 0:
+        raise ValueError("Round-trip cost must be finite and nonnegative")
     return {
-        "lower_log_return": math.log1p(-fraction),
+        # A positive gross return cannot fall below 1-c when c >= 1.
+        # Keep the upward hurdle exact; null makes the unreachable lower
+        # boundary explicit in JSON without emitting non-standard Infinity.
+        "lower_log_return": math.log1p(-fraction) if fraction < 1 else None,
         "upper_log_return": math.log1p(fraction),
         "round_trip_fraction": fraction,
         "shares": quantity,
@@ -62,3 +65,9 @@ def direction_cost_band(
         "currency": "USD" if market == "US" else "TWD",
         "scenario": costs.scenario,
     }
+
+
+def direction_band_values(band: dict) -> tuple[float, float]:
+    """Use an unreachable lower threshold for tensor/array label comparisons."""
+    lower = band["lower_log_return"]
+    return (-math.inf if lower is None else lower, band["upper_log_return"])

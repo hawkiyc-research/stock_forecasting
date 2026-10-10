@@ -196,6 +196,48 @@ def test_real_kronos_direction_gradient_evaluation_and_roundtrip(tmp_path, monke
         optimizer.step()
         scheduler.step(16)
         optimizer.zero_grad(set_to_none=True)
+    cost_boundary_checks = {}
+    if audit_path := os.environ.get("DIRECTION_QA_COST_AUDIT"):
+        audit = json.loads(Path(audit_path).read_text())
+        for split in ("train", "validation", "test"):
+            boundary_source = dataset(
+                train_root if split == "train" else evaluation_root,
+                train_index if split == "train" else evaluation_index,
+                split,
+            )
+            ordinals = [row["ordinal"] for row in audit["splits"][split]["examples"]][:16]
+            assert ordinals, f"No actual cost-boundary cases in the {split} audit"
+            boundary_subset = Subset(boundary_source, ordinals)
+            boundary_subset.split = split
+            boundary_loader = DataLoader(
+                boundary_subset,
+                batch_size=len(ordinals),
+                collate_fn=training.ModelBatchCollator.for_model(config, training=True),
+                pin_memory=True,
+                **training._loader_process_options(workers, persistent=False),
+            )
+            boundary_batch = training._move_batch_to_device(next(iter(boundary_loader)), device)
+            assert torch.isneginf(boundary_batch["direction_bands"][:, 0]).all()
+            bundle.model.train()
+            optimizer.zero_grad(set_to_none=True)
+            with training._autocast_context(config, device):
+                boundary_output = training.forward_batch(bundle, boundary_batch, config, device)
+            assert torch.isfinite(boundary_output.loss)
+            boundary_output.loss.backward()
+            assert all(torch.isfinite(p.grad).all() for p in parameters if p.grad is not None)
+            optimizer.zero_grad(set_to_none=True)
+            metrics = training.evaluate_loader(bundle, boundary_loader, config, device)
+            assert (
+                metrics["direction"]["overall"]["absolute"]["aggregate"]["count"]
+                == len(ordinals) * 14
+            )
+            cost_boundary_checks[split] = {
+                "samples": len(ordinals),
+                "finite_loss": float(boundary_output.loss.detach()),
+                "finite_backward": True,
+                "evaluation": metrics["direction"],
+            }
+            boundary_source.close()
     bundle.model.eval()
     with torch.inference_mode(), training._autocast_context(config, device):
         expected = training.forward_batch(bundle, batch, config, device)
@@ -264,6 +306,7 @@ def test_real_kronos_direction_gradient_evaluation_and_roundtrip(tmp_path, monke
         "optimizer_steps": 3,
         "evaluation_windows_per_split": 256,
         "runtime_batch_plan": runtime_batch_plan,
+        "cost_boundary_checks": cost_boundary_checks,
         "evaluation": evaluation,
         "peak_vram_bytes": torch.cuda.max_memory_allocated(),
     }

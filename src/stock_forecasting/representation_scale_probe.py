@@ -276,19 +276,26 @@ def extract_probe_split(
             direction_arguments = {}
             head = getattr(model, "direction_head", None)
             if head is not None:
-                from stock_forecasting.direction_costs import direction_cost_band
+                from stock_forecasting.direction_costs import (
+                    direction_band_values,
+                    direction_cost_band,
+                )
 
                 # Direction inference needs only cutoff-known costs, never forward labels.
                 bands = [
                     direction_cost_band(float(price), market, kind, symbol, head.config.costs)
                     for price, market, kind, symbol in zip(
-                        batch["asset_series"][:, -1, 3], batch["market"],
-                        batch["asset_type"], batch["symbol"], strict=True,
+                        batch["asset_series"][:, -1, 3],
+                        batch["market"],
+                        batch["asset_type"],
+                        batch["symbol"],
+                        strict=True,
                     )
                 ]
                 direction_arguments["direction_bands"] = torch.tensor(
-                    [[band["lower_log_return"], band["upper_log_return"]] for band in bands],
-                    dtype=torch.float32, device=device,
+                    [direction_band_values(band) for band in bands],
+                    dtype=torch.float32,
+                    device=device,
                 )
             with autocast:
                 output = model(

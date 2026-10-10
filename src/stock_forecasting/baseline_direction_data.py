@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from stock_forecasting.direction_costs import direction_cost_band
+from stock_forecasting.direction_costs import direction_band_values, direction_cost_band
 
 
 def direction_array_batch(source, indices, costs):
@@ -51,10 +51,7 @@ def direction_array_batch(source, indices, costs):
                 str(metadata[0]),
                 costs,
             )
-            result["direction_bands"][position] = (
-                band["lower_log_return"],
-                band["upper_log_return"],
-            )
+            result["direction_bands"][position] = direction_band_values(band)
             result["metadata"][position] = metadata
     return result
 

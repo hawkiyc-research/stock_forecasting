@@ -184,7 +184,7 @@ def build_tabular_cache(
             for batch in iterator:
                 stop = offset + len(batch.targets)
                 arrays["features"][offset:stop] = (
-                    np.column_stack((batch.features, batch.direction_bands * 100))
+                    np.column_stack((batch.features, np.tanh(batch.direction_bands) * 100))
                     if direction.enabled
                     else batch.features
                 )

@@ -168,10 +168,16 @@ Kronos 初始化，不把舊 checkpoint 當作可直接接續的新架構。
 
 兩個方向 label 使用同一個 next-open／h-th-close 的 adjusted execution return：
 絕對方向用個股 log return；alpha 方向用個股減 benchmark log return。假設 ex-ante
-round-trip 成本比例為 `c`，`r < log(1-c)` 為 down，`r > log(1+c)` 為 up，邊界及中間
+round-trip 成本比例為 `0 ≤ c < 1`，`r < log(1-c)` 為 down，`r > log(1+c)` 為 up，邊界及中間
 皆為 neutral。Alpha 的成本帶代表要求相對優勢至少超過個股成本，不是兩腿避險的淨損益。
 大盤跌 8%、個股跌 4% 會得到 absolute down、alpha up；做多篩選不能只看 alpha up。
 Down 只表示不利變動，不表示已計入借券成本或可獲利放空。
+
+低價股票的最低費用可能使 `c ≥ 1`。這時保留原樣本與報酬，up 仍須超過
+`log(1+c)`，down 邊界不可達，其他有限報酬為 neutral；不刪除樣本，也不把成本壓到 100% 以下。
+對外 JSON 的 `lower_log_return` 為 `null`，內部標籤比較使用負無限大。
+模型與 GBDT 的成本特徵使用 `100 × tanh(log 門檻)` 保持有限；這只轉換預測輸入，
+不改精確分類門檻、alpha 分位數或真實極端報酬。
 
 成本設定在 `model.direction.costs`，不在訓練時查詢券商網站：
 
@@ -2707,10 +2713,17 @@ New runs start from pinned pretrained Kronos, not an old checkpoint with a diffe
 
 Both labels retain next-open to h-th-close adjusted execution returns. Absolute direction
 uses the stock log return; alpha direction subtracts the benchmark log return. With estimated
-round-trip fraction `c`, returns below `log(1-c)` are down, above `log(1+c)` are up; boundaries
+round-trip fraction `0 <= c < 1`, returns below `log(1-c)` are down, above `log(1+c)` are up; boundaries
 and the interior are neutral. The alpha band is a minimum relative-edge hurdle, not a hedged
 portfolio P&L. A stock losing 4% against a benchmark losing 8% is absolute down but alpha up.
 Long screening must not rely on alpha up alone; down is not a profitable-short recommendation.
+
+Minimum fees can make `c >= 1` for very low-priced stocks. Keep those samples and returns:
+the up hurdle remains `log(1+c)`, the down boundary is unreachable, and other finite returns
+are neutral. Neither samples nor costs are clipped. Public JSON uses `null` for
+`lower_log_return`; internal label comparisons use negative infinity. Neural and GBDT cost
+covariates use `100 * tanh(log threshold)` to stay finite. This transforms predictor inputs
+only, not exact label thresholds, alpha quantiles, or genuine extreme returns.
 
 `model.direction.costs` freezes the scenario without brokerage API calls during training:
 

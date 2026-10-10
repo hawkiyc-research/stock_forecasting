@@ -1464,19 +1464,23 @@ class ModelBatchCollator(FinancialBatchCollator):
 
         batch = super().__call__(samples)
         if self.direction_costs is not None:
-            from stock_forecasting.direction_costs import direction_cost_band
+            from stock_forecasting.direction_costs import direction_band_values, direction_cost_band
 
             batch["target_absolute"] = torch.stack(
                 [sample["target_absolute"] for sample in samples]
             )
             bands = [
                 direction_cost_band(
-                    float(sample["asset_series"][-1, 3]), sample["market"],
-                    sample["asset_type"], sample["symbol"], self.direction_costs,
-                ) for sample in samples
+                    float(sample["asset_series"][-1, 3]),
+                    sample["market"],
+                    sample["asset_type"],
+                    sample["symbol"],
+                    self.direction_costs,
+                )
+                for sample in samples
             ]
             batch["direction_bands"] = torch.tensor(
-                [[band["lower_log_return"], band["upper_log_return"]] for band in bands],
+                [direction_band_values(band) for band in bands],
                 dtype=torch.float32,
             )
         if self.validate_scales:

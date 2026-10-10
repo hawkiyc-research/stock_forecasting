@@ -105,6 +105,31 @@ def test_direction_threshold_edges_and_market_falling_example():
 
 
 @pytest.mark.parametrize("device", DEVICES)
+def test_unreachable_down_band_preserves_up_labels_and_finite_head_gradients(device):
+    from stock_forecasting.direction_costs import direction_band_values, direction_cost_band
+    from stock_forecasting.models.direction import direction_cost_features
+
+    config = mock_config()
+    cost = direction_cost_band(0.000001, "US", "stock", "LOW.US", config.model.direction.costs)
+    bands = torch.tensor([direction_band_values(cost)], device=device, dtype=torch.float32)
+    targets = torch.tensor([[-100.0, 0.0, cost["upper_log_return"] + 0.1]], device=device)
+    assert direction_labels(targets, bands).tolist() == [[1, 1, 2]]
+    features = direction_cost_features(bands)
+    assert torch.isfinite(features).all() and (features.abs() <= 100).all()
+    head = DualDirectionHead(32, 3, config.model.direction, 0.0).to(device)
+    context = torch.randn(1, 4, 32, device=device, requires_grad=True)
+    hidden = head.read(
+        context, context, context, torch.zeros(1, dtype=torch.long, device=device), bands
+    )
+    logits = head.logits(hidden)
+    losses = head.losses(hidden, logits, (targets, targets), bands)
+    sum(value for value in losses if value is not None).backward()
+    assert all(torch.isfinite(value).all() for value in logits)
+    assert torch.isfinite(context.grad).all()
+    assert all(torch.isfinite(p.grad).all() for p in head.parameters() if p.grad is not None)
+
+
+@pytest.mark.parametrize("device", DEVICES)
 def test_direction_heads_gradients_regularization_and_inference(device):
     config = mock_config()
     bundle = build_model_bundle(config, torch.device(device))
@@ -182,7 +207,9 @@ def test_new_adapter_initialization_preserves_base_weights():
 
 
 def test_lazy_direction_targets_reuse_membership_and_adjusted_execution(
-    market_frame, tmp_path, monkeypatch,
+    market_frame,
+    tmp_path,
+    monkeypatch,
 ):
     from collections import Counter
 
@@ -208,7 +235,11 @@ def test_lazy_direction_targets_reuse_membership_and_adjusted_execution(
     )
     for split in ("train", "validation", "test"):
         source = LazyFinancialWindowDataset(
-            root, split=split, window_size=32, h_start=1, symbol_cache_size=2,
+            root,
+            split=split,
+            window_size=32,
+            h_start=1,
+            symbol_cache_size=2,
         )
         wrapper = pickle.loads(pickle.dumps(DirectionDataset(source)))
         assert len(wrapper) == len(source)
@@ -280,8 +311,12 @@ def test_streaming_metrics_do_not_hide_neutral_collapse():
     json.dumps(result, allow_nan=False)
 
 
+@pytest.mark.parametrize("low_price", [False, True])
 def test_inference_exports_both_direction_probabilities_without_changing_alpha(
-    market_frame, tmp_path, monkeypatch,
+    market_frame,
+    tmp_path,
+    monkeypatch,
+    low_price,
 ):
     from types import SimpleNamespace
 
@@ -292,20 +327,28 @@ def test_inference_exports_both_direction_probabilities_without_changing_alpha(
     checkpoint = tmp_path / "run-direction" / "checkpoint-000001"
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(
-        inference, "run_preflight",
+        inference,
+        "run_preflight",
         lambda *_args, **_kwargs: SimpleNamespace(require_success=lambda: None),
     )
     monkeypatch.setattr(inference, "resolve_checkpoint", lambda *_args, **_kwargs: checkpoint)
     monkeypatch.setattr(inference, "load_checkpoint", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(inference, "provenance_summary", lambda *_args: {})
     observation = inference.prepare_causal_observation(
-        market_frame, input_length=128, symbol="AAPL.US",
+        market_frame,
+        input_length=128,
+        symbol="AAPL.US",
     )
+    if low_price:
+        observation.asset_series[..., :4].mul_(1e-6)
     payload = inference.infer_observation(config, checkpoint, observation)
     direction = payload["direction"]
     assert direction["class_order"] == ["down", "neutral", "up"]
     assert direction["costs"]["shares"] == 50
     assert direction["costs"]["reference_price"] == float(observation.asset_series[0, -1, 3])
+    if low_price:
+        assert direction["costs"]["lower_log_return"] is None
+        assert direction["costs"]["round_trip_fraction"] >= 1
     for task in ("absolute", "alpha"):
         probabilities = direction[f"{task}_probabilities"]
         assert list(probabilities) == [str(h) for h in range(1, 15)]

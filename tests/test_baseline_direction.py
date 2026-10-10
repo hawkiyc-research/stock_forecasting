@@ -79,9 +79,30 @@ def test_numpy_labels_match_torch_including_edges_and_market_crash():
     assert numpy_direction_labels(np.asarray([[np.log(0.96) - np.log(0.92)]]), bands).item() == 2
 
 
+def test_unreachable_down_labels_and_cost_features_match_both_backends():
+    from stock_forecasting.models.direction import direction_cost_features
+
+    bands = np.asarray([[-np.inf, np.log(2)], [-0.005, 0.005]], dtype="float32")
+    targets = np.asarray([[-100, 0, 1], [-0.01, 0, 0.01]], dtype="float32")
+    np.testing.assert_array_equal(numpy_direction_labels(targets, bands), [[1, 1, 2], [0, 1, 2]])
+    np.testing.assert_array_equal(
+        numpy_direction_labels(targets, bands),
+        direction_labels(torch.tensor(targets), torch.tensor(bands)).numpy(),
+    )
+    np.testing.assert_allclose(
+        np.tanh(bands) * 100, direction_cost_features(torch.tensor(bands)).numpy(), rtol=1e-6
+    )
+
+
 @pytest.mark.parametrize("split", ["train", "validation", "test"])
-def test_lazy_baseline_labels_match_main_without_changing_membership(small_lazy_config, split):
+@pytest.mark.parametrize("unreachable_down", [False, True])
+def test_lazy_baseline_labels_match_main_without_changing_membership(
+    small_lazy_config, split, unreachable_down
+):
     config = enable(small_lazy_config)
+    if unreachable_down:
+        config.model.direction.costs.taiwan_minimum_commission = 1_000_000
+        config.model.direction.costs.us_schwab_commission = 1_000_000
     source = lazy_dataset(config, split)
     indices = [0, min(13, len(source) - 1), len(source) - 1]
     expected = DirectionDataset(source).__getitems__(indices)
@@ -98,6 +119,8 @@ def test_lazy_baseline_labels_match_main_without_changing_membership(small_lazy_
 
     batch = ModelBatchCollator.for_model(config, training=False)(expected)
     np.testing.assert_array_equal(arrays["direction_bands"], batch["direction_bands"].numpy())
+    if unreachable_down:
+        assert np.isneginf(arrays["direction_bands"][:, 0]).all()
     actual = NeuralBatchDataset(
         source, metadata=True, direction_costs=config.model.direction.costs
     ).__getitems__(indices)
@@ -107,6 +130,7 @@ def test_lazy_baseline_labels_match_main_without_changing_membership(small_lazy_
 
 
 @pytest.mark.parametrize("name", ["gru", "dlinear", "patchtst"])
+@pytest.mark.parametrize("unreachable_down", [False, True])
 @pytest.mark.parametrize(
     "device",
     [
@@ -116,7 +140,9 @@ def test_lazy_baseline_labels_match_main_without_changing_membership(small_lazy_
         ),
     ],
 )
-def test_dual_heads_backward_preserve_quantiles_and_save_restore(name, device, tmp_path):
+def test_dual_heads_backward_preserve_quantiles_and_save_restore(
+    name, device, tmp_path, unreachable_down
+):
     horizons = tuple(range(1, 15))
     base = {
         "gru": lambda: CausalGRUBaseline(horizons=horizons),
@@ -130,7 +156,11 @@ def test_dual_heads_backward_preserve_quantiles_and_save_restore(name, device, t
         "sequences": x,
         "target_alpha": torch.randn(4, 14, device=device) * 0.03,
         "target_absolute": torch.randn(4, 14, device=device) * 0.04,
-        "direction_bands": torch.tensor([[-0.005, 0.005]], device=device).expand(4, -1),
+        "direction_bands": torch.tensor(
+            [[-np.inf, np.log(2)]] if unreachable_down else [[-0.005, 0.005]],
+            device=device,
+            dtype=torch.float32,
+        ).expand(4, -1),
     }
     q, logits, loss, losses = forward_loss(
         model, batch, torch.ones(14, device=device) * 0.03, device
@@ -156,11 +186,19 @@ def test_dual_heads_backward_preserve_quantiles_and_save_restore(name, device, t
     assert model.reference_state()["samples"] == 32
 
 
-def test_direction_cache_full_resume_and_cpu_rules_trees(small_lazy_config, tmp_path, monkeypatch):
+@pytest.mark.parametrize("unreachable_down", [False, True])
+def test_direction_cache_full_resume_and_cpu_rules_trees(
+    small_lazy_config, tmp_path, monkeypatch, unreachable_down
+):
     import stock_forecasting.baseline_build as build
 
     config = enable(small_lazy_config)
     p = parameters()
+    if unreachable_down:
+        p["direction"]["costs"].update(
+            taiwan_minimum_commission=1_000_000, us_schwab_commission=1_000_000
+        )
+        config.model.direction = DirectionConfig(**p["direction"])
     root = tmp_path / "suite"
     cache = build_tabular_cache(config, root / "inputs", workers=2, batch_size=32)
     assert build_tabular_cache(config, root / "inputs", workers=2) == cache
@@ -171,6 +209,9 @@ def test_direction_cache_full_resume_and_cpu_rules_trees(small_lazy_config, tmp_
         arrays = open_tabular(root / "inputs", split)
         assert arrays["features"].shape == (count, 32)
         assert arrays["absolute_targets"].shape == (count, len(horizons))
+        assert np.isfinite(arrays["features"]).all()
+        if unreachable_down:
+            assert np.isneginf(arrays["direction_bands"][:, 0]).all()
     tree = root / "gbdt"
     tree.mkdir()
     original_save = build._save_pickle
@@ -255,10 +296,18 @@ def test_baseline_and_main_direction_metrics_match_including_extreme_logits():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Cloud CUDA")
-def test_direction_runtime_measures_joint_path_without_updating_weights(small_lazy_config):
+@pytest.mark.parametrize("unreachable_down", [False, True])
+def test_direction_runtime_measures_joint_path_without_updating_weights(
+    small_lazy_config, unreachable_down
+):
     from stock_forecasting.baseline_runtime import tune_baseline_runtime
 
     config, p = enable(small_lazy_config), parameters()
+    if unreachable_down:
+        p["direction"]["costs"].update(
+            taiwan_minimum_commission=1_000_000, us_schwab_commission=1_000_000
+        )
+        config.model.direction = DirectionConfig(**p["direction"])
     source = lazy_dataset(config, "train")
     model = DirectionalBaseline(
         DLinearBaseline(config.data.input_length, horizons=tuple(config.data.alpha_horizons)),

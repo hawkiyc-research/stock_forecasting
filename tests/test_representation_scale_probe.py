@@ -308,14 +308,20 @@ def test_invalid_settings_fail_before_execution(kwargs: dict[str, Any]) -> None:
         ScaleProbeSettings(**kwargs)
 
 
-@pytest.mark.parametrize("direction", [False, True])
+@pytest.mark.parametrize(
+    "direction,unreachable_down", [(False, False), (True, False), (True, True)]
+)
 def test_mock_checkpoint_extraction_preserves_weights_and_checkpoint_files(
     tmp_path: Path,
     scale_store: Path,
     direction: bool,
+    unreachable_down: bool,
 ) -> None:
     config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
     config.model.direction.enabled = direction
+    if unreachable_down:
+        config.model.direction.costs.taiwan_minimum_commission = 1_000_000
+        config.model.direction.costs.us_schwab_commission = 1_000_000
     monitor = "direction/selection_loss" if direction else "primary_5d/selection_score"
     config.training.checkpoint_monitor = monitor
     config.data.input_length = 64

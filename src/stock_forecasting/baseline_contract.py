@@ -136,7 +136,10 @@ def baseline_contract(project: Path, selection: dict) -> dict:
     if parameters.get("direction", {}).get("enabled"):
         definitions = {}
         for relative, names in (
-            ("models/direction.py", {"direction_labels", "classification_loss"}),
+            (
+                "models/direction.py",
+                {"direction_labels", "direction_cost_features", "classification_loss"},
+            ),
             ("direction_runtime.py", {"DirectionMetrics"}),
         ):
             tree = ast.parse((project / "src/stock_forecasting" / relative).read_text())

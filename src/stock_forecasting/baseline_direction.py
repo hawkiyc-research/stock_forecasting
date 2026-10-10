@@ -11,7 +11,11 @@ from torch import nn
 
 from stock_forecasting.baselines import _normalized_pinball_torch
 from stock_forecasting.direction_runtime import DirectionMetrics
-from stock_forecasting.models.direction import classification_loss, direction_labels
+from stock_forecasting.models.direction import (
+    classification_loss,
+    direction_cost_features,
+    direction_labels,
+)
 
 
 class DirectionalBaseline(nn.Module):
@@ -36,7 +40,7 @@ class DirectionalBaseline(nn.Module):
         moments = torch.cat(
             (sequences.mean(2).flatten(1), sequences.std(2, unbiased=False).flatten(1)), 1
         )
-        features = torch.cat((hidden, moments, bands.to(hidden.dtype) * 100), 1)
+        features = torch.cat((hidden, moments, direction_cost_features(bands).to(hidden.dtype)), 1)
         shape = (len(sequences), len(self.base.horizons), 3)
         return (
             quantiles,

@@ -17,6 +17,11 @@ def direction_labels(targets: Tensor, bands: Tensor) -> Tensor:
     return torch.where(targets < bands[:, 0:1], 0, torch.where(targets > bands[:, 1:2], 2, 1))
 
 
+def direction_cost_features(bands: Tensor) -> Tensor:
+    """Bound predictor covariates, never the exact label thresholds or returns."""
+    return bands.tanh() * 100
+
+
 def classification_loss(logits: Tensor, labels: Tensor) -> Tensor:
     return F.cross_entropy(logits.float().reshape(-1, 3), labels.reshape(-1))
 
@@ -56,7 +61,9 @@ class DualDirectionHead(nn.Module):
         query = (
             self.query.weight[None]
             + self.market(market_ids)[:, None]
-            + self.cost_projection(bands.to(self.cost_projection.weight.dtype) * 100)[:, None]
+            + self.cost_projection(
+                direction_cost_features(bands).to(self.cost_projection.weight.dtype)
+            )[:, None]
         )
         hidden, _ = self.attention(query, context, context, need_weights=False)
         return self.norm(query + hidden)
