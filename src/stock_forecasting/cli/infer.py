@@ -371,7 +371,8 @@ def infer_observation(
                 calibration,
                 volatility=(
                     volatility_ratio(output.scale_features.detach().float().cpu().numpy())
-                    if calibration["schema_version"] == 2 else None
+                    if calibration["schema_version"] == 2
+                    else None
                 ),
             )
             calibrated_forecast = _forecast_payload(
@@ -381,7 +382,8 @@ def infer_observation(
                 signal_threshold=config.model.postprocess_alpha_threshold,
             )
             calibration_status = (
-                "validation_fitted_frozen_regime" if calibration["schema_version"] == 2
+                "validation_fitted_frozen_regime"
+                if calibration["schema_version"] == 2
                 else "validation_fitted"
             )
     return {
@@ -409,40 +411,58 @@ def infer_observation(
                 "schema_version": 1,
                 "class_order": ["down", "neutral", "up"],
                 "costs": direction_costs,
-                "absolute_probabilities": dict(zip(
-                    map(str, config.data.alpha_horizons),
-                    output.absolute_direction_logits.softmax(-1)[0].float().cpu().tolist(),
-                    strict=True,
-                )),
-                "alpha_probabilities": dict(zip(
-                    map(str, config.data.alpha_horizons),
-                    output.alpha_direction_logits.softmax(-1)[0].float().cpu().tolist(),
-                    strict=True,
-                )),
-                **({
-                    "schema_version": 2,
-                    "probability_source": "population_logits",
-                    "balanced_decisions": {
-                        "source": "history_residual_logits_without_train_prior",
-                        "absolute": dict(zip(
-                            map(str, config.data.alpha_horizons),
-                            output.absolute_direction_decision_logits.argmax(-1)[0].cpu().tolist(),
-                            strict=True,
-                        )),
-                        "alpha": dict(zip(
-                            map(str, config.data.alpha_horizons),
-                            output.alpha_direction_decision_logits.argmax(-1)[0].cpu().tolist(),
-                            strict=True,
-                        )),
-                    },
-                    "train_prior": bundle.model.direction_head.reference_state()["priors"],
-                } if getattr(output, "absolute_direction_decision_logits", None) is not None else {}),
+                "absolute_probabilities": dict(
+                    zip(
+                        map(str, config.data.alpha_horizons),
+                        output.absolute_direction_logits.softmax(-1)[0].float().cpu().tolist(),
+                        strict=True,
+                    )
+                ),
+                "alpha_probabilities": dict(
+                    zip(
+                        map(str, config.data.alpha_horizons),
+                        output.alpha_direction_logits.softmax(-1)[0].float().cpu().tolist(),
+                        strict=True,
+                    )
+                ),
+                **(
+                    {
+                        "schema_version": 2,
+                        "probability_source": "population_logits",
+                        "balanced_decisions": {
+                            "source": "history_residual_logits_without_train_prior",
+                            "absolute": dict(
+                                zip(
+                                    map(str, config.data.alpha_horizons),
+                                    output.absolute_direction_decision_logits.argmax(-1)[0]
+                                    .cpu()
+                                    .tolist(),
+                                    strict=True,
+                                )
+                            ),
+                            "alpha": dict(
+                                zip(
+                                    map(str, config.data.alpha_horizons),
+                                    output.alpha_direction_decision_logits.argmax(-1)[0]
+                                    .cpu()
+                                    .tolist(),
+                                    strict=True,
+                                )
+                            ),
+                        },
+                        "train_prior": bundle.model.direction_head.reference_state()["priors"],
+                    }
+                    if getattr(output, "absolute_direction_decision_logits", None) is not None
+                    else {}
+                ),
                 "interpretation": (
                     "Absolute up exceeds the estimated cash round-trip hurdle; alpha up is "
                     "relative outperformance, not guaranteed absolute profit. "
                     "Down is not a short-sale recommendation."
                 ),
-            } if getattr(output, "absolute_direction_logits", None) is not None else None
+            }
+            if getattr(output, "absolute_direction_logits", None) is not None
+            else None
         ),
         "interval_calibration_status": calibration_status,
         "ranking_scores": (

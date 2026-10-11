@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import re
 import shlex
 import unittest
@@ -25,8 +26,7 @@ SETTINGS = {
 }
 SOURCES = (
     "https://research.google/pubs/long-tail-learning-via-logit-adjustment/",
-    "https://proceedings.neurips.cc/paper/2020/hash/"
-    "3fe78a8acf5fda99de95303940a2420c-Abstract.html",
+    "https://proceedings.neurips.cc/paper/2020/hash/3fe78a8acf5fda99de95303940a2420c-Abstract.html",
 )
 
 
@@ -35,7 +35,8 @@ def config_fields() -> dict[str, object]:
     source = (ROOT / "src/stock_forecasting/config.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     direction = next(
-        node for node in tree.body
+        node
+        for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "DirectionConfig"
     )
     fields = {}
@@ -50,10 +51,8 @@ def config_fields() -> dict[str, object]:
         ):
             value = next((key.value for key in value.keywords if key.arg == "default"), None)
         if value is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 fields[node.target.id] = ast.literal_eval(value)
-            except (TypeError, ValueError):
-                pass
     return fields
 
 
@@ -71,7 +70,8 @@ class DirectionV2DocumentationTests(unittest.TestCase):
     def test_new_and_retained_experiments_are_documented_in_both_languages(self) -> None:
         registry = ast.parse((ROOT / "scripts/runpod_selection.py").read_text(encoding="utf-8"))
         literals = {
-            node.value for node in ast.walk(registry)
+            node.value
+            for node in ast.walk(registry)
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
         }
         self.assertIn("direction64", literals)
@@ -90,7 +90,7 @@ class DirectionV2DocumentationTests(unittest.TestCase):
 
     def test_new_config_fields_have_bilingual_parameter_rows(self) -> None:
         fields = config_fields()
-        self.assertTrue(SETTINGS <= fields.keys())
+        self.assertTrue(fields.keys() >= SETTINGS)
         for language, text in self.documents["README.md"].items():
             rows = {
                 match.group(1): match.group(2)
@@ -113,8 +113,15 @@ class DirectionV2DocumentationTests(unittest.TestCase):
             for language, text in languages.items():
                 with self.subTest(document=relative, language=language):
                     for marker in (
-                        "softmax(z)", "argmax(f)", "balanced_decision", "raw accuracy",
-                        "CE(z)", "log(3)", "PCGrad", "512 MiB", "LoRA numel",
+                        "softmax(z)",
+                        "argmax(f)",
+                        "balanced_decision",
+                        "raw accuracy",
+                        "CE(z)",
+                        "log(3)",
+                        "PCGrad",
+                        "512 MiB",
+                        "LoRA numel",
                     ):
                         self.assertIn(marker, text)
                     for source in SOURCES:
@@ -123,11 +130,14 @@ class DirectionV2DocumentationTests(unittest.TestCase):
     def test_final_market_weight_cap_and_inference_class_indices_are_explicit(self) -> None:
         source = (ROOT / "src/stock_forecasting/cli/infer.py").read_text(encoding="utf-8")
         literals = {
-            node.value for node in ast.walk(ast.parse(source))
+            node.value
+            for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.Constant) and isinstance(node.value, str)
         }
         for marker in (
-            "probability_source", "population_logits", "balanced_decisions",
+            "probability_source",
+            "population_logits",
+            "balanced_decisions",
             "history_residual_logits_without_train_prior",
         ):
             self.assertIn(marker, literals)
@@ -136,8 +146,12 @@ class DirectionV2DocumentationTests(unittest.TestCase):
                 with self.subTest(document=relative, language=language):
                     for marker in (
                         "w_m=min(k/p_m, market_weight_max)",
-                        "sum(p_m*w_m)=1", 'probability_source="population_logits"',
-                        "balanced_decisions.absolute", "0=down", "1=neutral", "2=up",
+                        "sum(p_m*w_m)=1",
+                        'probability_source="population_logits"',
+                        "balanced_decisions.absolute",
+                        "0=down",
+                        "1=neutral",
+                        "2=up",
                         "history_residual_logits_without_train_prior",
                     ):
                         self.assertIn(marker, text)
@@ -175,7 +189,7 @@ class DirectionV2DocumentationTests(unittest.TestCase):
                     self.assertIn("seed 59", text)
                     self.assertRegex(text, r"20 (?:個\s+)?confidence bins")
                     self.assertIn("4,096", text)
-                    self.assertIn("28 × LoRA numel", text)
+                    self.assertIn("28 \u00d7 LoRA numel", text)
                     if language == "zh":
                         self.assertIn("不執行模型 forward", text.replace("未訓練", ""))
                         self.assertTrue(

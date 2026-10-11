@@ -2065,7 +2065,10 @@ bash scripts/runpod_workflow.sh gpu-notify-test
 每個 run 的 `metrics.jsonl`、`summary.json` 與 W&B 保存 training loss、pinball、
 market-weighted pinball、ranking loss、各學習率、已處理樣本數與完整 validation 指標。
 整合實驗的 `train/loss` 不等於未加權 `train/pinball_loss`；加權部分另記為
-`train/weighted_pinball_loss`。`loss_log_points_per_epoch`
+`train/weighted_pinball_loss`。分析 pinball 的 train/validation gap 時，統一比較
+`train/pinball_loss` 與 `validation/aggregate/normalized_pinball`；方向實驗也可使用
+`validation/direction/pinball_loss`，不要將其與方向選模用的 `validation/loss` 混淆。
+`loss_log_points_per_epoch`
 預設 250，另記錄 validation 邊界；`evaluations_per_epoch: 5` 對應每 epoch 的
 20%／40%／60%／80%／100%。W&B 使用 `trainer/global_step` 與
 `benchmark_validation/global_step`，loss 和 validation 的同 step 紀錄不互相覆蓋。
@@ -2175,9 +2178,16 @@ append 新 session，不覆寫舊曲線。`train/loss` 是 market-weighted norma
 total-loss 定義；方向實驗另包含已記錄係數的 absolute／alpha CE 及表徵正則化，
 v2 另保存 train priors、固定市場權重、共享梯度診斷、population／balanced-decision 指標
 及第一輪完整 validation 的 pinball anchor；不可把不同版本的 `direction/selection_loss` 混排。
-`validation/loss` 是完整
-validation 的 normalized pinball，不含 ranking。判斷 train/validation gap 時應比較
-`train/pinball_loss` 與 `validation/loss`，不能把 training total loss 直接拿來比較。
+`validation/loss` 記錄該 run 的 `checkpoint_monitor`，不是所有實驗共用的 loss：
+無方向 head 的預設為完整 validation 各 horizon 平均的 normalized pinball，不含 ranking；
+原版 `direction64` 為 pinball 加上凍結 reference 加權的兩項 CE；
+`direction64-v2` 則為等市場／任務／horizon 的 balanced-decision BA 選模損失，加上
+凍結首輪完整 validation pinball anchor 的退化罰分。
+判斷 pinball 的 train/validation gap 時，應比較 `train/pinball_loss` 與
+`validation/aggregate/normalized_pinball`（方向實驗亦另列
+`validation/direction/pinball_loss`），不能把 training total loss 或方向選模損失
+直接當作 validation pinball。兩項方向任務的泛化則分別檢查完整 validation 的
+absolute／alpha CE、accuracy、balanced accuracy 與市場別指標。
 loss 日誌依 `loss_log_points_per_epoch` 分段平均記錄（預設每 epoch 250 點），並涵蓋
 每次 validation 邊界；每次寫入都 flush/fsync，W&B 停用時仍保留在 network volume。
 
@@ -5005,7 +5015,10 @@ Set optional environment variables before the workflow; they do not modify model
 
 Each run's `metrics.jsonl`, `summary.json` and W&B record training loss, pinball, market-weighted pinball, ranking
 loss, learning rates, processed samples and full validation metrics.
-`train/pinball_loss` remains unweighted and comparable to `validation/loss`;
+`train/pinball_loss` remains unweighted; compare it with
+`validation/aggregate/normalized_pinball` for the pinball generalization gap.
+Direction experiments also expose `validation/direction/pinball_loss`; do not confuse
+either pinball field with their checkpoint-selection `validation/loss`.
 `train/weighted_pinball_loss` records the market-weighted training component.
 `loss_log_points_per_epoch` defaults to 250, plus validation boundaries;
 `evaluations_per_epoch: 5` corresponds to 20%/40%/60%/80%/100% of each epoch.
@@ -5126,9 +5139,17 @@ include recorded reference-weighted absolute/alpha CE and representation regular
 V2 additionally persists train priors, fixed market weights, shared-gradient diagnostics,
 population/balanced-decision metrics and the first full-validation pinball anchor. Different
 versions' `direction/selection_loss` values are not comparable rankings.
-`validation/loss` is full-validation normalized pinball without ranking. Compare
-training pinball against validation loss when diagnosing a generalization gap,
-not training total loss. Losses are averaged between the configured
+`validation/loss` records the run's `checkpoint_monitor`, not one common loss across experiments:
+the default without direction heads is mean normalized pinball over all full-validation
+horizons, without ranking; original `direction64` uses pinball plus both CE terms weighted
+by frozen references; `direction64-v2` uses equal-market/task/horizon balanced-decision BA
+selection loss plus the regression penalty against its frozen first full-validation pinball anchor.
+Compare `train/pinball_loss` with `validation/aggregate/normalized_pinball` when diagnosing
+the pinball generalization gap. Direction experiments also record
+`validation/direction/pinball_loss`; neither training total loss nor direction selection loss
+is validation pinball. Assess direction generalization separately using each absolute/alpha
+task's full-validation CE, accuracy, balanced accuracy and market-specific metrics.
+Losses are averaged between the configured
 `loss_log_points_per_epoch` points (default 250), including validation boundaries.
 Every local record is flushed/fsynced and remains on the network volume even with W&B disabled.
 

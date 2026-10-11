@@ -230,7 +230,9 @@ class DirectionConfig(StrictModel):
         if self.gradient_management != "none" and (
             not self.enabled or self.architecture != "market_residual_v2"
         ):
-            raise ValueError("Shared task-gradient management requires the enabled v2 direction head")
+            raise ValueError(
+                "Shared task-gradient management requires the enabled v2 direction head"
+            )
         return self
 
 
@@ -279,7 +281,9 @@ class ModelConfig(StrictModel):
             raise ValueError("encoder_dim must be divisible by direction.attention_heads")
         if self.direction.enabled and self.direction.architecture == "market_residual_v2":
             if self.feature_mode not in ("scales", "combined") or not self.explicit_output_scale:
-                raise ValueError("The v2 direction head requires the existing extended scale branch")
+                raise ValueError(
+                    "The v2 direction head requires the existing extended scale branch"
+                )
             if (
                 self.direction.gradient_management != "none"
                 and self.time_series_backend == "kronos"
@@ -465,9 +469,8 @@ class TrainingConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_training_contract(self) -> TrainingConfig:
-        if (
-            len(self.market_loss_weights) != 4
-            or any(not 0 < v <= 4 for v in self.market_loss_weights)
+        if len(self.market_loss_weights) != 4 or any(
+            not 0 < v <= 4 for v in self.market_loss_weights
         ):
             raise ValueError("market_loss_weights requires four finite weights in (0, 4]")
         if self.sample_decay_end <= self.sample_decay_start:
@@ -681,7 +684,8 @@ class ExperimentConfig(StrictModel):
             if self.training.checkpoint_save_top_k != 5:
                 raise ValueError("Production Stage 1/2 must retain the best five checkpoints")
             expected_monitor = (
-                "direction/selection_loss" if self.model.direction.enabled
+                "direction/selection_loss"
+                if self.model.direction.enabled
                 else "primary_5d/selection_score"
             )
             if (

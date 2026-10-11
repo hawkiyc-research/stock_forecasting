@@ -22,8 +22,12 @@ BASELINE = runpy.run_path(str(ROOT / "src/stock_forecasting/baseline_contract.py
 class IntegratedAdaptationControlTests(unittest.TestCase):
     def scheduler(self, **kwargs):
         return SamplePlateauScheduler(
-            SimpleNamespace(param_groups=[{"lr": 1e-5}, {"lr": 5e-6}]), 2,
-            warmup_samples=32, decay_start=64, decay_end=128, **kwargs,
+            SimpleNamespace(param_groups=[{"lr": 1e-5}, {"lr": 5e-6}]),
+            2,
+            warmup_samples=32,
+            decay_start=64,
+            decay_end=128,
+            **kwargs,
         )
 
     def test_sample_clock_matches_across_batch_sizes(self):
@@ -69,14 +73,29 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
     def test_new_presets_keep_old_presets_and_baseline_identity(self):
         names = SELECTION["EXPERIMENT_CONFIGS"]
         variants = (
-            "lora32", "lora64", "partial", "adaptive64", "adaptive128", "direction64",
+            "lora32",
+            "lora64",
+            "partial",
+            "adaptive64",
+            "adaptive128",
+            "direction64",
             "direction64-v2",
         )
         expected = {f"{g}-{v}" for g in ("a", "b") for v in variants}
         self.assertEqual(set(names), expected)
-        args = argparse.Namespace(stage="stage2", data_profile="us_tw_eodhd", dataset_revision="v1",
-                                  start="2021-01-01", end="2026-06-01", h_start=1, universe="all",
-                                  stocks=[], etfs=[], symbol_limit=None, feature_mode="combined")
+        args = argparse.Namespace(
+            stage="stage2",
+            data_profile="us_tw_eodhd",
+            dataset_revision="v1",
+            start="2021-01-01",
+            end="2026-06-01",
+            h_start=1,
+            universe="all",
+            stocks=[],
+            etfs=[],
+            symbol_limit=None,
+            feature_mode="combined",
+        )
         original = SELECTION["_build_selection"](args, ROOT)
         for group in ("a", "b"):
             identities, datasets = set(), set()
@@ -88,13 +107,22 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
             self.assertEqual(len(datasets), 1)
 
     def test_main_model_policy_does_not_enter_baseline_or_prepare_identity(self):
-        self.assertFalse(any("forecast_optimization" in p or "interval_calibration" in p
-                             for p in BASELINE["BASELINE_SOURCES"]))
+        self.assertFalse(
+            any(
+                "forecast_optimization" in p or "interval_calibration" in p
+                for p in BASELINE["BASELINE_SOURCES"]
+            )
+        )
         tree = ast.parse((ROOT / "src/stock_forecasting/run_contract.py").read_text())
-        paths = next(ast.literal_eval(node.value) for node in tree.body
-                     if isinstance(node, ast.Assign) and any(
-                         isinstance(t, ast.Name) and t.id == "TRAINING_IMPLEMENTATION_PATHS"
-                         for t in node.targets))
+        paths = next(
+            ast.literal_eval(node.value)
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "TRAINING_IMPLEMENTATION_PATHS"
+                for t in node.targets
+            )
+        )
         self.assertIn("forecast_optimization.py", paths)
         self.assertIn("interval_calibration.py", paths)
 

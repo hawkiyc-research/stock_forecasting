@@ -12,9 +12,10 @@ from stock_forecasting.multitask_gradients import SharedTaskGradientManager
 
 DEVICES = [
     "cpu",
-    pytest.param("cuda", marks=pytest.mark.skipif(
-        not torch.cuda.is_available(), reason="Requires cloud CUDA"
-    )),
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires cloud CUDA"),
+    ),
 ]
 
 
@@ -22,8 +23,11 @@ def make_parameters(device="cpu"):
     shared = nn.Parameter(torch.tensor([1.0, 2.0], device=device))
     private = nn.Parameter(torch.tensor([3.0], device=device))
     technical = nn.Parameter(torch.tensor([4.0], device=device))
-    named = [("encoder.attn.lora_a.weight", shared), ("head.weight", private),
-             ("technical_adapter.weight", technical)]
+    named = [
+        ("encoder.attn.lora_a.weight", shared),
+        ("head.weight", private),
+        ("technical_adapter.weight", technical),
+    ]
     return shared, private, technical, named
 
 
@@ -53,8 +57,10 @@ def test_negative_conflict_projects_only_lora_and_retains_private_regularization
 @pytest.mark.parametrize("device", DEVICES)
 def test_no_conflict_is_exactly_ordinary_backward(device):
     shared, private, technical, named = make_parameters(device)
-    losses = {"regression": shared.sum() + private.sum(),
-              "absolute": 2 * shared.sum() + technical.sum()}
+    losses = {
+        "regression": shared.sum() + private.sum(),
+        "absolute": 2 * shared.sum() + technical.sum(),
+    }
     total = sum(losses.values())
     expected = torch.autograd.grad(total, (shared, private, technical), retain_graph=True)
     manager = SharedTaskGradientManager(named, diagnostics_interval=1)
@@ -72,8 +78,10 @@ def test_microbatch_accumulation_and_partial_divisor_preserve_prior_gradients(de
     manager = SharedTaskGradientManager(named, diagnostics_interval=1)
     expected = shared.new_zeros(2)
     for factor, divisor in [(1.0, 2), (3.0, 2), (2.0, 1)]:
-        losses = {"regression": factor * shared[0] + private.sum(),
-                  "absolute": factor * (-shared[0] + shared[1])}
+        losses = {
+            "regression": factor * shared[0] + private.sum(),
+            "absolute": factor * (-shared[0] + shared[1]),
+        }
         correction = manager.prepare_correction(losses, divisor=divisor)
         (sum(losses.values()) / divisor).backward()
         manager.apply_correction(correction)
@@ -190,8 +198,7 @@ def test_scaler_scale_is_read_without_get_scale_host_sync():
 def test_checkpoint_resumes_three_task_projection_order_exactly():
     shared, _, _, named = make_parameters()
     manager = SharedTaskGradientManager(named, diagnostics_interval=1, seed=42)
-    losses = {"regression": shared[0], "absolute": -shared[0] + shared[1],
-              "alpha": -shared[1]}
+    losses = {"regression": shared[0], "absolute": -shared[0] + shared[1], "alpha": -shared[1]}
     correction = manager.prepare_correction(losses)
     sum(losses.values()).backward()
     manager.apply_correction(correction)
@@ -199,8 +206,11 @@ def test_checkpoint_resumes_three_task_projection_order_exactly():
     shared.grad = None
     restored = SharedTaskGradientManager(named, diagnostics_interval=1, seed=42)
     restored.load_state_dict(manager.state_dict())
-    continued_losses = {"regression": shared[0], "absolute": -shared[0] + shared[1],
-                        "alpha": -shared[1]}
+    continued_losses = {
+        "regression": shared[0],
+        "absolute": -shared[0] + shared[1],
+        "alpha": -shared[1],
+    }
     expected = manager.prepare_correction(continued_losses)
     actual = restored.prepare_correction(continued_losses)
     for left, right in zip(expected.values, actual.values, strict=True):

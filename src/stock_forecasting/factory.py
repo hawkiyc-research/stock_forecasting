@@ -182,21 +182,28 @@ def build_model_bundle(
     direction_head = None
     if config.model.direction.enabled:
         from stock_forecasting.models.direction import (
-            DualDirectionHead, MarketResidualDualDirectionHead,
+            DualDirectionHead,
+            MarketResidualDualDirectionHead,
         )
 
         if getattr(config.model.direction, "architecture", "legacy") == "market_residual_v2":
             branch = alpha_head.numeric_branch
             if branch is None or branch.scale_projection is None or branch.feature_count != 20:
-                raise ValueError("Direction v2 requires the existing extended numerical scale branch")
+                raise ValueError(
+                    "Direction v2 requires the existing extended numerical scale branch"
+                )
             direction_head = MarketResidualDualDirectionHead(
-                config.model.encoder_dim, config.data.alpha_horizons,
-                config.model.direction, config.model.alpha_head_dropout,
+                config.model.encoder_dim,
+                config.data.alpha_horizons,
+                config.model.direction,
+                config.model.alpha_head_dropout,
             )
         else:
             direction_head = DualDirectionHead(
-                config.model.encoder_dim, len(config.data.alpha_horizons),
-                config.model.direction, config.model.alpha_head_dropout,
+                config.model.encoder_dim,
+                len(config.data.alpha_horizons),
+                config.model.direction,
+                config.model.alpha_head_dropout,
             )
     model = QuantForecastModel(
         backbone,

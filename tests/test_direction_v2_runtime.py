@@ -62,8 +62,9 @@ def _head(*, anchor=0.3, priors=None):
     return SimpleNamespace(
         reference_state=lambda: state,
         weights=lambda: torch.tensor([0.3 / math.log(3)] * 2),
-        config=SimpleNamespace(selection_pinball_guard_tolerance=0.01,
-                               selection_pinball_guard_weight=1.0),
+        config=SimpleNamespace(
+            selection_pinball_guard_tolerance=0.01, selection_pinball_guard_weight=1.0
+        ),
     )
 
 
@@ -151,12 +152,15 @@ def test_effective_market_weights_respect_cap_under_extreme_imbalance(cap):
         np.testing.assert_allclose(weights, [0.97 / 0.99, 3, 3, 1])
 
 
-@pytest.mark.parametrize("key,value", [
-    ("scales", [0.0, 0.04]),
-    ("smoothing", 0.0),
-    ("market_weight_max", 0.5),
-    ("sample_weights", np.zeros(12)),
-])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("scales", [0.0, 0.04]),
+        ("smoothing", 0.0),
+        ("market_weight_max", 0.5),
+        ("sample_weights", np.zeros(12)),
+    ],
+)
 def test_invalid_train_reference_inputs_fail(key, value):
     arguments = _reference_data()
     arguments[key] = value
@@ -182,14 +186,17 @@ def test_every_nonempty_year_remains_represented_with_sufficient_budget():
 def test_population_and_balanced_decisions_remain_separate():
     truth, probability = _batch()
     metric = DirectionV2Metrics([1, 5])
-    metric.append_probabilities(truth, probability, np.zeros_like(truth), ["US"] * 3,
-                                ["2026-01-02"] * 3, pinball=0.3)
+    metric.append_probabilities(
+        truth, probability, np.zeros_like(truth), ["US"] * 3, ["2026-01-02"] * 3, pinball=0.3
+    )
     result = metric.finish(_head(), COSTS)
     assert result["overall"]["absolute"]["aggregate"]["accuracy"] == 1
     assert result["balanced_decision"]["overall"]["absolute"]["aggregate"]["accuracy"] == 1 / 3
     assert result["selection_loss"] == pytest.approx(2 / 3)
     assert result["probability_source"] == "population_logits"
-    probability_metrics = result["probability_diagnostics"]["market"]["US"]["absolute"]["horizons"]["1"]
+    probability_metrics = result["probability_diagnostics"]["market"]["US"]["absolute"]["horizons"][
+        "1"
+    ]
     assert probability_metrics["brier"] == pytest.approx(0.06)
     assert probability_metrics["ece"] == pytest.approx(0.2)
     assert probability_metrics["balanced_cross_entropy"] == pytest.approx(-math.log(0.8))
@@ -203,8 +210,14 @@ def test_market_macro_does_not_hide_small_market_under_large_market_count():
     decisions = truth.copy()
     decisions[-3:] = (truth[-3:] + 1) % 3
     metric = DirectionV2Metrics([1, 5])
-    metric.append_probabilities(truth, probability, decisions, ["US"] * 300 + ["TPEX"] * 3,
-                                ["2026-01-02"] * 303, pinball=0.3)
+    metric.append_probabilities(
+        truth,
+        probability,
+        decisions,
+        ["US"] * 300 + ["TPEX"] * 3,
+        ["2026-01-02"] * 303,
+        pinball=0.3,
+    )
     result = metric.finish(_head(), COSTS)
     assert result["balanced_decision"]["market_macro"]["balanced_accuracy"] == pytest.approx(0.5)
     assert result["selection_loss"] == pytest.approx(0.5)
@@ -216,8 +229,9 @@ def test_population_prior_reference_keeps_market_conditioning_when_aggregated():
     priors[0] = [0.8, 0.1, 0.1]
     priors[1] = [0.1, 0.8, 0.1]
     metric = DirectionV2Metrics([1, 5])
-    metric.append_probabilities(truth, probability, truth, ["us", "twse", "TPEX"],
-                                ["2026-01-02"] * 3, pinball=0.3)
+    metric.append_probabilities(
+        truth, probability, truth, ["us", "twse", "TPEX"], ["2026-01-02"] * 3, pinball=0.3
+    )
     result = metric.finish(_head(priors=priors), COSTS)
     row = result["probability_diagnostics"]["overall"]["absolute"]["horizons"]["1"]
     assert row["train_prior_cross_entropy"] == pytest.approx(
@@ -231,8 +245,9 @@ def test_validation_anchor_is_read_only_and_pinball_regression_adds_penalty():
     truth, probability = _batch()
     head = _head(anchor=0.3)
     metric = DirectionV2Metrics([1, 5], split="test")
-    metric.append_probabilities(truth, probability, truth, ["US"] * 3, ["2026-01-02"] * 3,
-                                pinball=0.33)
+    metric.append_probabilities(
+        truth, probability, truth, ["US"] * 3, ["2026-01-02"] * 3, pinball=0.33
+    )
     state = json.dumps(head.reference_state(), sort_keys=True)
     result = metric.finish(head, COSTS)
     assert result["selection_loss"] == pytest.approx(0.09)
@@ -244,15 +259,19 @@ def test_first_validation_anchor_is_pending_but_test_cannot_fit_one():
     truth, probability = _batch()
     for split in ("validation", "test"):
         metric = DirectionV2Metrics([1, 5], split=split)
-        metric.append_probabilities(truth, probability, truth, ["US"] * 3, ["2026-01-02"] * 3,
-                                    pinball=0.3)
+        metric.append_probabilities(
+            truth, probability, truth, ["US"] * 3, ["2026-01-02"] * 3, pinball=0.3
+        )
         head = _head(anchor=None)
         if split == "test":
             with pytest.raises(ValueError, match="frozen validation"):
                 metric.finish(head, COSTS)
         else:
             result = metric.finish(head, COSTS)
-            assert result["selection_definition"]["pinball_guard_basis"] == "pending_first_full_validation"
+            assert (
+                result["selection_definition"]["pinball_guard_basis"]
+                == "pending_first_full_validation"
+            )
             assert head.reference_state()["pinball_guard_reference"] is None
 
 
@@ -263,9 +282,14 @@ def test_stream_partition_preserves_confusion_and_daily_counts():
     dates = ["2026-01-02", "2026-01-02", "2026-01-05"]
     metrics[0].append_probabilities(truth, probability, truth, markets, dates, pinball=0.3)
     for start in range(3):
-        metrics[1].append_probabilities(truth[start:start + 1], probability[start:start + 1],
-                                       truth[start:start + 1], markets[start:start + 1],
-                                       dates[start:start + 1], pinball=0.3)
+        metrics[1].append_probabilities(
+            truth[start : start + 1],
+            probability[start : start + 1],
+            truth[start : start + 1],
+            markets[start : start + 1],
+            dates[start : start + 1],
+            pinball=0.3,
+        )
     results = [metric.finish(_head(), COSTS) for metric in metrics]
     assert results[0]["daily"] == results[1]["daily"]
     assert results[0]["overall"] == results[1]["overall"]
@@ -277,8 +301,9 @@ def test_confidence_joint_precision_uses_population_probabilities():
     truth, probability = _batch()
     decisions = np.full_like(truth, 2)
     metric = DirectionV2Metrics([1, 5])
-    metric.append_probabilities(truth, probability, decisions, ["US"] * 3,
-                                ["2026-01-02"] * 3, pinball=0.3)
+    metric.append_probabilities(
+        truth, probability, decisions, ["US"] * 3, ["2026-01-02"] * 3, pinball=0.3
+    )
     result = metric.finish(_head(), COSTS)
     curve = result["probability_diagnostics"]["overall"]["joint_up_confidence"]["1"]
     assert curve[0]["signals"] == 3
@@ -291,8 +316,9 @@ def test_daily_bound_and_invalid_probabilities_fail_explicitly():
     truth, probability = _batch()
     metric = DirectionV2Metrics([1, 5], max_daily_entries=1)
     with pytest.raises(ValueError, match="explicit bound"):
-        metric.append_probabilities(truth, probability, truth, ["US"] * 3,
-                                    ["2026-01-02", "2026-01-03", "2026-01-03"])
+        metric.append_probabilities(
+            truth, probability, truth, ["US"] * 3, ["2026-01-02", "2026-01-03", "2026-01-03"]
+        )
     invalid = probability.copy()
     invalid[0, 0, 0, 0] = np.nan
     with pytest.raises(ValueError, match="population-probability"):

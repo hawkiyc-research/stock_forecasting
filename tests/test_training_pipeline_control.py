@@ -67,7 +67,8 @@ class TrainingPipelineControlTests(unittest.TestCase):
             if not isinstance(node, ast.Dict):
                 continue
             fields = {
-                key.value: value for key, value in zip(node.keys, node.values, strict=True)
+                key.value: value
+                for key, value in zip(node.keys, node.values, strict=True)
                 if isinstance(key, ast.Constant) and isinstance(key.value, str)
             }
             event = fields.get("event")
@@ -78,7 +79,9 @@ class TrainingPipelineControlTests(unittest.TestCase):
 
         def definition(enabled, architecture="legacy", management="none"):
             direction = SimpleNamespace(
-                enabled=enabled, architecture=architecture, gradient_management=management,
+                enabled=enabled,
+                architecture=architecture,
+                gradient_management=management,
             )
             config = SimpleNamespace(model=SimpleNamespace(direction=direction))
             return eval(expression, {"config": config})
@@ -114,7 +117,8 @@ class TrainingPipelineControlTests(unittest.TestCase):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             calls = [
-                node for node in ast.walk(function)
+                node
+                for node in ast.walk(function)
                 if isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "clip_grad_norm_"
@@ -133,7 +137,8 @@ class TrainingPipelineControlTests(unittest.TestCase):
             if getattr(function, "name", None) not in locations:
                 continue
             updates = [
-                node for node in ast.walk(function)
+                node
+                for node in ast.walk(function)
                 if isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
@@ -421,9 +426,15 @@ class TrainingPipelineControlTests(unittest.TestCase):
             "math": math,
             "pairwise": pairwise,
         }
-        definitions(TRAINING, {
-            "_probe_cuda_candidates", "_select_batch_measurement", "_project_next_probe_peak",
-        }, scope)
+        definitions(
+            TRAINING,
+            {
+                "_probe_cuda_candidates",
+                "_select_batch_measurement",
+                "_project_next_probe_peak",
+            },
+            scope,
+        )
         best, results = scope["_probe_cuda_candidates"](
             bundle=SimpleNamespace(model=SimpleNamespace(modules=lambda: modes)),
             sample=None,
@@ -683,7 +694,9 @@ class TrainingPipelineControlTests(unittest.TestCase):
         self.assertEqual(loader.count("drop_last=False"), 2)
         self.assertIn("_preserve_probe_state(bundle.model)", probe)
         self.assertIn("optimizer.step()", probe)
-        self.assertIn("_backward_training_output(output, bundle, accumulation, task_manager)", probe)
+        self.assertIn(
+            "_backward_training_output(output, bundle, accumulation, task_manager)", probe
+        )
         self.assertIn("_shared_task_gradient_manager(bundle, config)", probe)
         backward = ast.unparse(functions["_backward_training_output"])
         self.assertIn("backward()", backward)

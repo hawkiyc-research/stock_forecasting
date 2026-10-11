@@ -1424,8 +1424,12 @@ class ModelBatchCollator(FinancialBatchCollator):
     """Validate inputs and prepare deterministic membership before pinning/H2D."""
 
     def __init__(
-        self, *, validate_scales=False, extended_scales=False,
-        prepare_ranking=True, direction_costs=None,
+        self,
+        *,
+        validate_scales=False,
+        extended_scales=False,
+        prepare_ranking=True,
+        direction_costs=None,
     ):
         super().__init__()
         self.validate_scales = validate_scales
@@ -1524,8 +1528,12 @@ def _move_batch_to_device(
             non_blocking=non_blocking,
         )
     for key in (
-        "market_ids", "ranking_group_ids", "security_ids", "ranking_pairs",
-        "target_absolute", "direction_bands",
+        "market_ids",
+        "ranking_group_ids",
+        "security_ids",
+        "ranking_pairs",
+        "target_absolute",
+        "direction_bands",
     ):
         if key in batch:
             moved[key] = batch[key].to(device, non_blocking=non_blocking)
@@ -1765,7 +1773,11 @@ def _backward_training_output(output, bundle: ModelBundle, divisor: float, manag
         regression = output.weighted_pinball_loss
         if regression is None:
             regression = output.pinball_loss
-        if regression is None or output.absolute_direction_loss is None or output.alpha_direction_loss is None:
+        if (
+            regression is None
+            or output.absolute_direction_loss is None
+            or output.alpha_direction_loss is None
+        ):
             raise RuntimeError("Shared gradient management requires all three task losses")
         if output.ranking_loss is not None:
             regression = regression + bundle.model.ranking_loss_weight * output.ranking_loss
@@ -1790,7 +1802,9 @@ def _freeze_direction_validation_anchor(bundle: ModelBundle, metrics: dict[str, 
         if head.pinball_guard_reference is None:
             head.set_pinball_guard_reference(float(metrics["direction"]["pinball_loss"]))
         metrics["direction"]["loss_reference"] = head.reference_state()
-        metrics["direction"]["selection_definition"]["pinball_guard_basis"] = "first_full_validation"
+        metrics["direction"]["selection_definition"]["pinball_guard_basis"] = (
+            "first_full_validation"
+        )
 
 
 def _measure_cuda_batch(
@@ -1917,9 +1931,8 @@ def _measure_cuda_batch(
                 context = nullcontext() if training else torch.inference_mode()
                 with context, _autocast_context(config, device):
                     output = forward_batch(bundle, device_batch, config, device)
-                    if training:
-                        if output.loss is None:
-                            raise RuntimeError("Pipeline probe did not produce a training loss")
+                    if training and output.loss is None:
+                        raise RuntimeError("Pipeline probe did not produce a training loss")
                 if training:
                     _backward_training_output(output, bundle, accumulation, task_manager)
                     if (index + 1) % accumulation == 0:
@@ -2002,12 +2015,20 @@ def _measure_cuda_batch(
         )
     except BaseException as error:
         probe_error = error
-        print(json.dumps({"cuda_pipeline_probe_error": {
-            "training": training,
-            "batch_size": batch_size,
-            "error_type": type(error).__name__,
-            "error": str(error),
-        }}, sort_keys=True), flush=True)
+        print(
+            json.dumps(
+                {
+                    "cuda_pipeline_probe_error": {
+                        "training": training,
+                        "batch_size": batch_size,
+                        "error_type": type(error).__name__,
+                        "error": str(error),
+                    }
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         if not _is_cuda_out_of_memory(error):
             raise
         return BatchProbeMeasurement(
@@ -2022,7 +2043,8 @@ def _measure_cuda_batch(
     finally:
         try:
             _finish_probe_loader(
-                device_iterator, loader_iterator,
+                device_iterator,
+                loader_iterator,
                 max_batches=probe_batches,
                 primary_error=probe_error,
                 drain=not probe_fetch_failed or _is_cuda_out_of_memory(probe_error),
@@ -2039,7 +2061,12 @@ def _measure_cuda_batch(
 
 
 def _finish_probe_loader(
-    device_iterator, loader_iterator, *, max_batches, primary_error, drain=True,
+    device_iterator,
+    loader_iterator,
+    *,
+    max_batches,
+    primary_error,
+    drain=True,
     timeout_seconds=60.0,
 ):
     """Drain a finite host-only probe before closing its multiprocessing queues."""
@@ -2101,10 +2128,12 @@ def _project_next_probe_peak(measurements, batch_size):
         for left, right in pairwise(measured)
         if right.batch_size > left.batch_size
     ]
-    return math.ceil(max(
-        latest.projected_peak_bytes * batch_size / latest.batch_size,
-        latest.projected_peak_bytes + max(slopes, default=0) * (batch_size - latest.batch_size),
-    ))
+    return math.ceil(
+        max(
+            latest.projected_peak_bytes * batch_size / latest.batch_size,
+            latest.projected_peak_bytes + max(slopes, default=0) * (batch_size - latest.batch_size),
+        )
+    )
 
 
 def _select_batch_measurement(
@@ -2211,16 +2240,28 @@ def _probe_cuda_candidates(
             projected_peak = _project_next_probe_peak(measurements, batch_size)
             if projected_peak is not None and projected_peak > device_memory_limit_bytes:
                 measurement = BatchProbeMeasurement(
-                    batch_size=batch_size, seconds_per_batch=None, samples_per_second=None,
-                    peak_allocated_bytes=None, projected_peak_bytes=projected_peak,
-                    accepted=False, outcome="projected_memory_guard",
+                    batch_size=batch_size,
+                    seconds_per_batch=None,
+                    samples_per_second=None,
+                    peak_allocated_bytes=None,
+                    projected_peak_bytes=projected_peak,
+                    accepted=False,
+                    outcome="projected_memory_guard",
                 )
                 measurements.append(measurement)
-                print(json.dumps({"cuda_pipeline_probe_skipped": {
-                    "training": training,
-                    **measurement.as_dict(),
-                    "device_memory_limit_bytes": device_memory_limit_bytes,
-                }}, sort_keys=True), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "cuda_pipeline_probe_skipped": {
+                                "training": training,
+                                **measurement.as_dict(),
+                                "device_memory_limit_bytes": device_memory_limit_bytes,
+                            }
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
                 break
             measurement = _measure_cuda_batch(
                 bundle=bundle,
@@ -2814,7 +2855,8 @@ def evaluate_loader(
                 ranking=config.model.independent_ranking_head,
                 calibration_policy=(
                     config.validation.interval_calibration.model_dump()
-                    if fit_interval_calibration or interval_calibration is not None else None
+                    if fit_interval_calibration or interval_calibration is not None
+                    else None
                 ),
             )
             try:
@@ -2871,9 +2913,7 @@ def evaluate_loader(
                     if interval_calibration["schema_version"] == 2:
                         # Fixed split cleaning keeps every validation label before
                         # this boundary, not merely its forecast cutoff date.
-                        interval_calibration["fit_label_end_exclusive"] = (
-                            config.data.validation_end
-                        )
+                        interval_calibration["fit_label_end_exclusive"] = config.data.validation_end
                     interval_calibration["membership"] = metrics["sample_membership"]
                     metrics["interval_calibration"] = interval_calibration
                 if interval_calibration is not None:
@@ -2971,7 +3011,8 @@ def _learning_rate_multiplier(step: int, warmup_steps: int, total_steps: int) ->
 
 def _scheduler(optimizer: AdamW, warmup_steps: int, total_steps: int, config=None):
     if config is not None and config.training.learning_rate_schedule in (
-        "validation_plateau", "sample_plateau"
+        "validation_plateau",
+        "sample_plateau",
     ):
         from stock_forecasting.optimization_policy import ValidationPlateauScheduler
 
@@ -3726,12 +3767,13 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 "validation=1-equal_market_task_horizon_balanced_decision_accuracy"
                 "+frozen_first_full_validation_pinball_guard"
                 if config.model.direction.enabled
-                and config.model.direction.architecture == "market_residual_v2" else
-                "train=normalized_pinball+reference_scaled_absolute_CE+reference_scaled_alpha_CE"
+                and config.model.direction.architecture == "market_residual_v2"
+                else "train=normalized_pinball+reference_scaled_absolute_CE"
+                "+reference_scaled_alpha_CE"
                 "+weighted_ranking+representation_regularization; "
                 "validation=normalized_pinball+fixed_reference_scaled_direction_CE"
-                if config.model.direction.enabled else
-                "train=market_weighted_normalized_pinball+weighted_ranking; "
+                if config.model.direction.enabled
+                else "train=market_weighted_normalized_pinball+weighted_ranking; "
                 "validation=unweighted_normalized_pinball"
             ),
             "market_loss_weights_us_twse_tpex_unknown": config.training.market_loss_weights,
@@ -3914,8 +3956,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     accumulated_loss_count += 1
                     if bundle.model.direction_head is not None:
                         for name in (
-                            "absolute_direction_loss", "alpha_direction_loss",
-                            "direction_weighted_loss", "representation_loss",
+                            "absolute_direction_loss",
+                            "alpha_direction_loss",
+                            "direction_weighted_loss",
+                            "representation_loss",
                         ):
                             value = getattr(output, name)
                             if value is not None:
@@ -3935,10 +3979,12 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     )
                     weighted_pinball = (
                         output.weighted_pinball_loss.detach()
-                        if output.weighted_pinball_loss is not None else pinball
+                        if output.weighted_pinball_loss is not None
+                        else pinball
                     )
                     accumulated_weighted_pinball_sum = (
-                        weighted_pinball if accumulated_weighted_pinball_sum is None
+                        weighted_pinball
+                        if accumulated_weighted_pinball_sum is None
                         else accumulated_weighted_pinball_sum + weighted_pinball
                     )
                     accumulated_ranking_sum = (
@@ -3963,7 +4009,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     gradient_metrics = task_manager.optimizer_step_completed()
                     if gradient_metrics is not None:
                         tracking.log(
-                            {**gradient_metrics, "gradient/runtime_optimizer_step": runtime_global_step + 1},
+                            {
+                                **gradient_metrics,
+                                "gradient/runtime_optimizer_step": runtime_global_step + 1,
+                            },
                             step=global_step,
                         )
                 if config.training.learning_rate_schedule == "sample_plateau":
@@ -3986,14 +4035,21 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                                 f"train/{name}": float((value / accumulated_loss_count).cpu())
                                 for name, value in direction_loss_sums.items()
                             },
-                            **({
-                                f"train/direction_weight_{name}": float(value)
-                                for name, value in zip(
-                                    ("absolute", "alpha"),
-                                    bundle.model.direction_head.weights().detach().cpu().tolist(),
-                                    strict=True,
-                                )
-                            } if bundle.model.direction_head is not None else {}),
+                            **(
+                                {
+                                    f"train/direction_weight_{name}": float(value)
+                                    for name, value in zip(
+                                        ("absolute", "alpha"),
+                                        bundle.model.direction_head.weights()
+                                        .detach()
+                                        .cpu()
+                                        .tolist(),
+                                        strict=True,
+                                    )
+                                }
+                                if bundle.model.direction_head is not None
+                                else {}
+                            ),
                             "train/loss": logged_loss,
                             "train/pinball_loss": float(
                                 (accumulated_pinball_sum / accumulated_loss_count).cpu()

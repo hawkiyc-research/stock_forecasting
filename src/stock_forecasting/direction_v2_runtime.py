@@ -305,7 +305,9 @@ def calibrate_direction_references(bundle, config, dataset, device, workers, bat
 class DirectionV2Metrics(DirectionMetrics):
     """Keep population decisions comparable and report balanced decisions separately."""
 
-    def __init__(self, horizons, *, split="validation", probability_bins=10, max_daily_entries=4096):
+    def __init__(
+        self, horizons, *, split="validation", probability_bins=10, max_daily_entries=4096
+    ):
         super().__init__(horizons)
         if split not in ("validation", "test") or probability_bins < 2 or max_daily_entries < 1:
             raise ValueError("Invalid bounded direction evaluation configuration")
@@ -319,18 +321,29 @@ class DirectionV2Metrics(DirectionMetrics):
             [output.absolute_direction_decision_logits, output.alpha_direction_decision_logits], 1
         )
         truth = torch.stack(
-            [direction_labels(batch[name], batch["direction_bands"])
-             for name in ("target_absolute", "target_alpha")],
+            [
+                direction_labels(batch[name], batch["direction_bands"])
+                for name in ("target_absolute", "target_alpha")
+            ],
             1,
         )
         log_probability = raw.float().log_softmax(-1)
         ce = -log_probability.gather(-1, truth.unsqueeze(-1)).squeeze(-1)
         # One host transfer avoids synchronizing independently for every diagnostic.
-        values = torch.cat(
-            [truth[..., None].float(), log_probability.exp(),
-             decision.argmax(-1)[..., None].float(), ce[..., None]],
-            -1,
-        ).detach().cpu().numpy()
+        values = (
+            torch.cat(
+                [
+                    truth[..., None].float(),
+                    log_probability.exp(),
+                    decision.argmax(-1)[..., None].float(),
+                    ce[..., None],
+                ],
+                -1,
+            )
+            .detach()
+            .cpu()
+            .numpy()
+        )
         self.append_probabilities(
             values[..., 0].astype(np.int64),
             values[..., 1:4],
@@ -366,22 +379,23 @@ class DirectionV2Metrics(DirectionMetrics):
             raise ValueError("Invalid population-probability direction evaluation batch")
         predicted = probabilities.argmax(-1)
         if losses is None:
-            losses = -np.log(np.maximum(
-                np.take_along_axis(probabilities, truth[..., None], -1)[..., 0], 1e-30
-            ))
+            losses = -np.log(
+                np.maximum(np.take_along_axis(probabilities, truth[..., None], -1)[..., 0], 1e-30)
+            )
         losses = np.asarray(losses, dtype=np.float64)
         if losses.shape != shape or not np.isfinite(losses).all() or (losses < 0).any():
             raise ValueError("Invalid direction cross entropy")
-        market_array = np.asarray([
-            MARKET_ORDER[MARKET_IDS.get(str(value).upper(), 3)] for value in markets
-        ])
+        market_array = np.asarray(
+            [MARKET_ORDER[MARKET_IDS.get(str(value).upper(), 3)] for value in markets]
+        )
         super().append_arrays(truth, predicted, losses, market_array, dates, pinball=pinball)
         self.balanced.append_arrays(
             truth, balanced_predicted, losses, market_array, dates, pinball=pinball
         )
         groups = {"overall": np.arange(len(truth))}
-        groups.update({f"market/{m}": np.flatnonzero(market_array == m)
-                       for m in np.unique(market_array)})
+        groups.update(
+            {f"market/{m}": np.flatnonzero(market_array == m) for m in np.unique(market_array)}
+        )
         for key, rows in groups.items():
             if key not in self.probability_slices:
                 self.probability_slices[key] = self._probability_state()
@@ -410,11 +424,15 @@ class DirectionV2Metrics(DirectionMetrics):
             joint_score = selected[:, :, :, 2].min(1)
             for horizon in range(len(self.horizons)):
                 signals = joint[:, horizon]
-                bins = np.minimum((joint_score[signals, horizon] * self.bins).astype(int),
-                                  self.bins - 1)
+                bins = np.minimum(
+                    (joint_score[signals, horizon] * self.bins).astype(int), self.bins - 1
+                )
                 for column, weights in enumerate(
-                    (None, actual[signals, 0, horizon] == 2,
-                     (actual[signals, 0, horizon] == 2) & (actual[signals, 1, horizon] == 2))
+                    (
+                        None,
+                        actual[signals, 0, horizon] == 2,
+                        (actual[signals, 0, horizon] == 2) & (actual[signals, 1, horizon] == 2),
+                    )
                 ):
                     state["joint_bins"][horizon, :, column] += np.bincount(
                         bins, weights=weights, minlength=self.bins
@@ -425,13 +443,19 @@ class DirectionV2Metrics(DirectionMetrics):
                 raise ValueError("Direction daily diagnostics exceeded their explicit bound")
             rows = np.flatnonzero(day_array == day)
             if day not in self.daily:
-                self.daily[day] = {"population": DirectionMetrics(self.horizons),
-                                   "balanced": DirectionMetrics(self.horizons)}
+                self.daily[day] = {
+                    "population": DirectionMetrics(self.horizons),
+                    "balanced": DirectionMetrics(self.horizons),
+                }
             entry = self.daily[day]
             for name, forecast in (("population", predicted), ("balanced", balanced_predicted)):
                 entry[name].append_arrays(
-                    truth[rows], forecast[rows], losses[rows], market_array[rows],
-                    day_array[rows], pinball=pinball
+                    truth[rows],
+                    forecast[rows],
+                    losses[rows],
+                    market_array[rows],
+                    day_array[rows],
+                    pinball=pinball,
                 )
 
     def _probability_state(self):
@@ -452,47 +476,63 @@ class DirectionV2Metrics(DirectionMetrics):
             for position, horizon in enumerate(self.horizons):
                 count = state["count"][task, position]
                 total = max(int(count.sum()), 1)
-                confidence, correct = (state[key][task, position] for key in ("confidence", "correct"))
+                confidence, correct = (
+                    state[key][task, position] for key in ("confidence", "correct")
+                )
                 support = confusion[task, position].sum(1)
                 active = support > 0
-                ce = np.divide(state["class_ce"][task, position], support,
-                               out=np.zeros(3), where=active)
+                ce = np.divide(
+                    state["class_ce"][task, position], support, out=np.zeros(3), where=active
+                )
                 row = {
                     "brier": float(state["brier"][task, position] / total),
                     "ece": float(np.abs(confidence - correct).sum() / total),
                     "balanced_cross_entropy": float(ce[active].mean()) if active.any() else 0.0,
                     "confidence_bins": [
-                        {"lower_inclusive": i / self.bins,
-                         "upper_exclusive": (i + 1) / self.bins,
-                         "includes_one": i == self.bins - 1,
-                         "count": int(count[i]),
-                         "mean_confidence": float(confidence[i] / max(int(count[i]), 1)),
-                         "accuracy": float(correct[i] / max(int(count[i]), 1))}
+                        {
+                            "lower_inclusive": i / self.bins,
+                            "upper_exclusive": (i + 1) / self.bins,
+                            "includes_one": i == self.bins - 1,
+                            "count": int(count[i]),
+                            "mean_confidence": float(confidence[i] / max(int(count[i]), 1)),
+                            "accuracy": float(correct[i] / max(int(count[i]), 1)),
+                        }
                         for i in range(self.bins)
                     ],
                 }
                 if priors is not None or prior_class_ce is not None:
-                    prior_ce = (-np.log(priors[task, position]) if priors is not None
-                                else prior_class_ce[task, position])
+                    prior_ce = (
+                        -np.log(priors[task, position])
+                        if priors is not None
+                        else prior_class_ce[task, position]
+                    )
                     reference_ce = float(np.dot(support, prior_ce) / total)
                     model_ce = float(state["class_ce"][task, position].sum() / total)
                     row["train_prior_cross_entropy"] = reference_ce
-                    row["cross_entropy_skill_vs_train_prior"] = 1 - model_ce / max(reference_ce, 1e-12)
+                    row["cross_entropy_skill_vs_train_prior"] = 1 - model_ce / max(
+                        reference_ce, 1e-12
+                    )
                     balanced_prior = float(prior_ce[active].mean()) if active.any() else 0.0
                     row["balanced_train_prior_cross_entropy"] = balanced_prior
-                    row["balanced_cross_entropy_skill_vs_train_prior"] = (
-                        1 - row["balanced_cross_entropy"] / max(balanced_prior, 1e-12)
-                    )
+                    row["balanced_cross_entropy_skill_vs_train_prior"] = 1 - row[
+                        "balanced_cross_entropy"
+                    ] / max(balanced_prior, 1e-12)
                 horizons[str(horizon)] = row
             result[name] = {"horizons": horizons}
         result["joint_up_confidence"] = {
             str(horizon): [
-                {"minimum_raw_up_probability": i / self.bins,
-                 "signals": int(state["joint_bins"][position, i:, 0].sum()),
-                 "absolute_up_precision": float(state["joint_bins"][position, i:, 1].sum()
-                     / max(int(state["joint_bins"][position, i:, 0].sum()), 1)),
-                 "both_up_precision": float(state["joint_bins"][position, i:, 2].sum()
-                     / max(int(state["joint_bins"][position, i:, 0].sum()), 1))}
+                {
+                    "minimum_raw_up_probability": i / self.bins,
+                    "signals": int(state["joint_bins"][position, i:, 0].sum()),
+                    "absolute_up_precision": float(
+                        state["joint_bins"][position, i:, 1].sum()
+                        / max(int(state["joint_bins"][position, i:, 0].sum()), 1)
+                    ),
+                    "both_up_precision": float(
+                        state["joint_bins"][position, i:, 2].sum()
+                        / max(int(state["joint_bins"][position, i:, 0].sum()), 1)
+                    ),
+                }
                 for i in range(self.bins)
             ]
             for position, horizon in enumerate(self.horizons)
@@ -525,7 +565,9 @@ class DirectionV2Metrics(DirectionMetrics):
             support = self.slices[f"market/{market}"]["confusion"].sum(-1)
             prior_ce_sum += support * -np.log(priors[MARKET_IDS.get(market.upper(), 3)])
         overall_prior_class_ce = np.divide(
-            prior_ce_sum, overall_support, out=np.zeros_like(prior_ce_sum),
+            prior_ce_sum,
+            overall_support,
+            out=np.zeros_like(prior_ce_sum),
             where=overall_support > 0,
         )
         result["probability_diagnostics"] = {
@@ -533,7 +575,8 @@ class DirectionV2Metrics(DirectionMetrics):
             "probabilities_are_population_predictions": True,
             "calibration_not_assumed": True,
             "overall": self._probability_summary(
-                self.probability_slices["overall"], self.slices["overall"]["confusion"],
+                self.probability_slices["overall"],
+                self.slices["overall"]["confusion"],
                 prior_class_ce=overall_prior_class_ce,
             ),
             "market": {},
@@ -542,28 +585,51 @@ class DirectionV2Metrics(DirectionMetrics):
         for market, summary in balanced.get("market", {}).items():
             for metric in scores:
                 # Equal market/task/horizon weight; retain class supports for auditing.
-                scores[metric].append(float(np.mean([
-                    row[metric] for task in ("absolute", "alpha")
-                    for row in summary[task]["horizons"].values()
-                ])))
+                scores[metric].append(
+                    float(
+                        np.mean(
+                            [
+                                row[metric]
+                                for task in ("absolute", "alpha")
+                                for row in summary[task]["horizons"].values()
+                            ]
+                        )
+                    )
+                )
             key = f"market/{market}"
             result["probability_diagnostics"]["market"][market] = self._probability_summary(
-                self.probability_slices[key], self.slices[key]["confusion"],
+                self.probability_slices[key],
+                self.slices[key]["confusion"],
                 priors[MARKET_IDS.get(market.upper(), 3)],
             )
         market_macro = {key: float(np.mean(value)) for key, value in scores.items()}
         balanced["market_macro"] = market_macro
         probability_macro_keys = (
-            "brier", "ece", "balanced_cross_entropy", "train_prior_cross_entropy",
-            "cross_entropy_skill_vs_train_prior", "balanced_train_prior_cross_entropy",
+            "brier",
+            "ece",
+            "balanced_cross_entropy",
+            "train_prior_cross_entropy",
+            "cross_entropy_skill_vs_train_prior",
+            "balanced_train_prior_cross_entropy",
             "balanced_cross_entropy_skill_vs_train_prior",
         )
         result["probability_diagnostics"]["market_macro"] = {
-            key: float(np.mean([
-                float(np.mean([row[key] for task in ("absolute", "alpha")
-                               for row in summary[task]["horizons"].values()]))
-                for summary in result["probability_diagnostics"]["market"].values()
-            ]))
+            key: float(
+                np.mean(
+                    [
+                        float(
+                            np.mean(
+                                [
+                                    row[key]
+                                    for task in ("absolute", "alpha")
+                                    for row in summary[task]["horizons"].values()
+                                ]
+                            )
+                        )
+                        for summary in result["probability_diagnostics"]["market"].values()
+                    ]
+                )
+            )
             for key in probability_macro_keys
         }
         # Confusion arrays are sufficient for block-based uncertainty estimates.
@@ -594,7 +660,9 @@ class DirectionV2Metrics(DirectionMetrics):
         anchor = references.get("pinball_guard_reference")
         if anchor is None:
             if self.split != "validation":
-                raise ValueError("Holdout direction selection requires a frozen validation pinball anchor")
+                raise ValueError(
+                    "Holdout direction selection requires a frozen validation pinball anchor"
+                )
             anchor = result["pinball_loss"]
             basis = "pending_first_full_validation"
         else:
@@ -603,7 +671,12 @@ class DirectionV2Metrics(DirectionMetrics):
             raise ValueError("Invalid frozen validation pinball anchor")
         tolerance = getattr(head.config, "selection_pinball_guard_tolerance", 0.01)
         weight = getattr(head.config, "selection_pinball_guard_weight", 1.0)
-        if not math.isfinite(tolerance) or tolerance < 0 or not math.isfinite(weight) or weight <= 0:
+        if (
+            not math.isfinite(tolerance)
+            or tolerance < 0
+            or not math.isfinite(weight)
+            or weight <= 0
+        ):
             raise ValueError("Invalid direction selection pinball guard parameters")
         penalty = weight * max(result["pinball_loss"] / anchor - (1 + tolerance), 0.0)
         result["selection_loss"] = 1 - market_macro["balanced_accuracy"] + penalty

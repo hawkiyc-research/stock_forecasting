@@ -128,7 +128,8 @@ def _model_runtime_task_gradients(model: torch.nn.Module) -> dict[str, Any] | No
 
 
 def _restore_runtime_task_gradients(
-    model: torch.nn.Module, trainer_state: dict[str, Any],
+    model: torch.nn.Module,
+    trainer_state: dict[str, Any],
 ) -> None:
     """Validate deterministic projection state before restoring optimizer state."""
 
@@ -146,7 +147,10 @@ def _restore_runtime_task_gradients(
 
 
 def _restore_runtime_scale_features(
-    model: torch.nn.Module, trainer_state: dict[str, Any], *, require_match: bool,
+    model: torch.nn.Module,
+    trainer_state: dict[str, Any],
+    *,
+    require_match: bool,
 ) -> None:
     branch = getattr(getattr(model, "alpha_head", None), "numeric_branch", None)
     stored = trainer_state.get("runtime_scale_features")
@@ -1769,7 +1773,9 @@ def load_checkpoint(
         _restore_rng_state(trainer_state.get("rng_state"))
     if config is not None:
         _validate_loaded_model_contract(
-            source, trainer_state, config,
+            source,
+            trainer_state,
+            config,
             allow_historical_inference=allow_historical_inference,
         )
     trainer_state["missing_frozen_keys"] = missing
@@ -1780,7 +1786,8 @@ def _validate_loaded_model_contract(
     checkpoint_dir: Path,
     trainer_state: dict[str, Any],
     config: ExperimentConfig,
-    *, allow_historical_inference: bool = False,
+    *,
+    allow_historical_inference: bool = False,
 ) -> None:
     """Reject evaluation or inference under a different model or training stage."""
 
@@ -1792,7 +1799,8 @@ def _validate_loaded_model_contract(
     from stock_forecasting.run_contract import readonly_checkpoint_contract_digest
 
     contract_validator = (
-        readonly_checkpoint_contract_digest if allow_historical_inference
+        readonly_checkpoint_contract_digest
+        if allow_historical_inference
         else compatible_training_resume_contract_digest
     )
     expected_resume_contract = contract_validator(

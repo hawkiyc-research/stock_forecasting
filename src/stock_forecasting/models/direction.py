@@ -146,13 +146,15 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         self.config = config
         self.horizons = tuple(int(h) for h in horizons)
         self.query = nn.Embedding(len(self.horizons), dimension)
-        nn.init.normal_(self.query.weight, std=dimension ** -0.5)
+        nn.init.normal_(self.query.weight, std=dimension**-0.5)
         self.stream = nn.Parameter(torch.zeros(3, dimension))
         self.attention = nn.MultiheadAttention(
             dimension, config.attention_heads, dropout=dropout, batch_first=True
         )
         self.numeric_projection = nn.Sequential(
-            nn.Linear(24, config.market_residual_hidden_dim), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(24, config.market_residual_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(config.market_residual_hidden_dim, dimension),
         )
         self.norm = nn.LayerNorm(dimension)
@@ -161,7 +163,8 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         self.market_signal = nn.Sequential(
             nn.LayerNorm(dimension),
             nn.Linear(dimension, config.market_residual_hidden_dim),
-            nn.GELU(), nn.Dropout(dropout),
+            nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(config.market_residual_hidden_dim, 4 * 2 * 3),
         )
         nn.init.zeros_(self.market_signal[-1].weight)
@@ -191,12 +194,19 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         self.train_market_weights = torch.ones(4, dtype=torch.float32, device=device)
 
     def read(
-        self, asset: Tensor, benchmark: Tensor, conditioned: Tensor,
-        market_ids: Tensor, bands: Tensor, *, standardized_scales: Tensor,
+        self,
+        asset: Tensor,
+        benchmark: Tensor,
+        conditioned: Tensor,
+        market_ids: Tensor,
+        bands: Tensor,
+        *,
+        standardized_scales: Tensor,
         scale_features: Tensor,
     ) -> Tensor:
         if standardized_scales.shape != (asset.shape[0], 20) or scale_features.shape != (
-            asset.shape[0], 20
+            asset.shape[0],
+            20,
         ):
             raise ValueError("Direction v2 requires the existing 20 past-only scale features")
         context = torch.cat(
@@ -207,16 +217,17 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         # The decision hurdle depends on return scale as well as its raw fee value.
         # An unreachable lower band stays exact in labels and finite in predictors.
         volatility = scale_features[:, (0, 2)].float().clamp_min(1e-8)
-        volatility = volatility[:, None, :, None] * self.horizon_values.float().sqrt()[
-            None, :, None, None
-        ]
+        volatility = (
+            volatility[:, None, :, None] * self.horizon_values.float().sqrt()[None, :, None, None]
+        )
         ratios = bands.float()[:, None, None, :] / volatility
         ratios = torch.nan_to_num(ratios, nan=0.0, posinf=20.0, neginf=-20.0).clamp(-20, 20)
         numerical = torch.cat(
             (
                 standardized_scales.float()[:, None].expand(-1, len(self.horizons), -1),
                 ratios.asinh().flatten(-2),
-            ), -1,
+            ),
+            -1,
         )
         numerical = self.numeric_projection(numerical.to(self.numeric_projection[0].weight.dtype))
         # Queries route attention only. Market/cost metadata has no output residual shortcut.
@@ -269,8 +280,12 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
             state.get("schema_version") != 2
             or state.get("architecture", self.architecture) != self.architecture
             or len(values) != 3
-            or any(not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in values)
-            or not isinstance(samples, int) or isinstance(samples, bool) or samples <= 0
+            or any(
+                not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in values
+            )
+            or not isinstance(samples, int)
+            or isinstance(samples, bool)
+            or samples <= 0
         ):
             raise ValueError("Invalid direction v2 train-only reference state")
         device = self.query.weight.device
@@ -279,15 +294,21 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         if (
             priors.shape != (4, 2, len(self.horizons), 3)
             or not bool((torch.isfinite(priors) & (priors > 0)).all())
-            or not torch.allclose(priors.sum(-1), torch.ones_like(priors[..., 0]), atol=1e-6, rtol=0)
+            or not torch.allclose(
+                priors.sum(-1), torch.ones_like(priors[..., 0]), atol=1e-6, rtol=0
+            )
             or weights.shape != (4,)
             or not bool((torch.isfinite(weights) & (weights > 0)).all())
         ):
-            raise ValueError("Direction v2 priors and market weights must match the train population")
+            raise ValueError(
+                "Direction v2 priors and market weights must match the train population"
+            )
         guard = state.get("pinball_guard_reference")
         if guard is not None and (
-            not isinstance(guard, (int, float)) or isinstance(guard, bool)
-            or not math.isfinite(guard) or guard <= 0
+            not isinstance(guard, (int, float))
+            or isinstance(guard, bool)
+            or not math.isfinite(guard)
+            or guard <= 0
         ):
             raise ValueError("Direction v2 pinball guard reference must be finite and positive")
         if (guard is None) != (state.get("pinball_guard_basis") is None) or (
@@ -301,8 +322,14 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         self.pinball_guard_reference = guard
         self.pinball_guard_basis = state.get("pinball_guard_basis")
         owned = {
-            "schema_version", "architecture", "samples", "references", "priors",
-            "market_weights", "pinball_guard_reference", "pinball_guard_basis",
+            "schema_version",
+            "architecture",
+            "samples",
+            "references",
+            "priors",
+            "market_weights",
+            "pinball_guard_reference",
+            "pinball_guard_basis",
         }
         self._reference_metadata = copy.deepcopy({k: v for k, v in state.items() if k not in owned})
 
@@ -313,8 +340,13 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         return (losses * self.train_market_weights[market_ids, None]).mean()
 
     def losses(
-        self, hidden: Tensor, logits: tuple[Tensor, Tensor],
-        targets: tuple[Tensor, Tensor], bands: Tensor, *, market_ids: Tensor,
+        self,
+        hidden: Tensor,
+        logits: tuple[Tensor, Tensor],
+        targets: tuple[Tensor, Tensor],
+        bands: Tensor,
+        *,
+        market_ids: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor | None]:
         labels = tuple(direction_labels(target, bands) for target in targets)
         clean = tuple(
@@ -324,7 +356,9 @@ class MarketResidualDualDirectionHead(DualDirectionHead):
         adversarial = None
         if self.training and torch.is_grad_enabled() and self.config.representation_weight:
             normalized = clean[0] / self.loss_references[1] + clean[1] / self.loss_references[2]
-            gradient = torch.autograd.grad(normalized, hidden, retain_graph=True)[0].detach().float()
+            gradient = (
+                torch.autograd.grad(normalized, hidden, retain_graph=True)[0].detach().float()
+            )
             radius = self.config.representation_radius * math.sqrt(hidden.shape[-1])
             delta = radius * gradient / gradient.norm(dim=-1, keepdim=True).clamp_min(1e-12)
             perturbed = self.logits(hidden + delta.to(hidden.dtype), market_ids)

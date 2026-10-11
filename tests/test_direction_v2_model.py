@@ -34,7 +34,9 @@ DEVICES = [
 
 def v2_config():
     return DirectionConfig(
-        enabled=True, architecture="market_residual_v2", class_balance_power=1.0,
+        enabled=True,
+        architecture="market_residual_v2",
+        class_balance_power=1.0,
         market_residual_hidden_dim=16,
     )
 
@@ -73,9 +75,7 @@ def test_population_logits_prior_and_balanced_decision_are_separate(device):
     population = head.logits(hidden, markets)
     decisions = head.decision_logits(population, markets)
     for task in range(2):
-        torch.testing.assert_close(
-            population[task].softmax(-1), head.train_priors[markets, task]
-        )
+        torch.testing.assert_close(population[task].softmax(-1), head.train_priors[markets, task])
         torch.testing.assert_close(decisions[task], torch.zeros_like(decisions[task]))
     assert population[0][0, 0].argmax().item() == 0
     assert population[0][1, 0].argmax().item() == 2
@@ -113,8 +113,13 @@ def test_historical_scale_and_context_paths_receive_finite_gradients(device):
     bands = torch.tensor([[-0.005, 0.005]], device=device).expand(4, -1).clone()
     bands[0, 0] = -torch.inf
     hidden = head.read(
-        context, context * 0.7, context * 1.2, markets, bands,
-        standardized_scales=standardized, scale_features=scales,
+        context,
+        context * 0.7,
+        context * 1.2,
+        markets,
+        bands,
+        standardized_scales=standardized,
+        scale_features=scales,
     )
     logits = head.logits(hidden, markets)
     targets = torch.tensor([[-0.02, 0, 0.03]], device=device).expand(4, -1)
@@ -127,18 +132,33 @@ def test_historical_scale_and_context_paths_receive_finite_gradients(device):
     head.eval()
     with torch.no_grad():
         original = head.read(
-            context, context, context, markets, bands,
-            standardized_scales=standardized, scale_features=scales,
+            context,
+            context,
+            context,
+            markets,
+            bands,
+            standardized_scales=standardized,
+            scale_features=scales,
         )
         changed = head.read(
-            context * 0.0, context * 0.0, context * 0.0, markets, bands,
-            standardized_scales=standardized, scale_features=scales,
+            context * 0.0,
+            context * 0.0,
+            context * 0.0,
+            markets,
+            bands,
+            standardized_scales=standardized,
+            scale_features=scales,
         )
         assert not torch.allclose(original, changed)
         # Market IDs route priors/output experts, never the history reader query.
         rerouted = head.read(
-            context, context, context, markets.roll(1), bands,
-            standardized_scales=standardized, scale_features=scales,
+            context,
+            context,
+            context,
+            markets.roll(1),
+            bands,
+            standardized_scales=standardized,
+            scale_features=scales,
         )
         torch.testing.assert_close(original, rerouted)
 
@@ -184,8 +204,12 @@ def test_quant_model_reuses_scale_statistics_and_preserves_legacy_outputs(device
     bands = torch.tensor([[-0.005, 0.005]], device=device).expand(4, -1)
     targets = torch.randn(4, len(config.data.alpha_horizons), device=device) * 0.02
     output = bundle.model(
-        asset, benchmark, market_ids=markets, direction_bands=bands,
-        target_alpha=targets, target_absolute=targets + 0.01,
+        asset,
+        benchmark,
+        market_ids=markets,
+        direction_bands=bands,
+        target_alpha=targets,
+        target_absolute=targets + 0.01,
     )
     assert output.alpha_quantiles.shape == (4, len(config.data.alpha_horizons), 3)
     assert output.absolute_direction_decision_logits.shape == output.absolute_direction_logits.shape
@@ -204,8 +228,18 @@ def test_quant_model_reuses_scale_statistics_and_preserves_legacy_outputs(device
     legacy = DualDirectionHead(32, 3, DirectionConfig(enabled=True), 0)
     assert legacy.reference_state()["schema_version"] == 1
     assert set(legacy.state_dict()) == {
-        "stream", "query.weight", "market.weight", "cost_projection.weight",
-        "attention.in_proj_weight", "attention.in_proj_bias", "attention.out_proj.weight",
-        "attention.out_proj.bias", "norm.weight", "norm.bias", "absolute.weight",
-        "absolute.bias", "alpha.weight", "alpha.bias",
+        "stream",
+        "query.weight",
+        "market.weight",
+        "cost_projection.weight",
+        "attention.in_proj_weight",
+        "attention.in_proj_bias",
+        "attention.out_proj.weight",
+        "attention.out_proj.bias",
+        "norm.weight",
+        "norm.bias",
+        "absolute.weight",
+        "absolute.bias",
+        "alpha.weight",
+        "alpha.bias",
     }

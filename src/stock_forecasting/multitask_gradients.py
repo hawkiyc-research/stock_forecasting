@@ -99,8 +99,11 @@ class SharedTaskGradientManager:
 
     def load_state_dict(self, state: Mapping[str, Any]) -> None:
         """Restore deterministic task-projection order without checkpointing gradients."""
-        if (state.get("schema_version") != 1 or state.get("mode") != self.mode
-                or state.get("seed") != self.seed):
+        if (
+            state.get("schema_version") != 1
+            or state.get("mode") != self.mode
+            or state.get("seed") != self.seed
+        ):
             raise ValueError("Incompatible shared gradient checkpoint state")
         for field in ("optimizer_steps", "microbatches"):
             value = state.get(field)
@@ -108,8 +111,10 @@ class SharedTaskGradientManager:
                 raise ValueError("Invalid shared gradient checkpoint counter")
         names = state.get("task_names")
         if names is not None and (
-            not isinstance(names, list) or not 2 <= len(names) <= self.max_tasks
-            or any(not isinstance(name, str) for name in names) or len(set(names)) != len(names)
+            not isinstance(names, list)
+            or not 2 <= len(names) <= self.max_tasks
+            or any(not isinstance(name, str) for name in names)
+            or len(set(names)) != len(names)
         ):
             raise ValueError("Invalid shared gradient checkpoint tasks")
         self.optimizer_steps = state["optimizer_steps"]
@@ -175,8 +180,9 @@ class SharedTaskGradientManager:
 
         correction = None
         if self.mode == "pcgrad":
-            delta = tuple(torch.zeros_like(parameter, dtype=torch.float32)
-                          for parameter in self.parameters)
+            delta = tuple(
+                torch.zeros_like(parameter, dtype=torch.float32) for parameter in self.parameters
+            )
             rng = random.Random(self.seed + self.microbatches)
             for i, original in enumerate(originals):
                 projected = tuple(gradient.clone() for gradient in original)
@@ -204,15 +210,20 @@ class SharedTaskGradientManager:
             correction = SharedGradientCorrection(id(self), delta)
 
         if collect:
-            cosines = torch.stack([
-                dot / (norms_squared[i].sqrt() * norms_squared[j].sqrt()).clamp_min(1e-12)
-                for dot, (i, j) in zip(pair_dots, pairs, strict=True)
-            ]).clamp(-1, 1)
-            metrics = torch.cat([
-                norms_squared.sqrt(), cosines,
-                (pair_dots < 0).float(),
-                torch.stack([projected_pairs, (~valid).float()]),
-            ]).detach()
+            cosines = torch.stack(
+                [
+                    dot / (norms_squared[i].sqrt() * norms_squared[j].sqrt()).clamp_min(1e-12)
+                    for dot, (i, j) in zip(pair_dots, pairs, strict=True)
+                ]
+            ).clamp(-1, 1)
+            metrics = torch.cat(
+                [
+                    norms_squared.sqrt(),
+                    cosines,
+                    (pair_dots < 0).float(),
+                    torch.stack([projected_pairs, (~valid).float()]),
+                ]
+            ).detach()
             self._diagnostic_sum = (
                 metrics if self._diagnostic_sum is None else self._diagnostic_sum + metrics
             )
@@ -240,9 +251,7 @@ class SharedTaskGradientManager:
         count = len(self.task_names)
         pairs = [(i, j) for i in range(count) for j in range(i + 1, count)]
         values = (self._diagnostic_sum / self._diagnostic_count).cpu().tolist()
-        result = {
-            f"gradient/norm/{name}": values[i] for i, name in enumerate(self.task_names)
-        }
+        result = {f"gradient/norm/{name}": values[i] for i, name in enumerate(self.task_names)}
         for offset, (i, j) in enumerate(pairs):
             suffix = f"{self.task_names[i]}__{self.task_names[j]}"
             result[f"gradient/cosine/{suffix}"] = values[count + offset]

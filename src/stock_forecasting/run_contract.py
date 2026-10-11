@@ -52,9 +52,13 @@ TRAINING_IMPLEMENTATION_PATHS = (
 )
 
 DIRECTION_IMPLEMENTATION_PATHS = (
-    "direction_costs.py", "direction_data.py", "direction_runtime.py",
-    "models/direction.py", "models/technical_channels.py",
-    "direction_v2_runtime.py", "multitask_gradients.py",
+    "direction_costs.py",
+    "direction_data.py",
+    "direction_runtime.py",
+    "models/direction.py",
+    "models/technical_channels.py",
+    "direction_v2_runtime.py",
+    "multitask_gradients.py",
 )
 
 
@@ -199,7 +203,8 @@ def _checkpoint_retention_migration_matches(
         label="Current training resume contract",
     )
     changed_files = {
-        path for path in set(stored_files) | set(current_files)
+        path
+        for path in set(stored_files) | set(current_files)
         if stored_files.get(path) != current_files.get(path)
     }
     if not changed_files:

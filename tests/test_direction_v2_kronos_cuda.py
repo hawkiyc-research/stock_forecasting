@@ -19,11 +19,14 @@ from stock_forecasting import training
 from stock_forecasting.checkpointing import _load_trainable_model_state, trainable_state_dict
 from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.data.dataset import LazyFinancialWindowDataset
+from stock_forecasting.data.manifest import canonical_json_sha256, sha256_file
 from stock_forecasting.direction_data import DirectionDataset
 from stock_forecasting.direction_v2_runtime import calibrate_direction_references
 from stock_forecasting.factory import build_model_bundle
-from stock_forecasting.data.manifest import canonical_json_sha256, sha256_file
-from stock_forecasting.models.scale_features import EXTENDED_FEATURE_VERSION, validate_scale_feature_statistics
+from stock_forecasting.models.scale_features import (
+    EXTENDED_FEATURE_VERSION,
+    validate_scale_feature_statistics,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.skipif(
@@ -33,10 +36,16 @@ pytestmark = pytest.mark.skipif(
 
 
 def dataset(root, index, split):
-    return DirectionDataset(LazyFinancialWindowDataset(
-        root / "prepared/bar-store", split=split, window_size=128, h_start=1,
-        sample_index_root=index, symbol_cache_size=4,
-    ))
+    return DirectionDataset(
+        LazyFinancialWindowDataset(
+            root / "prepared/bar-store",
+            split=split,
+            window_size=128,
+            h_start=1,
+            sample_index_root=index,
+            symbol_cache_size=4,
+        )
+    )
 
 
 def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, monkeypatch):
@@ -53,7 +62,9 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
     train_root = Path(os.environ["DIRECTION_QA_TRAIN_ROOT"])
     evaluation_root = Path(os.environ["DIRECTION_QA_EVALUATION_ROOT"])
     source = dataset(train_root, Path(os.environ["DIRECTION_QA_TRAIN_INDEX"]), "train")
-    evaluation = dataset(evaluation_root, Path(os.environ["DIRECTION_QA_EVALUATION_INDEX"]), "validation")
+    evaluation = dataset(
+        evaluation_root, Path(os.environ["DIRECTION_QA_EVALUATION_INDEX"]), "validation"
+    )
     config = ExperimentConfig.from_yaml(ROOT / "configs/experiments/a_direction64_v2.yaml")
     config.model.kronos_source_root = ROOT / "src/stock_forecasting/_vendor/kronos"
     config.runtime.log_root = tmp_path / "logs"
@@ -64,47 +75,66 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
     assert workers.effective_workers > 0
     calibration_count = min(config.data.label_scale_calibration_samples, len(source))
     robust_identity = training._robust_scale_identity(
-        source, sample_count=calibration_count, seed=config.data.calibration_seed,
+        source,
+        sample_count=calibration_count,
+        seed=config.data.calibration_seed,
     )
     robust_digest = canonical_json_sha256(robust_identity)
     robust_path = train_root / "training-cache/robust-scales" / f"{robust_digest}.json"
     assert robust_path.is_file(), "Read-only QA requires the matching prepared robust-scale cache"
     scales = training._load_cached_robust_scales(
-        robust_path, identity=robust_identity, identity_sha256=robust_digest,
+        robust_path,
+        identity=robust_identity,
+        identity_sha256=robust_digest,
     )
     statistics_identity = {
         "version": EXTENDED_FEATURE_VERSION,
         "bar_store_manifest_sha256": sha256_file(source.root / "bar-store.json"),
         "sample_universe": source.sample_universe_identity,
-        "window_size": source.window_size, "split": "train",
-        "sample_count": calibration_count, "seed": config.data.calibration_seed,
+        "window_size": source.window_size,
+        "split": "train",
+        "sample_count": calibration_count,
+        "seed": config.data.calibration_seed,
         "sampler": "blockwise-16-v1",
     }
-    statistics_path = train_root / "training-cache/scale-features" / f"{canonical_json_sha256(statistics_identity)}.json"
-    assert statistics_path.is_file(), "Read-only QA requires the matching prepared scale-feature cache"
+    statistics_path = (
+        train_root
+        / "training-cache/scale-features"
+        / f"{canonical_json_sha256(statistics_identity)}.json"
+    )
+    assert statistics_path.is_file(), (
+        "Read-only QA requires the matching prepared scale-feature cache"
+    )
     statistics = validate_scale_feature_statistics(json.loads(statistics_path.read_text()))
     assert statistics["identity"] == statistics_identity
     device = torch.device("cuda")
     training.set_global_seed(42)
-    bundle = build_model_bundle(config, device, robust_scales=scales,
-                                scale_feature_statistics=statistics)
+    bundle = build_model_bundle(
+        config, device, robust_scales=scales, scale_feature_statistics=statistics
+    )
     reference_states = []
     for seed in (42, 43, 44):
         config.training.seed = seed
         training.set_global_seed(seed)
         before_rng, before_cuda_rng = torch.get_rng_state(), torch.cuda.get_rng_state()
-        reference_states.append(calibrate_direction_references(
-            bundle, config, source, device, workers, SimpleNamespace(training_batch_size=32)
-        ))
+        reference_states.append(
+            calibrate_direction_references(
+                bundle, config, source, device, workers, SimpleNamespace(training_batch_size=32)
+            )
+        )
         assert torch.equal(before_rng, torch.get_rng_state())
         assert torch.equal(before_cuda_rng, torch.cuda.get_rng_state())
     assert reference_states[0] == reference_states[1] == reference_states[2]
     config.training.seed = 42
     training.set_global_seed(42)
     subset = Subset(source, [i * (len(source) - 1) // 15 for i in range(16)])
-    loader = DataLoader(subset, batch_size=16,
-                        collate_fn=training.ModelBatchCollator.for_model(config, training=True),
-                        pin_memory=True, **training._loader_process_options(workers, persistent=False))
+    loader = DataLoader(
+        subset,
+        batch_size=16,
+        collate_fn=training.ModelBatchCollator.for_model(config, training=True),
+        pin_memory=True,
+        **training._loader_process_options(workers, persistent=False),
+    )
     iterator = iter(loader)
     try:
         batch = training._move_batch_to_device(next(iterator), device)
@@ -125,11 +155,16 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
         training._backward_training_output(output, bundle, 1, manager)
         assert torch.isfinite(output.loss)
         assert all(torch.isfinite(p.grad).all() for p in parameters if p.grad is not None)
-        assert any(p.grad is not None and p.grad.norm() > 0
-                   for name, p in bundle.model.named_parameters() if "lora_" in name)
-        assert any(p.grad is not None and p.grad.norm() > 0
-                   for name, p in bundle.model.named_parameters()
-                   if "direction_head.numeric_projection" in name)
+        assert any(
+            p.grad is not None and p.grad.norm() > 0
+            for name, p in bundle.model.named_parameters()
+            if "lora_" in name
+        )
+        assert any(
+            p.grad is not None and p.grad.norm() > 0
+            for name, p in bundle.model.named_parameters()
+            if "direction_head.numeric_projection" in name
+        )
         optimizer.step()
         diagnostics.append(manager.optimizer_step_completed())
     optimizer.zero_grad(set_to_none=True)
@@ -138,9 +173,13 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
     peak = torch.cuda.max_memory_allocated()
     evaluation_subset = Subset(evaluation, list(range(32)))
     evaluation_subset.split = "validation"
-    evaluation_loader = DataLoader(evaluation_subset, batch_size=16,
+    evaluation_loader = DataLoader(
+        evaluation_subset,
+        batch_size=16,
         collate_fn=training.ModelBatchCollator.for_model(config, training=False),
-        pin_memory=True, **training._loader_process_options(workers, persistent=False))
+        pin_memory=True,
+        **training._loader_process_options(workers, persistent=False),
+    )
     metrics = training.evaluate_loader(bundle, evaluation_loader, config, device)
     training._freeze_direction_validation_anchor(bundle, metrics)
     anchor = bundle.model.direction_head.pinball_guard_reference
@@ -164,9 +203,14 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
     manager.load_state_dict(state)
     with torch.no_grad(), training._autocast_context(config, device):
         actual = training.forward_batch(bundle, batch, config, device)
-    for name in ("alpha_quantiles", "ranking_scores", "absolute_direction_logits",
-                 "alpha_direction_logits", "absolute_direction_decision_logits",
-                 "alpha_direction_decision_logits"):
+    for name in (
+        "alpha_quantiles",
+        "ranking_scores",
+        "absolute_direction_logits",
+        "alpha_direction_logits",
+        "absolute_direction_decision_logits",
+        "alpha_direction_decision_logits",
+    ):
         torch.testing.assert_close(getattr(actual, name), getattr(expected, name), rtol=0, atol=0)
     if os.environ.get("DIRECTION_QA_RUNTIME_PROBE") == "1":
         # Existing caches are read-only; probes must never build a new source index.
@@ -176,24 +220,42 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
             assert mode == "r"
             return original_open(filename, mode, *args, **kwargs)
 
-        with patch("numpy.lib.format.open_memmap", side_effect=read_only), patch(
-            "stock_forecasting.date_market_sampler.atomic_write_json",
-            side_effect=AssertionError("QA cannot rewrite prepared caches"),
+        with (
+            patch("numpy.lib.format.open_memmap", side_effect=read_only),
+            patch(
+                "stock_forecasting.date_market_sampler.atomic_write_json",
+                side_effect=AssertionError("QA cannot rewrite prepared caches"),
+            ),
         ):
             measurement = training._measure_cuda_batch(
-                bundle=bundle, sample=source[0], batch_size=16, config=config, device=device,
-                training=True, optimizer_state_reserve_bytes=0,
-                device_memory_limit_bytes=int(torch.cuda.get_device_properties(0).total_memory * .72),
-                dataset=source, worker_plan=workers,
+                bundle=bundle,
+                sample=source[0],
+                batch_size=16,
+                config=config,
+                device=device,
+                training=True,
+                optimizer_state_reserve_bytes=0,
+                device_memory_limit_bytes=int(
+                    torch.cuda.get_device_properties(0).total_memory * 0.72
+                ),
+                dataset=source,
+                worker_plan=workers,
             )
         assert measurement.accepted
         assert bundle.model.direction_head.reference_state() == references
         assert manager.state_dict() == state
-    record = {"seed_reference_equal": True, "samples": reference_states[0]["samples"],
-              "pcgrad_updates": 3, "gradient_diagnostics": diagnostics,
-              "train_elapsed_seconds": elapsed, "peak_cuda_bytes": peak,
-              "gpu": torch.cuda.get_device_name(), "validation": again["direction"],
-              "roundtrip_exact": True, "existing_caches_read_only": True}
+    record = {
+        "seed_reference_equal": True,
+        "samples": reference_states[0]["samples"],
+        "pcgrad_updates": 3,
+        "gradient_diagnostics": diagnostics,
+        "train_elapsed_seconds": elapsed,
+        "peak_cuda_bytes": peak,
+        "gpu": torch.cuda.get_device_name(),
+        "validation": again["direction"],
+        "roundtrip_exact": True,
+        "existing_caches_read_only": True,
+    }
     (tmp_path / "v2-kronos-evidence.json").write_text(json.dumps(record, allow_nan=False))
     print(json.dumps(record, allow_nan=False))
     source.close()

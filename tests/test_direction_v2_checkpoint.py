@@ -26,16 +26,24 @@ from stock_forecasting.run_contract import training_resume_contract_fingerprint
 
 ROOT = Path(__file__).resolve().parents[1]
 V2_DIRECTION_FIELDS = {
-    "architecture", "class_balance_power", "market_residual_hidden_dim", "prior_smoothing",
-    "market_weight_max", "gradient_management", "gradient_diagnostics_interval",
-    "probability_bins", "max_daily_entries", "selection_pinball_guard_tolerance",
+    "architecture",
+    "class_balance_power",
+    "market_residual_hidden_dim",
+    "prior_smoothing",
+    "market_weight_max",
+    "gradient_management",
+    "gradient_diagnostics_interval",
+    "probability_bins",
+    "max_daily_entries",
+    "selection_pinball_guard_tolerance",
     "selection_pinball_guard_weight",
 }
 DEVICES = [
     "cpu",
-    pytest.param("cuda", marks=pytest.mark.skipif(
-        not torch.cuda.is_available(), reason="Requires cloud CUDA"
-    )),
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires cloud CUDA"),
+    ),
 ]
 
 
@@ -48,23 +56,33 @@ class _CheckpointModel(nn.Module):
         self.alpha_head.register_buffer("robust_scales", torch.ones(len(horizons), device=device))
         if config.model.direction.enabled:
             self.direction_head = MarketResidualDualDirectionHead(
-                32, horizons, config.model.direction, 0,
+                32,
+                horizons,
+                config.model.direction,
+                0,
             ).to(device)
-            self.direction_head.restore_references({
-                "schema_version": 2,
-                "samples": 8192,
-                "references": [0.3, math.log(3), math.log(3)],
-                "priors": [[[[0.5, 0.25, 0.25] for _ in horizons] for _ in range(2)]
-                           for _ in range(4)],
-                "market_weights": [0.6, 1.2, 2.0, 1.0],
-                "basis": "train_null_quantiles_and_uniform_classes_v2",
-            })
+            self.direction_head.restore_references(
+                {
+                    "schema_version": 2,
+                    "samples": 8192,
+                    "references": [0.3, math.log(3), math.log(3)],
+                    "priors": [
+                        [[[0.5, 0.25, 0.25] for _ in horizons] for _ in range(2)] for _ in range(4)
+                    ],
+                    "market_weights": [0.6, 1.2, 2.0, 1.0],
+                    "basis": "train_null_quantiles_and_uniform_classes_v2",
+                }
+            )
             self.direction_head.set_pinball_guard_reference(0.35)
         self._task_gradient_manager = (
             SharedTaskGradientManager(
-                self.named_parameters(), seed=config.training.seed, diagnostics_interval=1,
+                self.named_parameters(),
+                seed=config.training.seed,
+                diagnostics_interval=1,
                 mode=config.model.direction.gradient_management,
-            ) if manager else None
+            )
+            if manager
+            else None
         )
 
 
@@ -74,7 +92,9 @@ def _config(*, v2: bool = True) -> ExperimentConfig:
         config.model.feature_mode = "combined"
         config.model.explicit_output_scale = True
         config.model.direction = DirectionConfig(
-            enabled=True, architecture="market_residual_v2", gradient_management="pcgrad",
+            enabled=True,
+            architecture="market_residual_v2",
+            gradient_management="pcgrad",
         )
     return config
 
@@ -83,13 +103,18 @@ def _run(tmp_path: Path, config: ExperimentConfig) -> Path:
     directory = tmp_path / "direction-v2-checkpoint-run"
     directory.mkdir()
     contract, digest = training_resume_contract_fingerprint(config)
-    (directory / "run-manifest.json").write_text(json.dumps({
-        "schema_version": CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
-        "run_id": directory.name,
-        "run_key": directory.name,
-        "training_resume_contract": contract,
-        "training_resume_contract_sha256": digest,
-    }), encoding="utf-8")
+    (directory / "run-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+                "run_id": directory.name,
+                "run_key": directory.name,
+                "training_resume_contract": contract,
+                "training_resume_contract_sha256": digest,
+            }
+        ),
+        encoding="utf-8",
+    )
     return directory
 
 
@@ -119,9 +144,16 @@ def _step(model, optimizer, scheduler):
 
 def _save(config, directory, model, optimizer, scheduler):
     return save_checkpoint(
-        model=model, optimizer=optimizer, scheduler=scheduler, config=config,
-        run_directory=directory, global_step=1, epoch=0, batch_index=1,
-        selection_metric_name="direction/selection_loss", selection_metric_value=0.75,
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        config=config,
+        run_directory=directory,
+        global_step=1,
+        epoch=0,
+        batch_index=1,
+        selection_metric_name="direction/selection_loss",
+        selection_metric_value=0.75,
         selection_metric_mode="min",
     )
 
@@ -146,8 +178,7 @@ def test_projection_checkpoint_restores_counters_and_the_next_optimizer_step(tmp
     torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
     torch.testing.assert_close(restored.lora_a, original.lora_a, rtol=0, atol=0)
     assert (
-        restored._task_gradient_manager.state_dict()
-        == original._task_gradient_manager.state_dict()
+        restored._task_gradient_manager.state_dict() == original._task_gradient_manager.state_dict()
     )
 
 
@@ -157,9 +188,16 @@ def test_completion_result_also_preserves_the_task_gradient_state(tmp_path):
     optimizer, scheduler = _optimizer(model)
     _step(model, optimizer, scheduler)
     result = save_training_completion_result(
-        model=model, config=config, run_directory=_run(tmp_path, config), global_step=1,
-        completed_epochs=1, processed_train_samples=4, planned_train_samples=4,
-        validation_evaluations=1, stop_reason="epochs_completed", early_stopping_state={},
+        model=model,
+        config=config,
+        run_directory=_run(tmp_path, config),
+        global_step=1,
+        completed_epochs=1,
+        processed_train_samples=4,
+        planned_train_samples=4,
+        validation_evaluations=1,
+        stop_reason="epochs_completed",
+        early_stopping_state={},
         metrics={"direction/selection_loss": 0.75},
     )
     saved = json.loads((result / "training-result.json").read_text())
@@ -168,7 +206,9 @@ def test_completion_result_also_preserves_the_task_gradient_state(tmp_path):
 
 @pytest.mark.parametrize("damage", ["missing", "null", "list", "seed", "mode", "counter", "tasks"])
 def test_invalid_projection_state_is_rejected_before_optimizer_restore(
-    tmp_path, monkeypatch, damage,
+    tmp_path,
+    monkeypatch,
+    damage,
 ):
     config = _config()
     model = _CheckpointModel(config, manager=True, device="cpu")
@@ -184,14 +224,16 @@ def test_invalid_projection_state_is_rejected_before_optimizer_restore(
         state["runtime_task_gradients"] = []
     else:
         field, value = {
-            "seed": ("seed", -1), "mode": ("mode", "monitor"),
-            "counter": ("microbatches", True), "tasks": ("task_names", ["same", "same"]),
+            "seed": ("seed", -1),
+            "mode": ("mode", "monitor"),
+            "counter": ("microbatches", True),
+            "tasks": ("task_names", ["same", "same"]),
         }[damage]
         state["runtime_task_gradients"][field] = value
     state_path.write_text(json.dumps(state), encoding="utf-8")
     calls = []
     monkeypatch.setattr(optimizer, "load_state_dict", lambda _value: calls.append("optimizer"))
-    with pytest.raises(ValueError, match="shared.*gradient"):
+    with pytest.raises(ValueError, match=r"shared.*gradient"):
         load_checkpoint(checkpoint, model, optimizer, scheduler)
     assert calls == []
 
@@ -245,19 +287,26 @@ def test_legacy_direction_architecture_digest_matches_the_pre_v2_payload():
     config = _config(v2=False)
     config.model.direction = DirectionConfig(enabled=True)
     payload = json.loads(config.model.model_dump_json())
-    assert V2_DIRECTION_FIELDS <= payload["direction"].keys()
+    assert payload["direction"].keys() >= V2_DIRECTION_FIELDS
     for name in V2_DIRECTION_FIELDS:
         payload["direction"].pop(name)
     payload.pop("feature_mode")
     payload.pop("alpha_head_fp32")
     for name in (
-        "market_aware", "explicit_output_scale", "decoupled_output_scale",
-        "independent_ranking_head", "market_residual_hidden_dim", "ranking_numeric_features",
-        "unfreeze_last_blocks", "ranking_loss_weight", "ranking_max_pairs",
+        "market_aware",
+        "explicit_output_scale",
+        "decoupled_output_scale",
+        "independent_ranking_head",
+        "market_residual_hidden_dim",
+        "ranking_numeric_features",
+        "unfreeze_last_blocks",
+        "ranking_loss_weight",
+        "ranking_max_pairs",
     ):
         payload.pop(name)
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-                         allow_nan=False).encode("utf-8")
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
     assert config.model.architecture_digest() == hashlib.sha256(encoded).hexdigest()
     original = config.model.architecture_digest()
     config.model.direction.probability_bins = 25
@@ -267,11 +316,17 @@ def test_legacy_direction_architecture_digest_matches_the_pre_v2_payload():
     assert config.model.architecture_digest() != original
 
 
-@pytest.mark.parametrize("field,value", [
-    ("probability_bins", 25), ("class_balance_power", 0.5),
-    ("market_residual_hidden_dim", 32), ("gradient_diagnostics_interval", 123),
-    ("gradient_management", "monitor"), ("selection_pinball_guard_weight", 2.0),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("probability_bins", 25),
+        ("class_balance_power", 0.5),
+        ("market_residual_hidden_dim", 32),
+        ("gradient_diagnostics_interval", 123),
+        ("gradient_management", "monitor"),
+        ("selection_pinball_guard_weight", 2.0),
+    ],
+)
 def test_v2_architecture_digest_still_hashes_all_its_active_fields(field, value):
     config = _config()
     original = config.model.architecture_digest()

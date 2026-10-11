@@ -53,7 +53,13 @@ EXPERIMENT_CONFIGS = {
     }
     for group in ("a", "b")
     for variant in (
-        "lora32", "lora64", "partial", "adaptive64", "adaptive128", "direction64", "direction64-v2"
+        "lora32",
+        "lora64",
+        "partial",
+        "adaptive64",
+        "adaptive128",
+        "direction64",
+        "direction64-v2",
     )
 }
 STAGE_RUNTIME = {

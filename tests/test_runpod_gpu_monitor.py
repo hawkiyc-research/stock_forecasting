@@ -167,19 +167,27 @@ class TelemetryTests(unittest.TestCase):
                 key = Path(name) / "key"
                 key.write_text("fixture, never read as a private key")
                 proxy = {
-                    "id": "pod-a", "desiredStatus": "RUNNING", "name": "experiment",
-                    "ssh": {"proxy": {
-                        "host": "ssh.runpod.io", "port": 22, "username": "pod-a",
-                    }},
+                    "id": "pod-a",
+                    "desiredStatus": "RUNNING",
+                    "name": "experiment",
+                    "ssh": {
+                        "proxy": {
+                            "host": "ssh.runpod.io",
+                            "port": 22,
+                            "username": "pod-a",
+                        }
+                    },
                 }
                 direct = copy.deepcopy(proxy)
                 direct["ssh"]["direct"] = {
-                    "host": "127.0.0.1", "port": 12345, "username": "root",
+                    "host": "127.0.0.1",
+                    "port": 12345,
+                    "username": "root",
                 }
                 replies = iter((proxy, direct))
                 now = [100.0]
 
-                def reply(command, **kwargs):
+                def reply(command, replies=replies, raw=raw, **kwargs):
                     if command[0] == "bash":
                         return json.dumps(next(replies))
                     if command[-1] == "nvidia-smi -q -x":
@@ -187,8 +195,10 @@ class TelemetryTests(unittest.TestCase):
                     self.assertEqual(command[-3:-1], ["-O", "exit"])
                     return ""
 
-                with patch.object(telemetry, "bounded_call", side_effect=reply) as call, \
-                        patch.object(telemetry.time, "monotonic", side_effect=lambda: now[0]):
+                with (
+                    patch.object(telemetry, "bounded_call", side_effect=reply) as call,
+                    patch.object(telemetry.time, "monotonic", side_effect=lambda now=now: now[0]),
+                ):
                     connection = telemetry.TelemetrySSH(ROOT, "pod-a", key)
                     try:
                         for elapsed in (0, 59, 60):
