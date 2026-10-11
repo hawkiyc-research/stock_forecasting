@@ -205,6 +205,7 @@ class DirectionConfig(StrictModel):
     """Opt-in dual three-class supervision on the A-LoRA64 architecture."""
 
     enabled: bool = False
+    architecture: Literal["legacy", "market_residual_v2"] = "legacy"
     technical_channels: bool = True
     attention_heads: int = Field(default=8, ge=1)
     loss_reference_samples: int = Field(default=1024, ge=32, le=8192)
@@ -212,7 +213,25 @@ class DirectionConfig(StrictModel):
     alpha_weight: float = Field(default=1.0, gt=0.0, le=10.0)
     representation_weight: float = Field(default=0.05, ge=0.0, le=1.0)
     representation_radius: float = Field(default=0.01, gt=0.0, le=0.1)
+    class_balance_power: float = Field(default=1.0, ge=0.0, le=1.0)
+    market_residual_hidden_dim: int = Field(default=64, ge=8, le=256)
+    prior_smoothing: float = Field(default=1.0, gt=0.0, le=100.0)
+    market_weight_max: float = Field(default=3.0, ge=1.0, le=4.0)
+    gradient_management: Literal["none", "monitor", "pcgrad"] = "none"
+    gradient_diagnostics_interval: int = Field(default=100, ge=1, le=10_000)
+    probability_bins: int = Field(default=20, ge=5, le=128)
+    max_daily_entries: int = Field(default=4096, ge=128, le=16_384)
+    selection_pinball_guard_tolerance: float = Field(default=0.01, ge=0.0, le=0.1)
+    selection_pinball_guard_weight: float = Field(default=1.0, gt=0.0, le=10.0)
     costs: DirectionCostConfig = Field(default_factory=DirectionCostConfig)
+
+    @model_validator(mode="after")
+    def validate_direction_contract(self) -> DirectionConfig:
+        if self.gradient_management != "none" and (
+            not self.enabled or self.architecture != "market_residual_v2"
+        ):
+            raise ValueError("Shared task-gradient management requires the enabled v2 direction head")
+        return self
 
 
 class ModelConfig(StrictModel):
@@ -258,6 +277,15 @@ class ModelConfig(StrictModel):
     def validate_model_contract(self) -> ModelConfig:
         if self.direction.enabled and self.encoder_dim % self.direction.attention_heads:
             raise ValueError("encoder_dim must be divisible by direction.attention_heads")
+        if self.direction.enabled and self.direction.architecture == "market_residual_v2":
+            if self.feature_mode not in ("scales", "combined") or not self.explicit_output_scale:
+                raise ValueError("The v2 direction head requires the existing extended scale branch")
+            if (
+                self.direction.gradient_management != "none"
+                and self.time_series_backend == "kronos"
+                and not self.lora.enabled
+            ):
+                raise ValueError("Shared task-gradient management requires trainable Kronos LoRA")
         if self.encoder_dim % self.resampler_heads != 0:
             raise ValueError("encoder_dim must be divisible by resampler_heads")
         if self.encoder_dim % self.benchmark_conditioner_heads != 0:
@@ -319,6 +347,22 @@ class ModelConfig(StrictModel):
         semantics = json.loads(self.model_dump_json())
         if not self.direction.enabled:
             semantics.pop("direction")
+        elif self.direction.architecture == "legacy":
+            # V2-only defaults do not change the architecture of an existing head.
+            for name in (
+                "architecture",
+                "class_balance_power",
+                "market_residual_hidden_dim",
+                "prior_smoothing",
+                "market_weight_max",
+                "gradient_management",
+                "gradient_diagnostics_interval",
+                "probability_bins",
+                "max_daily_entries",
+                "selection_pinball_guard_tolerance",
+                "selection_pinball_guard_weight",
+            ):
+                semantics["direction"].pop(name)
         # Preserve the architecture digest of existing baseline checkpoints.
         if self.feature_mode == "baseline":
             semantics.pop("feature_mode")

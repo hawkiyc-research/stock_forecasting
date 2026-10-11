@@ -77,3 +77,11 @@ class DirectionForecastOutput(QuantForecastOutput):
     alpha_direction_loss: Tensor | None = None
     representation_loss: Tensor | None = None
     direction_weighted_loss: Tensor | None = None
+
+
+@dataclass(frozen=True)
+class DirectionV2ForecastOutput(DirectionForecastOutput):
+    """Keep population probability logits separate from balanced decision logits."""
+
+    absolute_direction_decision_logits: Tensor | None = None
+    alpha_direction_decision_logits: Tensor | None = None

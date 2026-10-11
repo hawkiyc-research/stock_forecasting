@@ -68,7 +68,10 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
 
     def test_new_presets_keep_old_presets_and_baseline_identity(self):
         names = SELECTION["EXPERIMENT_CONFIGS"]
-        variants = ("lora32", "lora64", "partial", "adaptive64", "adaptive128", "direction64")
+        variants = (
+            "lora32", "lora64", "partial", "adaptive64", "adaptive128", "direction64",
+            "direction64-v2",
+        )
         expected = {f"{g}-{v}" for g in ("a", "b") for v in variants}
         self.assertEqual(set(names), expected)
         args = argparse.Namespace(stage="stage2", data_profile="us_tw_eodhd", dataset_revision="v1",

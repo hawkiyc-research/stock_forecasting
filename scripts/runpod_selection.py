@@ -52,7 +52,9 @@ EXPERIMENT_CONFIGS = {
         "end": "2026-06-01",
     }
     for group in ("a", "b")
-    for variant in ("lora32", "lora64", "partial", "adaptive64", "adaptive128", "direction64")
+    for variant in (
+        "lora32", "lora64", "partial", "adaptive64", "adaptive128", "direction64", "direction64-v2"
+    )
 }
 STAGE_RUNTIME = {
     # Keep terminate_after in immutable selection hashes created before REST v2 migration.

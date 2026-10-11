@@ -6,7 +6,9 @@ import torch
 from torch import Tensor, nn
 
 from .forecast import GatedBenchmarkConditioner, MultiHorizonAlphaHead
-from .outputs import DirectionForecastOutput, QuantEncoderOutput, QuantForecastOutput
+from .outputs import (
+    DirectionForecastOutput, DirectionV2ForecastOutput, QuantEncoderOutput, QuantForecastOutput,
+)
 from .projector import CausalPerceiverResampler
 from .ranking import same_date_ranking_loss
 from .scale_features import historical_scale_features
@@ -197,22 +199,42 @@ class QuantForecastModel(nn.Module):
             else weighted_pinball + self.ranking_loss_weight * ranking_loss
         )
         absolute_logits = alpha_logits = absolute_loss = alpha_loss = None
+        absolute_decision_logits = alpha_decision_logits = None
         representation_loss = direction_weighted_loss = None
         if self.direction_head is not None:
             if market_ids is None or direction_bands is None:
                 raise ValueError("Direction predictions require market IDs and ex-ante cost bands")
             head = self.direction_head
+            direction_v2 = getattr(head, "architecture", None) == "market_residual_v2"
+            read_kwargs = {}
+            if direction_v2:
+                from .scale_features import SCALE_STANDARDIZED_CLIP, _transform
+
+                if scales is None or branch is None or branch.statistics is None:
+                    raise ValueError("Direction v2 requires the existing train-fitted scale statistics")
+                # Reuse the numerical branch's exact train-fitted transform and buffers.
+                standardized = (_transform(scales.float()) - branch.feature_center) / branch.feature_scale
+                read_kwargs = {
+                    "standardized_scales": standardized.clamp(
+                        -SCALE_STANDARDIZED_CLIP, SCALE_STANDARDIZED_CLIP
+                    ),
+                    "scale_features": scales,
+                }
             hidden = head.read(
                 asset_encoded.latent_tokens, benchmark_encoded.latent_tokens,
-                conditioned, market_ids, direction_bands,
+                conditioned, market_ids, direction_bands, **read_kwargs,
             )
-            absolute_logits, alpha_logits = head.logits(hidden)
+            logits = head.logits(hidden, market_ids) if direction_v2 else head.logits(hidden)
+            absolute_logits, alpha_logits = logits
+            if direction_v2:
+                absolute_decision_logits, alpha_decision_logits = head.decision_logits(logits, market_ids)
             if (target_alpha is None) != (target_absolute is None):
                 raise ValueError("Direction supervision requires both absolute and alpha labels")
             if target_absolute is not None:
                 absolute_loss, alpha_loss, representation_loss = head.losses(
                     hidden, (absolute_logits, alpha_logits),
                     (target_absolute, target_alpha), direction_bands,
+                    **({"market_ids": market_ids} if direction_v2 else {}),
                 )
                 weights = head.weights()
                 direction_weighted_loss = weights[0] * absolute_loss + weights[1] * alpha_loss
@@ -230,8 +252,15 @@ class QuantForecastModel(nn.Module):
             "representation_loss": representation_loss,
             "direction_weighted_loss": direction_weighted_loss,
         }
+        if absolute_decision_logits is not None:
+            direction_fields.update(
+                absolute_direction_decision_logits=absolute_decision_logits,
+                alpha_direction_decision_logits=alpha_decision_logits,
+            )
         output_type = (
-            QuantForecastOutput if self.direction_head is None else DirectionForecastOutput
+            QuantForecastOutput if self.direction_head is None
+            else DirectionV2ForecastOutput if absolute_decision_logits is not None
+            else DirectionForecastOutput
         )
         return output_type(
             loss=total_loss,

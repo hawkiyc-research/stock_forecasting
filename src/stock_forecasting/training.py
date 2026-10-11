@@ -1740,6 +1740,59 @@ def _preserve_probe_state(model):
             torch.cuda.set_rng_state_all(cuda_rng)
 
 
+def _shared_task_gradient_manager(bundle: ModelBundle, config: ExperimentConfig):
+    """Construct the same bounded LoRA gradient path for probes and training."""
+    direction = config.model.direction
+    if not direction.enabled or direction.gradient_management == "none":
+        return None
+    from stock_forecasting.multitask_gradients import SharedTaskGradientManager
+
+    return SharedTaskGradientManager(
+        bundle.model.named_parameters(),
+        mode=direction.gradient_management,
+        diagnostics_interval=direction.gradient_diagnostics_interval,
+        seed=config.training.seed,
+    )
+
+
+def _backward_training_output(output, bundle: ModelBundle, divisor: float, manager) -> None:
+    """Project only shared LoRA task conflicts; retain ordinary private gradients."""
+    if output.loss is None:
+        raise RuntimeError("Training forward pass did not produce a loss")
+    correction = None
+    if manager is not None:
+        head = bundle.model.direction_head
+        regression = output.weighted_pinball_loss
+        if regression is None:
+            regression = output.pinball_loss
+        if regression is None or output.absolute_direction_loss is None or output.alpha_direction_loss is None:
+            raise RuntimeError("Shared gradient management requires all three task losses")
+        if output.ranking_loss is not None:
+            regression = regression + bundle.model.ranking_loss_weight * output.ranking_loss
+        weights = head.weights()
+        correction = manager.prepare_correction(
+            {
+                "regression": regression,
+                "absolute": weights[0] * output.absolute_direction_loss,
+                "alpha": weights[1] * output.alpha_direction_loss,
+            },
+            divisor=divisor,
+        )
+    (output.loss / divisor).backward()
+    if manager is not None:
+        manager.apply_correction(correction)
+
+
+def _freeze_direction_validation_anchor(bundle: ModelBundle, metrics: dict[str, Any]) -> None:
+    """Freeze once after a formal full validation, never in a probe or holdout."""
+    head = bundle.model.direction_head
+    if head is not None and hasattr(head, "set_pinball_guard_reference"):
+        if head.pinball_guard_reference is None:
+            head.set_pinball_guard_reference(float(metrics["direction"]["pinball_loss"]))
+        metrics["direction"]["loss_reference"] = head.reference_state()
+        metrics["direction"]["selection_definition"]["pinball_guard_basis"] = "first_full_validation"
+
+
 def _measure_cuda_batch(
     *,
     bundle: ModelBundle,
@@ -1839,6 +1892,7 @@ def _measure_cuda_batch(
         )
         with _preserve_probe_state(bundle.model):
             bundle.model.train(training)
+            task_manager = _shared_task_gradient_manager(bundle, config) if training else None
             if training:
                 parameter_groups, trainable = _optimizer_parameter_groups(bundle, config)
                 optimizer = AdamW(
@@ -1866,12 +1920,15 @@ def _measure_cuda_batch(
                     if training:
                         if output.loss is None:
                             raise RuntimeError("Pipeline probe did not produce a training loss")
-                        loss = output.loss / accumulation
                 if training:
-                    loss.backward()
+                    _backward_training_output(output, bundle, accumulation, task_manager)
                     if (index + 1) % accumulation == 0:
-                        torch.nn.utils.clip_grad_norm_(trainable, config.training.max_grad_norm)
+                        torch.nn.utils.clip_grad_norm_(
+                            trainable, config.training.max_grad_norm, error_if_nonfinite=True
+                        )
                         optimizer.step()
+                        if task_manager is not None:
+                            task_manager.optimizer_step_completed()
                         optimizer.zero_grad(set_to_none=True)
                 ranking = getattr(output, "ranking_loss", None)
                 if index >= warmup_batches and ranking is not None:
@@ -2716,9 +2773,19 @@ def evaluate_loader(
     from stock_forecasting.direction_runtime import DirectionMetrics
     from stock_forecasting.forecast_evaluation import ForecastEvaluationStore, market_macro_metrics
 
-    direction_metrics = (
-        DirectionMetrics(config.data.alpha_horizons) if config.model.direction.enabled else None
-    )
+    direction_metrics = None
+    if config.model.direction.enabled:
+        if config.model.direction.architecture == "market_residual_v2":
+            from stock_forecasting.direction_v2_runtime import DirectionV2Metrics
+
+            direction_metrics = DirectionV2Metrics(
+                config.data.alpha_horizons,
+                split=getattr(loader.dataset, "split", "validation"),
+                probability_bins=config.model.direction.probability_bins,
+                max_daily_entries=config.model.direction.max_daily_entries,
+            )
+        else:
+            direction_metrics = DirectionMetrics(config.data.alpha_horizons)
 
     if fit_interval_calibration and getattr(loader.dataset, "split", None) != "validation":
         raise ValueError("Interval calibration may only fit the validation split")
@@ -3540,6 +3607,8 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
     )
     selected_train_samples = len(train_batch_sampler.sampler)
     parameter_groups, trainable = _optimizer_parameter_groups(bundle, config)
+    task_manager = _shared_task_gradient_manager(bundle, config)
+    bundle.model._task_gradient_manager = task_manager
     optimizer = AdamW(
         parameter_groups,
         lr=config.training.learning_rate,
@@ -3648,6 +3717,16 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 else None
             ),
             "loss_definition": (
+                "train=market_weighted_normalized_pinball"
+                "+fixed_reference_scaled_population_absolute_CE"
+                "+fixed_reference_scaled_population_alpha_CE"
+                "+weighted_ranking+reference_scaled_representation_regularization; "
+                f"shared_gradient_management={config.model.direction.gradient_management}"
+                "(LoRA_only,not_an_additive_loss); "
+                "validation=1-equal_market_task_horizon_balanced_decision_accuracy"
+                "+frozen_first_full_validation_pinball_guard"
+                if config.model.direction.enabled
+                and config.model.direction.architecture == "market_residual_v2" else
                 "train=normalized_pinball+reference_scaled_absolute_CE+reference_scaled_alpha_CE"
                 "+weighted_ranking+representation_regularization; "
                 "validation=normalized_pinball+fixed_reference_scaled_direction_CE"
@@ -3782,7 +3861,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             raise ValueError("Mapped resume checkpoint exceeds the runtime training budget")
 
         if bundle.model.direction_head is not None and config.training.resume_checkpoint is None:
-            from stock_forecasting.direction_runtime import calibrate_direction_references
+            if config.model.direction.architecture == "market_residual_v2":
+                from stock_forecasting.direction_v2_runtime import calibrate_direction_references
+            else:
+                from stock_forecasting.direction_runtime import calibrate_direction_references
 
             calibrate_direction_references(
                 bundle, config, train_dataset, device, worker_plan, batch_plan
@@ -3823,7 +3905,6 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                         len(train_loader),
                         batch_plan.gradient_accumulation_steps,
                     )
-                    loss = output.loss / divisor
                     detached_loss = output.loss.detach()
                     accumulated_loss_sum = (
                         detached_loss
@@ -3866,7 +3947,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                         else accumulated_ranking_sum + ranking
                     )
                     accumulated_microbatch_samples += int(batch["target_alpha"].shape[0])
-                loss.backward()
+                _backward_training_output(output, bundle, divisor, task_manager)
                 should_step = (
                     batch_index + 1
                 ) % batch_plan.gradient_accumulation_steps == 0 or batch_index + 1 == len(
@@ -3874,8 +3955,17 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 )
                 if not should_step:
                     continue
-                torch.nn.utils.clip_grad_norm_(trainable, config.training.max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(
+                    trainable, config.training.max_grad_norm, error_if_nonfinite=True
+                )
                 optimizer.step()
+                if task_manager is not None:
+                    gradient_metrics = task_manager.optimizer_step_completed()
+                    if gradient_metrics is not None:
+                        tracking.log(
+                            {**gradient_metrics, "gradient/runtime_optimizer_step": runtime_global_step + 1},
+                            step=global_step,
+                        )
                 if config.training.learning_rate_schedule == "sample_plateau":
                     scheduler.step(samples=accumulated_microbatch_samples)
                 else:
@@ -3964,6 +4054,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                         config,
                         device,
                     )
+                    _freeze_direction_validation_anchor(bundle, validation_metrics)
                     last_evaluation_step = global_step
                     last_runtime_evaluation_step = runtime_global_step
                     selection = _validation_monitor_value(

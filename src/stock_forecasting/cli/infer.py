@@ -419,6 +419,24 @@ def infer_observation(
                     output.alpha_direction_logits.softmax(-1)[0].float().cpu().tolist(),
                     strict=True,
                 )),
+                **({
+                    "schema_version": 2,
+                    "probability_source": "population_logits",
+                    "balanced_decisions": {
+                        "source": "history_residual_logits_without_train_prior",
+                        "absolute": dict(zip(
+                            map(str, config.data.alpha_horizons),
+                            output.absolute_direction_decision_logits.argmax(-1)[0].cpu().tolist(),
+                            strict=True,
+                        )),
+                        "alpha": dict(zip(
+                            map(str, config.data.alpha_horizons),
+                            output.alpha_direction_decision_logits.argmax(-1)[0].cpu().tolist(),
+                            strict=True,
+                        )),
+                    },
+                    "train_prior": bundle.model.direction_head.reference_state()["priors"],
+                } if getattr(output, "absolute_direction_decision_logits", None) is not None else {}),
                 "interpretation": (
                     "Absolute up exceeds the estimated cash round-trip hurdle; alpha up is "
                     "relative outperformance, not guaranteed absolute profit. "

@@ -54,6 +54,7 @@ TRAINING_IMPLEMENTATION_PATHS = (
 DIRECTION_IMPLEMENTATION_PATHS = (
     "direction_costs.py", "direction_data.py", "direction_runtime.py",
     "models/direction.py", "models/technical_channels.py",
+    "direction_v2_runtime.py", "multitask_gradients.py",
 )
 
 

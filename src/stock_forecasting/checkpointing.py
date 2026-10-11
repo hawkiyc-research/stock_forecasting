@@ -122,6 +122,29 @@ def _model_direction_references(model: torch.nn.Module) -> dict[str, Any] | None
     return state
 
 
+def _model_runtime_task_gradients(model: torch.nn.Module) -> dict[str, Any] | None:
+    manager = getattr(model, "_task_gradient_manager", None)
+    return None if manager is None else manager.state_dict()
+
+
+def _restore_runtime_task_gradients(
+    model: torch.nn.Module, trainer_state: dict[str, Any],
+) -> None:
+    """Validate deterministic projection state before restoring optimizer state."""
+
+    manager = getattr(model, "_task_gradient_manager", None)
+    stored = trainer_state.get("runtime_task_gradients")
+    if manager is None:
+        direction = getattr(model, "direction_head", None)
+        mode = getattr(getattr(direction, "config", None), "gradient_management", "none")
+        if stored is not None or mode != "none":
+            raise ValueError("Training resume requires its shared task-gradient manager")
+        return
+    if not isinstance(stored, dict):
+        raise ValueError("Training resume is missing shared task-gradient checkpoint state")
+    manager.load_state_dict(stored)
+
+
 def _restore_runtime_scale_features(
     model: torch.nn.Module, trainer_state: dict[str, Any], *, require_match: bool,
 ) -> None:
@@ -689,6 +712,7 @@ def _stage_checkpoint(
     checkpoint_dir = run_directory / f"checkpoint-{global_step:06d}"
     if checkpoint_dir.exists():
         raise FileExistsError(f"Checkpoint already exists: {checkpoint_dir}")
+    runtime_task_gradients = _model_runtime_task_gradients(model)
     staging_dir = run_directory / f".{checkpoint_dir.name}.staging-{uuid.uuid4().hex}"
     staging_dir.mkdir(parents=True, exist_ok=False)
     trainer_state = {
@@ -713,6 +737,7 @@ def _stage_checkpoint(
         "runtime_robust_scales": _model_runtime_robust_scales(model),
         "runtime_scale_features": _model_runtime_scale_features(model),
         "runtime_direction_loss": _model_direction_references(model),
+        "runtime_task_gradients": runtime_task_gradients,
         "selection": selection,
         "rng_state": _capture_rng_state(),
     }
@@ -861,6 +886,7 @@ def save_training_completion_result(
             "runtime_robust_scales": _model_runtime_robust_scales(model),
             "runtime_scale_features": _model_runtime_scale_features(model),
             "runtime_direction_loss": _model_direction_references(model),
+            "runtime_task_gradients": _model_runtime_task_gradients(model),
             "created_at": datetime.now(UTC).isoformat(),
             "artifact_files": {
                 "adapter.safetensors": _file_integrity(adapter_path),
@@ -1715,6 +1741,8 @@ def load_checkpoint(
     if (optimizer is None) != (scheduler is None):
         raise ValueError("Training resume requires both optimizer and scheduler state")
     trainer_state = validate_checkpoint_trainer_state(source)
+    if optimizer is not None:
+        _restore_runtime_task_gradients(model, trainer_state)
     _restore_runtime_robust_scales(
         model,
         trainer_state,

@@ -60,6 +60,89 @@ def samplers():
 
 
 class TrainingPipelineControlTests(unittest.TestCase):
+    def test_session_loss_definition_matches_v2_and_preserves_legacy_events(self):
+        tree = ast.parse(TRAINING.read_text())
+        events = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            fields = {
+                key.value: value for key, value in zip(node.keys, node.values, strict=True)
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            event = fields.get("event")
+            if isinstance(event, ast.Constant) and event.value == "training_session_started":
+                events.append(fields["loss_definition"])
+        self.assertEqual(len(events), 1)
+        expression = compile(ast.Expression(events[0]), str(TRAINING), "eval")
+
+        def definition(enabled, architecture="legacy", management="none"):
+            direction = SimpleNamespace(
+                enabled=enabled, architecture=architecture, gradient_management=management,
+            )
+            config = SimpleNamespace(model=SimpleNamespace(direction=direction))
+            return eval(expression, {"config": config})
+
+        self.assertEqual(
+            definition(True),
+            "train=normalized_pinball+reference_scaled_absolute_CE+reference_scaled_alpha_CE"
+            "+weighted_ranking+representation_regularization; "
+            "validation=normalized_pinball+fixed_reference_scaled_direction_CE",
+        )
+        self.assertEqual(
+            definition(False),
+            "train=market_weighted_normalized_pinball+weighted_ranking; "
+            "validation=unweighted_normalized_pinball",
+        )
+        for management in ("none", "monitor", "pcgrad"):
+            with self.subTest(management=management):
+                self.assertEqual(
+                    definition(True, "market_residual_v2", management),
+                    "train=market_weighted_normalized_pinball"
+                    "+fixed_reference_scaled_population_absolute_CE"
+                    "+fixed_reference_scaled_population_alpha_CE"
+                    "+weighted_ranking+reference_scaled_representation_regularization; "
+                    f"shared_gradient_management={management}(LoRA_only,not_an_additive_loss); "
+                    "validation=1-equal_market_task_horizon_balanced_decision_accuracy"
+                    "+frozen_first_full_validation_pinball_guard",
+                )
+
+    def test_probe_and_training_reject_nonfinite_gradients_before_optimizer_update(self):
+        tree = ast.parse(TRAINING.read_text())
+        locations = {}
+        for function in tree.body:
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            calls = [
+                node for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "clip_grad_norm_"
+            ]
+            if calls:
+                locations[function.name] = calls
+        self.assertEqual(len(locations), 2)
+        self.assertIn("_measure_cuda_batch", locations)
+        for calls in locations.values():
+            self.assertEqual(len(calls), 1)
+            call = calls[0]
+            keywords = {value.arg: value.value for value in call.keywords}
+            self.assertIn("error_if_nonfinite", keywords)
+            self.assertIs(ast.literal_eval(keywords["error_if_nonfinite"]), True)
+        for function in tree.body:
+            if getattr(function, "name", None) not in locations:
+                continue
+            updates = [
+                node for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "optimizer"
+                and node.func.attr == "step"
+            ]
+            self.assertEqual(len(updates), 1)
+            self.assertLess(locations[function.name][0].lineno, updates[0].lineno)
+
     def test_hotpath_migration_covers_only_the_verified_model_execution_patch(self):
         registry = runpy.run_path(
             str(ROOT / "src/stock_forecasting/checkpoint_resume_migrations.py")
@@ -600,7 +683,12 @@ class TrainingPipelineControlTests(unittest.TestCase):
         self.assertEqual(loader.count("drop_last=False"), 2)
         self.assertIn("_preserve_probe_state(bundle.model)", probe)
         self.assertIn("optimizer.step()", probe)
-        self.assertIn("loss.backward()", probe)
+        self.assertIn("_backward_training_output(output, bundle, accumulation, task_manager)", probe)
+        self.assertIn("_shared_task_gradient_manager(bundle, config)", probe)
+        backward = ast.unparse(functions["_backward_training_output"])
+        self.assertIn("backward()", backward)
+        self.assertIn("prepare_correction", backward)
+        self.assertIn("apply_correction", backward)
         self.assertNotIn("[sample] * batch_size", probe)
         self.assertIn("_finish_probe_loader(", probe)
         self.assertIn("_shutdown_workers()", ast.unparse(functions["_finish_probe_loader"]))
