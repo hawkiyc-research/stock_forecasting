@@ -59,16 +59,18 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 - `ranking_scores`：啟用獨立 ranking head 時為 `[batch, 15-h_start]`；是無量綱排序分數，
   不是報酬、機率，也不能當成 q50。
 
-原有容量與 adaptive 實驗沒有分類 head。`direction64` 與 `direction64-v2` 另輸出個股絕對方向與 alpha
+原有容量與 adaptive 實驗沒有分類 head。`direction64`、`direction64-v2` 與 `direction64-v3` 另輸出個股絕對方向與 alpha
 方向 logits，各為 `[batch, 15-h_start, 3]`，順序固定為 `down, neutral, up`；推論的
 `direction` 欄位包含兩者機率、成本情境及門檻，不能將 alpha up 解讀為個股一定上漲。
 既有 alpha 輸出契約及 `model_output_schema_version=5.0` 保留，方向欄位另以 schema 1
-描述；v2 方向 schema 為 2，另外明列人口分布機率與去先驗的 balanced decision。
+描述；v2 方向 schema 為 2，V3 為 3，另外明列人口分布機率與去先驗的 balanced decision。
 `softmax(z)` 才是人口分布預測機率；balanced decision 不能冒充原始機率或原始 accuracy。
 推論 JSON 的 `direction.probability_source="population_logits"` 明列機率來源；
 `balanced_decisions.absolute` 與 `.alpha` 是以持有期字串為 key 的類別索引，
-`0=down`、`1=neutral`、`2=up`，不是機率。其 `source` 為
-`history_residual_logits_without_train_prior`，`train_prior` 另保存所用訓練先驗。
+`0=down`、`1=neutral`、`2=up`，不是機率。其 `source`：
+V2 為 `history_residual_logits_without_train_prior`；V3 為
+`population_log_probabilities_minus_train_log_prior`，另明列 `probability_structure=ordered_conditional_chain`。
+`train_prior` 保存所用訓練先驗。V3 的三個輸出是條件鏈導出的 log probabilities，不是三個獨立 logits。
 所有實驗仍可由 q10/q50/q90 後處理成 `strong_bearish`、`bearish`、`neutral`、
 `bullish`、`strong_bullish`；這套五級訊號不是方向分類器，也不是額外訓練目標。
 不相容的 output schema 會被拒絕載入。
@@ -670,6 +672,73 @@ raw／balanced direction 指標；不能把各自的回歸護欄基準當成共�
 `representation_weight=0.05`（0–1）、`representation_radius=0.01`（大於 0、至多 0.1）
 及既有成本設定保留。v2 不修改 CPU prepare、資料清理、動態 training sampling 或
 完整 validation/test；相同資料規則與成本情境可直接重用已完成的雙方向 baseline。
+
+##### V3：有序方向、市場狀態選擇與機率品質選模
+
+`a-direction64-v3`／`b-direction64-v3`（`a_direction64_v3.yaml`／`b_direction64_v3.yaml`）
+保留 Kronos-base／LoRA64、alpha 分位數、獨立排序、十技術通道、直接尺度路徑、
+train-only reference、市場權重與 PCGrad；只替換方向讀取及選模結構。
+清洗規則、baseline 標籤／成本、資料來源與切分不變，既有 baseline 可重用。
+V3 必須建立新 run，不能接續 V2 checkpoint；同 V3 的中斷仍可 resume。
+
+方向分類借鑑 [CORN 的條件機率順序結構](https://arxiv.org/abs/2111.08851)：
+`a=P(return>lower)`、`b=P(return>upper | return>lower)`，
+`P(down)=1-a`、`P(neutral)=a*(1-b)`、`P(up)=a*b`。
+上界跨越機率不會大於下界跨越機率。使用穩定 log-sigmoid 的三分類負對數似然（NLL），
+等價於全樣本下界 BCE 加上**僅 non-down 樣本**的上界條件 BCE，再以全樣本數平均；
+不是兩項 BCE 各自平均後相加。`log(3)` reference 仍對應三分類均勻 null 機率，
+而非假設兩個條件機率都是 0.5。固定 train 先驗轉為條件座標 log-odds，歷史訊號學習
+其 residual。Population 機率為 `softmax(log_probability)`；balanced decision 另用
+`log_probability - τ*log(train_prior)`，不是可作勝率的校準機率。
+此結構借鑑 ordinal 文獻，不宣稱論文已證明本資料可達 60% 方向率。
+
+特徵選擇借鑑 [MASTER](https://ojs.aaai.org/index.php/AAAI/article/view/27767)，
+不引入全市場 N×N attention、不新增指標或刪除極端報酬。只使用截至 `t` 的既有 benchmark
+std20／std60、context close CV、mean5／mean20、volume ratio20、drawdown60，
+沿用 train-fitted 標準化。小型 gate 網路產生三條 token stream 的 `3*softmax` gate
+與 20 個數值特徵的 `2*sigmoid` gate，動態選擇 asset／benchmark／conditioned 表徵與
+尺度特徵；gate 不讀未來、標籤、成本或 batch population，也沒有市場狀態直加 logits 的捷徑。
+新增計算為 batch tensor kernels，不改 DataLoader、worker 或預取流程。
+
+V3 仍最小化 `direction/selection_loss`，但其定義獨立於 V2：
+
+```text
+selection_loss = mean_market_task_horizon(
+                    (CE / CE_train_prior + Brier / Brier_train_prior + 1 - population_macro_F1) / 3
+                    + 0.25 * balanced_opposite_error + 0.25 * collapse_deficit)
+                 + frozen_pinball_guard
+```
+
+CE／Brier 基準為凍結 train 市場／任務／horizon 先驗，在完整 validation labels 上評分，
+不從 validation 擬合新先驗；markets／tasks／horizons 等權。BA 保留作診斷，不再單獨選模。
+CE 與 Brier 的機率品質依據見 [Gneiting／Raftery 的 scoring-rule 理論](https://sites.stat.washington.edu/people/raftery/Research/PDF/Gneiting2007jasa.pdf)。
+含 F1／護欄的整體分數是工程複合選模規則，不宣稱整體也是 strictly proper scoring rule。
+`balanced_opposite_error` 平均真 down 判 up、真 up 判 down 的條件錯誤率，排除無真實支持
+的 tail；此處評分使用 population argmax，並非 `balanced_decision` 的預測。
+`collapse_deficit` 對真實占比至少 5% 的類別，計算 `max(1-predicted_share/0.01,0)` 後平均。
+這是可設定護欄，不刪樣本、不宣稱預測占比少於 1% 必然錯誤。
+分項分數／罰分、類別占比、塌縮類別、ordinal MAE、相反方向錯誤、既有 precision／recall、
+CE skill、Brier skill、confidence bins 均記錄，並同時診斷 balanced decision。
+初始權重是工程預設，不是文獻保證的最佳金融參數。Pinball anchor、test 不擬合、
+跨 run 不以 selection loss 排名的規則與 V2 相同；coverage 不列入方向選模目標。
+
+| 設定欄位 | V3 預設／允許值 | 用途 |
+| --- | --- | --- |
+| `selection_class_support_min` | `0.05`；大於 0、至多 0.5 | 觸發塌縮護欄的最低真實類別占比 |
+| `selection_prediction_share_min` | `0.01`；大於 0、至多 0.1 | 預測占比不足時的線性 deficit 基準 |
+| `selection_collapse_weight` | `0.25`；0–2 | 類別塌縮選模罰分倍率 |
+| `selection_opposite_weight` | `0.25`；0–2 | 真 down／up 相反方向誤判罰分倍率 |
+
+這四項僅影響 V3；`architecture=market_ordinal_v3`，其餘方向參數沿用上表。
+CLI 使用既有 `--experiment`／`--seed`／`--gpuId`／`--maxRuntime`，沒有新增必填參數：
+
+```bash
+bash scripts/runpod_workflow.sh train --experiment a-direction64-v3 --seed 42 \
+  --gpuId "NVIDIA GeForce RTX 5090" --maxRuntime 72h
+```
+
+`b-direction64-v3` 選 B 組；seed 43／44 各自執行獨立 train 命令。這會建立正式訓練 Pod，
+不是本機訓練或驗證；仍須先完成既有 code sync 與 readiness。
 
 原 Stage 1/2 與 `lora32`／`lora64`／`partial` 實驗採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
 初始 LR 的 0.09；到達最低 LR 後，必須再完成兩次 validation 間隔的訓練，才允許 early stop。
@@ -1759,7 +1828,7 @@ baseline 與預訓練模型會直接共用；切換容量實驗不重新下載�
 也不因 Pod 數量而重訓 baseline。每台 Pod 各自使用一張 GPU，不是 DDP 或多 GPU
 聯合訓練。
 
-Stage 2 提供十四份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01，資料終點皆為
+Stage 2 提供十六份設定。A 的資料起點為 2021-01-01，B 為 2016-01-01，資料終點皆為
 2026-06-01（不含）；兩者共用相同的 validation/test 來源與有效樣本規則。
 `--experiment` 保留 configure 的 profile、universe、revision 與 h_start。
 
@@ -1772,10 +1841,11 @@ Stage 2 提供十四份設定。A 的資料起點為 2021-01-01，B 為 2016-01-
 | `a-adaptive128`、`b-adaptive128` | `a_adaptive128.yaml`、`b_adaptive128.yaml` | 與 adaptive64 相同整合設定；只改 LoRA rank 128、alpha 256 |
 | `a-direction64`、`b-direction64` | `a_direction64.yaml`、`b_direction64.yaml` | A-LoRA64 基礎，加雙三分類、十技術通道、horizon query 與表徵正則化；rank 64、alpha 128 |
 | `a-direction64-v2`、`b-direction64-v2` | `a_direction64_v2.yaml`、`b_direction64_v2.yaml` | 同樣 rank 64、alpha 128；方向 head 直接尺度路徑、train prior 分離、固定 reference、市場權重與共享 LoRA 負衝突 PCGrad |
+| `a-direction64-v3`、`b-direction64-v3` | `a_direction64_v3.yaml`、`b_direction64_v3.yaml` | 同樣 rank 64、alpha 128；成本有序條件機率、市場狀態特徵選擇、population 機率品質與誤判護欄選模 |
 
 全部實驗從相同 pretrained Kronos-base 初始化，不從其他實驗的 checkpoint 接續。
-舊設定保留為對照，`partial` 是次要研究線；方向模型新版選用 `direction64-v2`，
-`direction64` 保留原架構重現。兩者不可跨版本接續同一 run。
+舊設定保留為對照，`partial` 是次要研究線；方向模型新版選用 `direction64-v3`，
+`direction64` 與 `direction64-v2` 保留原架構重現。不可跨版本接續同一 run。
 省略 `--experiment` 仍使用既有 configure，不會偷偷換成整合版。
 原六份 task／LoRA／解凍層學習率為 `3e-5`／`5e-6`／`1e-6`；整合版差異見
 [訓練目標與校準](#training-zh)。所有實驗 warmup 固定為
@@ -1786,6 +1856,8 @@ Stage 2 提供十四份設定。A 的資料起點為 2021-01-01，B 為 2016-01-
 q50 location、正值上下區間寬度與獨立 ranking score 分開。原有 checkpoint／early stop
 使用完整 validation normalized pinball；`direction64` 使用固定 reference 加權的 pinball＋雙 CE；
 `direction64-v2` 使用等市場／任務／horizon balanced-decision BA 加第一輪完整 validation 的 pinball 護欄。
+`direction64-v3` 使用 population CE／Brier 相對 train prior 的比率、macro-F1、決策誤判／塌縮
+罰分與同一 pinball 護欄；BA 繼續記錄，但不再單獨決定 checkpoint。
 選定 checkpoint 後才用完整
 validation 擬合凍結的上下尾校準。Test 保留 raw 與 `calibrated`；整合版另外保留
 `calibrated_static` 與延遲回饋的 `calibrated_online`，不使用未成熟報酬，也不保證未來 coverage。
@@ -1823,7 +1895,7 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-把上述名稱的 `a-` 改成 `b-` 即可比較 B 組；也可以混合 A/B，一次最多選十四個
+把上述名稱的 `a-` 改成 `b-` 即可比較 B 組；也可以混合 A/B，一次最多選十六個
 不同名稱，本機啟動並行 worker 上限仍為六。可以在其他實驗已執行時另開不同 run。每個實驗先固定自己的 immutable
 selection，不修改全域 active selection；後續 configure 不會改變已建立 Pod 的設定。
 
@@ -2183,6 +2255,8 @@ v2 另保存 train priors、固定市場權重、共享梯度診斷、population
 原版 `direction64` 為 pinball 加上凍結 reference 加權的兩項 CE；
 `direction64-v2` 則為等市場／任務／horizon 的 balanced-decision BA 選模損失，加上
 凍結首輪完整 validation pinball anchor 的退化罰分。
+`direction64-v3` 則用 population CE／Brier 對 train prior 的比率、macro-F1、相反誤判／塌縮
+罰分與相同 pinball 護欄；分項皆記錄，BA 不再單獨選模。
 判斷 pinball 的 train/validation gap 時，應比較 `train/pinball_loss` 與
 `validation/aggregate/normalized_pinball`（方向實驗亦另列
 `validation/direction/pinball_loss`），不能把 training total loss 或方向選模損失
@@ -2595,7 +2669,7 @@ pytest 的 `-k EXPR` 篩選測試、`-q` 簡潔輸出、`-h` 顯示全部第三�
 4. Readiness 核對所選 dataset 自身的 manifest 與實際 artifacts；不要求另一份資料最後寫入的
    共用 CPU marker 在 stage/config 上相同，也不能混用不同 profile、universe 或資料內容。
 5. `alpha_quantiles` 為 `[B,15-h_start,3]`、q10 ≤ q50 ≤ q90；
-   `ranking_scores` 與中位數報酬分開；兩版方向 preset 另輸出兩組三分類機率，不生成自然語言。
+   `ranking_scores` 與中位數報酬分開；各版方向 preset 另輸出兩組三分類機率，不生成自然語言。
    v2 的 population probabilities／raw accuracy 與 `balanced_decision` 必須分開，不能偷換指標。
 6. 輸入與 train-only 正規化不使用未來資料。Validation 用於選模和選模後的區間校準；
    frozen test 不參與 fitting；獨立 online 診斷只使用到期後的過往標籤，不能混為一談。
@@ -2711,18 +2785,21 @@ architecture and report snapshots.
 - `ranking_scores`: `[batch, 15-h_start]` when the independent ranking head is enabled;
   dimensionless ordering scores, not returns, probabilities, or replacements for q50.
 
-Original capacity and adaptive presets have no classifier. `direction64` and `direction64-v2` add absolute-stock
+Original capacity and adaptive presets have no classifier. `direction64`, `direction64-v2` and `direction64-v3` add absolute-stock
 and alpha direction logits, each `[batch, 15-h_start, 3]` in `down, neutral, up` order.
 Inference includes probabilities and the cost scenario/bands under `direction`; alpha up
 does not imply an absolute gain. Core alpha schema `model_output_schema_version=5.0`
 is retained; the original additive direction output has schema version 1. V2 uses direction
-schema 2 and separately identifies population probabilities and prior-removed balanced decisions.
+schema 2; V3 uses schema 3. Both separately identify population probabilities and prior-removed balanced decisions.
 Only `softmax(z)` supplies population probabilities; balanced decisions do not replace raw accuracy
 or masquerade as population probabilities.
 Inference JSON explicitly declares `direction.probability_source="population_logits"`.
 `balanced_decisions.absolute` and `.alpha` map holding-period strings to class indices:
 `0=down`, `1=neutral`, `2=up`, not probabilities. Their `source` is
-`history_residual_logits_without_train_prior`; `train_prior` separately stores the training priors.
+`history_residual_logits_without_train_prior` for V2 and
+`population_log_probabilities_minus_train_log_prior` for V3. V3 additionally declares
+`probability_structure=ordered_conditional_chain`; its three outputs are conditional-chain log
+probabilities, not independent logits. `train_prior` stores the training priors.
 Every preset retains five-level quantile post-processing (`strong_bearish` through
 `strong_bullish`), which is not the new classifier or a separate training objective.
 Incompatible output schemas fail closed.
@@ -2843,7 +2920,8 @@ scale information alone is not evidence of improved alpha forecasting.
 #### Direction supervision and ten technical channels
 
 `a-direction64`/`b-direction64` retain the original architecture for reproduction;
-`a-direction64-v2`/`b-direction64-v2` use the new direction head. Both build on `lora64`:
+`a-direction64-v2`/`b-direction64-v2` retain market-residual V2, while V3 is defined below.
+All direction presets build on `lora64`:
 rank 64, alpha 128, no partial unfreezing,
 task/LoRA LR `3e-5`/`5e-6`, dropout `0.05`, weight decay `0.01`, validation plateau scheduling
 and static interval calibration. Original capacity/adaptive presets remain reproducible.
@@ -3423,6 +3501,78 @@ v2 presets are selected with `--experiment`; numerical-contract changes still re
 and existing cost settings remain. V2 does not change CPU preparation, data cleaning, dynamic
 training sampling or full validation/test. Existing dual-direction baselines remain reusable
 for unchanged data rules and cost scenarios.
+
+##### V3: ordered direction, state-guided selection and probability-aware checkpoints
+
+`a-direction64-v3`/`b-direction64-v3` use `a_direction64_v3.yaml`/`b_direction64_v3.yaml`.
+They retain Kronos-base/LoRA64, alpha quantiles, independent ranking, ten technical channels,
+direct scales, train-only references, market weighting and PCGrad. Only direction reading and
+selection change. Cleaning, baseline labels/costs, sources and splits stay unchanged; existing
+baselines remain reusable. V3 needs a new run, not a V2 checkpoint resumed as V3; same-V3
+interrupted runs remain resumable.
+
+Following [CORN's conditional ordinal structure](https://arxiv.org/abs/2111.08851),
+`a=P(return>lower)` and `b=P(return>upper | return>lower)` produce
+`P(down)=1-a`, `P(neutral)=a*(1-b)`, `P(up)=a*b`. Crossing the upper boundary cannot be more
+probable than crossing the lower boundary. Stable log-sigmoid three-class NLL equals lower
+boundary BCE on every sample plus upper conditional BCE **only on non-down samples**, averaged
+over all samples, not separately averaged BCEs. The retained `log(3)` reference means uniform
+three-class null probabilities, not two conditional probabilities of 0.5. Train priors become
+conditional log-odds offsets with history-dependent residuals. Population probabilities are
+`softmax(log_probability)`; balanced decisions separately use
+`log_probability - τ*log(train_prior)`, not calibrated trading win probabilities. Ordinal
+literature motivates the structure but does not guarantee 60% direction accuracy here.
+
+Inspired by [MASTER](https://ojs.aaai.org/index.php/AAAI/article/view/27767), feature gates use
+only existing benchmark std20/std60, context close CV, mean5/mean20, volume ratio20 and
+drawdown60 at cutoff `t`, with train-fitted normalization. A small network generates
+`3*softmax` gates for asset/benchmark/conditioned token streams and `2*sigmoid` gates for twenty
+numerical features. No future bars, labels, fees or batch population enter gates; state is not
+added directly to logits. There is no new indicator, cross-stock N×N attention, extreme-return
+removal or DataLoader/worker/prefetch change. Native batch tensor kernels implement routing.
+
+V3 retains `direction/selection_loss` with a separate definition:
+
+```text
+selection_loss = mean_market_task_horizon(
+                    (CE / CE_train_prior + Brier / Brier_train_prior + 1 - population_macro_F1) / 3
+                    + 0.25 * balanced_opposite_error + 0.25 * collapse_deficit)
+                 + frozen_pinball_guard
+```
+
+CE/Brier references score frozen train market/task/horizon priors on full validation labels;
+they do not fit validation priors. Markets/tasks/horizons receive equal weight; BA remains a
+diagnostic rather than the sole selection objective.
+The probability-quality rationale for CE/Brier follows [Gneiting and Raftery's scoring-rule theory](https://sites.stat.washington.edu/people/raftery/Research/PDF/Gneiting2007jasa.pdf).
+The complete F1/guard-augmented selection score is an engineering composite, not itself claimed
+to be a strictly proper scoring rule. `balanced_opposite_error` averages true
+down→up and true up→down conditional error rates over supported tails, using population argmax,
+not the separately reported `balanced_decision` rule. For classes with true share at least 5%,
+`collapse_deficit` averages `max(1-predicted_share/0.01,0)`. It is a configurable guard, not
+sample removal or proof that predictions below 1% are necessarily wrong. Score/guard components,
+true/predicted shares, collapsed classes, ordinal MAE, opposite errors, precision/recall,
+CE skill, Brier skill and confidence bins are recorded; balanced decisions are also audited.
+Initial weights are explicit engineering defaults, not literature-established optimal financial
+parameters. Frozen pinball anchors, no test fitting and no cross-run ranking by selection loss
+remain as in V2; coverage is not a direction-selection objective.
+
+| Setting | V3 default / allowed values | Purpose |
+| --- | --- | --- |
+| `selection_class_support_min` | `0.05`; greater than 0, at most 0.5 | Minimum true class share for the collapse guard |
+| `selection_prediction_share_min` | `0.01`; greater than 0, at most 0.1 | Reference predicted share for the linear deficit |
+| `selection_collapse_weight` | `0.25`; 0–2 | Collapse penalty multiplier |
+| `selection_opposite_weight` | `0.25`; 0–2 | Opposite-direction mistake penalty multiplier |
+
+These four settings affect V3 only; use `architecture=market_ordinal_v3`. Other direction settings
+retain the table above. Existing CLI options select the model without new required flags:
+
+```bash
+bash scripts/runpod_workflow.sh train --experiment a-direction64-v3 --seed 42 \
+  --gpuId "NVIDIA GeForce RTX 5090" --maxRuntime 72h
+```
+
+Use `b-direction64-v3` for B and separate train commands for seeds 43/44. This creates a formal
+training Pod, not local training or QA; existing code sync and readiness gates still apply.
 
 For the original Stage 1/2 and `lora32`/`lora64`/`partial` presets, two non-improving validations after warmup multiply neural learning rates by 0.3,
 down to 0.09 of their original values. Early stopping additionally requires two
@@ -4684,7 +4834,7 @@ main-model Pods. Prepared data, baselines and pretrained models are shared. Chan
 or Pod count does not download market data, split datasets again, or retrain baselines.
 Each Pod runs its own single-GPU model; this is not DDP or distributed model training.
 
-Stage 2 offers fourteen configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
+Stage 2 offers sixteen configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
 2026-06-01 (exclusive). They share the validation/test source and eligibility rules.
 `--experiment` preserves the configured profile, universe, revision and h_start.
 
@@ -4697,11 +4847,12 @@ Stage 2 offers fourteen configs. A starts on 2021-01-01 and B on 2016-01-01; bot
 | `a-adaptive128`, `b-adaptive128` | `a_adaptive128.yaml`, `b_adaptive128.yaml` | Same integrated settings; only LoRA rank/alpha change to 128/256 |
 | `a-direction64`, `b-direction64` | `a_direction64.yaml`, `b_direction64.yaml` | A-LoRA64 base plus dual three-class heads, ten technical channels, horizon queries and representation regularization; rank 64, alpha 128 |
 | `a-direction64-v2`, `b-direction64-v2` | `a_direction64_v2.yaml`, `b_direction64_v2.yaml` | Same rank 64/alpha 128; direct direction-scale path, separated train priors, data-only references, market weighting and shared-LoRA negative-conflict PCGrad |
+| `a-direction64-v3`, `b-direction64-v3` | `a_direction64_v3.yaml`, `b_direction64_v3.yaml` | Same rank 64/alpha 128; cost-ordered conditional probabilities, market-state feature selection, population probability quality and decision-error selection guards |
 
 All initialize from the same pretrained Kronos-base, not another experiment's checkpoint.
 The original six configs remain controls; partial unfreezing is a secondary research line.
-Use `direction64-v2` for the new direction model; retained `direction64` reproduces the original
-architecture. The two cannot resume the same run across versions. Omitting
+Use `direction64-v3` for the new direction model; `direction64` and `direction64-v2` retain
+their original architectures. Runs cannot resume across architecture versions. Omitting
 `--experiment` still uses the configured selection rather than silently switching it.
 Original task/LoRA/unfrozen learning rates are `3e-5`/`5e-6`/`1e-6`; see
 [training objectives](#training-en) for integrated settings. All use a fixed 256,000
@@ -4714,6 +4865,8 @@ The q50 location, positive interval widths and independent ranking score are sep
 Original presets select by full-validation normalized pinball; `direction64` uses fixed-reference
 pinball plus both CEs on the same full validation set; `direction64-v2` uses equal-market/task/horizon
 balanced-decision BA with a pinball guard anchored to the first full validation.
+V3 uses population CE/Brier ratios against train priors, macro-F1, opposite-error/collapse penalties
+and the same pinball guard; components are logged and BA is no longer the sole selection objective.
 Frozen tail calibration is fitted on full validation after checkpoint selection;
 test retains raw and `calibrated` metrics. Integrated presets also retain `calibrated_static`
 and delayed-feedback `calibrated_online`, never using immature labels. Future 80% coverage
@@ -4752,7 +4905,7 @@ bash scripts/runpod_workflow.sh train \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-Replace `a-` with `b-` for group B, or mix groups; at most fourteen distinct names may be selected
+Replace `a-` with `b-` for group B, or mix groups; at most sixteen distinct names may be selected
 per command. Additional different runs may be created while experiments are already running.
 Each launch pins its own immutable selection without changing the global active selection.
 Later configure commands do not change a previously created Pod's settings.
@@ -5144,6 +5297,8 @@ the default without direction heads is mean normalized pinball over all full-val
 horizons, without ranking; original `direction64` uses pinball plus both CE terms weighted
 by frozen references; `direction64-v2` uses equal-market/task/horizon balanced-decision BA
 selection loss plus the regression penalty against its frozen first full-validation pinball anchor.
+`direction64-v3` uses population CE/Brier ratios versus train priors, macro-F1, opposite-error/collapse
+penalties and the same pinball guard. All components are recorded; BA alone no longer selects models.
 Compare `train/pinball_loss` with `validation/aggregate/normalized_pinball` when diagnosing
 the pinball generalization gap. Direction experiments also record
 `validation/direction/pinball_loss`; neither training total loss nor direction selection loss

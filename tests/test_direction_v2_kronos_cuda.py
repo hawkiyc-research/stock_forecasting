@@ -48,7 +48,8 @@ def dataset(root, index, split):
     )
 
 
-def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, monkeypatch):
+@pytest.mark.parametrize("variant", ["v2", "v3"])
+def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, monkeypatch, variant):
     torch.set_num_threads(2)
     cache = Path(os.environ["DIRECTION_QA_HF_HOME"])
     monkeypatch.setenv("HF_HOME", str(cache))
@@ -65,7 +66,12 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
     evaluation = dataset(
         evaluation_root, Path(os.environ["DIRECTION_QA_EVALUATION_INDEX"]), "validation"
     )
-    config = ExperimentConfig.from_yaml(ROOT / "configs/experiments/a_direction64_v2.yaml")
+    config = ExperimentConfig.from_yaml(ROOT / f"configs/experiments/a_direction64_{variant}.yaml")
+    calibrate = calibrate_direction_references
+    if variant == "v3":
+        from stock_forecasting.direction_ordinal_runtime import (
+            calibrate_direction_references as calibrate,
+        )
     config.model.kronos_source_root = ROOT / "src/stock_forecasting/_vendor/kronos"
     config.runtime.log_root = tmp_path / "logs"
     config.model.direction.gradient_diagnostics_interval = 1
@@ -118,7 +124,7 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
         training.set_global_seed(seed)
         before_rng, before_cuda_rng = torch.get_rng_state(), torch.cuda.get_rng_state()
         reference_states.append(
-            calibrate_direction_references(
+            calibrate(
                 bundle, config, source, device, workers, SimpleNamespace(training_batch_size=32)
             )
         )
@@ -147,6 +153,7 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
     torch.cuda.reset_peak_memory_stats()
     started = time.monotonic()
     diagnostics = []
+    state_gate_gradients = []
     bundle.model.train()
     for _ in range(3):
         optimizer.zero_grad(set_to_none=True)
@@ -165,6 +172,10 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
             for name, p in bundle.model.named_parameters()
             if "direction_head.numeric_projection" in name
         )
+        if variant == "v3":
+            gate_gradient = bundle.model.direction_head.state_gate[-1].weight.grad
+            assert gate_gradient is not None and gate_gradient.norm() > 0
+            state_gate_gradients.append(float(gate_gradient.norm()))
         optimizer.step()
         diagnostics.append(manager.optimizer_step_completed())
     optimizer.zero_grad(set_to_none=True)
@@ -245,6 +256,8 @@ def test_real_kronos_v2_seed_reference_pcgrad_probe_and_checkpoint(tmp_path, mon
         assert bundle.model.direction_head.reference_state() == references
         assert manager.state_dict() == state
     record = {
+        "architecture": config.model.direction.architecture,
+        "state_gate_gradient_norms": state_gate_gradients,
         "seed_reference_equal": True,
         "samples": reference_states[0]["samples"],
         "pcgrad_updates": 3,

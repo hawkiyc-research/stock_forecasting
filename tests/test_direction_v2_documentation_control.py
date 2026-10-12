@@ -209,7 +209,11 @@ class DirectionV2DocumentationTests(unittest.TestCase):
                 for line in block.replace("\\\n", " ").splitlines():
                     if line.startswith("bash scripts/runpod_workflow.sh train "):
                         commands.append(shlex.split(line))
-            multi_seed = [command for command in commands if "--seed" in command]
+            multi_seed = [
+                command
+                for command in commands
+                if "--seed" in command and "a-direction64-v2" in command
+            ]
             self.assertEqual(len(multi_seed), 1, language)
             command = multi_seed[0]
             self.assertEqual(command[command.index("--experiment") + 1], "a-direction64-v2")

@@ -80,6 +80,7 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
             "adaptive128",
             "direction64",
             "direction64-v2",
+            "direction64-v3",
         )
         expected = {f"{g}-{v}" for g in ("a", "b") for v in variants}
         self.assertEqual(set(names), expected)

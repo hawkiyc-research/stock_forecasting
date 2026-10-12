@@ -199,11 +199,13 @@ def _write_ready_manifest(config, frame, prepared):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA runner")
+@pytest.mark.parametrize("architecture", ["market_residual_v2", "market_ordinal_v3"])
 def test_fixed_split_direction_v2_train_resume_and_full_holdout(
     tmp_path,
     market_frame,
     monkeypatch,
     deterministic_resume_cuda,
+    architecture,
 ):
     raw, store = tmp_path / "market.parquet", tmp_path / "bar-store"
     market_frame.to_parquet(raw, index=False)
@@ -222,6 +224,8 @@ def test_fixed_split_direction_v2_train_resume_and_full_holdout(
         },
     )
     config = _config(tmp_path, raw, store)
+    config.model.direction.architecture = architecture
+    schema = 3 if architecture == "market_ordinal_v3" else 2
     _write_ready_manifest(config, market_frame, prepared)
     # Validate every manifest consumer before the expensive CUDA training acceptance.
     run_preflight(config, require_data=True).require_success()
@@ -241,7 +245,7 @@ def test_fixed_split_direction_v2_train_resume_and_full_holdout(
         assert loader.num_workers == 2 and not loader.drop_last
         result = original_evaluate(bundle, loader, experiment, device, **kwargs)
         assert result["direction"]["samples"] == len(loader.dataset)
-        assert result["direction"]["schema_version"] == 2
+        assert result["direction"]["schema_version"] == schema
         assert result["direction"]["probability_source"] == "population_logits"
         assert sum(row["samples"] for row in result["direction"]["daily"].values()) == len(
             loader.dataset
@@ -264,15 +268,19 @@ def test_fixed_split_direction_v2_train_resume_and_full_holdout(
         for line in (continuous.run_directory / "metrics.jsonl").read_text().splitlines()
     ]
     session = next(row for row in events if row.get("event") == "training_session_started")
-    assert session["loss_definition"] == (
-        "train=market_weighted_normalized_pinball"
-        "+fixed_reference_scaled_population_absolute_CE"
-        "+fixed_reference_scaled_population_alpha_CE"
-        "+weighted_ranking+reference_scaled_representation_regularization; "
-        "shared_gradient_management=none(LoRA_only,not_an_additive_loss); "
-        "validation=1-equal_market_task_horizon_balanced_decision_accuracy"
-        "+frozen_first_full_validation_pinball_guard"
-    )
+    if schema == 3:
+        assert "population_absolute_conditional_NLL" in session["loss_definition"]
+        assert "Brier_prior_ratio" in session["loss_definition"]
+    else:
+        assert session["loss_definition"] == (
+            "train=market_weighted_normalized_pinball"
+            "+fixed_reference_scaled_population_absolute_CE"
+            "+fixed_reference_scaled_population_alpha_CE"
+            "+weighted_ranking+reference_scaled_representation_regularization; "
+            "shared_gradient_management=none(LoRA_only,not_an_additive_loss); "
+            "validation=1-equal_market_task_horizon_balanced_decision_accuracy"
+            "+frozen_first_full_validation_pinball_guard"
+        )
     expected = load_file(continuous.completion_result / "adapter.safetensors")
     manifest = json.loads((continuous.run_directory / "run-manifest.json").read_text())
     assert manifest["training_resume_contract"]["training"]["seed"] == 42
@@ -280,7 +288,7 @@ def test_fixed_split_direction_v2_train_resume_and_full_holdout(
         (continuous.completion_result / "training-result.json").read_text()
     )
     reference = continuous_state["runtime_direction_loss"]
-    assert reference["schema_version"] == 2 and reference["samples"] == 32
+    assert reference["schema_version"] == schema and reference["samples"] == 32
     assert reference["sampling"]["calibration_seed"] == config.data.calibration_seed
     assert reference["sampling"]["yearly_sampling_decay"] == 0.8
     assert reference["pinball_guard_basis"] == "first_full_validation"

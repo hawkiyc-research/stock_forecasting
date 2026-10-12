@@ -58,6 +58,8 @@ DIRECTION_IMPLEMENTATION_PATHS = (
     "models/direction.py",
     "models/technical_channels.py",
     "direction_v2_runtime.py",
+    "direction_ordinal_runtime.py",
+    "models/direction_ordinal.py",
     "multitask_gradients.py",
 )
 

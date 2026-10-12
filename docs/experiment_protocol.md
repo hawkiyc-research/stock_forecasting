@@ -11,7 +11,7 @@
 相對市場 benchmark 的 alpha 條件分布，並辨識超過成本門檻的個股絕對／alpha 方向？
 
 本協定不把 validation Sharpe 或單次回測視為「可交易 alpha」的充分證據，也不把模型
-輸出直接當交易規則。技術指標 baseline 保留為對照；兩版方向 preset 另將十個有定義的
+輸出直接當交易規則。技術指標 baseline 保留為對照；各版方向 preset 另將十個有定義的
 歷史技術通道輸入 Kronos predictor，不用 baseline 規則取代 backbone。
 
 ### 2. 固定假設與範圍
@@ -30,7 +30,8 @@
 
 主假說：共享金融預訓練 encoder、歷史 benchmark conditioning 與可讀出的歷史尺度
 能在相同資料及切分下提升成本敏感的個股絕對／alpha 方向辨識，且不以失控的分位數
-誤差換取分類表面增益。v2 優先檢查等市場／任務／horizon 的 balanced-decision BA，
+誤差換取分類表面增益。V3 用人口機率品質、macro-F1 與決策錯誤護欄選模；保留 V2
+等市場／任務／horizon 的 balanced-decision BA 選模作對照，
 同時保留人口分布 raw accuracy、majority 基準、up precision／recall 及 normalized pinball。
 原有分位數、correlation、ranking 與校準假說仍作對照；不以單一 horizon 的多數類別
 accuracy 或提高 coverage 宣稱方向能力，也不預設本版會達到 60%。
@@ -129,7 +130,7 @@ selection mode 固定為 `min`。
 reference 存 checkpoint，resume 不重新估計。已完成的雙方向 baseline 保留其獨立目標；
 v2 不更換 label、資料規則或成本情境，不需因此重訓 baseline 或重做 CPU prepare。
 
-`direction64` 原版保留以供重現；`direction64-v2` 使用獨立的 `a_direction64_v2.yaml`／
+`direction64` 原版保留以供重現；`a-direction64-v2`／`b-direction64-v2` 使用獨立的 `a_direction64_v2.yaml`／
 `b_direction64_v2.yaml`。方向 head 直接讀取既有 20 維 train-only 標準化尺度特徵，
 另加入成本門檻除以個股／相對 20 日波動 × `sqrt(horizon)` 的四個有界輸入；比值
 限於 `[-20,20]` 後作 `asinh`，不改精確 label 門檻或裁切真實報酬。
@@ -210,6 +211,7 @@ market-weighted training pinball、sample-clock 衰減與較強 dropout／weight
 主要 selection metric：
 
 - 原有實驗：all-horizon mean normalized pinball；`direction64`：固定 reference 加權的 pinball＋雙 CE；`direction64-v2`：等市場方向 BA 與凍結 pinball 護欄，皆越低越好，不跨定義比較 selection loss。
+- V3：population CE／Brier 對 train prior 的比率與 macro-F1，加相反方向／塌縮罰分及凍結 pinball 護欄；完整公式見第 13 節。
 
 `direction64` 另報每個 horizon／市場／月份的兩個三分類 confusion matrix、accuracy、
 balanced accuracy、macro-F1、majority accuracy、up precision／recall／訊號比例。
@@ -257,7 +259,7 @@ Production Stage 1/2 不允許 `max_steps` 或固定 step cadence。optimizer bu
 target set、batch size、gradient accumulation 與 epoch 數推導，每個 epoch 固定做
 5 次 validation。每個可接受 checkpoint 必須：
 
-1. 由完整 validation 選出：原有實驗看 `primary_5d/selection_score`；兩版方向實驗看其版本定義的 `direction/selection_loss`。
+1. 由完整 validation 選出：原有實驗看 `primary_5d/selection_score`；各版方向實驗看其版本定義的 `direction/selection_loss`。
 2. 保存 trainable parameter union、optimizer、scheduler、RNG state 與 resolved config。
 3. 綁定 run ID、dataset artifacts、model architecture、Kronos source/model/tokenizer
    revisions 與 bounded training-source digest。
@@ -303,13 +305,28 @@ Stage 2：
 
 ### 13. 優先 ablation
 
-當前方向比較使用相同資料組別的 `direction64` 與 `direction64-v2`，各至少三個
+當前方向比較使用相同資料組別的 `direction64-v2` 與 `direction64-v3`，各至少三個
 training seeds（42、43、44）；原版保留為重現對照。這是整套路徑／prior／梯度／選模
-方法的比較，不得把差異歸因於單一元件。CLI 使用 `train --experiment a-direction64-v2`
-或 `b-direction64-v2`，搭配可重複的 `--seed`；runtime、GPU 型號及多 Pod 參數
+方法的比較，不得把差異歸因於單一元件。CLI 使用 `train --experiment a-direction64-v3`
+或 `b-direction64-v3`，搭配可重複的 `--seed`；runtime、GPU 型號及多 Pod 參數
 維持原有規則，完整命令見 [README 訓練操作](../README.md#train-zh)。
 原 `adaptive64`／`adaptive128` 的容量對照仍保留：其餘設定固定，只改 LoRA rank／alpha；
 與 `lora64` 比較也是整套方法比較。`partial` 保留為次要研究線，不取代 Kronos／LoRA。
+
+V3 的 `a_direction64_v3.yaml`／`b_direction64_v3.yaml` 使用 `market_ordinal_v3`：
+下界條件機率 `a`、上界條件機率 `b` 組成 `[1-a,a*(1-b),a*b]`；以三分類 NLL 訓練，
+保留成本、absolute／alpha、alpha 分位數、排序、LoRA、PCGrad 與 train-only references。
+這是 [CORN](https://arxiv.org/abs/2111.08851) 的順序結構，不是承諾金融方向率。
+借鑑 [MASTER](https://ojs.aaai.org/index.php/AAAI/article/view/27767) 的市場條件特徵選擇，
+只用既有 benchmark 七個歷史狀態特徵，對三條 token stream 與 20 個數值特徵作有界 gating。
+不改清洗、baseline 數值契約、DataLoader；相同資料／成本的 baseline 可重用。
+V3 selection loss 等市場／任務／horizon 平均 `(CE/priorCE+Brier/priorBrier+1-population_macro_F1)/3`，
+加相反方向誤判與塌縮罰分（各預設 0.25）及既有凍結 pinball 護欄。
+塌縮指真實占比至少 5%、預測占比不足 1%；門檻及權重可設定，不移除樣本。
+BA、population 與 balanced-decision accuracy、per-class precision／recall、confidence bins
+均保留，另報 ordinal MAE、相反方向錯誤、Brier skill、塌縮類別與各選模分項。
+Test 不擬合任何先驗或門檻；V2/V3 不跨架構 resume，selection loss 不跨 run 排名。
+參數及完整公式見 [README V3 模型](../README.md#training-zh)。
 
 後續可在不改 output contract 與資料切分下，另作以下單因子消融：
 
@@ -363,8 +380,9 @@ technical channels into the Kronos predictor without replacing it with baseline 
 The primary hypothesis is that a shared finance-pretrained encoder, historical-benchmark
 conditioning and readable past-only scales improve cost-sensitive absolute-stock/alpha
 direction discrimination on identical data/splits without buying apparent classification gains
-with uncontrolled quantile errors. V2 prioritizes equal-market/task/horizon balanced-decision
-BA while retaining raw population accuracy, majority baselines, up precision/recall and
+with uncontrolled quantile errors. V3 selects by population probability quality, macro-F1 and
+decision-error guards; V2 retains equal-market/task/horizon balanced-decision BA as a control.
+All retain raw population accuracy, majority baselines, up precision/recall and
 normalized pinball. Original quantile, correlation, ranking and calibration hypotheses remain
 controls. Neither one horizon's majority accuracy nor higher coverage establishes direction
 skill, and this version does not presume 60% accuracy.
@@ -459,7 +477,7 @@ without refitting on resume. Completed dual-direction baselines retain their ind
 objectives. V2 does not change labels, data rules or cost scenarios and therefore requires
 neither baseline retraining nor repeated CPU preparation.
 
-The original `direction64` remains reproducible. `direction64-v2` uses separate
+The original `direction64` remains reproducible. `a-direction64-v2`/`b-direction64-v2` use separate
 `a_direction64_v2.yaml`/`b_direction64_v2.yaml` files. Its direction head directly reads the
 existing 20 train-standardized scale features, plus four bounded inputs formed by cost thresholds
 divided by asset/relative 20-day volatility times `sqrt(horizon)`. Ratios are bounded to
@@ -552,6 +570,8 @@ and boundaries are documented in [README](../README.md#training-en).
 Selection metric: original presets minimize all-horizon normalized pinball; `direction64`
 minimizes fixed-reference pinball plus both CEs; `direction64-v2` uses equal-market direction
 BA and a frozen pinball guard. Different selection-loss definitions cannot be ranked directly.
+V3 uses population CE/Brier ratios against train priors, macro-F1, opposite-error/collapse penalties
+and the frozen pinball guard; section 13 defines the complete formula.
 Direction presets additionally report absolute/alpha
 confusion matrices, accuracy, balanced accuracy, macro-F1, majority accuracy, up precision,
 recall and signal fraction by horizon, market and month. Classification precision is not
@@ -633,15 +653,31 @@ Stronger claims require multiple seeds, dispersion, and predefined ablations.
 
 ### 13. Priority ablations
 
-The current direction comparison is `direction64` versus `direction64-v2` within one data
+The current direction comparison is `direction64-v2` versus `direction64-v3` within one data
 group, each with at least three training seeds (42, 43, 44). The original remains a reproduction
 control. This compares a bundle of paths, priors, gradient management and selection, not the
-causal effect of a single component. Use `train --experiment a-direction64-v2` or
-`b-direction64-v2` with repeated `--seed`; runtime, GPU selection and multi-Pod options retain
+causal effect of a single component. Use `train --experiment a-direction64-v3` or
+`b-direction64-v3` with repeated `--seed`; runtime, GPU selection and multi-Pod options retain
 their existing behavior. Complete commands are in [README training operations](../README.md#train-en).
 The original `adaptive64`/`adaptive128` capacity control remains available with everything else
 fixed and only LoRA rank/alpha changed; comparisons against `lora64` also evaluate a bundle.
 `partial` remains secondary and does not replace the Kronos/LoRA backbone.
+
+V3 uses `a_direction64_v3.yaml`/`b_direction64_v3.yaml` and `market_ordinal_v3`. Lower crossing
+probability `a` and conditional upper crossing `b` form `[1-a,a*(1-b),a*b]`; three-class NLL
+retains costs, absolute/alpha tasks, quantiles, ranking, LoRA, PCGrad and train-only references.
+This follows [CORN](https://arxiv.org/abs/2111.08851), not a financial-accuracy guarantee.
+Inspired by [MASTER](https://ojs.aaai.org/index.php/AAAI/article/view/27767), seven existing
+past-only benchmark state features generate bounded gates for three token streams and twenty
+numerical features. Cleaning, baseline semantics and DataLoader remain unchanged; matching
+data/cost baseline results are reusable. Selection equally averages market/task/horizon
+`(CE/priorCE+Brier/priorBrier+1-population_macro_F1)/3`, adding opposite-error and collapse
+penalties (each default 0.25) plus the retained frozen pinball guard. Collapse means true share
+at least 5% and predicted share below 1%; configurable thresholds/weights never remove samples.
+BA, population/balanced decision accuracy, per-class precision/recall and confidence bins remain;
+ordinal MAE, opposite errors, Brier skill, collapsed classes and score components are added.
+Test fits no prior/threshold. V2/V3 cannot resume across architectures; selection loss does not
+rank runs. See [README V3 model](../README.md#training-en) for parameters and the full formula.
 
 Optional later single-factor ablations, without changing outputs or splits, include:
 

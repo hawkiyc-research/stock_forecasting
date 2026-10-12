@@ -37,6 +37,10 @@ V2_DIRECTION_FIELDS = {
     "max_daily_entries",
     "selection_pinball_guard_tolerance",
     "selection_pinball_guard_weight",
+    "selection_class_support_min",
+    "selection_prediction_share_min",
+    "selection_collapse_weight",
+    "selection_opposite_weight",
 }
 DEVICES = [
     "cpu",
@@ -55,24 +59,34 @@ class _CheckpointModel(nn.Module):
         horizons = config.data.alpha_horizons
         self.alpha_head.register_buffer("robust_scales", torch.ones(len(horizons), device=device))
         if config.model.direction.enabled:
-            self.direction_head = MarketResidualDualDirectionHead(
+            head_type = MarketResidualDualDirectionHead
+            if config.model.direction.architecture == "market_ordinal_v3":
+                from stock_forecasting.models.direction_ordinal import (
+                    MarketOrdinalDualDirectionHead,
+                )
+
+                head_type = MarketOrdinalDualDirectionHead
+            self.direction_head = head_type(
                 32,
                 horizons,
                 config.model.direction,
                 0,
             ).to(device)
-            self.direction_head.restore_references(
-                {
-                    "schema_version": 2,
-                    "samples": 8192,
-                    "references": [0.3, math.log(3), math.log(3)],
-                    "priors": [
-                        [[[0.5, 0.25, 0.25] for _ in horizons] for _ in range(2)] for _ in range(4)
-                    ],
-                    "market_weights": [0.6, 1.2, 2.0, 1.0],
-                    "basis": "train_null_quantiles_and_uniform_classes_v2",
-                }
-            )
+            reference = {
+                "schema_version": 2,
+                "samples": 8192,
+                "references": [0.3, math.log(3), math.log(3)],
+                "priors": [
+                    [[[0.5, 0.25, 0.25] for _ in horizons] for _ in range(2)] for _ in range(4)
+                ],
+                "market_weights": [0.6, 1.2, 2.0, 1.0],
+                "basis": "train_null_quantiles_and_uniform_classes_v2",
+            }
+            if config.model.direction.architecture == "market_ordinal_v3":
+                from stock_forecasting.direction_ordinal_runtime import ordinal_reference
+
+                reference = ordinal_reference(reference)
+            self.direction_head.restore_references(reference)
             self.direction_head.set_pinball_guard_reference(0.35)
         self._task_gradient_manager = (
             SharedTaskGradientManager(
@@ -86,14 +100,14 @@ class _CheckpointModel(nn.Module):
         )
 
 
-def _config(*, v2: bool = True) -> ExperimentConfig:
+def _config(*, v2: bool = True, architecture="market_residual_v2") -> ExperimentConfig:
     config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
     if v2:
         config.model.feature_mode = "combined"
         config.model.explicit_output_scale = True
         config.model.direction = DirectionConfig(
             enabled=True,
-            architecture="market_residual_v2",
+            architecture=architecture,
             gradient_management="pcgrad",
         )
     return config
@@ -159,8 +173,11 @@ def _save(config, directory, model, optimizer, scheduler):
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_projection_checkpoint_restores_counters_and_the_next_optimizer_step(tmp_path, device):
-    config = _config()
+@pytest.mark.parametrize("architecture", ["market_residual_v2", "market_ordinal_v3"])
+def test_projection_checkpoint_restores_counters_and_the_next_optimizer_step(
+    tmp_path, device, architecture
+):
+    config = _config(architecture=architecture)
     original = _CheckpointModel(config, manager=True, device=device)
     optimizer, scheduler = _optimizer(original)
     _step(original, optimizer, scheduler)
@@ -182,8 +199,9 @@ def test_projection_checkpoint_restores_counters_and_the_next_optimizer_step(tmp
     )
 
 
-def test_completion_result_also_preserves_the_task_gradient_state(tmp_path):
-    config = _config()
+@pytest.mark.parametrize("architecture", ["market_residual_v2", "market_ordinal_v3"])
+def test_completion_result_also_preserves_the_task_gradient_state(tmp_path, architecture):
+    config = _config(architecture=architecture)
     model = _CheckpointModel(config, manager=True, device="cpu")
     optimizer, scheduler = _optimizer(model)
     _step(model, optimizer, scheduler)

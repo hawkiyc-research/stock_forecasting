@@ -2816,10 +2816,15 @@ def evaluate_loader(
 
     direction_metrics = None
     if config.model.direction.enabled:
-        if config.model.direction.architecture == "market_residual_v2":
+        if config.model.direction.architecture in ("market_residual_v2", "market_ordinal_v3"):
             from stock_forecasting.direction_v2_runtime import DirectionV2Metrics
 
-            direction_metrics = DirectionV2Metrics(
+            metrics_type = DirectionV2Metrics
+            if config.model.direction.architecture == "market_ordinal_v3":
+                from stock_forecasting.direction_ordinal_runtime import DirectionOrdinalMetrics
+
+                metrics_type = DirectionOrdinalMetrics
+            direction_metrics = metrics_type(
                 config.data.alpha_horizons,
                 split=getattr(loader.dataset, "split", "validation"),
                 probability_bins=config.model.direction.probability_bins,
@@ -3759,6 +3764,17 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             ),
             "loss_definition": (
                 "train=market_weighted_normalized_pinball"
+                "+fixed_reference_scaled_population_absolute_conditional_NLL"
+                "+fixed_reference_scaled_population_alpha_conditional_NLL"
+                "+weighted_ranking+reference_scaled_representation_regularization; "
+                f"shared_gradient_management={config.model.direction.gradient_management}"
+                "(LoRA_only,not_an_additive_loss); "
+                "validation=equal_market_task_horizon_mean(CE_prior_ratio,Brier_prior_ratio,"
+                "1-population_macro_F1)+opposite_error_guard+class_collapse_guard"
+                "+frozen_first_full_validation_pinball_guard"
+                if config.model.direction.enabled
+                and config.model.direction.architecture == "market_ordinal_v3"
+                else "train=market_weighted_normalized_pinball"
                 "+fixed_reference_scaled_population_absolute_CE"
                 "+fixed_reference_scaled_population_alpha_CE"
                 "+weighted_ranking+reference_scaled_representation_regularization; "
@@ -3903,7 +3919,11 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             raise ValueError("Mapped resume checkpoint exceeds the runtime training budget")
 
         if bundle.model.direction_head is not None and config.training.resume_checkpoint is None:
-            if config.model.direction.architecture == "market_residual_v2":
+            if config.model.direction.architecture == "market_ordinal_v3":
+                from stock_forecasting.direction_ordinal_runtime import (
+                    calibrate_direction_references,
+                )
+            elif config.model.direction.architecture == "market_residual_v2":
                 from stock_forecasting.direction_v2_runtime import calibrate_direction_references
             else:
                 from stock_forecasting.direction_runtime import calibrate_direction_references

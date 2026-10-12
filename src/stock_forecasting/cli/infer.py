@@ -427,10 +427,22 @@ def infer_observation(
                 ),
                 **(
                     {
-                        "schema_version": 2,
+                        "schema_version": (
+                            3 if config.model.direction.architecture == "market_ordinal_v3" else 2
+                        ),
+                        "architecture": config.model.direction.architecture,
+                        "probability_structure": (
+                            "ordered_conditional_chain"
+                            if config.model.direction.architecture == "market_ordinal_v3"
+                            else "flat_population_logits"
+                        ),
                         "probability_source": "population_logits",
                         "balanced_decisions": {
-                            "source": "history_residual_logits_without_train_prior",
+                            "source": (
+                                "population_log_probabilities_minus_train_log_prior"
+                                if config.model.direction.architecture == "market_ordinal_v3"
+                                else "history_residual_logits_without_train_prior"
+                            ),
                             "absolute": dict(
                                 zip(
                                     map(str, config.data.alpha_horizons),

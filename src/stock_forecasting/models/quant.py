@@ -208,7 +208,10 @@ class QuantForecastModel(nn.Module):
             if market_ids is None or direction_bands is None:
                 raise ValueError("Direction predictions require market IDs and ex-ante cost bands")
             head = self.direction_head
-            direction_v2 = getattr(head, "architecture", None) == "market_residual_v2"
+            direction_v2 = getattr(head, "architecture", None) in (
+                "market_residual_v2",
+                "market_ordinal_v3",
+            )
             read_kwargs = {}
             if direction_v2:
                 from .scale_features import SCALE_STANDARDIZED_CLIP, _transform

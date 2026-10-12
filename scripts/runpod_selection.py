@@ -60,6 +60,7 @@ EXPERIMENT_CONFIGS = {
         "adaptive128",
         "direction64",
         "direction64-v2",
+        "direction64-v3",
     )
 }
 STAGE_RUNTIME = {

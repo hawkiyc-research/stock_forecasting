@@ -186,13 +186,23 @@ def build_model_bundle(
             MarketResidualDualDirectionHead,
         )
 
-        if getattr(config.model.direction, "architecture", "legacy") == "market_residual_v2":
+        if getattr(config.model.direction, "architecture", "legacy") in (
+            "market_residual_v2",
+            "market_ordinal_v3",
+        ):
             branch = alpha_head.numeric_branch
             if branch is None or branch.scale_projection is None or branch.feature_count != 20:
                 raise ValueError(
                     "Direction v2 requires the existing extended numerical scale branch"
                 )
-            direction_head = MarketResidualDualDirectionHead(
+            head_type = MarketResidualDualDirectionHead
+            if config.model.direction.architecture == "market_ordinal_v3":
+                from stock_forecasting.models.direction_ordinal import (
+                    MarketOrdinalDualDirectionHead,
+                )
+
+                head_type = MarketOrdinalDualDirectionHead
+            direction_head = head_type(
                 config.model.encoder_dim,
                 config.data.alpha_horizons,
                 config.model.direction,
@@ -224,7 +234,10 @@ def build_model_bundle(
         direction_head.loss_references = torch.tensor(
             [1.0, math.log(3), math.log(3)], device=device, dtype=torch.float32
         )
-        if getattr(direction_head, "architecture", None) == "market_residual_v2":
+        if getattr(direction_head, "architecture", None) in (
+            "market_residual_v2",
+            "market_ordinal_v3",
+        ):
             direction_head.runtime_float32()
     model.market_loss_weights = torch.tensor(
         config.training.market_loss_weights, device=device, dtype=torch.float32

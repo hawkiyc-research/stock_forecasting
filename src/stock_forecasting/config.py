@@ -205,7 +205,7 @@ class DirectionConfig(StrictModel):
     """Opt-in dual three-class supervision on the A-LoRA64 architecture."""
 
     enabled: bool = False
-    architecture: Literal["legacy", "market_residual_v2"] = "legacy"
+    architecture: Literal["legacy", "market_residual_v2", "market_ordinal_v3"] = "legacy"
     technical_channels: bool = True
     attention_heads: int = Field(default=8, ge=1)
     loss_reference_samples: int = Field(default=1024, ge=32, le=8192)
@@ -223,15 +223,19 @@ class DirectionConfig(StrictModel):
     max_daily_entries: int = Field(default=4096, ge=128, le=16_384)
     selection_pinball_guard_tolerance: float = Field(default=0.01, ge=0.0, le=0.1)
     selection_pinball_guard_weight: float = Field(default=1.0, gt=0.0, le=10.0)
+    selection_class_support_min: float = Field(default=0.05, gt=0.0, le=0.5)
+    selection_prediction_share_min: float = Field(default=0.01, gt=0.0, le=0.1)
+    selection_collapse_weight: float = Field(default=0.25, ge=0.0, le=2.0)
+    selection_opposite_weight: float = Field(default=0.25, ge=0.0, le=2.0)
     costs: DirectionCostConfig = Field(default_factory=DirectionCostConfig)
 
     @model_validator(mode="after")
     def validate_direction_contract(self) -> DirectionConfig:
         if self.gradient_management != "none" and (
-            not self.enabled or self.architecture != "market_residual_v2"
+            not self.enabled or self.architecture not in ("market_residual_v2", "market_ordinal_v3")
         ):
             raise ValueError(
-                "Shared task-gradient management requires the enabled v2 direction head"
+                "Shared task-gradient management requires an enabled v2/v3 direction head"
             )
         return self
 
@@ -279,10 +283,13 @@ class ModelConfig(StrictModel):
     def validate_model_contract(self) -> ModelConfig:
         if self.direction.enabled and self.encoder_dim % self.direction.attention_heads:
             raise ValueError("encoder_dim must be divisible by direction.attention_heads")
-        if self.direction.enabled and self.direction.architecture == "market_residual_v2":
+        if self.direction.enabled and self.direction.architecture in (
+            "market_residual_v2",
+            "market_ordinal_v3",
+        ):
             if self.feature_mode not in ("scales", "combined") or not self.explicit_output_scale:
                 raise ValueError(
-                    "The v2 direction head requires the existing extended scale branch"
+                    "The v2/v3 direction head requires the existing extended scale branch"
                 )
             if (
                 self.direction.gradient_management != "none"
@@ -349,6 +356,15 @@ class ModelConfig(StrictModel):
         """Hash only model semantics so Stage 1 and Stage 2 can be compared."""
 
         semantics = json.loads(self.model_dump_json())
+        if self.direction.enabled and self.direction.architecture != "market_ordinal_v3":
+            # V3-only selection defaults do not alter retained architecture identities.
+            for name in (
+                "selection_class_support_min",
+                "selection_prediction_share_min",
+                "selection_collapse_weight",
+                "selection_opposite_weight",
+            ):
+                semantics["direction"].pop(name)
         if not self.direction.enabled:
             semantics.pop("direction")
         elif self.direction.architecture == "legacy":

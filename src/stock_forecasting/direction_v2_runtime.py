@@ -231,7 +231,9 @@ def references_from_arrays(
     }
 
 
-def calibrate_direction_references(bundle, config, dataset, device, workers, batch_plan):
+def calibrate_direction_references(
+    bundle, config, dataset, device, workers, batch_plan, *, reference_transform=None
+):
     """Use bounded multiworker label reads, without running any model forward."""
     from stock_forecasting.date_market_sampler import date_market_index
     from stock_forecasting.training import ModelBatchCollator, _loader_process_options
@@ -298,6 +300,8 @@ def calibrate_direction_references(bundle, config, dataset, device, workers, bat
         market_weight_max=config.model.direction.market_weight_max,
         metadata=metadata,
     )
+    if reference_transform is not None:
+        state = reference_transform(state)
     bundle.model.direction_head.restore_references(state)
     return bundle.model.direction_head.reference_state()
 
@@ -542,8 +546,8 @@ class DirectionV2Metrics(DirectionMetrics):
     def finish(self, head, costs):
         result = super().finish(head, costs)
         references = head.reference_state()
-        if references.get("schema_version") != 2:
-            raise ValueError("Main direction-v2 metrics require schema-2 train priors")
+        if references.get("schema_version") not in (2, 3):
+            raise ValueError("Main direction metrics require schema-2/3 train priors")
         priors = np.asarray(references["priors"], dtype=np.float64)
         if (
             priors.shape != (4, 2, len(self.horizons), 3)
