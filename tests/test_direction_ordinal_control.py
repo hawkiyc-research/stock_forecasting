@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import ast
+import json
 import runpy
 import subprocess
 import unittest
@@ -18,9 +20,9 @@ FIELDS = (
 
 
 class OrdinalControlTests(unittest.TestCase):
-    @unittest.skipUnless((ROOT / ".git").exists(), "Source preservation requires the Git checkout")
-    def test_presets_are_additive_and_baseline_sources_are_untouched(self):
-        registry = runpy.run_path(str(ROOT / "scripts/runpod_selection.py"))["EXPERIMENT_CONFIGS"]
+    def test_presets_are_additive_without_changing_baseline_task_or_data(self):
+        selection = runpy.run_path(str(ROOT / "scripts/runpod_selection.py"))
+        registry = selection["EXPERIMENT_CONFIGS"]
         for group in ("a", "b"):
             for variant in (
                 "lora32",
@@ -35,21 +37,38 @@ class OrdinalControlTests(unittest.TestCase):
                 self.assertIn(f"{group}-{variant}", registry)
                 self.assertTrue((ROOT / registry[f"{group}-{variant}"]["config_path"]).is_file())
         contract = runpy.run_path(str(ROOT / "src/stock_forecasting/baseline_contract.py"))
-        changed = set(
-            subprocess.check_output(
-                ["git", "diff", "--name-only", "HEAD"], cwd=ROOT, text=True
-            ).splitlines()
+        original = selection["_build_selection"](
+            argparse.Namespace(
+                stage="stage2",
+                data_profile="us_tw_eodhd",
+                dataset_revision="v1",
+                start="2021-01-01",
+                end="2026-06-01",
+                h_start=1,
+                universe="all",
+                stocks=[],
+                etfs=[],
+                symbol_limit=None,
+                feature_mode="combined",
+            ),
+            ROOT,
         )
-        self.assertFalse(changed.intersection(contract["BASELINE_SOURCES"]))
-        self.assertFalse(
-            changed.intersection(
-                {
-                    "configs/baseline.json",
-                    "configs/data_cleaning.json",
-                    "src/stock_forecasting/dataset_identity.py",
-                }
-            )
-        )
+        expected_parameters = json.loads((ROOT / "configs/baseline.json").read_text())
+        expected_parameters.pop("resources", None)
+        # An unrelated new baseline task may edit shared files. Test the enduring
+        # isolation contract, not which files happen to be dirty before commit.
+        for group in ("a", "b"):
+            previous = selection["_with_experiment"](original, f"{group}-direction64-v2", ROOT)
+            ordinal = selection["_with_experiment"](original, f"{group}-direction64-v3", ROOT)
+            self.assertEqual(previous["dataset_request"], ordinal["dataset_request"])
+            self.assertEqual(previous["dataset_request_sha256"], ordinal["dataset_request_sha256"])
+            self.assertNotIn("baseline_task", ordinal)
+            baseline = contract["baseline_contract"](ROOT, previous)
+            self.assertEqual(baseline, contract["baseline_contract"](ROOT, ordinal))
+            self.assertEqual(baseline["contract"]["parameters"], expected_parameters)
+            for seed in (42, 43, 44):
+                seeded = selection["_with_training_seed"](ordinal, seed, ROOT)
+                self.assertEqual(baseline, contract["baseline_contract"](ROOT, seeded))
 
     @unittest.skipUnless((ROOT / ".git").exists(), "Source preservation requires the Git checkout")
     def test_shared_direction_helpers_are_identical_to_retained_version(self):

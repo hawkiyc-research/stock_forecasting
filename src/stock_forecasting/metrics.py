@@ -161,7 +161,17 @@ def multi_horizon_alpha_metrics(
 
 
 def _rank(values: NDArray[np.float64]) -> NDArray[np.float64]:
-    return np.asarray(values).argsort(kind="stable").argsort(kind="stable").astype(np.float64)
+    """Return zero-based average ranks, using only date-sized temporary arrays."""
+    values = np.asarray(values)
+    if not values.size:
+        return np.empty(0, dtype=np.float64)
+    order = np.argsort(values, kind="stable")
+    ordered = values[order]
+    starts = np.concatenate(([0], np.flatnonzero(ordered[1:] != ordered[:-1]) + 1))
+    stops = np.concatenate((starts[1:], [values.size]))
+    ranks = np.empty(values.size, dtype=np.float64)
+    ranks[order] = np.repeat((starts + stops - 1) * 0.5, stops - starts)
+    return ranks
 
 
 def cross_sectional_metrics(
@@ -173,7 +183,7 @@ def cross_sectional_metrics(
     transaction_cost_bps: float = 10.0,
     annualization_horizon: int = 5,
     date_groups: tuple[NDArray[np.int64], NDArray[np.int64]] | None = None,
-) -> dict[str, float]:
+) -> dict[str, float | str]:
     """Compute date-level RankIC and an equal-weight long/short diagnostic."""
 
     target_array = np.asarray(targets, dtype=np.float64)
@@ -202,12 +212,15 @@ def cross_sectional_metrics(
         if valid.sum() < 3 or np.ptp(period_signals[valid]) == 0:
             continue
         valid_indices = indices[valid]
-        correlation = np.corrcoef(
-            _rank(target_array[valid_indices]),
-            _rank(signal_array[valid_indices]),
-        )[0, 1]
-        if np.isfinite(correlation):
-            information_coefficients.append(float(correlation))
+        # A constant target has no defined correlation. Keep the existing
+        # portfolio diagnostic for that date, but exclude it from RankIC.
+        if np.ptp(period_targets[valid]) > 0:
+            correlation = np.corrcoef(
+                _rank(target_array[valid_indices]),
+                _rank(signal_array[valid_indices]),
+            )[0, 1]
+            if np.isfinite(correlation):
+                information_coefficients.append(float(correlation))
         order = valid_indices[np.argsort(signal_array[valid_indices], kind="stable")]
         bucket = max(1, len(order) // 5)
         short_indices = order[:bucket]
@@ -241,8 +254,14 @@ def cross_sectional_metrics(
         max_drawdown = sharpe = 0.0
     ic_std = float(ic_array.std(ddof=1)) if ic_array.size > 1 else 0.0
     return {
+        # Preserve numeric placeholders for historical consumers; validity and
+        # method metadata distinguish unavailable estimates and older rankings.
         "rank_ic_mean": float(ic_array.mean()) if ic_array.size else 0.0,
         "rank_ic_ir": float(ic_array.mean() / ic_std) if ic_std > 0 else 0.0,
+        "rank_ic_method": "spearman_average_ties_v1",
+        "rank_ic_status": "ok" if ic_array.size else "unavailable",
+        "rank_ic_evaluated_dates": float(ic_array.size),
+        "rank_ic_ir_status": "ok" if ic_std > 0 else "unavailable",
         "net_long_short_mean_log_return": (
             float(return_array.mean()) if return_array.size else 0.0
         ),

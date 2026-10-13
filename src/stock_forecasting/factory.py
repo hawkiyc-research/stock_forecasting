@@ -163,21 +163,34 @@ def build_model_bundle(
     )
     if len(resolved_scales) != len(config.data.alpha_horizons):
         raise ValueError("Runtime robust scales must match the configured alpha horizons")
-    alpha_head = MultiHorizonAlphaHead(
+    alpha_head_type = MultiHorizonAlphaHead
+    head_options = {
+        "quantiles": tuple(config.model.alpha_quantiles),
+        "decoupled_output_scale": config.model.decoupled_output_scale,
+        "independent_ranking_head": config.model.independent_ranking_head,
+        "market_residual_hidden_dim": config.model.market_residual_hidden_dim,
+        "ranking_numeric_features": config.model.ranking_numeric_features,
+    }
+    if config.model.prediction_task != "quantiles":
+        from stock_forecasting.models.signal import SingleTaskHead
+
+        alpha_head_type = SingleTaskHead
+        head_options = {
+            "prediction_task": config.model.prediction_task,
+            "point_loss_beta": config.model.point_loss_beta,
+            "neutral_return_threshold": config.model.neutral_return_threshold,
+        }
+    alpha_head = alpha_head_type(
         config.model.encoder_dim,
         horizons=tuple(config.data.alpha_horizons),
         hidden_dim=config.model.alpha_head_hidden_dim,
-        quantiles=tuple(config.model.alpha_quantiles),
         robust_scales=resolved_scales,
         dropout=config.model.alpha_head_dropout,
         feature_mode=config.model.feature_mode,
         fp32_head=config.model.alpha_head_fp32,
         market_aware=config.model.market_aware,
         explicit_output_scale=config.model.explicit_output_scale,
-        decoupled_output_scale=config.model.decoupled_output_scale,
-        independent_ranking_head=config.model.independent_ranking_head,
-        market_residual_hidden_dim=config.model.market_residual_hidden_dim,
-        ranking_numeric_features=config.model.ranking_numeric_features,
+        **head_options,
     )
     direction_head = None
     if config.model.direction.enabled:
@@ -215,15 +228,24 @@ def build_model_bundle(
                 config.model.direction,
                 config.model.alpha_head_dropout,
             )
-    model = QuantForecastModel(
+    model_type = QuantForecastModel
+    model_options = {
+        "ranking_loss_weight": config.model.ranking_loss_weight,
+        "ranking_max_pairs": config.model.ranking_max_pairs,
+        "market_loss_weights": config.training.market_loss_weights,
+        "direction_head": direction_head,
+    }
+    if config.model.prediction_task != "quantiles":
+        from stock_forecasting.models.signal import SignalForecastModel
+
+        model_type = SignalForecastModel
+        model_options = {}
+    model = model_type(
         backbone,
         resampler,
         benchmark_conditioner,
         alpha_head,
-        ranking_loss_weight=config.model.ranking_loss_weight,
-        ranking_max_pairs=config.model.ranking_max_pairs,
-        market_loss_weights=config.training.market_loss_weights,
-        direction_head=direction_head,
+        **model_options,
     )
     target_dtype = _dtype(config.model.dtype) if device.type == "cuda" else torch.float32
     model.to(device=device, dtype=target_dtype)

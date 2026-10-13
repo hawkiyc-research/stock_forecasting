@@ -30,18 +30,30 @@ class TrainingSeedControlTests(unittest.TestCase):
         shutil.copytree(ROOT / "configs", self.root / "configs")
         self.original = SELECTION["_build_selection"](
             argparse.Namespace(
-                stage="stage2", data_profile="us_tw_eodhd", dataset_revision="v1",
-                start="2021-01-01", end="2026-06-01", h_start=1, universe="all",
-                stocks=[], etfs=[], symbol_limit=None, feature_mode="combined",
-            ), self.root,
+                stage="stage2",
+                data_profile="us_tw_eodhd",
+                dataset_revision="v1",
+                start="2021-01-01",
+                end="2026-06-01",
+                h_start=1,
+                universe="all",
+                stocks=[],
+                etfs=[],
+                symbol_limit=None,
+                feature_mode="combined",
+            ),
+            self.root,
         )
 
     def pin(self, seed):
         selected = SELECTION["_with_training_seed"](self.original, seed, self.root)
         path = SELECTION["_store_selection"](self.root, selected)
         env = SELECTION["_selection_exports"](path, selected)
-        env.update(PROJECT_ROOT=str(self.root), NETWORK_VOLUME_ROOT="/runpod-volume",
-                   RUNPOD_REMOTE_SELECTION_PATH=str(path))
+        env.update(
+            PROJECT_ROOT=str(self.root),
+            NETWORK_VOLUME_ROOT="/runpod-volume",
+            RUNPOD_REMOTE_SELECTION_PATH=str(path),
+        )
         config = self.root / selected["stage"]["config_path"]
         return config, selected, path, env
 
@@ -53,6 +65,34 @@ class TrainingSeedControlTests(unittest.TestCase):
                 SELECTION["_verify_environment"](path, selected, env)
                 self.assertEqual(CONFIGURATION["training_seed_override"](config, env), seed)
                 self.assertEqual(config.read_bytes(), before)
+
+    def test_independent_tasks_keep_selection_digest_at_runtime_for_three_seeds(self):
+        for group in ("a", "b"):
+            for variant in ("alpha-point64", "absolute-direction64"):
+                selected = SELECTION["_with_experiment"](
+                    self.original,
+                    f"{group}-{variant}",
+                    self.root,
+                )
+                for seed in (42, 43, 44):
+                    with self.subTest(group=group, variant=variant, seed=seed):
+                        pinned = SELECTION["_with_training_seed"](selected, seed, self.root)
+                        path = SELECTION["_store_selection"](self.root, pinned)
+                        env = SELECTION["_selection_exports"](path, pinned)
+                        env.update(
+                            PROJECT_ROOT=str(self.root),
+                            NETWORK_VOLUME_ROOT="/runpod-volume",
+                            RUNPOD_REMOTE_SELECTION_PATH=str(path),
+                        )
+                        config = self.root / pinned["stage"]["config_path"]
+                        SELECTION["_verify_environment"](path, pinned, env)
+                        self.assertEqual(CONFIGURATION["training_seed_override"](config, env), seed)
+                        altered = copy.deepcopy(pinned)
+                        altered.pop("baseline_task")
+                        path.write_text(json.dumps(altered))
+                        with self.assertRaisesRegex(ValueError, "immutable selection"):
+                            CONFIGURATION["training_seed_override"](config, env)
+                        path.write_text(json.dumps(pinned))
 
     def test_legacy_selection_does_not_require_or_override_seed(self):
         path = SELECTION["_store_selection"](self.root, self.original)
@@ -88,10 +128,14 @@ class TrainingSeedControlTests(unittest.TestCase):
     def test_seed_env_must_match_pinned_selection_and_source_config(self):
         config, selected, path, env = self.pin(43)
         for key, value in (
-            ("RUNPOD_TRAINING_SEED", "42"), ("RUNPOD_TRAINING_SEED", "-1"),
-            ("RUNPOD_TRAINING_SEED", "4294967296"), ("RUNPOD_TRAINING_SEED", "4.3"),
-            ("RUNPOD_SELECTION_ID", "different"), ("RUNPOD_SELECTION_SHA256", "0" * 64),
-            ("RUNPOD_CONFIG", ""), ("RUNPOD_REMOTE_SELECTION_PATH", str(self.root / "missing")),
+            ("RUNPOD_TRAINING_SEED", "42"),
+            ("RUNPOD_TRAINING_SEED", "-1"),
+            ("RUNPOD_TRAINING_SEED", "4294967296"),
+            ("RUNPOD_TRAINING_SEED", "4.3"),
+            ("RUNPOD_SELECTION_ID", "different"),
+            ("RUNPOD_SELECTION_SHA256", "0" * 64),
+            ("RUNPOD_CONFIG", ""),
+            ("RUNPOD_REMOTE_SELECTION_PATH", str(self.root / "missing")),
         ):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 CONFIGURATION["training_seed_override"](config, {**env, key: value})
@@ -120,11 +164,21 @@ class TrainingSeedControlTests(unittest.TestCase):
             entry = b"RUNPOD_TRAINING_SEED=" + seed.encode() + b"\0" if seed else b""
             source.write_bytes(base + entry)
             result = subprocess.run(
-                [sys.executable, str(ROOT / "scripts/runpod_reexec_with_pid1_env.py"),
-                 "--source", str(source), "--", sys.executable, "-c",
-                 "import os; print(os.environ.get('RUNPOD_TRAINING_SEED', 'absent'))"],
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/runpod_reexec_with_pid1_env.py"),
+                    "--source",
+                    str(source),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    "import os; print(os.environ.get('RUNPOD_TRAINING_SEED', 'absent'))",
+                ],
                 env={**os.environ, "RUNPOD_TEST_MODE": "1", "RUNPOD_TRAINING_SEED": "999"},
-                capture_output=True, text=True, timeout=10, check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
             )
             self.assertEqual(result.stdout.strip(), seed or "absent")
 
@@ -138,19 +192,56 @@ class TrainingSeedControlTests(unittest.TestCase):
             "'gpu':os.environ['RUNPOD_CLI_GPU_ID'],'runtime':os.environ['RUNPOD_CLI_MAX_RUNTIME_SECONDS']}))\n"
         )
         result = subprocess.run(
-            ["bash", str(scripts / "runpod_workflow.sh"), "train", "--seed", "42", "--seed", "43",
-             "--seed", "44", "--experiment", "a-adaptive64", "--maxRuntime", "48h",
-             "--gpuId", "NVIDIA GeForce RTX 5090", "--launchWorkers", "3"],
-            capture_output=True, text=True, timeout=10, check=True,
+            [
+                "bash",
+                str(scripts / "runpod_workflow.sh"),
+                "train",
+                "--seed",
+                "42",
+                "--seed",
+                "43",
+                "--seed",
+                "44",
+                "--experiment",
+                "a-adaptive64",
+                "--maxRuntime",
+                "48h",
+                "--gpuId",
+                "NVIDIA GeForce RTX 5090",
+                "--launchWorkers",
+                "3",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
         )
         output = json.loads(result.stdout)
-        self.assertEqual(output["args"], ["launch", "--seed", "42", "--seed", "43", "--seed", "44",
-                                          "--experiment", "a-adaptive64", "--launchWorkers", "3"])
+        self.assertEqual(
+            output["args"],
+            [
+                "launch",
+                "--seed",
+                "42",
+                "--seed",
+                "43",
+                "--seed",
+                "44",
+                "--experiment",
+                "a-adaptive64",
+                "--launchWorkers",
+                "3",
+            ],
+        )
         self.assertEqual(output["gpu"], "NVIDIA GeForce RTX 5090")
         self.assertEqual(output["runtime"], "172800")
         for args in (("train", "--seed"), ("baseline", "--seed", "42")):
-            invalid = subprocess.run(["bash", str(scripts / "runpod_workflow.sh"), *args],
-                                     capture_output=True, text=True, timeout=10)
+            invalid = subprocess.run(
+                ["bash", str(scripts / "runpod_workflow.sh"), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
             self.assertNotEqual(invalid.returncode, 0)
 
     def test_checkpoint_preflight_checks_pinned_seed_without_changing_old_runs(self):
@@ -159,11 +250,13 @@ class TrainingSeedControlTests(unittest.TestCase):
         contract = {"training": {"seed": 43}, "dataset_artifacts": {}}
         digest = SELECTION["_payload_sha256"](contract)
         manifest = {
-            "run_id": "run-fixture", "run_key": "run-fixture",
+            "run_id": "run-fixture",
+            "run_key": "run-fixture",
             "schema_version": preflight["readiness"].CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
             "source_config_sha256": "a" * 64,
             "resolved_config_sha256": hashlib.sha256(b"resolved").hexdigest(),
-            "training_resume_contract": contract, "training_resume_contract_sha256": digest,
+            "training_resume_contract": contract,
+            "training_resume_contract_sha256": digest,
         }
         validate = preflight["_validate_run_manifest"]
         args = (manifest, "run-fixture", digest, "a" * 64, b"resolved", "dataset", {}, "b" * 64)
@@ -171,8 +264,9 @@ class TrainingSeedControlTests(unittest.TestCase):
             for seed in ("", "43"):
                 with patch.dict(os.environ, {"RUNPOD_TRAINING_SEED": seed}):
                     validate(*args)
-            with patch.dict(os.environ, {"RUNPOD_TRAINING_SEED": "42"}), self.assertRaisesRegex(
-                ValueError, "training seed differs"
+            with (
+                patch.dict(os.environ, {"RUNPOD_TRAINING_SEED": "42"}),
+                self.assertRaisesRegex(ValueError, "training seed differs"),
             ):
                 validate(*args)
 

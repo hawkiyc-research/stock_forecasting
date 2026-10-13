@@ -143,6 +143,9 @@ class ParallelControlTests(unittest.TestCase):
     def test_full_creator_cartesian_product_and_zero_seed(self):
         self.assert_creator_launch(["a-adaptive64", "b-adaptive64"], [0, 43])
 
+    def test_full_creator_independent_tasks_keep_three_seeds_and_task_identity(self):
+        self.assert_creator_launch(["a-alpha-point64", "b-absolute-direction64"], [42, 43, 44])
+
     def test_full_creator_seed_only_uses_configured_experiment(self):
         self.assert_creator_launch([], [42, 43, 44])
 
@@ -215,7 +218,8 @@ class ParallelControlTests(unittest.TestCase):
         self.assertEqual(pointer.read_bytes(), before)
         expected = {
             "stock-forecasting-" + name + (f"-seed{seed}" if seed is not None else "")
-            for name in experiments or ["configured"] for seed in seeds or [None]
+            for name in experiments or ["configured"]
+            for seed in seeds or [None]
         }
         pods = [json.loads(p.read_text()) for p in writes.glob("pod-*.json")]
         self.assertEqual(len(pods), len(expected))
@@ -229,11 +233,26 @@ class ParallelControlTests(unittest.TestCase):
                 seed = int(record["env"]["RUNPOD_TRAINING_SEED"])
                 self.assertIn(seed, seeds)
                 self.assertIn(f"Training seed: {seed}", output.getvalue())
-                selected = json.loads((self.root / ".runpod/selections" / (
-                    record["env"]["RUNPOD_SELECTION_ID"] + ".json"
-                )).read_text())
+                selected = json.loads(
+                    (
+                        self.root
+                        / ".runpod/selections"
+                        / (record["env"]["RUNPOD_SELECTION_ID"] + ".json")
+                    ).read_text()
+                )
                 self.assertEqual(selected["stage"]["training_seed"], seed)
                 self.assertEqual(selected["stage"]["config_path"], record["env"]["RUNPOD_CONFIG"])
+                experiment = selected["stage"].get("experiment", "")
+                if experiment.endswith("-alpha-point64"):
+                    self.assertEqual(
+                        selected["baseline_task"],
+                        {"prediction_task": "alpha_point", "point_loss_beta": 1.0},
+                    )
+                elif experiment.endswith("-absolute-direction64"):
+                    self.assertEqual(
+                        selected["baseline_task"],
+                        {"prediction_task": "absolute_direction", "neutral_return_threshold": 0.01},
+                    )
             guard = json.loads((writes / ("guard-" + record["id"] + ".json")).read_text())
             self.assertEqual(record["env"]["RUNPOD_SCOPED_LIFECYCLE"], "1")
             self.assertEqual(
@@ -524,9 +543,20 @@ class ParallelControlTests(unittest.TestCase):
             "json": json,
             "TRAINING_IMPLEMENTATION_PATHS": paths,
             "DIRECTION_IMPLEMENTATION_PATHS": next(
-                ast.literal_eval(node.value) for node in tree.body
-                if isinstance(node, ast.Assign) and any(
+                ast.literal_eval(node.value)
+                for node in tree.body
+                if isinstance(node, ast.Assign)
+                and any(
                     isinstance(t, ast.Name) and t.id == "DIRECTION_IMPLEMENTATION_PATHS"
+                    for t in node.targets
+                )
+            ),
+            "SIGNAL_IMPLEMENTATION_PATHS": next(
+                ast.literal_eval(node.value)
+                for node in tree.body
+                if isinstance(node, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "SIGNAL_IMPLEMENTATION_PATHS"
                     for t in node.targets
                 )
             ),

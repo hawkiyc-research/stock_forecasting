@@ -83,7 +83,10 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
             "direction64-v3",
         )
         expected = {f"{g}-{v}" for g in ("a", "b") for v in variants}
-        self.assertEqual(set(names), expected)
+        independent = {
+            f"{g}-{v}" for g in ("a", "b") for v in ("alpha-point64", "absolute-direction64")
+        }
+        self.assertEqual(set(names), expected | independent)
         args = argparse.Namespace(
             stage="stage2",
             data_profile="us_tw_eodhd",

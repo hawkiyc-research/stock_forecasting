@@ -230,7 +230,11 @@ class StorageIdentityTests(unittest.TestCase):
                 and any(
                     isinstance(target, ast.Name)
                     and target.id
-                    in {"TRAINING_IMPLEMENTATION_PATHS", "DIRECTION_IMPLEMENTATION_PATHS"}
+                    in {
+                        "TRAINING_IMPLEMENTATION_PATHS",
+                        "DIRECTION_IMPLEMENTATION_PATHS",
+                        "SIGNAL_IMPLEMENTATION_PATHS",
+                    }
                     for target in node.targets
                 )
             ):

@@ -150,8 +150,15 @@ def _pipeline_probe(model, source, parameters, scales, *, training, batch_size, 
     sampler = SampleCursorBatchSampler(len(source), batch_size, 59, 1)
     batches = list(islice(iter(sampler), warmup + measured))
     warmup = min(warmup, max(0, len(batches) - 1))
-    loader = neural_loader(
+    task = getattr(model, "prediction_task", "quantiles")
+    factory = neural_loader
+    if task != "quantiles":
+        from stock_forecasting.baseline_signal import signal_neural_loader
+
+        factory = signal_neural_loader
+    loader = factory(
         source,
+        **({"task": task} if task != "quantiles" else {}),
         workers=workers,
         batch_sampler=batches,
         prefetch=prefetch,
@@ -178,7 +185,9 @@ def _pipeline_probe(model, source, parameters, scales, *, training, batch_size, 
             else None
         )
         scale_tensor = torch.tensor(scales, device="cuda")
-        moments = Moments(list(source.horizons), scales) if not training else None
+        moments = (
+            Moments(list(source.horizons), scales) if not training and task == "quantiles" else None
+        )
         timings = []
         rows = 0
         wait_seconds = 0.0
@@ -262,6 +271,8 @@ def tune_baseline_runtime(model, source, parameters, plan, *, scales=None, evalu
     per_sample = 2 * source.window_size * 5 * (4 + 8) + len(source.horizons) * 4
     if isinstance(model, DirectionalBaseline):
         per_sample += len(source.horizons) * 4 + 8
+    elif getattr(model, "prediction_task", "quantiles") == "absolute_direction":
+        per_sample += len(source.horizons) * 4
 
     def host_limits(workers):
         host = plan.get("gpu_job_host_bytes", 4 * 1024**3) - (

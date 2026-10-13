@@ -42,9 +42,11 @@ def training_seed_override(path: str | Path, environment: Mapping[str, str]) -> 
     if not isinstance(selection, dict) or not isinstance(selection.get("stage"), dict):
         raise ValueError("The run's immutable selection has an invalid structure")
     core = {
-        key: selection.get(key)
-        for key in ("schema_version", "stage", "dataset_request", "runtime")
+        key: selection.get(key) for key in ("schema_version", "stage", "dataset_request", "runtime")
     }
+    # Optional task semantics are part of new selections; legacy digests stay unchanged.
+    if "baseline_task" in selection:
+        core["baseline_task"] = selection["baseline_task"]
     digest = hashlib.sha256(
         json.dumps(
             core, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False

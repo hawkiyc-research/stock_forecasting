@@ -267,9 +267,14 @@ def test_validation_setup_accepts_an_allowlisted_training_code_migration(
     implementation = current_contract["training_implementation"]
     implementation["files"].update(migration["to_files"])
     implementation["sha256"] = _canonical_digest(implementation["files"])
+
+    def implementation_contract(prediction_task="quantiles"):
+        assert prediction_task == "quantiles"
+        return copy.deepcopy(implementation)
+
     monkeypatch.setattr(
         "stock_forecasting.run_contract.training_implementation_contract",
-        lambda: copy.deepcopy(implementation),
+        implementation_contract,
     )
     stored_contract = copy.deepcopy(current_contract)
     stored_files = stored_contract["training_implementation"]["files"]

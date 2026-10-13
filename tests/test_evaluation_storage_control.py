@@ -138,7 +138,9 @@ class EvaluationStorageControlTests(unittest.TestCase):
                 selected_datasets=["fixture"],
             ),
             model=SimpleNamespace(
-                time_series_backend="kronos", direction=SimpleNamespace(enabled=False),
+                time_series_backend="kronos",
+                direction=SimpleNamespace(enabled=False),
+                prediction_task="quantiles",
             ),
             model_architecture_digest=lambda: "architecture-fixture",
             as_dict=lambda: {},

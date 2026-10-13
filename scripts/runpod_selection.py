@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import runpy
@@ -61,6 +62,8 @@ EXPERIMENT_CONFIGS = {
         "direction64",
         "direction64-v2",
         "direction64-v3",
+        "alpha-point64",
+        "absolute-direction64",
     )
 }
 STAGE_RUNTIME = {
@@ -244,12 +247,68 @@ def _normalize_symbols(
 
 
 def _selection_core(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    core = {
         "schema_version": payload.get("schema_version"),
         "stage": payload.get("stage"),
         "dataset_request": payload.get("dataset_request"),
         "runtime": payload.get("runtime"),
     }
+    if "baseline_task" in payload:
+        core["baseline_task"] = payload["baseline_task"]
+    return core
+
+
+def _validate_baseline_task(task: Any) -> Dict[str, Any]:
+    """Keep task semantics separate from main-model capacity and deployment."""
+    if not isinstance(task, dict):
+        _fail("Baseline task must be an object")
+    name = task.get("prediction_task")
+    parameter = {
+        "alpha_point": "point_loss_beta",
+        "absolute_direction": "neutral_return_threshold",
+    }.get(name)
+    if parameter is None or set(task) != {"prediction_task", parameter}:
+        _fail("Baseline task has unsupported or incomplete parameters")
+    value = task[parameter]
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        or (name == "absolute_direction" and value >= 1)
+    ):
+        _fail("Baseline task has an invalid " + parameter)
+    return task
+
+
+def _config_baseline_task(path: Path) -> Optional[Dict[str, Any]]:
+    """Read the three literal model-task scalars without a local YAML dependency."""
+    source = path.read_text(encoding="utf-8")
+    section = re.search(r"(?ms)^model:[ \t]*\n(.*?)(?=^[A-Za-z_][\w]*:|\Z)", source)
+    if section is None:
+        _fail("Experiment config has no model section")
+
+    def scalar(name: str, default: str) -> str:
+        matches = re.findall(r"(?m)^  " + name + r":[ \t]*([^\n#]+)", section[1])
+        if len(matches) > 1:
+            _fail("Duplicate model task parameter: " + name)
+        return matches[0].strip().strip("\"'") if matches else default
+
+    task = scalar("prediction_task", "quantiles")
+    if task == "quantiles":
+        return None
+    parameter = {
+        "alpha_point": "point_loss_beta",
+        "absolute_direction": "neutral_return_threshold",
+    }.get(task)
+    if parameter is None:
+        _fail("Unsupported experiment prediction_task: " + task)
+    default = "1.0" if task == "alpha_point" else "0.01"
+    try:
+        value = float(scalar(parameter, default))
+    except ValueError as error:
+        raise SelectionError("Model task parameters must be literal finite numbers") from error
+    return _validate_baseline_task({"prediction_task": task, parameter: value})
 
 
 def _dataset_request_core(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -345,6 +404,9 @@ def _validate_selection(
         "dataset_request_sha256",
         "runtime",
     }
+    if "baseline_task" in payload:
+        expected_selection_keys.add("baseline_task")
+        _validate_baseline_task(payload["baseline_task"])
     if set(payload) != expected_selection_keys:
         _fail("Training selection fields are incomplete or unsupported")
     if payload.get("schema_version") != SELECTION_SCHEMA_VERSION:
@@ -372,6 +434,15 @@ def _validate_selection(
         if experiment not in EXPERIMENT_CONFIGS or stage["name"] != "stage2":
             _fail("Unknown Stage 2 experiment")
         expected_config_path = EXPERIMENT_CONFIGS[experiment]["config_path"]
+    task_name = (
+        "alpha_point"
+        if experiment and experiment.endswith("-alpha-point64")
+        else "absolute_direction"
+        if experiment and experiment.endswith("-absolute-direction64")
+        else None
+    )
+    if (payload.get("baseline_task") or {}).get("prediction_task") != task_name:
+        _fail("Experiment and baseline task semantics disagree")
     if stage.get("config_path") != expected_config_path:
         _fail("Training stage does not map to the approved config")
     if stage.get("feature_mode") not in ("baseline", "scales", "benchmark", "combined"):
@@ -392,6 +463,10 @@ def _validate_selection(
                 "Active selection was created for a different config revision; "
                 "run configure_runpod_training.sh again"
             )
+        if task_name is not None and _config_baseline_task(config_path) != payload.get(
+            "baseline_task"
+        ):
+            _fail("Experiment YAML and baseline task parameters disagree")
 
     request = payload.get("dataset_request")
     if (
@@ -1005,6 +1080,11 @@ def _with_experiment(payload: dict, experiment: str, project_root: Path) -> dict
         "feature_mode": "combined",
         "experiment": experiment,
     }
+    task = _config_baseline_task(path)
+    if task is None:
+        payload.pop("baseline_task", None)
+    else:
+        payload["baseline_task"] = task
     payload["runtime"] = STAGE_RUNTIME["stage2"]
     payload["created_at"] = datetime.now(timezone.utc).isoformat()
     payload["dataset_request_sha256"] = _payload_sha256(

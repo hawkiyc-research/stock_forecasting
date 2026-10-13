@@ -87,6 +87,11 @@ EVALUATION_CONTROL_IMPLEMENTATION_PATHS = (
     "validation_benchmark.py",
     "baseline_contract.py",
 )
+SIGNAL_EVALUATION_IMPLEMENTATION_PATHS = (
+    "signal_evaluation.py",
+    "signal_training.py",
+    "models/signal.py",
+)
 VALIDATION_NON_NUMERICAL_CONFIG_FIELDS = (
     "enabled",
     "auto_run_after_training",
@@ -235,7 +240,10 @@ def _evaluation_contract_resume_view(
     if numerical_config is None:
         return None
     implementation = inputs["evaluation_implementation"]
+    task = inputs.get("evaluation_protocol", {}).get("prediction_task", "quantiles")
     numerical_paths = set(EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS)
+    if task != "quantiles":
+        numerical_paths.update(SIGNAL_EVALUATION_IMPLEMENTATION_PATHS)
     if (
         not isinstance(implementation, dict)
         or not numerical_paths <= set(implementation)
@@ -248,7 +256,7 @@ def _evaluation_contract_resume_view(
         # Version 6 snapshots also recorded control-plane files. Their paths and
         # publication checks can change without invalidating saved model scores.
         "evaluation_implementation": {
-            name: implementation[name] for name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
+            name: implementation[name] for name in sorted(numerical_paths)
         },
     }
 
@@ -295,6 +303,17 @@ def _evaluation_contracts_are_resume_compatible(
     return False
 
 
+def _benchmark_evaluation_split(config: ExperimentConfig) -> Literal["validation", "test"]:
+    """Describe the actual full-holdout path whenever prebuilt results are reused."""
+    if (
+        config.data.fixed_split
+        or config.validation.require_prebuilt_baselines
+        or config.model.prediction_task != "quantiles"
+    ):
+        return "test"
+    return "validation"
+
+
 def build_evaluation_contract(
     config: ExperimentConfig,
     *,
@@ -328,13 +347,25 @@ def build_evaluation_contract(
             "evaluation_schema": VALIDATION_BENCHMARK_SCHEMA_VERSION,
             "evaluation_protocol": {
                 "version": EVALUATION_PROTOCOL_VERSION,
-                "split": "test" if config.data.fixed_split else "validation",
+                "split": _benchmark_evaluation_split(config),
                 "fixed_split": config.data.fixed_split,
                 "max_samples": config.training.evaluation_max_samples,
+                **(
+                    {"prediction_task": config.model.prediction_task}
+                    if config.model.prediction_task != "quantiles"
+                    else {}
+                ),
             },
             "evaluation_implementation": {
                 name: _file_fingerprint(Path(__file__).parent / name)
-                for name in EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS
+                for name in (
+                    *EVALUATION_NUMERICAL_IMPLEMENTATION_PATHS,
+                    *(
+                        SIGNAL_EVALUATION_IMPLEMENTATION_PATHS
+                        if config.model.prediction_task != "quantiles"
+                        else ()
+                    ),
+                )
             },
         },
     }
@@ -494,7 +525,7 @@ def _aggregate_numeric(payloads: list[dict[str, Any]]) -> dict[str, Any]:
 def _flatten_numeric(payload: dict[str, Any], prefix: str = "") -> dict[str, float]:
     output: dict[str, float] = {}
     for key, value in payload.items():
-        if key in ("sample_membership", "daily_normalized_pinball"):
+        if key in ("sample_membership", "daily_normalized_pinball", "daily_signal_loss"):
             continue
         name = f"{prefix}/{key}" if prefix else key
         if isinstance(value, dict):
@@ -572,7 +603,9 @@ def _lazy_baseline_arrays(
     return len(dataset), len(sampler), arrays
 
 
-def _comparison_summary(models: dict[str, Any]) -> dict[str, Any]:
+def _comparison_summary(
+    models: dict[str, Any], prediction_task: str = "quantiles"
+) -> dict[str, Any]:
     paths = {
         "selection_score": "primary_5d/selection_score",
         "normalized_pinball": "aggregate/normalized_pinball",
@@ -581,6 +614,23 @@ def _comparison_summary(models: dict[str, Any]) -> dict[str, Any]:
         "rank_ic_mean": "cross_sectional_5d/rank_ic_mean",
         "net_long_short_sharpe": "cross_sectional_5d/net_long_short_sharpe",
     }
+    if prediction_task == "alpha_point":
+        paths = {
+            "selection_score": "aggregate/selection_score",
+            "normalized_smooth_l1": "aggregate/normalized_smooth_l1",
+            "mae": "primary_5d/mae",
+            "rmse": "primary_5d/rmse",
+            "correlation": "primary_5d/correlation",
+        }
+    elif prediction_task == "absolute_direction":
+        paths = {
+            "selection_score": "aggregate/selection_score",
+            "cross_entropy": "primary_5d/cross_entropy",
+            "accuracy": "primary_5d/accuracy",
+            "balanced_accuracy": "primary_5d/balanced_accuracy",
+            "macro_f1": "primary_5d/macro_f1",
+            "brier_score": "primary_5d/brier_score",
+        }
     rows: list[dict[str, Any]] = []
     for name, result in models.items():
         if result.get("state") != "complete":
@@ -597,6 +647,20 @@ def _comparison_summary(models: dict[str, Any]) -> dict[str, Any]:
                 for metric_name, metric_path in paths.items()
             }
         )
+        if prediction_task == "alpha_point":
+            markets = sorted(
+                {
+                    market
+                    for metrics in payloads
+                    for market in metrics.get("cross_sectional", {}).get("by_market", {})
+                }
+            )
+            row["rank_ic_by_market_5d"] = {
+                market: _median_metric(
+                    payloads, f"cross_sectional/by_market/{market}/5d/rank_ic_mean"
+                )
+                for market in markets
+            }
         rows.append(row)
     return {
         "rows": sorted(rows, key=lambda row: row["model"]),
@@ -666,9 +730,7 @@ class ValidationBenchmark:
         self.models = models
         self.seeds = seeds
         self.resume = resume
-        self.evaluation_split: Literal["validation", "test"] = (
-            "test" if config.data.fixed_split else "validation"
-        )
+        self.evaluation_split = _benchmark_evaluation_split(config)
         self.recompute_full_model = recompute_full_model or self.evaluation_split == "test"
         requested_workers, source = _requested_dataloader_workers(config)
         self.worker_plan = plan_dataloader_workers(requested_workers, source=source)
@@ -717,7 +779,7 @@ class ValidationBenchmark:
             payload["state"] = "running"
             payload["resumed_at"] = _utc_now()
             return payload
-        return {
+        payload = {
             "schema_version": VALIDATION_BENCHMARK_SCHEMA_VERSION,
             "evaluation_contract": self.evaluation_contract,
             "state": "running",
@@ -762,6 +824,28 @@ class ValidationBenchmark:
             "started_at": _utc_now(),
             "models": {},
         }
+        if self.config.model.prediction_task != "quantiles":
+            task = self.config.model.prediction_task
+            payload["prediction_task"] = task
+            payload["protocol"]["model_selection"] = (
+                "Validation-only equal-horizon normalized SmoothL1."
+                if task == "alpha_point"
+                else "Validation-only equal-horizon absolute-direction cross entropy."
+            )
+            payload["protocol"]["classification"] = (
+                "No classifier: an independent robust alpha point regressor."
+                if task == "alpha_point"
+                else "Independent down/neutral/up absolute-return classifier with a fixed "
+                "simple-return neutral threshold; no transaction-cost labels or inputs."
+            )
+            payload["model_definitions"] = {
+                name: (
+                    f"{name}: independently fitted {task} statistical signal; "
+                    "no quantile surrogate or trading-cost decision target."
+                )
+                for name in self.models
+            }
+        return payload
 
     def _publish(self) -> None:
         self.payload["updated_at"] = _utc_now()
@@ -915,7 +999,10 @@ class ValidationBenchmark:
         self._publish_lifecycle("preparing")
         self._publish()
         try:
-            if self.config.validation.require_prebuilt_baselines:
+            if (
+                self.config.validation.require_prebuilt_baselines
+                or self.config.model.prediction_task != "quantiles"
+            ):
                 return self._run_prebuilt()
             robust_scales = None
             if self.config.data.fixed_split:
@@ -1073,7 +1160,9 @@ class ValidationBenchmark:
                 "checkpoint_recomputed",
                 time.perf_counter() - started,
             )
-        self.payload["comparison"] = _comparison_summary(self.payload["models"])
+        self.payload["comparison"] = _comparison_summary(
+            self.payload["models"], self.config.model.prediction_task
+        )
         self._verify_paired_results(scales)
         self.payload["test_unlocked"] = True
         self.payload["comparison"]["ranking_role"] = (
@@ -1098,6 +1187,28 @@ class ValidationBenchmark:
                 if metrics.get("evaluation_robust_scales") != robust_scales:
                     raise ValueError(f"{name} used different train-calibrated scales")
         full = results.get(FULL_MODEL_NAME, {}).get("metrics")
+        task = getattr(
+            getattr(getattr(self, "config", None), "model", None), "prediction_task", None
+        ) or (full or {}).get("prediction_task", "quantiles")
+        if task != "quantiles":
+            for name, result in results.items():
+                scores = result.get("seed_results") or {"single": result.get("metrics", {})}
+                for metrics in scores.values():
+                    if metrics.get("prediction_task") != task:
+                        raise ValueError(f"{name} used a different prediction task")
+                    contract_key = (
+                        "point_loss_beta" if task == "alpha_point" else "neutral_return_threshold"
+                    )
+                    if contract_key not in metrics or (
+                        full and metrics.get(contract_key) != full.get(contract_key)
+                    ):
+                        raise ValueError(f"{name} used a different {contract_key}")
+            self.payload["comparison"]["prediction_task"] = task
+        daily_key = "daily_normalized_pinball" if task == "quantiles" else "daily_signal_loss"
+        if task != "quantiles":
+            self.payload["comparison"]["paired_loss_definition"] = (
+                "Date-wise mean of the equally weighted full-horizon single-task objective."
+            )
         comparisons = {}
         if full:
             for name, result in results.items():
@@ -1106,8 +1217,8 @@ class ValidationBenchmark:
                 scores = result.get("seed_results") or {"single": result["metrics"]}
                 comparisons[name] = {
                     seed: paired_block_comparison(
-                        full["daily_normalized_pinball"],
-                        metrics["daily_normalized_pinball"],
+                        full[daily_key],
+                        metrics[daily_key],
                     )
                     for seed, metrics in scores.items()
                 }

@@ -305,12 +305,16 @@ def test_legacy_direction_architecture_digest_matches_the_pre_v2_payload():
     config = _config(v2=False)
     config.model.direction = DirectionConfig(enabled=True)
     payload = json.loads(config.model.model_dump_json())
+    assert payload["prediction_task"] == "quantiles"
     assert payload["direction"].keys() >= V2_DIRECTION_FIELDS
     for name in V2_DIRECTION_FIELDS:
         payload["direction"].pop(name)
     payload.pop("feature_mode")
     payload.pop("alpha_head_fp32")
     for name in (
+        "prediction_task",
+        "point_loss_beta",
+        "neutral_return_threshold",
         "market_aware",
         "explicit_output_scale",
         "decoupled_output_scale",
@@ -327,6 +331,9 @@ def test_legacy_direction_architecture_digest_matches_the_pre_v2_payload():
     ).encode("utf-8")
     assert config.model.architecture_digest() == hashlib.sha256(encoded).hexdigest()
     original = config.model.architecture_digest()
+    config.model.point_loss_beta = 0.75
+    config.model.neutral_return_threshold = 0.025
+    assert config.model.architecture_digest() == original
     config.model.direction.probability_bins = 25
     config.model.direction.class_balance_power = 0.5
     assert config.model.architecture_digest() == original

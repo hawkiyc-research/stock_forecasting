@@ -77,6 +77,10 @@ class DirectionalBaseline(nn.Module):
 
 
 def forward_loss(model, batch, scales, device):
+    if getattr(model, "prediction_task", "quantiles") != "quantiles":
+        from stock_forecasting.baseline_signal import signal_forward_loss
+
+        return signal_forward_loss(model, batch, scales, device)
     sequences = batch["sequences"].to(device, non_blocking=True)
     target = batch["target_alpha"].to(device, non_blocking=True)
     if not isinstance(model, DirectionalBaseline):

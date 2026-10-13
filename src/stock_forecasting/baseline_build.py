@@ -32,6 +32,7 @@ from stock_forecasting.baseline_direction import (
 )
 from stock_forecasting.baseline_input import close_neural_loader, neural_loader
 from stock_forecasting.baseline_runtime import SampleCursorBatchSampler, tune_baseline_runtime
+from stock_forecasting.baseline_signal import SignalBaseline, signal_neural_loader
 from stock_forecasting.baseline_storage import (
     SIGNAL_NAMES,
     build_tabular_cache,
@@ -90,8 +91,11 @@ def _loader(
     persistent=False,
 ):
     source = lazy_dataset(config, split, relative=True, validated_root=validated_root)
-    return neural_loader(
+    task = getattr(config.model, "prediction_task", "quantiles")
+    factory = neural_loader if task == "quantiles" else signal_neural_loader
+    return factory(
         source,
+        **({"task": task} if task != "quantiles" else {}),
         workers=workers,
         batch_size=batch_size,
         batch_sampler=sampler,
@@ -103,6 +107,10 @@ def _loader(
 
 @torch.inference_mode()
 def _neural_validation(model, loader, horizons, scales):
+    if isinstance(model, SignalBaseline):
+        from stock_forecasting.baseline_signal_jobs import neural_score
+
+        return neural_score(model, loader, horizons, scales)
     model.eval()
     moments = Moments(horizons, scales)
     direction = _direction_evaluation(model, horizons, len(loader.dataset))
@@ -161,11 +169,14 @@ def _history(directory, record):
         "task_losses",
         record.get("training_task_losses", record.get("training", {}).get("task_losses", [])),
     )
-    record["task_loss_order"] = [
-        "normalized_pinball",
-        "absolute_cross_entropy",
-        "alpha_cross_entropy",
-    ][: len(losses)]
+    record.setdefault(
+        "task_loss_order",
+        [
+            "normalized_pinball",
+            "absolute_cross_entropy",
+            "alpha_cross_entropy",
+        ][: len(losses)],
+    )
     with (directory / "metrics.jsonl").open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, allow_nan=False) + "\n")
         stream.flush()
@@ -174,6 +185,10 @@ def _history(directory, record):
 
 @torch.inference_mode()
 def _neural_test(model, loader, output, horizons, scales):
+    if isinstance(model, SignalBaseline):
+        from stock_forecasting.baseline_signal_jobs import neural_score
+
+        return neural_score(model, loader, horizons, scales, output=output)
     model.eval()
     store = EvaluationStore(output, len(loader.dataset), horizons, scales)
     direction = _direction_evaluation(model, horizons, len(loader.dataset), output)
@@ -223,7 +238,10 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
         "dlinear": lambda: DLinearBaseline(config.data.input_length, horizons=horizons),
         "patchtst": lambda: PatchTSTBaseline(horizons=horizons),
     }[name]()
-    if config.model.direction.enabled:
+    task = parameters.get("signal_task")
+    if task:
+        model = SignalBaseline(model, task)
+    elif config.model.direction.enabled:
         model = DirectionalBaseline(model, config.model.direction)
     model = model.cuda()
     source_root = plan.get("validated_bar_store_roots")
@@ -369,6 +387,7 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
                     "scales": scales,
                     "seed": seed,
                     "direction": config.model.direction.model_dump(),
+                    "signal_task": task,
                 },
             )
         schedule.observe(score, parameters["early_stopping_min_delta"])
@@ -382,7 +401,14 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
                 "training_samples_since_validation": loss_count,
                 "training_task_losses": (loss_sums / max(loss_count, 1)).cpu().tolist(),
                 "learning_rates": schedule.get_last_lr(),
-                "pinball": validation_metrics["aggregate"]["selection_score"],
+                "objective": parameters.get("objectives", {}).get("neural", "normalized_pinball"),
+                "validation_loss": validation_metrics["aggregate"]["selection_score"],
+                "pinball": validation_metrics["aggregate"]["selection_score"] if not task else None,
+                "task_loss_order": [parameters["objectives"]["neural"]]
+                if task
+                else ["normalized_pinball", "absolute_cross_entropy", "alpha_cross_entropy"][
+                    : len(loss_sums)
+                ],
                 "direction": validation_metrics.get("direction"),
             },
         )
@@ -464,6 +490,13 @@ def _train_neural_impl(config, directory, name, seed, parameters, scales, plan, 
                             "sample_cursor": cursor,
                             "loss": float(loss.detach()),
                             "task_losses": [float(value.detach()) for value in task_losses],
+                            "task_loss_order": [parameters["objectives"]["neural"]]
+                            if task
+                            else [
+                                "normalized_pinball",
+                                "absolute_cross_entropy",
+                                "alpha_cross_entropy",
+                            ][: len(task_losses)],
                             "loss_reference": model.reference_state()
                             if isinstance(model, DirectionalBaseline)
                             else None,
@@ -597,6 +630,10 @@ def _tabular_score(
 
 
 def _train_gbdt(root, directory, seed, parameters, horizons, scales):
+    if parameters.get("signal_task"):
+        from stock_forecasting.baseline_signal_jobs import train_signal_gbdt
+
+        return train_signal_gbdt(root, directory, seed, parameters, horizons, scales)
     from stock_forecasting.baseline_direction_tree import (
         ConstantDirectionClassifier,
         full_labels,
@@ -852,6 +889,10 @@ def _train_gbdt(root, directory, seed, parameters, horizons, scales):
 
 
 def _train_rules(root, directory, horizons, scales, parameters=None):
+    if (parameters or {}).get("signal_task"):
+        from stock_forecasting.baseline_signal_jobs import train_signal_rules
+
+        return train_signal_rules(root, directory, horizons, scales, parameters)
     from stock_forecasting.baseline_direction_data import numpy_direction_labels
 
     direction_parameters = (parameters or {}).get("direction", {})
@@ -977,7 +1018,19 @@ def run_job(config_payload, root_string, name, seed, parameters, scales, plan):
                     validated_root=plan["validated_bar_store_roots"],
                     checkpoint_seconds=parameters["resources"].get("checkpoint_seconds", 300),
                     progress_seconds=parameters["resources"].get("progress_seconds", 30),
+                    class_balance_audit=parameters.get("class_balance_audit"),
                 )
+                if parameters.get("signal_task", {}).get("prediction_task") == "absolute_direction":
+                    from stock_forecasting.baseline_contract import validate_signal_admission
+
+                    validate_signal_admission(
+                        {
+                            "class_label_audit": payload["class_label_audit"],
+                            "sample_counts": payload["counts"],
+                        },
+                        parameters,
+                        config.data.alpha_horizons,
+                    )
             elif name == "rules":
                 payload = _train_rules(
                     root, directory, list(config.data.alpha_horizons), scales, parameters
@@ -1219,6 +1272,7 @@ def build_baselines(config):
 
     project, identity = runtime_contract()
     parameters = json.loads((project / "configs/baseline.json").read_text())
+    parameters.update(identity["contract"]["parameters"])
     from stock_forecasting.baseline_contract import validate_optimization_alignment
 
     validate_optimization_alignment(config, parameters)
@@ -1262,6 +1316,11 @@ def build_baselines(config):
             horizon_count + 10
         ) * 4 + evaluation_count * horizon_count * (
             24 * learned_count + 2 * len(RULE_BASELINE_NAMES)
+        )
+    elif parameters.get("signal_task", {}).get("prediction_task") == "absolute_direction":
+        expected_disk += sum(counts.values()) * (horizon_count + 6) * 4
+        expected_disk += (
+            evaluation_count * horizon_count * 4 * (plan["gpu_slots"] + plan["cpu_slots"])
         )
     existing_disk = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
     remaining_disk = max(0, expected_disk - existing_disk)
@@ -1316,8 +1375,12 @@ def build_baselines(config):
             for job in list(waiting):
                 if (
                     job[0] in ("rules", "gbdt")
-                    and not (root / "jobs/inputs/complete.json").is_file()
-                ):
+                    or (
+                        parameters.get("signal_task", {}).get("prediction_task")
+                        == "absolute_direction"
+                        and job[0] != "inputs"
+                    )
+                ) and not (root / "jobs/inputs/complete.json").is_file():
                     continue
                 gpu = job[0] not in ("inputs", "rules", "gbdt")
                 memory = (
@@ -1393,6 +1456,15 @@ def build_baselines(config):
         )
         for directory in directories:
             metrics = json.loads((directory / "validation-metrics.json").read_text())
+            if parameters.get("signal_task"):
+                from stock_forecasting.baseline_signal_contract import validate_signal_metrics
+
+                validate_signal_metrics(
+                    metrics,
+                    parameters["signal_task"],
+                    cache["counts"]["validation"],
+                    config.data.alpha_horizons,
+                )
             if parameters.get("direction", {}).get("enabled"):
                 from stock_forecasting.baseline_contract import validate_direction_metrics
 
@@ -1432,6 +1504,10 @@ def build_baselines(config):
             for split in ("validation", "test")
             for name in ("absolute_targets", "direction_bands")
         ]
+    elif parameters.get("signal_task", {}).get("prediction_task") == "absolute_direction":
+        files += [
+            root / "inputs" / split / "absolute_targets.npy" for split in ("validation", "test")
+        ]
 
     def artifact(path):
         return path.relative_to(root).as_posix(), {
@@ -1453,6 +1529,8 @@ def build_baselines(config):
         "calibration_identity_sha256": calibration.identity_sha256,
         "artifacts": artifacts,
     }
+    if parameters.get("signal_task", {}).get("prediction_task") == "absolute_direction":
+        payload["class_label_audit"] = cache["class_label_audit"]
     validate_complete(payload, identity)
     atomic_write_json(complete, payload)
     return payload

@@ -136,11 +136,39 @@ class ReadmeCliReferenceTests(unittest.TestCase):
 
     def test_baseline_readiness_documents_both_existing_capabilities(self) -> None:
         for text in self.languages.values():
-            for expected in ("Baseline: COMPLETE", "Baseline: NOT COMPLETE", "Data rules: PASS",
-                             "STORAGE FINALIZATION REQUIRED", "--baseline"):
+            for expected in (
+                "Baseline: COMPLETE",
+                "Baseline: NOT COMPLETE",
+                "Data rules: PASS",
+                "STORAGE FINALIZATION REQUIRED",
+                "--baseline",
+            ):
                 self.assertIn(expected, text)
         self.assertNotIn("不是 baseline 訓練完成檢查", self.languages["zh"])
         self.assertNotIn("not completed baseline training", self.languages["en"])
+
+    def test_independent_task_presets_and_baseline_choice_are_bilingual(self) -> None:
+        for language, text in self.languages.items():
+            with self.subTest(language=language):
+                for value in (
+                    "a-alpha-point64",
+                    "b-alpha-point64",
+                    "a-absolute-direction64",
+                    "b-absolute-direction64",
+                    "point_loss_beta=1.0",
+                    "neutral_return_threshold=0.01",
+                    "signal-1.0",
+                    "train/normalized_smooth_l1",
+                    "train/cross_entropy",
+                    "rank_ic_method=spearman_average_ties_v1",
+                ):
+                    self.assertIn(value, text)
+                section = text.split(f'<a id="baseline-{language}"></a>', 1)[1].split("\n#### ", 2)[
+                    1
+                ]
+                self.assertIn("`--experiment NAME`", section)
+        self.assertNotIn("不能把 `--experiment` 傳給 baseline", self.markdown)
+        self.assertNotIn("baseline does not accept\n`--experiment`", self.markdown)
 
     def test_experiment_protocol_matches_current_early_stop_and_holdout(self) -> None:
         protocol = (ROOT / "docs/experiment_protocol.md").read_text(encoding="utf-8")

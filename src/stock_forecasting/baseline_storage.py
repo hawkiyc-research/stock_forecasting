@@ -74,6 +74,7 @@ def build_tabular_cache(
     validated_root: Path | None = None,
     checkpoint_seconds: float = 300,
     progress_seconds: float = 30,
+    class_balance_audit: dict | None = None,
 ) -> dict:
     root.mkdir(parents=True, exist_ok=True)
     sources = {
@@ -95,6 +96,14 @@ def build_tabular_cache(
         },
     }
     direction = config.model.direction
+    signal_task = getattr(config.model, "prediction_task", "quantiles")
+    absolute_signal = signal_task == "absolute_direction"
+    signal_parameters = None
+    if signal_task != "quantiles":
+        signal_parameters = {"prediction_task": signal_task}
+        parameter = "neutral_return_threshold" if absolute_signal else "point_loss_beta"
+        signal_parameters[parameter] = getattr(config.model, parameter)
+        identity["signal_task"] = signal_parameters
     if direction.enabled:
         identity["direction"] = {"schema": 1, "costs": direction.costs.model_dump()}
     done = root / "complete.json"
@@ -104,10 +113,25 @@ def build_tabular_cache(
             raise ValueError("Baseline input cache does not match the immutable bar store")
         for split, count in existing["counts"].items():
             validate_tabular(
-                root, split, count, len(config.data.alpha_horizons), direction=direction.enabled
+                root,
+                split,
+                count,
+                len(config.data.alpha_horizons),
+                direction=direction.enabled,
+                absolute_signal=absolute_signal,
+            )
+        if absolute_signal:
+            from stock_forecasting.baseline_signal import validate_label_audit
+
+            validate_label_audit(
+                existing.get("class_label_audit", {}),
+                signal_parameters,
+                existing["counts"]["train"],
+                config.data.alpha_horizons,
             )
         return existing
     counts = {}
+    class_audit = None
     for split in ("train", "validation", "test"):
         source = sources[split]
         count = len(source)
@@ -119,7 +143,16 @@ def build_tabular_cache(
             "identity": identity,
             "count": count,
         }:
-            validate_tabular(root, split, count, len(source.horizons), direction=direction.enabled)
+            validate_tabular(
+                root,
+                split,
+                count,
+                len(source.horizons),
+                direction=direction.enabled,
+                absolute_signal=absolute_signal,
+            )
+            if absolute_signal and split == "train":
+                class_audit = json.loads((directory / "class-label-audit.json").read_text())
             continue
         shapes = {
             "features": (count, 32 if direction.enabled else 30),
@@ -132,8 +165,13 @@ def build_tabular_cache(
                 direction_bands=(count, 2),
                 absolute_signals=(count, 6),
             )
+        elif absolute_signal:
+            shapes.update(
+                absolute_targets=(count, len(source.horizons)), absolute_signals=(count, 6)
+            )
         progress_path = directory / "resume.json"
         offset = 0
+        audit_counts = {}
         if progress_path.is_file():
             progress = json.loads(progress_path.read_text())
             if progress["identity"] != identity or progress["count"] != count:
@@ -141,7 +179,20 @@ def build_tabular_cache(
             offset = progress["committed_rows"]
             if type(offset) is not int or not 0 <= offset <= count:
                 raise ValueError("Invalid baseline input resume cursor")
-            validate_tabular(root, split, count, len(source.horizons), direction=direction.enabled)
+            validate_tabular(
+                root,
+                split,
+                count,
+                len(source.horizons),
+                direction=direction.enabled,
+                absolute_signal=absolute_signal,
+            )
+            if absolute_signal and split == "train":
+                audit_counts = progress.get("class_label_counts", {})
+                if offset and not audit_counts:
+                    raise ValueError(
+                        "Resumed classification input cache lacks its committed class audit"
+                    )
         required = sum(np.prod(shape) * 4 for shape in shapes.values())
         if split != "train":
             required += count * META_DTYPE.itemsize
@@ -166,9 +217,14 @@ def build_tabular_cache(
                 dtype=META_DTYPE,
                 shape=(count,),
             )
-        _commit_tabular_progress(directory, arrays, identity, count, offset)
+        _commit_tabular_progress(directory, arrays, identity, count, offset, audit_counts)
+        dataset = BaselineBatchDataset(source, direction.costs if direction.enabled else None)
+        if signal_task != "quantiles":
+            from stock_forecasting.baseline_signal import SignalBatchDataset
+
+            dataset = SignalBatchDataset(source, task=signal_task)
         loader = DataLoader(
-            BaselineBatchDataset(source, direction.costs if direction.enabled else None),
+            dataset,
             batch_size=batch_size,
             sampler=range(offset, count),
             collate_fn=collate_baseline_batch,
@@ -200,6 +256,22 @@ def build_tabular_cache(
                     arrays["absolute_signals"][offset:stop] = np.column_stack(
                         [absolute_signals[name] for name in SIGNAL_NAMES]
                     )
+                elif absolute_signal:
+                    arrays["absolute_targets"][offset:stop] = batch.absolute_targets
+                    absolute_signals = _absolute_rule_signals(batch)
+                    arrays["absolute_signals"][offset:stop] = np.column_stack(
+                        [absolute_signals[name] for name in SIGNAL_NAMES]
+                    )
+                    if split == "train":
+                        from stock_forecasting.baseline_signal import append_label_audit
+
+                        append_label_audit(
+                            audit_counts,
+                            batch.absolute_targets,
+                            batch.markets,
+                            signal_parameters["neutral_return_threshold"],
+                            source.horizons,
+                        )
                 if "metadata" in arrays:
                     for name, values in (
                         ("symbol", batch.symbols),
@@ -221,23 +293,49 @@ def build_tabular_cache(
                     )
                     reported_at, reported_offset = now, offset
                 if now - saved_at >= checkpoint_seconds:
-                    _commit_tabular_progress(directory, arrays, identity, count, offset)
+                    _commit_tabular_progress(
+                        directory, arrays, identity, count, offset, audit_counts
+                    )
                     saved_at = time.monotonic()
             if offset != count:
                 raise ValueError("Baseline input cache did not visit the entire split")
-            _commit_tabular_progress(directory, arrays, identity, count, offset)
+            _commit_tabular_progress(directory, arrays, identity, count, offset, audit_counts)
         finally:
             iterator._shutdown_workers()
             for array in arrays.values():
                 array.flush()
                 array._mmap.close()
+        if absolute_signal and split == "train":
+            from stock_forecasting.baseline_signal import validate_label_audit
+
+            class_audit = {
+                **signal_parameters,
+                "samples": count,
+                "counts": audit_counts,
+                "class_order": ["down", "neutral", "up"],
+                "source": "full_train",
+                "balance_warning_thresholds": class_balance_audit
+                or {"minimum_fraction": 0.01, "maximum_fraction": 0.98},
+            }
+            class_audit["warnings"] = validate_label_audit(
+                class_audit, signal_parameters, count, source.horizons
+            )
+            atomic_write_json(directory / "class-label-audit.json", class_audit)
+            if class_audit["warnings"]:
+                print(
+                    "Baseline train class imbalance warnings: "
+                    f"{json.dumps(class_audit['warnings'])}",
+                    flush=True,
+                )
         atomic_write_json(split_done, {"identity": identity, "count": count})
     payload = {"identity": identity, "counts": counts}
+    if absolute_signal:
+        payload["class_label_audit"] = class_audit
     atomic_write_json(done, payload)
     return payload
 
 
-def _commit_tabular_progress(directory, arrays, identity, count, offset):
+def _commit_tabular_progress(directory, arrays, identity, count, offset, class_label_counts=None):
     """Publish a cursor only after every corresponding mmap is durable."""
     for name, array in arrays.items():
         array.flush()
@@ -249,30 +347,46 @@ def _commit_tabular_progress(directory, arrays, identity, count, offset):
             "identity": identity,
             "count": count,
             "committed_rows": offset,
+            **({"class_label_counts": class_label_counts} if class_label_counts else {}),
         },
     )
 
 
-def open_tabular(root: Path, split: str) -> dict:
+def open_tabular(root: Path, split: str, *, absolute_signal=False) -> dict:
     names = ["features", "targets", "signals"] + ([] if split == "train" else ["metadata"])
     direction = ["absolute_targets", "direction_bands", "absolute_signals"]
     present = [(root / split / f"{name}.npy").is_file() for name in direction]
     if any(present):
         if not all(present):
-            raise ValueError("Incomplete baseline direction input cache")
-        names += direction
+            descriptor = root / "complete.json"
+            task = (
+                json.loads(descriptor.read_text()).get("identity", {}).get("signal_task", {})
+                if descriptor.is_file()
+                else {}
+            )
+            if present != [True, False, True] or not (
+                absolute_signal or task.get("prediction_task") == "absolute_direction"
+            ):
+                raise ValueError("Incomplete baseline direction input cache")
+            names += ["absolute_targets", "absolute_signals"]
+        else:
+            names += direction
     return {name: np.load(root / split / f"{name}.npy", mmap_mode="r") for name in names}
 
 
-def validate_tabular(root: Path, split: str, count: int, horizons: int, *, direction=False) -> None:
+def validate_tabular(
+    root: Path, split: str, count: int, horizons: int, *, direction=False, absolute_signal=False
+) -> None:
     shapes = {"features": (count, 30), "targets": (count, horizons), "signals": (count, 6)}
     if split != "train":
         shapes["metadata"] = (count,)
-    arrays = open_tabular(root, split)
+    if absolute_signal:
+        shapes.update(absolute_targets=(count, horizons), absolute_signals=(count, 6))
+    arrays = open_tabular(root, split, absolute_signal=absolute_signal)
     try:
         if direction and "absolute_targets" not in arrays:
             raise ValueError("Missing baseline direction input cache")
-        if "absolute_targets" in arrays:
+        if "direction_bands" in arrays:
             shapes["features"] = (count, 32)
             shapes.update(
                 absolute_targets=(count, horizons),

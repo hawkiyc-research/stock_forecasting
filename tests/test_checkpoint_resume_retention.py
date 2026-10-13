@@ -284,9 +284,14 @@ def test_current_interrupted_run_contract_allows_only_exact_migrations(
     current_files = current["training_implementation"]["files"]
     current_files.update(migration["to_files"])
     current["training_implementation"]["sha256"] = _digest(current_files)
+
+    def implementation_contract(prediction_task="quantiles"):
+        assert prediction_task == "quantiles"
+        return copy.deepcopy(current["training_implementation"])
+
     monkeypatch.setattr(
         "stock_forecasting.run_contract.training_implementation_contract",
-        lambda: copy.deepcopy(current["training_implementation"]),
+        implementation_contract,
     )
 
     stored = copy.deepcopy(current)

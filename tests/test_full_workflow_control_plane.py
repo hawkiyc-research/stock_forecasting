@@ -30,6 +30,7 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
             "configs/data_cleaning.json",
             "configs/baseline_execution_compatibility.json",
             "src/stock_forecasting/training.py",
+            "src/stock_forecasting/baseline_signal_contract.py",
             "src/stock_forecasting/models/direction.py",
             "src/stock_forecasting/direction_runtime.py",
         ):

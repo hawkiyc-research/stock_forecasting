@@ -1467,6 +1467,10 @@ class ModelBatchCollator(FinancialBatchCollator):
         from stock_forecasting.models.scale_features import validate_scale_feature_inputs
 
         batch = super().__call__(samples)
+        if samples and "target_absolute" in samples[0]:
+            batch["target_absolute"] = torch.stack(
+                [sample["target_absolute"] for sample in samples]
+            )
         if self.direction_costs is not None:
             from stock_forecasting.direction_costs import direction_band_values, direction_cost_band
 
@@ -2814,6 +2818,13 @@ def evaluate_loader(
     from stock_forecasting.direction_runtime import DirectionMetrics
     from stock_forecasting.forecast_evaluation import ForecastEvaluationStore, market_macro_metrics
 
+    if config.model.prediction_task != "quantiles":
+        from stock_forecasting.signal_training import evaluate_signal_loader
+
+        if fit_interval_calibration or interval_calibration is not None:
+            raise ValueError("Independent signal tasks cannot calibrate quantile intervals")
+        return evaluate_signal_loader(bundle, loader, config, device)
+
     direction_metrics = None
     if config.model.direction.enabled:
         if config.model.direction.architecture in ("market_residual_v2", "market_ordinal_v3"):
@@ -2960,10 +2971,29 @@ def evaluate_loader(
         bundle.model.train(was_training)
 
 
+def _training_loss_terms(output, config):
+    """Log the actual objective without calling point estimates quantiles."""
+    task = config.model.prediction_task
+    if task == "alpha_point":
+        return {"normalized_smooth_l1": output.point_loss}
+    if task == "absolute_direction":
+        return {"cross_entropy": output.classification_loss}
+    pinball = output.pinball_loss
+    return {
+        "pinball_loss": pinball,
+        "ranking_loss": output.ranking_loss
+        if output.ranking_loss is not None
+        else pinball.new_zeros(()),
+        "weighted_pinball_loss": output.weighted_pinball_loss
+        if output.weighted_pinball_loss is not None
+        else pinball,
+    }
+
+
 def _flatten_metrics(payload: dict[str, Any], prefix: str = "") -> dict[str, float]:
     flattened: dict[str, float] = {}
     for key, value in payload.items():
-        if key in ("sample_membership", "daily_normalized_pinball"):
+        if key in ("sample_membership", "daily_normalized_pinball", "daily_signal_loss"):
             continue
         path = f"{prefix}/{key}" if prefix else key
         if isinstance(value, dict):
@@ -3763,7 +3793,13 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 else None
             ),
             "loss_definition": (
-                "train=market_weighted_normalized_pinball"
+                "train=normalized_SmoothL1_alpha_point; "
+                "validation=mean_horizon_normalized_SmoothL1; independent_optimizer"
+                if config.model.prediction_task == "alpha_point"
+                else "train=absolute_return_three_class_CE; validation=mean_horizon_CE; "
+                "independent_optimizer; no_costs"
+                if config.model.prediction_task == "absolute_direction"
+                else "train=market_weighted_normalized_pinball"
                 "+fixed_reference_scaled_population_absolute_conditional_NLL"
                 "+fixed_reference_scaled_population_alpha_conditional_NLL"
                 "+weighted_ranking+reference_scaled_representation_regularization; "
@@ -3823,9 +3859,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
     best_checkpoint: Path | None = None
     last_ranking: dict[str, Any] = {}
     accumulated_loss_sum: Tensor | None = None
-    accumulated_pinball_sum: Tensor | None = None
-    accumulated_ranking_sum: Tensor | None = None
-    accumulated_weighted_pinball_sum: Tensor | None = None
+    task_loss_sums: dict[str, Tensor] = {}
     direction_loss_sums: dict[str, Tensor] = {}
     accumulated_loss_count = 0
     accumulated_microbatch_samples = 0
@@ -3986,32 +4020,8 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                                 direction_loss_sums[name] = (
                                     direction_loss_sums.get(name, 0) + value.detach()
                                 )
-                    pinball = output.pinball_loss.detach()
-                    ranking = (
-                        output.ranking_loss.detach()
-                        if output.ranking_loss is not None
-                        else pinball.new_zeros(())
-                    )
-                    accumulated_pinball_sum = (
-                        pinball
-                        if accumulated_pinball_sum is None
-                        else accumulated_pinball_sum + pinball
-                    )
-                    weighted_pinball = (
-                        output.weighted_pinball_loss.detach()
-                        if output.weighted_pinball_loss is not None
-                        else pinball
-                    )
-                    accumulated_weighted_pinball_sum = (
-                        weighted_pinball
-                        if accumulated_weighted_pinball_sum is None
-                        else accumulated_weighted_pinball_sum + weighted_pinball
-                    )
-                    accumulated_ranking_sum = (
-                        ranking
-                        if accumulated_ranking_sum is None
-                        else accumulated_ranking_sum + ranking
-                    )
+                    for name, value in _training_loss_terms(output, config).items():
+                        task_loss_sums[name] = task_loss_sums.get(name, 0) + value.detach()
                     accumulated_microbatch_samples += int(batch["target_alpha"].shape[0])
                 _backward_training_output(output, bundle, divisor, task_manager)
                 should_step = (
@@ -4071,15 +4081,10 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                                 else {}
                             ),
                             "train/loss": logged_loss,
-                            "train/pinball_loss": float(
-                                (accumulated_pinball_sum / accumulated_loss_count).cpu()
-                            ),
-                            "train/ranking_loss": float(
-                                (accumulated_ranking_sum / accumulated_loss_count).cpu()
-                            ),
-                            "train/weighted_pinball_loss": float(
-                                (accumulated_weighted_pinball_sum / accumulated_loss_count).cpu()
-                            ),
+                            **{
+                                f"train/{name}": float((value / accumulated_loss_count).cpu())
+                                for name, value in task_loss_sums.items()
+                            },
                             "train/epoch": float(epoch),
                             "train/epoch_fraction": runtime_global_step / optimizer_steps_per_epoch,
                             "train/processed_samples": processed_train_samples,
@@ -4114,9 +4119,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                         step=global_step,
                     )
                     accumulated_loss_sum = None
-                    accumulated_pinball_sum = None
-                    accumulated_ranking_sum = None
-                    accumulated_weighted_pinball_sum = None
+                    task_loss_sums.clear()
                     direction_loss_sums.clear()
                     accumulated_loss_count = 0
                     throughput_started = time.perf_counter()

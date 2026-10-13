@@ -77,14 +77,23 @@ class TrainingPipelineControlTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         expression = compile(ast.Expression(events[0]), str(TRAINING), "eval")
 
-        def definition(enabled, architecture="legacy", management="none"):
+        def definition(enabled, architecture="legacy", management="none", task="quantiles"):
             direction = SimpleNamespace(
                 enabled=enabled,
                 architecture=architecture,
                 gradient_management=management,
             )
-            config = SimpleNamespace(model=SimpleNamespace(direction=direction))
+            config = SimpleNamespace(
+                model=SimpleNamespace(direction=direction, prediction_task=task)
+            )
             return eval(expression, {"config": config})
+
+        for task, term in (("alpha_point", "SmoothL1"), ("absolute_direction", "three_class_CE")):
+            with self.subTest(task=task):
+                result = definition(False, task=task)
+                self.assertIn(term, result)
+                self.assertIn("independent_optimizer", result)
+                self.assertNotIn("pinball", result)
 
         self.assertEqual(
             definition(True),
@@ -244,7 +253,11 @@ class TrainingPipelineControlTests(unittest.TestCase):
         scope = {"json": json, "hashlib": hashlib, "CHECKPOINT_RETENTION_MIGRATIONS": registry}
         contract_path = ROOT / "src/stock_forecasting/run_contract.py"
         tree = ast.parse(contract_path.read_text())
-        for name in ("TRAINING_IMPLEMENTATION_PATHS", "DIRECTION_IMPLEMENTATION_PATHS"):
+        for name in (
+            "TRAINING_IMPLEMENTATION_PATHS",
+            "DIRECTION_IMPLEMENTATION_PATHS",
+            "SIGNAL_IMPLEMENTATION_PATHS",
+        ):
             scope[name] = ast.literal_eval(
                 next(
                     node.value

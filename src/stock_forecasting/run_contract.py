@@ -63,13 +63,31 @@ DIRECTION_IMPLEMENTATION_PATHS = (
     "multitask_gradients.py",
 )
 
+SIGNAL_IMPLEMENTATION_PATHS = (
+    "models/signal.py",
+    "signal_evaluation.py",
+    "signal_training.py",
+)
 
-def training_implementation_contract() -> dict[str, Any]:
+
+def model_output_schema_version(config: ExperimentConfig) -> str:
+    """Keep legacy output identity unchanged and name independent signal outputs."""
+    return (
+        MODEL_OUTPUT_SCHEMA_VERSION if config.model.prediction_task == "quantiles" else "signal-1.0"
+    )
+
+
+def training_implementation_contract(prediction_task: str = "quantiles") -> dict[str, Any]:
     """Fingerprint the bounded source set that defines quant training semantics."""
 
     package_root = Path(__file__).resolve().parent
     files: dict[str, str] = {}
-    for relative_path in (*TRAINING_IMPLEMENTATION_PATHS, *DIRECTION_IMPLEMENTATION_PATHS):
+    extra_paths = SIGNAL_IMPLEMENTATION_PATHS if prediction_task != "quantiles" else ()
+    for relative_path in (
+        *TRAINING_IMPLEMENTATION_PATHS,
+        *DIRECTION_IMPLEMENTATION_PATHS,
+        *extra_paths,
+    ):
         source = package_root / relative_path
         if not source.is_file():
             raise FileNotFoundError(f"Training implementation file is missing: {source}")
@@ -120,13 +138,13 @@ def training_resume_contract(config: ExperimentConfig) -> dict[str, Any]:
 
     return {
         "schema_version": TRAINING_RESUME_CONTRACT_VERSION,
-        "model_output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
+        "model_output_schema_version": model_output_schema_version(config),
         "data": payload["data"],
         "data_cleaning": load_data_policy(),
         "model": payload["model"],
         "model_architecture_sha256": config.model_architecture_digest(),
         "training": training,
-        "training_implementation": training_implementation_contract(),
+        "training_implementation": training_implementation_contract(config.model.prediction_task),
         "dataset_artifacts": _dataset_resume_contract(config),
     }
 
@@ -161,6 +179,7 @@ def _validated_implementation_files(
         or set(files)
         - set(TRAINING_IMPLEMENTATION_PATHS)
         - set(DIRECTION_IMPLEMENTATION_PATHS)
+        - set(SIGNAL_IMPLEMENTATION_PATHS)
         - {"baseline_contract.py", "run_contract.py", "run_paths.py"}
         or any(
             not isinstance(path, str)
@@ -179,7 +198,11 @@ def _validated_implementation_files(
     # Validate the original snapshot above, then compare only numerical sources.
     return {
         path: files[path]
-        for path in (*TRAINING_IMPLEMENTATION_PATHS, *DIRECTION_IMPLEMENTATION_PATHS)
+        for path in (
+            *TRAINING_IMPLEMENTATION_PATHS,
+            *DIRECTION_IMPLEMENTATION_PATHS,
+            *SIGNAL_IMPLEMENTATION_PATHS,
+        )
         if path in files
     }
 

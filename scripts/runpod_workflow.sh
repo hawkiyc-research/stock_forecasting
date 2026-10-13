@@ -23,7 +23,7 @@ Usage:
   bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline]
   bash scripts/runpod_workflow.sh train [--experiment NAME ...] [--seed N ...] [--launchWorkers N] [--maxRuntime DURATION] [--gpuId GPU_ID]
-  bash scripts/runpod_workflow.sh baseline [--maxRuntime DURATION] [--gpuId GPU_ID]
+  bash scripts/runpod_workflow.sh baseline [--experiment NAME] [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh resume [--maxRuntime DURATION] [--gpuId GPU_ID] [RUN_ID]
   bash scripts/runpod_workflow.sh validate [VALIDATION OPTIONS]
   bash scripts/runpod_workflow.sh runs [--experiment NAME] [--seed N] [--state STATE] [--limit N] [--offset N] [--workers N] [--output table|json] [--timezone ZONE]
@@ -373,6 +373,7 @@ EOF
         train_max_runtime=12h
         train_gpu_id="NVIDIA GeForce RTX 5090"
         train_launch_options=(launch)
+        baseline_experiment=""
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --seed)
@@ -384,11 +385,19 @@ EOF
                     shift 2
                     ;;
                 --experiment)
-                    [[ "${COMMAND}" == train && $# -ge 2 ]] || {
-                        echo "--experiment is a repeatable train option requiring one value" >&2
+                    [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || {
+                        echo "--experiment requires one experiment name" >&2
                         exit 2
                     }
-                    train_launch_options+=(--experiment "$2")
+                    if [[ "${COMMAND}" == train ]]; then
+                        train_launch_options+=(--experiment "$2")
+                    else
+                        [[ -z "${baseline_experiment}" ]] || {
+                            echo "baseline accepts --experiment only once" >&2
+                            exit 2
+                        }
+                        baseline_experiment="$2"
+                    fi
                     shift 2
                     ;;
                 --launchWorkers|--launch-workers)
@@ -422,6 +431,12 @@ EOF
         export RUNPOD_CLI_GPU_ID="${train_gpu_id}"
         if [[ "${COMMAND}" == train ]]; then
             exec python3 "${SCRIPT_DIR}/runpod_concurrency.py" "${train_launch_options[@]}"
+        fi
+        if [[ -n "${baseline_experiment}" ]]; then
+            python3 "${SCRIPT_DIR}/runpod_selection.py" select-experiment \
+                --project-root "${SCRIPT_DIR}/.." --experiment "${baseline_experiment}"
+            unset RUNPOD_LAUNCH_SELECTION_FILE
+            bash "${SCRIPT_DIR}/publish_runpod_selection.sh"
         fi
         exec env RUNPOD_GPU_WORKFLOW="${COMMAND}" bash "${SCRIPT_DIR}/create_runpod_pod.sh"
         ;;

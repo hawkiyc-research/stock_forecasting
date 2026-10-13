@@ -244,6 +244,9 @@ class ModelConfig(StrictModel):
     """Shared Kronos encoder, benchmark conditioner, and alpha quantile head."""
 
     time_series_backend: Literal["kronos", "mock"] = "kronos"
+    prediction_task: Literal["quantiles", "alpha_point", "absolute_direction"] = "quantiles"
+    point_loss_beta: float = Field(default=1.0, gt=0.0)
+    neutral_return_threshold: float = Field(default=0.01, gt=0.0, lt=1.0)
     time_series_model_id: str = "NeoQuasar/Kronos-base"
     time_series_tokenizer_id: str = "NeoQuasar/Kronos-Tokenizer-base"
     time_series_model_revision: str | None = None
@@ -281,6 +284,18 @@ class ModelConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_model_contract(self) -> ModelConfig:
+        if self.prediction_task != "quantiles" and (
+            self.direction.enabled
+            or self.ranking_loss_weight
+            or self.independent_ranking_head
+            or self.ranking_numeric_features
+            or self.decoupled_output_scale
+            or self.market_residual_hidden_dim
+        ):
+            raise ValueError(
+                "Independent signal tasks cannot enable auxiliary direction, ranking, "
+                "interval-scale or residual-head objectives"
+            )
         if self.direction.enabled and self.encoder_dim % self.direction.attention_heads:
             raise ValueError("encoder_dim must be divisible by direction.attention_heads")
         if self.direction.enabled and self.direction.architecture in (
@@ -356,6 +371,16 @@ class ModelConfig(StrictModel):
         """Hash only model semantics so Stage 1 and Stage 2 can be compared."""
 
         semantics = json.loads(self.model_dump_json())
+        if self.prediction_task == "quantiles":
+            for name in ("prediction_task", "point_loss_beta", "neutral_return_threshold"):
+                semantics.pop(name)
+        else:
+            semantics["output_schema"] = "signal-1.0"
+            semantics.pop(
+                "neutral_return_threshold"
+                if self.prediction_task == "alpha_point"
+                else "point_loss_beta"
+            )
         if self.direction.enabled and self.direction.architecture != "market_ordinal_v3":
             # V3-only selection defaults do not alter retained architecture identities.
             for name in (
@@ -659,6 +684,8 @@ class ExperimentConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_stage_contract(self) -> ExperimentConfig:
+        if self.model.prediction_task != "quantiles" and self.validation.calibrate_intervals:
+            raise ValueError("Independent signal tasks do not produce intervals to calibrate")
         if self.validation.interval_calibration.mode == "regime_adaptive" and (
             not self.validation.calibrate_intervals
             or self.model.feature_mode not in ("scales", "combined")

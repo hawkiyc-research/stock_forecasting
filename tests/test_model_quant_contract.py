@@ -849,7 +849,7 @@ def test_loaded_checkpoint_must_match_model_ids_architecture_and_stage(
             config,
         )
 
-    with pytest.raises(ValueError, match="predates the conditional alpha"):
+    with pytest.raises(ValueError, match="prediction task/output schema differs"):
         _validate_loaded_model_contract(
             checkpoint_directory,
             {**state, "model_output_schema_version": "3.1"},

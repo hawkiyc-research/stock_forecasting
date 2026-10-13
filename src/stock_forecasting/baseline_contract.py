@@ -119,6 +119,10 @@ def baseline_contract(project: Path, selection: dict) -> dict:
     policy_tools = runpy.run_path(str(project / "src/stock_forecasting/data_policy.py"))
     policy = policy_tools["load_data_policy"](project)
     parameters = json.loads((project / "configs/baseline.json").read_text())
+    signal_tools = runpy.run_path(
+        str(project / "src/stock_forecasting/baseline_signal_contract.py")
+    )
+    parameters = signal_tools["parameters_for_task"](parameters, selection)
     # Scheduling/resource limits cannot change numerical identity or force a rebuild.
     parameters.pop("resources", None)
     request = selection["dataset_request"]
@@ -133,6 +137,18 @@ def baseline_contract(project: Path, selection: dict) -> dict:
         "data_cleaning": policy,
         "evaluation_request": policy_tools["evaluation_request"](selection, policy),
     }
+    if parameters.get("signal_task"):
+        core["signal_implementation"] = {
+            name: hashlib.sha256(
+                (project / "src/stock_forecasting" / name).read_bytes()
+            ).hexdigest()
+            for name in (
+                "baseline_signal.py",
+                "baseline_signal_contract.py",
+                "baseline_signal_jobs.py",
+                "signal_evaluation.py",
+            )
+        }
     if parameters.get("direction", {}).get("enabled"):
         definitions = {}
         for relative, names in (
@@ -247,6 +263,19 @@ def validate_complete(payload: dict, expected: dict, *, require_shared: bool = F
         type(v) is not int or v < 1 for v in counts.values()
     ):
         raise ValueError("Baseline completion must record all three full population counts")
+    signal = expected["contract"]["parameters"].get("signal_task", {})
+    if signal.get("prediction_task") == "absolute_direction":
+        import runpy
+
+        tools = runpy.run_path(str(Path(__file__).with_name("baseline_signal_contract.py")))
+        start = expected["contract"]["data"].get("preparation", {}).get("h_start", 1)
+        tools["validate_class_audit"](
+            payload.get("class_label_audit", {}),
+            signal,
+            counts["train"],
+            range(start, 15),
+            **expected["contract"]["parameters"].get("class_balance_audit", {}),
+        )
     if payload.get("validation_membership", {}).get("samples") != counts["validation"]:
         raise ValueError("Baseline completion is missing the full validation membership")
     for name, result in payload["models"].items():
@@ -264,6 +293,15 @@ def validate_complete(payload: dict, expected: dict, *, require_shared: bool = F
             if metrics.get("evaluation_robust_scales") != payload.get("robust_scales"):
                 raise ValueError("Baseline metric calibration differs between experiments")
             direction = expected["contract"]["parameters"].get("direction", {})
+            task = expected["contract"]["parameters"].get("signal_task")
+            if task:
+                import runpy
+
+                check = runpy.run_path(
+                    str(Path(__file__).with_name("baseline_signal_contract.py"))
+                )["validate_signal_metrics"]
+                start = expected["contract"]["data"].get("preparation", {}).get("h_start", 1)
+                check(metrics, task, counts["test"], range(start, 15))
             if direction.get("enabled"):
                 start = expected["contract"]["data"].get("preparation", {}).get("h_start", 1)
                 validate_direction_metrics(
@@ -292,7 +330,35 @@ def validate_direction_metrics(metrics, parameters, samples, *, horizons=None):
             raise ValueError("Baseline direction horizons are incomplete")
 
 
+def validate_signal_admission(payload, parameters, horizons):
+    """Fail before a paid model launch when the complete train class audit degenerates."""
+    task = parameters.get("signal_task", {})
+    if task.get("prediction_task") != "absolute_direction":
+        return
+    import runpy
+
+    tools = runpy.run_path(str(Path(__file__).with_name("baseline_signal_contract.py")))
+    warnings = tools["validate_class_audit"](
+        payload.get("class_label_audit", {}),
+        task,
+        payload["sample_counts"]["train"],
+        horizons,
+        **parameters.get("class_balance_audit", {}),
+    )
+    if warnings:
+        raise ValueError(
+            "Training class audit found extreme class imbalance; "
+            "review the fixed threshold before training: " + json.dumps(warnings)
+        )
+
+
 def validate_optimization_alignment(config, parameters):
+    task = parameters.get("signal_task", {"prediction_task": "quantiles"})
+    if getattr(config.model, "prediction_task", "quantiles") != task["prediction_task"]:
+        raise ValueError("Baseline runtime differs from its independent task contract")
+    for name in ("point_loss_beta", "neutral_return_threshold"):
+        if name in task and getattr(config.model, name) != task[name]:
+            raise ValueError(f"Baseline runtime task parameter differs: {name}")
     for name in (
         "evaluations_per_epoch",
         "early_stopping_patience_evaluations",
@@ -384,6 +450,14 @@ def validate_direction_comparison_config(project: Path, selection: dict, paramet
     This does not participate in baseline identity or baseline creation. Read the
     repository's explicit, indented scalar YAML contract without importing ML.
     """
+    if selection.get("baseline_task", {}).get("prediction_task", "quantiles") != "quantiles":
+        import runpy
+
+        tools = runpy.run_path(str(project / "src/stock_forecasting/baseline_signal_contract.py"))
+        expected = tools["signal_task"](selection)
+        if parameters.get("signal_task") != expected:
+            raise ValueError("Main model and baseline use different independent prediction tasks")
+        return
     path = project / selection["stage"]["config_path"]
     active = section = None
     enabled = False
@@ -480,6 +554,7 @@ def baseline_runtime_payload(selection: dict, parameters: dict, volume: Path) ->
             "label_scale_calibration_samples": parameters["label_scale_calibration_samples"],
         },
         "model": {
+            **parameters.get("signal_task", {}),
             "time_series_backend": "mock",
             "lora": {"enabled": False},
             "direction": {
@@ -496,6 +571,7 @@ def baseline_runtime_payload(selection: dict, parameters: dict, volume: Path) ->
             "lora_learning_rate": min(1e-5, parameters["learning_rate"]),
         },
         "validation": {
+            **({"calibrate_intervals": False} if parameters.get("signal_task") else {}),
             "models": parameters["models"],
             "seeds": parameters["seeds"],
             "baseline_max_samples_per_split": None,
@@ -523,6 +599,16 @@ def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
         raise ValueError("Build matching baselines first: bash scripts/runpod_workflow.sh baseline")
     payload = json.loads(path.read_text())
     validate_complete(payload, identity, require_shared=True)
+    task = identity["contract"]["parameters"].get("signal_task", {"prediction_task": "quantiles"})
+    if task["prediction_task"] != getattr(config.model, "prediction_task", "quantiles"):
+        raise ValueError("Main model and baseline prediction tasks differ")
+    for parameter in ("point_loss_beta", "neutral_return_threshold"):
+        if parameter in task and getattr(config.model, parameter) != task[parameter]:
+            raise ValueError(f"Main model and baseline task parameter differs: {parameter}")
+    if task["prediction_task"] == "absolute_direction":
+        validate_signal_admission(
+            payload, identity["contract"]["parameters"], config.data.alpha_horizons
+        )
     if config.model.direction.enabled:
         direction = identity["contract"]["parameters"].get("direction", {})
         if (

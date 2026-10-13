@@ -23,6 +23,7 @@ from stock_forecasting.models import MODEL_OUTPUT_SCHEMA_VERSION
 from stock_forecasting.run_contract import (
     CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
     compatible_training_resume_contract_digest,
+    model_output_schema_version,
     training_resume_contract,
 )
 from stock_forecasting.run_paths import (
@@ -53,6 +54,23 @@ HASHED_CHECKPOINT_FILES = (
 
 def _is_non_negative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_output_schema(payload: dict[str, Any]) -> bool:
+    """Recognize exact task/output pairs without rewriting historical artifacts."""
+    task = payload.get("prediction_task", "quantiles")
+    if task not in ("quantiles", "alpha_point", "absolute_direction"):
+        return False
+    expected = MODEL_OUTPUT_SCHEMA_VERSION if task == "quantiles" else "signal-1.0"
+    return payload.get("model_output_schema_version") == expected
+
+
+def _task_metadata(config: ExperimentConfig) -> dict[str, str]:
+    return (
+        {}
+        if config.model.prediction_task == "quantiles"
+        else {"prediction_task": config.model.prediction_task}
+    )
 
 
 def _runtime_robust_scales(payload: dict[str, Any], label: str) -> list[float]:
@@ -363,8 +381,8 @@ def validate_checkpoint_trainer_state(
     if state.get("run_id") != run_id or state.get("run_key") != run_id:
         raise ValueError("Trainer state identity does not match its canonical run directory")
     _artifact_contract_digest(state, "Trainer state")
-    if state.get("model_output_schema_version") != MODEL_OUTPUT_SCHEMA_VERSION:
-        raise ValueError("Trainer state does not use the conditional alpha output schema")
+    if not _valid_output_schema(state):
+        raise ValueError("Trainer state does not use a supported task/output schema")
     global_step = state.get("global_step")
     epoch = state.get("epoch")
     batch_index = state.get("batch_index")
@@ -724,7 +742,8 @@ def _stage_checkpoint(
         "run_id": run_id,
         "run_key": run_id,
         "training_resume_contract_sha256": contract_digest,
-        "model_output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
+        "model_output_schema_version": model_output_schema_version(config),
+        **_task_metadata(config),
         "global_step": global_step,
         "epoch": epoch,
         "batch_index": batch_index,
@@ -875,7 +894,8 @@ def save_training_completion_result(
             "run_id": run_id,
             "run_key": run_id,
             "training_resume_contract_sha256": contract_digest,
-            "model_output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
+            "model_output_schema_version": model_output_schema_version(config),
+            **_task_metadata(config),
             "training_stage": config.training.stage,
             "model_architecture_sha256": config.model_architecture_digest(),
             "global_step": global_step,
@@ -1085,7 +1105,7 @@ def _ranked_checkpoint_rows(
         batch_index = state.get("batch_index")
         if (
             state.get("schema_version") != CHECKPOINT_ARTIFACT_SCHEMA_VERSION
-            or state.get("model_output_schema_version") != MODEL_OUTPUT_SCHEMA_VERSION
+            or not _valid_output_schema(state)
             or state.get("training_resume_contract_sha256") != contract_digest
             or state.get("run_id") != run_id
             or state.get("run_key") != run_id
@@ -1254,7 +1274,7 @@ def _validate_transaction_checkpoint(
     state_global_step = state.get("global_step")
     if (
         state.get("schema_version") != CHECKPOINT_ARTIFACT_SCHEMA_VERSION
-        or state.get("model_output_schema_version") != MODEL_OUTPUT_SCHEMA_VERSION
+        or not _valid_output_schema(state)
         or state.get("run_id") != run_id
         or state.get("run_key") != run_id
         or state.get("training_resume_contract_sha256") != contract_digest
@@ -1745,6 +1765,11 @@ def load_checkpoint(
     if (optimizer is None) != (scheduler is None):
         raise ValueError("Training resume requires both optimizer and scheduler state")
     trainer_state = validate_checkpoint_trainer_state(source)
+    checkpoint_task = trainer_state.get("prediction_task", "quantiles")
+    if checkpoint_task != getattr(model, "prediction_task", "quantiles") or (
+        config is not None and checkpoint_task != config.model.prediction_task
+    ):
+        raise ValueError("Checkpoint prediction task differs before any model state is loaded")
     if optimizer is not None:
         _restore_runtime_task_gradients(model, trainer_state)
     _restore_runtime_robust_scales(
@@ -1807,8 +1832,14 @@ def _validate_loaded_model_contract(
         config,
         run_manifest,
     )
-    if trainer_state.get("model_output_schema_version") != MODEL_OUTPUT_SCHEMA_VERSION:
-        raise ValueError("Checkpoint predates the conditional alpha output contract")
+    if (
+        not _valid_output_schema(trainer_state)
+        or trainer_state.get("prediction_task", "quantiles") != config.model.prediction_task
+        or trainer_state.get("model_output_schema_version") != model_output_schema_version(config)
+    ):
+        raise ValueError(
+            "Checkpoint prediction task/output schema differs from the selected config"
+        )
     if trainer_state.get("training_resume_contract_sha256") != expected_resume_contract:
         raise ValueError("Checkpoint training implementation or dataset contract differs")
     if trainer_state.get("model_architecture_sha256") != expected_architecture:

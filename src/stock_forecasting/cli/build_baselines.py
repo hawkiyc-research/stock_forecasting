@@ -17,6 +17,7 @@ from stock_forecasting.baseline_contract import (
     validate_local_configuration,
 )
 from stock_forecasting.baseline_result_storage import finalize_baseline_storage
+from stock_forecasting.baseline_signal_contract import parameters_for_task
 from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.data.manifest import atomic_write_json
 
@@ -37,6 +38,7 @@ def main(argv=None):
     )
     os.environ["RUNPOD_SELECTION_FILE"] = str(selection_path)
     parameters = json.loads((project / "configs/baseline.json").read_text())
+    parameters = parameters_for_task(parameters, selection)
     validate_local_configuration(project, selection, parameters)
     config = ExperimentConfig.model_validate(baseline_runtime_payload(selection, parameters, root))
     lifecycle = root / "lifecycle/stage1/baseline.json"

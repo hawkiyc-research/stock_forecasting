@@ -26,6 +26,7 @@ from stock_forecasting.metrics import POSTPROCESS_SIGNAL_NAMES, postprocess_alph
 from stock_forecasting.models import MODEL_OUTPUT_SCHEMA_VERSION
 from stock_forecasting.models.ranking import market_ids
 from stock_forecasting.preflight import run_preflight
+from stock_forecasting.run_contract import model_output_schema_version
 from stock_forecasting.runpod.configuration import load_run_config
 from stock_forecasting.training import _autocast_context, set_global_seed
 
@@ -291,6 +292,46 @@ def _forecast_payload(
     }
 
 
+def _signal_forecast_payload(output: Any, config: ExperimentConfig) -> dict[str, Any]:
+    """Publish statistical signals without quantiles, costs, or trading decisions."""
+    task = config.model.prediction_task
+    horizons = config.data.alpha_horizons
+    if task == "alpha_point":
+        values = output.alpha_point.detach().float().cpu()
+        if tuple(values.shape) != (1, len(horizons)) or not torch.isfinite(values).all():
+            raise ValueError("Alpha point output must be finite [1, horizons]")
+        return {
+            "prediction_task": task,
+            "units": "benchmark_relative_adjusted_log_return",
+            "estimand": "robust_conditional_location",
+            "horizons": horizons,
+            "by_horizon": {
+                f"{h}d": {"alpha_point": float(values[0, i])} for i, h in enumerate(horizons)
+            },
+        }
+    if task != "absolute_direction":
+        raise ValueError("Signal inference requires an independent signal task")
+    logits = output.absolute_direction_logits.detach().float().cpu()
+    if tuple(logits.shape) != (1, len(horizons), 3) or not torch.isfinite(logits).all():
+        raise ValueError("Absolute direction output must be finite [1, horizons, 3]")
+    probabilities = logits.softmax(-1)[0].tolist()
+    return {
+        "prediction_task": task,
+        "target": "absolute_adjusted_return",
+        "class_order": ["down", "neutral", "up"],
+        "neutral_simple_return_interval": [
+            -config.model.neutral_return_threshold,
+            config.model.neutral_return_threshold,
+        ],
+        "neutral_boundaries_inclusive": True,
+        "horizons": horizons,
+        "by_horizon": {
+            f"{h}d": {"absolute_direction_probabilities": probabilities[i]}
+            for i, h in enumerate(horizons)
+        },
+    }
+
+
 @torch.inference_mode()
 def infer_observation(
     config: ExperimentConfig,
@@ -315,7 +356,7 @@ def infer_observation(
     bundle.model.eval()
     direction_costs = None
     direction_bands = None
-    if config.model.direction.enabled:
+    if config.model.prediction_task == "quantiles" and config.model.direction.enabled:
         from stock_forecasting.direction_costs import direction_band_values, direction_cost_band
 
         length = int(observation.asset_attention_mask.sum())
@@ -343,6 +384,48 @@ def infer_observation(
             direction_bands=direction_bands,
         )
     training_data = provenance_summary(config.data.resolved_manifest_path)
+    if config.model.prediction_task != "quantiles":
+        return {
+            "model_output_schema_version": model_output_schema_version(config),
+            "prediction_task": config.model.prediction_task,
+            "symbol": observation.symbol,
+            "benchmark_symbol": observation.benchmark_symbol,
+            "asset_type": observation.asset_type,
+            "window_start_at": observation.window_start_at,
+            "cutoff_at": observation.cutoff_at,
+            "execution_contract": {
+                "signal": "after_close_t",
+                "entry": "regular_session_open_t_plus_1",
+                "entry_day_counts_as_holding_day_one": True,
+                "exit": "regular_session_close_t_plus_h",
+            },
+            "forecast": _signal_forecast_payload(output, config),
+            "interpretation": (
+                "Statistical model output only. Portfolio selection, transaction costs, "
+                "risk limits, and trading rules belong to the downstream strategy system."
+            ),
+            "data_provenance": {
+                "training_dataset": training_data,
+                "inference_asset": observation.metadata,
+                "inference_benchmark": observation.benchmark_metadata,
+            },
+            "encoder_contract": {
+                "asset_last_hidden_state_shape": list(output.asset_last_hidden_state.shape),
+                "benchmark_last_hidden_state_shape": list(output.benchmark_last_hidden_state.shape),
+                "asset_latent_tokens_shape": list(output.asset_latent_tokens.shape),
+                "benchmark_latent_tokens_shape": list(output.benchmark_latent_tokens.shape),
+                "conditioned_latent_tokens_shape": list(output.conditioned_latent_tokens.shape),
+                "reusable_method": "encode_ohlcv",
+            },
+            "checkpoint": {
+                "path": str(resolved_checkpoint),
+                "global_step": checkpoint_state.get("global_step"),
+                "epoch": checkpoint_state.get("epoch"),
+                "training_stage": checkpoint_state.get("training_stage"),
+                "model_architecture_sha256": checkpoint_state.get("model_architecture_sha256"),
+            },
+            "device": str(device),
+        }
     calibrated_forecast = None
     calibration_status = "not_available"
     if config.validation.calibrate_intervals:

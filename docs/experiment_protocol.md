@@ -1,4 +1,4 @@
-# 條件式 Alpha 模型實驗協定
+# Kronos Alpha 與方向模型實驗協定 / Kronos Alpha and Direction Experiment Protocol
 
 ## 中文
 
@@ -8,7 +8,9 @@
 下，以金融 K-line 預訓練的 Kronos-base 經 LoRA 微調後，能否比簡單規則、傳統 ML
 與小型 causal DL baseline 更準確地預測個別股票／ETF 從可設定的第 1、2 或 3 個
 持有交易日起至固定第 14 日、
-相對市場 benchmark 的 alpha 條件分布，並辨識超過成本門檻的個股絕對／alpha 方向？
+相對市場 benchmark 的 alpha，以及個股絕對方向？`alpha-point64` 與
+`absolute-direction64` 分別測試單任務穩健回歸與固定報酬帶三分類；既有分位數與
+成本敏感雙方向實驗保留作對照，不將其結果視為同一任務。
 
 本協定不把 validation Sharpe 或單次回測視為「可交易 alpha」的充分證據，也不把模型
 輸出直接當交易規則。技術指標 baseline 保留為對照；各版方向 preset 另將十個有定義的
@@ -22,13 +24,18 @@
 - 收盤 `t` 後產生訊號，下一市場交易日 raw open 進場，不跳過缺成交日。
 - 進場日算第 1 個持有交易日。
 - `h_start` 可設定為 1、2 或 3；horizons 是 `h_start` 到固定第 14 日。
-- label 固定為 benchmark-relative adjusted execution log return。
+- alpha label 為 benchmark-relative adjusted execution log return；獨立絕對方向則依個股 adjusted simple return 的固定 ±1% band 分類。
 - CAPM abnormal return 只作未來 diagnostic/ablation。
-- quantile 用 pinball，獨立 ranking head 用同日排序 loss；`direction64`／`direction64-v2` 另有個股絕對／alpha 三分類 CE，原五級方向後處理仍保留。
+- 單任務點估計用 normalized Smooth L1，獨立方向用 CE，不共用 LoRA 更新或混合任務 loss。舊 quantile 用 pinball，ranking head 用同日排序 loss；`direction64` 系列仍保留成本方向 CE 與原五級分位數後處理。
 
 ### 3. 模型假說
 
-主假說：共享金融預訓練 encoder、歷史 benchmark conditioning 與可讀出的歷史尺度
+單任務假說：在相同 Kronos-base／LoRA-64、資料及尺度路徑下，將穩健 alpha 點估計與
+個股漲／平／跌分開訓練，能否得到可重現、超越任務對齊 baseline 的 holdout 改善？
+每個任務有自己的 encoder 微調權重、head、optimizer 與 checkpoint；不預設分開必然較好。
+±1% 是初始候選，不宣稱最佳。完整 train 的市場／持有期類別稽核必須先通過；門檻不得由 test 挑選。
+
+既有多任務假說：共享金融預訓練 encoder、歷史 benchmark conditioning 與可讀出的歷史尺度
 能在相同資料及切分下提升成本敏感的個股絕對／alpha 方向辨識，且不以失控的分位數
 誤差換取分類表面增益。V3 用人口機率品質、macro-F1 與決策錯誤護欄選模；保留 V2
 等市場／任務／horizon 的 balanced-decision BA 選模作對照，
@@ -107,7 +114,25 @@ script smoke 當成額外訓練資料。
 
 ### 7. Objective
 
-主 objective 是 q10/q50/q90 pinball loss。每個 horizon 以 train-only robust scale
+`alpha-point64`／`absolute-direction64` 各自以以下一個 objective 訓練與選模：
+
+```text
+alpha_point: mean(SmoothL1((prediction - alpha) / train_scale[h], beta=1.0))
+absolute_direction: mean(CrossEntropy(logits[h], fixed_return_class[h]))
+fixed_return_class: down if return < -0.01; up if return > +0.01; otherwise neutral
+```
+
+方向 return 是 next-open 至 horizon close 的個股 adjusted simple return，非 alpha，
+不扣交易成本；等於任一邊界屬 neutral。程式在 log-return label 空間用 `log1p(-0.01)`
+與 `log1p(+0.01)` 作完全相同的判定。兩個任務都對有效樣本及持有期等權平均，
+不加入分位數、排序、舊雙方向／表徵擾動 loss，也不擬合區間校準。
+`alpha_point` 是穩健 location，不冒充 q50 或保證為條件期望。
+完整 validation 對應 loss 決定 checkpoint／early stop；監控鍵仍為
+`primary_5d/selection_score`、mode=`min`，分數涵蓋全部 horizons，不只第 5 日。
+Training 明列 `train/normalized_smooth_l1` 或 `train/cross_entropy`，另存
+`train/loss`、`validation/loss`；跨任務不得直接排名 selection score。
+
+以下為保留的 `quantiles` 實驗目標。其主 objective 是 q10/q50/q90 pinball loss。每個 horizon 以 train-only robust scale
 正規化後等權平均；training 另加獨立 ranking head 的同日排序 loss（預設權重 0.05），
 不直接把 q50 當排序 score。原有實驗的 validation selection 使用未校準 normalized pinball：
 
@@ -185,6 +210,18 @@ pinball 適合各 run 內的選模，不能只憑其跨組大小判定 A/B 優�
 
 ### 8. Comparator suite
 
+Baseline 依任務分開建置與保存。`baseline --experiment a-alpha-point64`（或 B）使用
+點估計 baseline；`baseline --experiment a-absolute-direction64` 使用同 ±1% 標籤的
+純三分類 baseline。不同任務結果不得混用；同資料與任務的 training seeds 共用一次
+完成結果，不因主模型 LoRA 容量或 seed 重訓 baseline。新 baseline 不重做 CPU prepare。
+點估計神經 baseline 使用 normalized Smooth L1；tree 使用 absolute-error objective，
+此 objective 差異須在報告揭露。分類神經模型用 CE、tree 用 log loss；規則提供 hard class，
+其機率分數只採明列數值 floor 的確定性預測，不代表經學習或校準機率。
+完整 validation/test 仍使用共同有效樣本。
+
+以下 comparator 描述適用於既有分位數／成本方向實驗；獨立任務保留相同模型家族，
+但採上面的任務對齊輸出與 loss，不建立假分位數：
+
 所有 baseline 只能讀相同 cutoff-inclusive asset/benchmark contexts，並用相同 train
 subset 與 validation split：
 
@@ -210,6 +247,7 @@ market-weighted training pinball、sample-clock 衰減與較強 dropout／weight
 
 主要 selection metric：
 
+- 獨立 `alpha_point`：完整 validation normalized Smooth L1；獨立 `absolute_direction`：完整 validation CE，皆對全部 horizons 等權且越低越好。點估計另報 MAE、RMSE、Pearson、符號一致率與有效 date-level RankIC；分類另報 accuracy、BA、macro-F1、類別分布與 confusion，不以 coverage 描述分類品質。
 - 原有實驗：all-horizon mean normalized pinball；`direction64`：固定 reference 加權的 pinball＋雙 CE；`direction64-v2`：等市場方向 BA 與凍結 pinball 護欄，皆越低越好，不跨定義比較 selection loss。
 - V3：population CE／Brier 對 train prior 的比率與 macro-F1，加相反方向／塌縮罰分及凍結 pinball 護欄；完整公式見第 13 節。
 
@@ -221,7 +259,7 @@ v2 另列 `balanced_decision` 的 confusion／accuracy／BA／macro-F1，而原 
 confidence bins 與聯合 up 的門檻／precision／count；逐日 confusion 聚合硬上限
 4,096 entries，超限報錯而非抽樣。這些機率未被假定為已校準。
 
-每個 `h_start`–14 日 horizon 另報告：
+既有分位數任務的每個 `h_start`–14 日 horizon 另報告：
 
 - raw pinball 與 normalized pinball
 - q50 MAE 與 normalized MAE
@@ -238,6 +276,9 @@ confidence bins 與聯合 up 的門檻／precision／count；逐日 confusion �
 
 cross-sectional diagnostics 不是投資組合模型輸出，也不是主要 checkpoint metric。
 transaction-cost 假設必須明列；單一 Sharpe 不可解讀為已證明可交易。
+新的 RankIC 使用 `spearman_average_ties_v1`；ties 取平均名次，constant prediction／target
+日期不列有效 correlation。報告須同時讀 `rank_ic_status`、`rank_ic_evaluated_dates` 與
+`rank_ic_ir_status`，不可把沒有有效日期的數值占位值當作結果；歷史無方法標記的數字未自動重算。
 
 ### 10. Test policy
 
@@ -290,11 +331,12 @@ Stage 1：
 - 輸出 `[B,15-h_start,3]` ordered alpha quantiles，`h_start ∈ {1,2,3}`；
   沒有自然語言／fact 生成；標準 preset 無 classifier，方向 preset 另驗收雙三分類 heads。
 
-Stage 2：
+Stage 2 與獨立任務：
 
-- 使用相同 architecture digest、100% train split、相同 pretrained revisions。
+- 標準 Stage 2 使用與標準 Stage 1 相同的 architecture digest；獨立 point／direction preset 各有自己的 task 與架構，不能互相接續。均使用完整 train population 的動態取樣及相同 pretrained revisions。
+- 獨立點估計驗收 `[B,15-h_start]` alpha point；獨立方向驗收 `[B,15-h_start,3]` logits／機率與固定報酬帶，不要求分位數／ranking／成本分類輸出。
 - 完成所有 baseline 與完整模型的同協定 validation。
-- raw JSON 有 per-horizon、aggregate、cross-sectional 與 subgroup metrics。
+- raw JSON 有 task-specific per-horizon、aggregate 與 subgroup metrics；point／quantile 另有有效 cross-sectional 指標，classifier 不捏造報酬排序。
 - 資料 provenance 可追溯，且 training code 無 provider/API import。
 
 研究主張：
@@ -356,7 +398,9 @@ Under strict point-in-time inputs, next-open execution, and chronological
 evaluation, can a finance-K-line-pretrained Kronos-base with LoRA predict the
 `h_start`-through-14 holding-day benchmark-relative alpha distribution of an individual stock
 or ETF more accurately than simple rules, traditional ML, and compact causal DL
-baselines, while identifying absolute-stock and alpha directions beyond cost hurdles?
+baselines? `alpha-point64` and `absolute-direction64` test independent robust point regression
+and fixed-return-band classification. Existing quantile and cost-sensitive dual-direction
+experiments remain controls; their outcomes are not interchangeable task results.
 
 Validation Sharpe or one backtest is not sufficient proof of tradable alpha,
 and model output is not a complete trading rule. Technical baselines measure
@@ -371,13 +415,20 @@ technical channels into the Kronos predictor without replacing it with baseline 
 - Signal after close `t`; entry at the next market session's raw open, without skipping missing bars.
 - Entry day counts as holding day one.
 - `h_start` is configurable as 1, 2, or 3; horizons run through fixed day 14.
-- Label fixed to benchmark-relative adjusted execution log return.
+- Alpha labels are benchmark-relative adjusted execution log returns; independent absolute direction uses the stock's adjusted simple return and fixed ±1% band.
 - CAPM abnormal return reserved for a diagnostic/ablation.
-- Pinball trains quantiles and an independent score head receives ranking loss; `direction64`/`direction64-v2` add absolute/alpha three-class CE while retaining five-level quantile post-processing.
+- Independent point regression uses normalized Smooth L1 and independent direction uses CE, without shared LoRA updates or mixed task losses. Legacy quantiles use pinball and a ranking head uses same-day loss; the `direction64` family retains cost-based CE and five-level quantile post-processing.
 
 ### 3. Model hypothesis
 
-The primary hypothesis is that a shared finance-pretrained encoder, historical-benchmark
+The independent-task hypothesis asks whether separating robust alpha-point prediction from
+absolute-stock down/neutral/up classification improves reproducible holdout results against
+task-aligned baselines with the same Kronos-base/LoRA-64, data and scale path. Each task has
+its own fine-tuned encoder, head, optimizer and checkpoint; separation is not presumed superior.
+The ±1% band is an initial candidate, not a proven optimum. Full-train market/horizon class
+audits must pass before fitting; test labels never select the threshold.
+
+The retained multitask hypothesis is that a shared finance-pretrained encoder, historical-benchmark
 conditioning and readable past-only scales improve cost-sensitive absolute-stock/alpha
 direction discrimination on identical data/splits without buying apparent classification gains
 with uncontrolled quantile errors. V3 selects by population probability quality, macro-F1 and
@@ -451,7 +502,26 @@ pretrained revisions so the Stage 1 smoke run is not hidden extra training.
 
 ### 7. Objective
 
-The primary objective is q10/q50/q90 pinball loss, equally averaged after
+`alpha-point64` and `absolute-direction64` each train and select by one objective:
+
+```text
+alpha_point: mean(SmoothL1((prediction - alpha) / train_scale[h], beta=1.0))
+absolute_direction: mean(CrossEntropy(logits[h], fixed_return_class[h]))
+fixed_return_class: down if return < -0.01; up if return > +0.01; otherwise neutral
+```
+
+The direction return is the stock's adjusted simple return from next-open to horizon-close,
+not alpha and not cost-adjusted. Equality at either boundary is neutral. Comparing log-return
+labels to `log1p(-0.01)` and `log1p(+0.01)` implements the same rule. Both tasks average valid
+samples/horizons equally, without quantile, ranking, legacy dual-direction/perturbation losses
+or interval calibration. `alpha_point` is a robust location, not labelled q50 or guaranteed
+to be a conditional mean. Full-validation task loss drives checkpoint selection/early stop
+at the stable `primary_5d/selection_score`, mode `min`, covering all horizons rather than day five.
+Training explicitly records `train/normalized_smooth_l1` or `train/cross_entropy`, alongside
+`train/loss` and `validation/loss`. Selection scores cannot be ranked across tasks.
+
+The following objectives apply to retained `quantiles` experiments. Their primary objective
+is q10/q50/q90 pinball loss, equally averaged after
 train-only per-horizon normalization. Training adds same-day ranking loss through
 an independent score head (default weight 0.05), not directly through q50.
 Original presets select by uncalibrated normalized pinball:
@@ -542,6 +612,20 @@ the shared holdout population.
 
 ### 8. Comparator suite
 
+Build/store baselines separately by task. `baseline --experiment a-alpha-point64` (or B)
+selects point baselines; `baseline --experiment a-absolute-direction64` selects pure classification
+with the same ±1% labels. Task results are not interchangeable. Runs sharing data and task
+reuse the completed baseline across training seeds; main-model LoRA capacity/seed does not
+trigger retraining. New baselines do not redo CPU preparation. Neural point baselines use
+normalized Smooth L1, while trees use absolute error; reports must disclose this objective
+difference. Classification uses neural CE/tree log loss. Rules predict hard classes; their
+probability scores use deterministic predictions with an explicit numerical floor, not learned
+or calibrated probabilities. Full validation/test still cover the shared eligible membership.
+
+The following comparator details apply to existing quantile/cost-direction experiments.
+Independent tasks retain the same model families with the aligned outputs/objectives above,
+without synthetic quantiles:
+
 All comparators read the same cutoff-inclusive asset/benchmark contexts and use
 the same train subset and validation split:
 
@@ -567,7 +651,10 @@ and boundaries are documented in [README](../README.md#training-en).
 
 ### 9. Validation metrics
 
-Selection metric: original presets minimize all-horizon normalized pinball; `direction64`
+Independent tasks minimize full-validation all-horizon normalized Smooth L1 (`alpha_point`)
+or CE (`absolute_direction`). Point diagnostics include MAE, RMSE, Pearson, sign agreement and
+valid date-level RankIC; classifiers report accuracy, BA, macro-F1, class shares and confusion,
+not coverage. Selection metric for original presets: all-horizon normalized pinball; `direction64`
 minimizes fixed-reference pinball plus both CEs; `direction64-v2` uses equal-market direction
 BA and a frozen pinball guard. Different selection-loss definitions cannot be ranked directly.
 V3 uses population CE/Brier ratios against train priors, macro-F1, opposite-error/collapse penalties
@@ -582,7 +669,7 @@ diagnostics include train-prior CE skill, 20 confidence bins and joint-up thresh
 Daily confusion aggregation has a hard 4,096-entry limit: overflow fails rather than subsamples.
 These probabilities are not assumed calibrated.
 
-For every horizon report raw/normalized pinball, q50 raw/normalized MAE, q50
+For every quantile-task horizon report raw/normalized pinball, q50 raw/normalized MAE, q50
 Pearson correlation, q50 sign agreement, q10–q90 coverage, width, and coverage
 error. Research diagnostics include date-level RankIC/IR, equal-weight
 long/short return, Sharpe, drawdown, turnover, five-level signal distribution,
@@ -591,6 +678,10 @@ and slices by market, asset type, provider, and year.
 Cross-sectional diagnostics are neither portfolio-model outputs nor checkpoint
 selection metrics. Transaction costs must be explicit, and one Sharpe is not
 proof of tradability.
+New RankIC uses `spearman_average_ties_v1`: ties receive average ranks, and dates with constant
+predictions/targets have no valid correlation. Reports must read `rank_ic_status`,
+`rank_ic_evaluated_dates` and `rank_ic_ir_status` instead of presenting no-valid-date numeric
+placeholders as estimates. Historical unmarked values have not automatically been recomputed.
 
 ### 10. Test policy
 
@@ -643,10 +734,14 @@ lifecycle termination. It outputs ordered `[B,15-h_start,3]` alpha quantiles for
 `h_start in {1,2,3}`, without natural-language/fact generation. Standard presets have no classifier;
 direction presets additionally validate both three-class heads.
 
-Stage 2 uses the same architecture and pretrained revisions with 100% train,
-evaluates all baselines under one protocol, persists per-horizon/aggregate/
-cross-sectional/subgroup raw JSON, retains provenance, and keeps provider code
-out of training.
+Standard Stage 2 matches the standard Stage 1 architecture. Independent point/direction presets
+have their own task/architecture and cannot resume across tasks; all retain the same pretrained
+revisions and dynamic sampling over the full training population. Point output is
+`[B,15-h_start]`; direction logits/probabilities are `[B,15-h_start,3]` with the fixed-return band,
+not quantile/ranking/cost-classification outputs. Baselines use one aligned protocol. Raw JSON
+persists task-specific horizon/aggregate/subgroup metrics, plus valid cross-sectional diagnostics
+for point/quantile tasks, not fabricated return rankings for classifiers. Provenance is retained
+and provider code remains outside training.
 
 Stage 1 proves script viability only. A single-seed Stage 2 is still a PoC.
 Stronger claims require multiple seeds, dispersion, and predefined ablations.

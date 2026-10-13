@@ -17,16 +17,35 @@ SELECTION = runpy.run_path(str(ROOT / "scripts/runpod_selection.py"))
 
 
 @pytest.mark.parametrize("seed", [0, 42, 43, 44, 2**32 - 1])
-def test_real_config_loader_seed_override_roundtrip(tmp_path, monkeypatch, seed):
+@pytest.mark.parametrize(
+    "experiment",
+    [
+        "a-adaptive64",
+        "a-alpha-point64",
+        "b-alpha-point64",
+        "a-absolute-direction64",
+        "b-absolute-direction64",
+    ],
+)
+def test_real_config_loader_seed_override_roundtrip(tmp_path, monkeypatch, seed, experiment):
     shutil.copytree(ROOT / "configs", tmp_path / "configs")
     selected = SELECTION["_build_selection"](
         argparse.Namespace(
-            stage="stage2", data_profile="us_tw_eodhd", dataset_revision="v1",
-            start="2021-01-01", end="2026-06-01", h_start=1, universe="all",
-            stocks=[], etfs=[], symbol_limit=None, feature_mode="combined",
-        ), tmp_path,
+            stage="stage2",
+            data_profile="us_tw_eodhd",
+            dataset_revision="v1",
+            start="2021-01-01",
+            end="2026-06-01",
+            h_start=1,
+            universe="all",
+            stocks=[],
+            etfs=[],
+            symbol_limit=None,
+            feature_mode="combined",
+        ),
+        tmp_path,
     )
-    selected = SELECTION["_with_experiment"](selected, "a-adaptive64", tmp_path)
+    selected = SELECTION["_with_experiment"](selected, experiment, tmp_path)
     selected = SELECTION["_with_training_seed"](selected, seed, tmp_path)
     source = SELECTION["_store_selection"](tmp_path, selected)
     environment = SELECTION["_selection_exports"](source, selected)

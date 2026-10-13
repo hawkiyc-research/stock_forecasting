@@ -65,8 +65,11 @@ class DirectionDataset:
 
 
 def with_direction_targets(dataset, config):
-    if not config.model.direction.enabled or isinstance(dataset, DirectionDataset):
+    required = config.model.direction.enabled or (
+        getattr(config.model, "prediction_task", "quantiles") == "absolute_direction"
+    )
+    if not required or isinstance(dataset, DirectionDataset):
         return dataset
     if dataset.series_mode != "raw":
-        raise ValueError("Direction costs require cutoff-price-anchored raw inputs")
+        raise ValueError("Absolute-return labels require raw adjusted execution prices")
     return DirectionDataset(dataset)

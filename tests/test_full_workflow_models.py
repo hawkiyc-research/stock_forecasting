@@ -282,8 +282,8 @@ def test_tabular_cache_resumes_durable_offset(small_lazy_config, tmp_path, monke
     root = tmp_path / "resume-inputs"
     original = storage._commit_tabular_progress
 
-    def interrupt(directory, arrays, identity, count, offset):
-        original(directory, arrays, identity, count, offset)
+    def interrupt(directory, arrays, identity, count, offset, class_label_counts=None):
+        original(directory, arrays, identity, count, offset, class_label_counts)
         if offset > 0:
             raise InterruptedError("simulated interruption after durable batch")
 
