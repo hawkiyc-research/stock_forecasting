@@ -7,15 +7,16 @@
 ### 閱讀導覽
 
 - [專案定位與授權](#overview-zh)、[模型架構與輸出](#model-zh)
+- [目前兩個獨立任務](#signal-tasks-zh)、[歷史 V1／V2／V3 實驗差異](#model-versions-zh)
 - [資料來源、連續性與流動性](#data-zh)、[固定時間切分](#splits-zh)
 - [離線管線](#pipeline-zh)、[訓練、loss 與全量評估](#training-zh)
 - [RunPod 操作手冊](#operations-zh)：[帳號與儲存](#setup-zh) → [設定與同步](#configure-zh)
-  → [CPU prepare](#cpu-zh) → [baseline](#baseline-zh) → [容量實驗／多 Pod 訓練](#train-zh)
+  → [CPU prepare](#cpu-zh) → [baseline](#baseline-zh) → [任務／實驗與多 Pod 訓練](#train-zh)
   → [下載結果](#download-zh)
 - [產物與推論](#artifacts-zh)、[歷史尺度表徵診斷](#probes-zh)、[CLI 參數速查](#cli-reference-zh)
 - [驗收與結果解讀](#acceptance-zh)、[資料與模型參考](#references-zh)
 
-已有資料與所選任務 baseline 的使用者，直接從「容量實驗／多 Pod 訓練」開始。
+已有資料與所選任務 baseline 的使用者，直接從「任務／實驗與多 Pod 訓練」開始。
 只有程式或 YAML 有修改才需要先同步；有 Pod 使用同一 volume 時不可覆寫共用程式。
 
 <a id="overview-zh"></a>
@@ -33,6 +34,8 @@
 - 提供可供下游系統重用的數值 encoder 介面。
 
 這是研究與能力驗證用的 PoC，不是投資建議、交易系統或可保證獲利的模型。
+模型的職責是提供可檢驗的 alpha 與個股方向訊號；交易規則、成本、部位、風控與回測
+由下游系統（例如 Hermes agent）結合模型輸出及傳統指標處理，不是本模型的預測目標。
 
 #### 授權與版本
 
@@ -50,10 +53,13 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 
 ### 模型架構與數值輸出
 
-#### 輸出契約
+<a id="signal-tasks-zh"></a>
 
-輸出由 `model.prediction_task` 明確區分；不同任務使用獨立 run、LoRA 權重、輸出頭與
-checkpoint，不在同一次更新混合回歸與分類梯度：
+#### 目前架構：兩個獨立任務與輸出契約
+
+目前主線由 `model.prediction_task` 選擇 `alpha_point` 或 `absolute_direction`。
+兩者各自使用獨立的 Kronos／LoRA 實例、run、optimizer、輸出頭與 checkpoint，
+不混合回歸與分類 loss，也不共享可訓練權重或梯度。保留的 `quantiles` 是另一條歷史實驗路徑：
 
 | 任務／preset | 輸出與語意 | 訓練與完整 validation 選模 |
 | --- | --- | --- |
@@ -72,7 +78,58 @@ checkpoint，不在同一次更新混合回歸與分類梯度：
 `direction.enabled=false` 只關閉舊雙方向多任務模組，不會關閉 `absolute_direction` 任務。
 舊實驗仍保留原輸出，不把點估計複製成三個假分位數；獨立任務使用 `signal-1.0` schema。
 
-以下為既有 `quantiles` 任務的輸出契約：
+`alpha_point > 0` 表示預測個股相對 benchmark 有正的超額 log return，並不表示個股一定
+上漲，也不是「贏大盤的機率」。是否跑贏 benchmark 可直接由 alpha 點估計的正負判讀，
+**不需要另一個 alpha 方向分類器**。回歸評估中的 `direction_agreement` 只是預測 alpha
+與實際 alpha 的符號一致率，不是額外 head、分類 loss 或個股漲跌正確率。
+
+兩個任務各自執行相同的輸入路徑：截至 `t` 的個股／benchmark OHLCV → 視窗標準化
+→ Kronos／LoRA → resampler 與 benchmark conditioning → mean-pooled 表徵、market／horizon
+embedding → 所選任務 head；20 維歷史尺度特徵與 benchmark latent 另直接進入 numerical branch。
+點估計 head 每個 horizon 輸出一個值，分類 head 輸出三個 logits。這不是 V3 的雙方向頭：
+目前兩個 preset **不啟用**十技術通道、horizon-query attention、市場狀態 gating、train prior、
+PCGrad、ranking 或表徵擾動正則化，也不使用交易成本特徵／標籤。
+
+要使用目前架構，需明確指定 `--experiment a-alpha-point64` 或
+`--experiment a-absolute-direction64`（B 組使用 `b-` 前綴）。標準
+`stage1_kronos_base_lora.yaml`／`stage2_kronos_base_lora.yaml` 仍是 `quantiles`；
+省略 `--experiment` 時沿用 configure 的 active selection，**不會自動切成最新任務**。
+
+<a id="model-versions-zh"></a>
+
+#### 歷史方向實驗 V1／V2／V3：範圍與差異
+
+V1、V2、V3 指保留的 **direction64 多任務系列**，不是 Stage 1／Stage 2、Git release 版本，
+也不是目前兩個獨立任務的別名。三版都同時學 alpha 分位數、個股絕對方向、alpha 方向與
+獨立排序；兩種方向都使用成本帶。以下是歷史實驗的重現契約，不會把這些目標加回新任務。
+
+| 版本 | A／B 實驗名稱 | 方向 architecture／schema |
+| --- | --- | --- |
+| V1 | `a-direction64`／`b-direction64` | `legacy`／方向 schema 1 |
+| V2 | `a-direction64-v2`／`b-direction64-v2` | `market_residual_v2`／方向 schema 2 |
+| V3 | `a-direction64-v3`／`b-direction64-v3` | `market_ordinal_v3`／方向 schema 3 |
+
+| 比較項目 | V1：雙方向初版 | V2：尺度直連與先驗分離 | V3：有序機率與市場狀態選擇 |
+| --- | --- | --- | --- |
+| 標籤／labels | 個股絕對報酬及 alpha 各分 down／neutral／up；門檻是預測日已知的成本帶 | 與 V1 相同，不改報酬、成本或清理規則 | 與 V2 相同，不以 test 調門檻 |
+| 方向 head／機率結構 | horizon query 讀取 token；每個任務三個自由 logits | 保留 horizon query；歷史訊號 `f` 與 train prior `π` 分離，人口 logits `z=f+τ log π` | 兩個條件 logit 導出 `[1-a, a(1-b), ab]` 三類有序機率，不是三個自由 logits |
+| 尺度與市場特徵 | 方向 head 未直接讀既有 20 維尺度分支 | 直接讀 20 維尺度及四個成本／波動比值；歷史 residual 加市場分支，market ID 選 prior | 保留 V2 路徑；benchmark 歷史狀態控制三組 token 與尺度特徵 gate |
+| Loss reference／任務尺度 | 未訓練模型 forward 的 pinball／雙 CE；最多 1,024 筆，即使抽樣 seed 固定仍受模型 seed 影響 | train-only null quantile reference 與固定 `CE=log(3)`；最多 8,192 筆，市場／年份分層，與模型初始化無關 | 沿用 V2 的固定 reference；分類 loss 改成 conditional-chain NLL |
+| 共享梯度／PCGrad | 加權總 loss 一次 backward | 只對共享 LoRA 的三組任務梯度做 PCGrad；其他參數仍用總 loss | 與 V2 相同；有序分類 NLL 的梯度仍傳入共享 LoRA |
+| Checkpoint／early-stop 選模 | reference 加權的 pinball＋兩個 CE | 市場／任務／horizon 平均 balanced-decision BA，加凍結 pinball 退化 guard | 人口分布 CE／Brier 相對 prior 的 skill、macro-F1，加 opposite-error／collapse penalties 與 pinball guard |
+| Baseline 比較 | 對齊 quantiles 與雙成本方向；不是純個股方向 baseline | 數值契約匹配時共用同一成本多任務 baseline；新增 balanced／prior 診斷不代表 baseline 改成 V2 head | 相同契約下仍用同一 baseline；不得把 baseline 當成 V3 ordinal 架構 |
+| Resume／接續 | 只接續同一 V1 run | 必須建立 V2 新 run，不能接 V1 checkpoint | 必須建立 V3 新 run，不能接 V1／V2 checkpoint |
+
+三版控制不變的部分：Kronos-base、LoRA rank 64／alpha 128、無部分解凍、個股與 benchmark
+各五個技術通道、horizon-query 讀取、ranking 權重 `0.05`、表徵擾動權重 `0.05`、
+task／LoRA LR `3e-5`／`5e-6`、dropout `0.05`、weight decay `0.01`、validation-plateau 排程，
+以及只在選模完成後擬合的靜態區間校準。完整 loss／選模公式見[訓練章節](#training-zh)。
+版本升級是可驗證的設計差異，不代表準確率已提升；應在相同樣本、horizon、任務與 seed
+對照下比較各項原始指標，不能直接比較不同版本定義的 `selection_score`。
+
+#### 歷史 `quantiles` 輸出與架構
+
+以下僅適用既有 `quantiles` 任務，不適用目前兩個獨立任務：
 
 - `alpha_quantiles`: `[batch, 15-h_start, 3]`。
 - 第二維依序是持有 `h_start`、`h_start+1`、…、14 個交易日；`h_start`
@@ -129,7 +186,7 @@ resampler 回傳 Kronos／LoRA；不 detach 表徵，也不以指標規則替代
 生產設定使用 `NeoQuasar/Kronos-base` 與
 `NeoQuasar/Kronos-Tokenizer-base`。預設 LoRA 實驗凍結 Kronos predictor 基礎權重，只在
 `q_proj`、`k_proj`、`v_proj`、`out_proj`、`w1`、`w2`、`w3`
-注入 LoRA；resampler、benchmark conditioner 與 alpha head 可訓練。官方 source 固定為 commit
+注入 LoRA；resampler、benchmark conditioner 與所選任務 head 可訓練。官方 source 固定為 commit
 `67b630e67f6a18c9e9be918d9b4337c960db1e9a`，必要的 source snapshot 與 MIT license
 隨專案一併同步；preflight 與建模會逐檔驗證 SHA-256，不會在 RunPod 執行 Git。
 模型與 tokenizer 權重另分別固定為
@@ -143,9 +200,9 @@ checkpoint 都會綁定 revisions。
 - `attention_mask`
 - `latent_tokens`
 
-下游系統可重用這些數值表示，接入其他預測、排序或風險分析模組，而不改變目前的 alpha 輸出契約。
+下游系統可重用這些數值表示，接入其他預測、排序或風險分析模組，而不改變所選任務的輸出契約。
 
-模型直接學習條件 alpha 分布；不是先預測 raw-return q50 再減 benchmark q50。
+`quantiles` 任務直接學習條件 alpha 分布；不是先預測 raw-return q50 再減 benchmark q50。
 benchmark 的歷史同時透過動態 gated cross-attention 與 resampler latent 直接分支
 影響輸出；尺度分支在 Kronos 視窗標準化前讀取歷史輸入。benchmark 在收盤 t
 之後的資料只供離線 label construction 使用，不會出現在模型輸入。
@@ -173,7 +230,13 @@ calibration sample 的 median／IQR 標準化；IQR 下限 `1e-3`，標準化值
 完整 schema、train dataset 指紋與統計值保存在 checkpoint 的 `runtime_scale_features`，
 推論只恢復統計，不以 validation、holdout 或當次輸入重新 fit。
 
-尺度 MLP 為 `20 → 32 → 16`；benchmark resampler tokens 先 mean pooling，再做 `512 → 16`。
+目前獨立任務與歷史 head 共用的尺度 MLP 為 `20 → 32 → 16`；benchmark resampler tokens
+先 mean pooling，再做 `512 → 16`。獨立任務將 head hidden 投影為 16 維，三者串接後經
+`48 → 32 → output_dim` 作 numerical residual：點估計 `output_dim=1`，分類 `output_dim=3`。
+點估計乘固定的 train-fitted robust scale；分類輸出 logits。不使用上下尾 gate、成本門檻或
+區間寬度。新任務的 `explicit_output_scale` 沿用尺度特徵契約，不表示建立分位數區間。
+
+以下的三參數、q50 與 tail-gate 設計只適用歷史 `quantiles` head：
 原 head 的 horizon-conditioned hidden 另做 `512 → 16`；三者串接後經 `48 → 32 → 3`，
 加在原 head 的三個 raw quantile parameters 上，位置在原 head LayerNorm **之後**。
 head 另接入 US／TWSE／TPEx／unknown 的市場 embedding。輸出不再只有加法 residual：
@@ -196,10 +259,11 @@ Production config 啟用 `explicit_output_scale`，因此 feature mode 必須為
 必須同步關閉明確尺度控制。切換 mode 不改變 dataset namespace，但必須建立新的 training run。
 是否改善預測必須由新訓練的評估結果證明，加入尺度資訊本身不等於已提升 alpha 能力。
 
-#### 方向任務與十個技術通道
+#### 歷史 direction64 V1／V2／V3 的方向任務與十個技術通道
 
-`a-direction64`／`b-direction64` 保留原版以供重現；`a-direction64-v2`／`b-direction64-v2`
-使用新版方向 head。兩版都以 `lora64` 設定為基礎：rank 64、alpha 128、無部分解凍，
+本節只描述上表的歷史多任務系列；`absolute-direction64` 不使用這些成本標籤或技術通道。
+`a-direction64`／`b-direction64` 是 V1，帶 `-v2`／`-v3` 後綴分別為 V2／V3。
+三版都以 `lora64` 設定為基礎：rank 64、alpha 128、無部分解凍，
 task／LoRA LR 為 `3e-5`／`5e-6`，dropout `0.05`、weight decay `0.01`、validation plateau
 排程及靜態區間校準。舊容量與 adaptive 設定仍保留；新實驗重新由固定 pretrained
 Kronos 初始化，不把舊 checkpoint 當作可直接接續的新架構。v2 必須建立新 run，
@@ -315,8 +379,10 @@ EODHD 是 PoC 資料，不應被描述成交易所級真實行情。跨 provider
 
 每筆樣本在交易日 `t` 收盤後產生訊號；下一個**市場交易日**的 regular-session raw
 open 進場，該日算第 1 個持有交易日，持有 `h` 日時在第 `h` 個市場交易日的
-raw close 出場。label 是商品與 benchmark 在完全相同 entry/exit timestamps 的
+raw close 出場。Alpha label 是商品與 benchmark 在完全相同 entry/exit timestamps 的
 total-return log return 差，`h ∈ {h_start,…,14}`，其中 `h_start ∈ {1,2,3}`。
+`absolute_direction` 使用同一 entry／exit 的個股 total-return log return，不減 benchmark；
+以 `log1p(-0.01)`／`log1p(0.01)` 對應固定 ±1% simple-return 三分類門檻。
 個股缺 bar 或零成交量時不能將 entry／exit 延後到下一個有資料的日期。
 
 預設 benchmark policy：
@@ -399,7 +465,8 @@ request 估算；估算值不會阻止完整資料集執行。provider 對 2018 
 逐商品稽核保存在 `parts/*.json`。未來無法成交的樣本是「無有效 ground truth」，
 不能將其排除後的評分解讀成無停牌／下市風險的可交易回測。
 
-改動清理規則會改變實際訓練樣本，必須各重建一次對應的 A/B baseline；舊模型與
+改動清理規則會改變實際訓練樣本，必須為受影響的 A/B 資料組別與 prediction task
+各建置對應 baseline；舊模型與
 結果保留，但不能當成新集合的公平基準。單純切換 LoRA／解凍容量不重建 baseline。
 此流程重用既有行情，不要求重跑 CPU prepare 或重新下載資料。
 
@@ -533,7 +600,7 @@ manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-25
 | Training sampling | 年度衰減動態取樣；不是固定 5% 商品—日期集合 | 年度衰減動態取樣；不保證每個 window 恰好一次 |
 | Epoch 上限 | 2 | 5 |
 | Validation cadence | 每 epoch 的 20%／40%／60%／80%／100%，共 5 次完整 validation | 同左 |
-| Early stopping | 設定的 validation monitor 連續 5 次未改善，且完成最低 LR 的兩個間隔；第 1 epoch 起生效。原有實驗用 normalized pinball，`direction64` 用固定加權 pinball＋雙 CE，v2 用等市場方向 BA 與 pinball 護欄 | 同左 |
+| Early stopping | 設定的 validation monitor 連續 5 次未改善，且完成最低 LR 的兩個間隔；第 1 epoch 起生效。各任務／版本的 monitor 定義見下表 | 同左 |
 | 保存結果 | validation 最佳 5 個完整 checkpoints，加上完成時的精簡權重 | 同左 |
 | Validation / test | 完整有效集合，不抽樣、不 padding、不 drop_last | 同左 |
 | 標準設定 | `configs/stage1_kronos_base_lora.yaml` | `configs/stage2_kronos_base_lora.yaml` |
@@ -541,7 +608,8 @@ manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-25
 
 訓練 DataLoader 以 bounded sampler 狀態從有效 cutoff ranges 動態取樣，按需讀取一個 symbol
 row group、建立 128-bar asset/benchmark context，並在記憶體中計算從 `h_start` 到第
-14 個持有交易日的 alpha label。磁碟上不會出現逐-window 或逐-label 資料集；Stage 1
+14 個持有交易日的 alpha 及個股絕對報酬，再按所選任務建立 label。主模型不預先落盤
+逐-window 或逐-label 資料集；baseline 的有界 input cache 另見下節。Stage 1
 每 epoch 呈現 `min(valid train cutoffs × 5%, 500,000)` 個樣本；Stage 2 的呈現次數
 等於全部 valid train cutoffs 數。年度衰減會使較新的 windows 重複呈現、較舊 windows
 未必在同一 epoch 出現；seed 與 epoch 決定可重現的順序與接續位置。兩者都用固定
@@ -561,12 +629,30 @@ accumulation 與 epoch 數推導；每次 epoch-relative validation 都參與最
 
 #### 訓練目標、學習率與校準
 
+所有 monitor 都以完整 validation 計算，越低越好；同一鍵名不代表同一分數定義。
+
+| 任務／實驗系列 | Checkpoint monitor | 分數定義 |
+| --- | --- | --- |
+| 目前 `alpha_point` | `primary_5d/selection_score` | 全 horizon 平均 normalized Smooth L1 |
+| 目前 `absolute_direction` | `primary_5d/selection_score` | 全 horizon 平均個股三分類 CE |
+| 歷史 quantiles，無雙方向 head | `primary_5d/selection_score` | 全 horizon 平均 normalized pinball |
+| 歷史 V1 `direction64` | `direction/selection_loss` | 固定 reference 加權 pinball＋雙 CE |
+| 歷史 V2 `direction64-v2` | `direction/selection_loss` | balanced-decision BA 損失＋凍結 pinball guard |
+| 歷史 V3 `direction64-v3` | `direction/selection_loss` | 人口機率品質、macro-F1、誤判／塌縮罰分＋pinball guard |
+
+##### 目前獨立點估計與個股方向目標
+
 獨立 `alpha_point` 只最小化 `mean(SmoothL1((prediction − alpha) / train_scale, beta=1))`；
 獨立 `absolute_direction` 只最小化固定三分類 CE。兩者都對有效樣本與全部持有期等權平均，
 不混合 pinball、排序或舊方向 regularizer。`primary_5d/selection_score` 仍為 `min`
 監控鍵，語意分別是完整 validation 的 normalized Smooth L1 與 CE，而不是只看第 5 日。
 Training 分別記錄 `train/normalized_smooth_l1` 或 `train/cross_entropy`，並保留
 `train/loss`、`validation/loss`；不得把不同任務的 selection score 當成同一指標排名。
+目前兩種 preset 均使用 validation-plateau、task／LoRA LR `3e-5`／`5e-6`、
+dropout `0.05` 與 weight decay `0.01`，不沿用 adaptive 的 sample-plateau 或市場 loss 權重。
+兩者的訓練排程、資料取樣與數值尺度各隨自己的 checkpoint 保存及接續。
+
+##### 歷史分位數目標與共用 train-only 尺度
 
 以下分位數與多任務目標只適用於既有 `quantiles` preset。
 Normalized pinball 是把每個 horizon 的分位數誤差除以該 horizon 的 **train-only robust
@@ -589,9 +675,11 @@ ranking 使用獨立 score head，不直接把 q50 當排序分數。
 每個 microbatch 最多 256 對，loss 仍涵蓋所有 forecast horizons。runtime-only date/market
 索引改善同組股票在 batch 中相遇的機會，對清理後 train windows 做年度衰減動態抽樣；不改 bar-store。
 原有實驗的 checkpoint／early stop 看完整 validation 的 normalized pinball；
-`direction64` 則使用下述固定多任務分數；`direction64-v2` 使用等市場方向指標及回歸護欄。
+V1／V2／V3 則使用上表及以下公式的多任務分數。
 所有版本均不以 ranking regularizer 或 holdout
 選模，也不做 prediction／parameter ensemble。
+
+##### V1：未訓練模型 reference 與加權總 loss
 
 `direction64` 的初始 loss 加權採 training-only reference normalization：先以固定 seed 59
 讀取最多 1,024 筆 train windows，量測未更新模型的平均 `sQ, sAbs, sAlpha`，之後凍結。
@@ -623,6 +711,8 @@ L = pinball + (sQ/sAbs)*CE_absolute + (sQ/sAlpha)*CE_alpha
 Balanced accuracy 平均該切片中有真實樣本的類別 recall；macro-F1 固定以三個類別平均，
 缺少真實樣本的類別仍可由 confusion matrix／support 識別。
 這些分類 accuracy 不可直接與舊 q50 sign agreement 當成同一指標比較。
+
+##### V2：尺度直連、固定 reference、先驗分離與 PCGrad
 
 `direction64-v2` 的 reference 不執行未訓練模型 forward：固定 calibration seed 59，
 最多 8,192 筆 train windows，以有界的市場／年份分層抽樣及年度衰減權重估計先驗。
@@ -702,7 +792,8 @@ raw／balanced direction 指標；不能把各自的回歸護欄基準當成共�
 `absolute_weight`／`alpha_weight` 仍為 1（大於 0、至多 10），可調兩任務權重；
 `representation_weight=0.05`（0–1）、`representation_radius=0.01`（大於 0、至多 0.1）
 及既有成本設定保留。v2 不修改 CPU prepare、資料清理、動態 training sampling 或
-完整 validation/test；相同資料規則與成本情境可直接重用已完成的雙方向 baseline。
+完整 validation/test；資料規則、成本情境及 baseline 數值／實作契約均匹配時，
+可重用已完成的雙方向 baseline，不需因此重訓。不能僅憑日期或成本相同跳過契約檢查。
 
 ##### V3：有序方向、市場狀態選擇與機率品質選模
 
@@ -771,11 +862,14 @@ bash scripts/runpod_workflow.sh train --experiment a-direction64-v3 --seed 42 \
 `b-direction64-v3` 選 B 組；seed 43／44 各自執行獨立 train 命令。這會建立正式訓練 Pod，
 不是本機訓練或驗證；仍須先完成既有 code sync 與 readiness。
 
-原 Stage 1/2 與 `lora32`／`lora64`／`partial` 實驗採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
+##### 共用 plateau 排程與歷史 adaptive 校準
+
+目前兩個獨立任務、原 Stage 1/2、`lora32`／`lora64`／`partial` 及 direction64 V1–V3
+皆採 warmup 後的 validation-driven plateau 排程：兩次未改善即將 LR 乘 0.3，最低為
 初始 LR 的 0.09；到達最低 LR 後，必須再完成兩次 validation 間隔的訓練，才允許 early stop。
 checkpoint 保存 plateau 狀態，resume／更換 batch plan 不會把已降低的 LR 重設。
 
-整合實驗使用 `sample_plateau`：按實際已處理 windows 計數，在 1,000,000 到 4,000,000
+歷史 `adaptive64`／`adaptive128` 整合實驗使用 `sample_plateau`：按實際已處理 windows 計數，在 1,000,000 到 4,000,000
 次呈現之間做 cosine 衰減至初始 LR 的 0.09，同時保留 plateau；兩者取較低倍率，
 不以 A/B 各自的 epoch 長度決定衰減位置。256,000 次呈現 warmup、低 LR 的兩次驗證保障
 及樣本計數都保存在 scheduler/checkpoint，resume 不會重設。設定項為
@@ -788,6 +882,7 @@ task LR 為 `1e-5`、LoRA LR 為 `5e-6`；resampler、conditioner、head 與 LoR
 正規化而抵銷權重。Ranking 仍使用 `0.05` 權重。Validation/test 保持未加權的完整集合，
 另報告 `market_macro` 等市場平均診斷；不改 checkpoint monitor 或 baseline 目標。
 
+以下校準只適用啟用 interval calibration 的歷史 `quantiles` preset；目前兩個獨立任務不做區間校準。
 選定 checkpoint 後才用完整 validation 擬合區間校準，q50 與 ranking score 保持不變。
 原設定的 `validation.interval_calibration.mode: static`（預設）保留 market/horizon 校準。
 整合實驗使用 `regime_adaptive`，輸出分開保存：
@@ -820,7 +915,7 @@ pinball。這是經驗性校準，不承諾未來或每個子群必達 80% cover
 與最終 test 都使用完整 split，`evaluation_max_samples` 與 `baseline_max_samples_per_split`
 固定為 `null`；沒有 20,000 筆上限。指標按完整資料的樣本數加權，預測分批移出 GPU 並使用
 磁碟暫存，逐塊彙總。同一資料組別的主模型與 baseline 使用相同 train-calibrated label scales，並驗證完整有序
-symbol/date SHA-256 相同。A/B 的 train-only scales 可能不同，跨組比較 normalized pinball
+symbol/date SHA-256 相同。A/B 的 train-only scales 可能不同，跨組比較 normalized Smooth L1 或 normalized pinball
 須同時核對尺度；評估集合則必須完全相同，不能只比日期。
 
 完整評估依 `symbol → cutoff` 的固定順序逐檔列舉所有有效 windows；runtime 清理後的
@@ -838,13 +933,23 @@ RAM、容器 shared memory、同時存活的 worker pools 與 pinned-memory 複�
 使用多 worker、pinned memory 與非同步 GPU transfer。結果的 `execution` 記錄實際筆數、
 batch、worker、prefetch、吞吐量與 GPU 峰值記憶體。這些是執行效能資料，不是預測效能。
 
-報告包含逐月、逐市場及各 horizon 指標，以及完整模型減去各 baseline 的逐日平均
-normalized pinball 差。95% 區間以預測日期為單位，使用 14 日 circular moving-block
+報告包含逐月、逐市場及各 horizon 指標，以及完整模型減去各 baseline 的逐日平均任務 loss 差：
+點估計用 normalized Smooth L1，純分類用 CE，歷史分位數用 normalized pinball，皆對全 horizon 等權。
+95% 區間以預測日期為單位，使用 14 日 circular moving-block
 bootstrap（1,000 次、seed 42），不把同日股票各自當獨立樣本；此區間未作多重比較校正。
+這是配對 loss 差的區間，不是 RankIC 或 balanced accuracy 的信賴區間。
 Holdout 排名僅描述結果，不可再用來挑 checkpoint、反覆調參或宣稱已涵蓋所有未來行情。
 
-上述 pinball／coverage 適用於分位數任務；點估計只報其回歸、方向符號與橫斷面排序指標，
-純分類只報機率／類別指標，不合成 q10/q50/q90。RankIC 使用標準 Spearman average ties，
+各任務的結果範圍如下，不能用另一種任務的欄位代替：
+
+| 任務 | 主要品質指標 | 不輸出的指標／訊號 |
+| --- | --- | --- |
+| `alpha_point` | normalized Smooth L1、MAE／RMSE／normalized MAE、bias、correlation 及有效狀態、alpha 符號一致率、逐市場／horizon 的 date-level RankIC | 分位數、coverage、個股漲跌分類機率、long-short 績效、Sharpe、五級交易訊號 |
+| `absolute_direction` | CE、Brier、accuracy、balanced accuracy 與缺類狀態、macro-F1、opposite error、ECE、majority accuracy、混淆矩陣、各類 support／precision／recall／預測占比 | alpha 分類、報酬點估計、RankIC、分位數與組合交易績效 |
+| 歷史 `quantiles` | pinball、coverage／width、q50 誤差／符號／相關性、ranking 與啟用的歷史方向診斷 | 不把 q50 冒充新任務的 `alpha_point`，也不把舊成本分類當固定 ±1% 分類 |
+
+新任務與 baseline 的逐模型比較在 `comparison.rows`；舊雙成本方向另有 `comparison.direction`。
+RankIC 使用標準 Spearman average ties，
 方法標記為 `rank_ic_method=spearman_average_ties_v1`；同日預測或 target 為常數時，
 該日沒有有效 correlation，不因排序時的列順序產生 RankIC。`rank_ic_status`、
 `rank_ic_evaluated_dates`、`rank_ic_ir_status` 區分有效值與保留的數值占位值。
@@ -852,22 +957,62 @@ Holdout 排名僅描述結果，不可再用來挑 checkpoint、反覆調參或�
 
 #### Baseline 前置建置與快取
 
-baseline 是主模型之前的獨立流程，所有 rule、GBDT、GRU、DLinear、PatchTST 使用完整
-train／validation／test。獨立 `alpha_point` 的神經 baseline 用 normalized Smooth L1、
-GBDT 用 absolute-error objective；獨立 `absolute_direction` 的神經 baseline 用 CE、
-GBDT 用 log loss，皆使用同一固定 return band。規則提供 task-aligned point／hard class；
-機率分數僅採明列數值 floor 的確定性預測，不代表經學習或校準的機率。
-兩種新任務均不訓練舊分位數與雙成本方向頭。
-以下為舊分位數／成本方向 baseline：GRU、DLinear、PatchTST 保留 alpha 分位數，另以共享表徵訓練
-個股絕對方向與 alpha 方向兩組三分類；GBDT 保留分位數 regressors，並增加每個 horizon
-的兩組 classifiers。標籤、進出場時點與成本門檻和 `direction64` 相同。神經模型每 epoch
-做五次完整 validation，最多五個 epochs；GBDT 每八輪新增樹後做完整 validation，最多
-200 輪，停用 sklearn 內部 validation 抽樣。兩者使用固定 train-only reference 加權的
-normalized pinball＋雙 CE 選擇 checkpoint，五次未改善 patience；神經模型另保留
-validation-plateau 與最低學習率觀察規則。固定規則不訓練分類器，不適用 early stopping；
-其 alpha residual quantiles 仍以完整 train 校準。完整資料相同不代表 FLOPs 或訓練時間相同。
+Baseline 是主模型之前的獨立流程。Rule、GBDT、GRU、DLinear、PatchTST 都使用完整
+train／validation／test，並按所選 prediction task 建置相應結果；舊分位數或雙成本方向
+結果不能當成目前兩個獨立任務的 baseline。操作命令見[baseline 建置](#baseline-zh)。
 
-方向設定由 `configs/baseline.json` 的 `direction` 獨立管理：`enabled` 預設 `true`，
+##### 目前兩個獨立任務
+
+| 任務 | 神經 baseline 訓練 | GBDT 訓練 | 完整 validation 選模與最終 test |
+| --- | --- | --- | --- |
+| `alpha_point` | train-scale normalized Smooth L1，與主模型相同 beta | `absolute_error`（MAE），不是 Smooth L1 | 統一 evaluator 的 normalized Smooth L1 選模；完整回歸／符號／RankIC 指標 |
+| `absolute_direction` | 個股絕對方向 CE，不訓練 alpha 分類 | 每個 horizon 的 log loss classifier | 相同 ±1% 含端點 neutral band；CE 選模與完整機率／類別指標 |
+
+固定規則產生 task-aligned point／hard class，不訓練分類器；分類機率評分使用明列
+`0/-30` logit floor 的確定性預測，不宣稱是學到或校準過的機率。兩個新任務都不訓練
+分位數、ranking 或雙成本方向頭，也不使用舊方向 loss reference。比較結果在 `comparison.rows`。
+
+##### 共同訓練、儲存與重用規則
+
+神經模型每 epoch 做五次完整 validation、最多五個 epochs；GBDT 每八輪新增樹後
+做完整 validation、最多 200 輪，停用 sklearn 內部 validation 抽樣。兩者均採五次未改善
+patience、保存最佳 validation 模型；神經模型另用 validation-plateau 與最低 LR 觀察規則。
+GBDT 沒有神經 optimizer 的 LR 排程，固定規則不適用 early stopping。
+Baseline 神經模型以 blockwise permutation 每 epoch 遍歷完整 train 一次；GBDT 也不套
+主模型的年度衰減 sample weights。主模型的年度加權動態 sampling 與此不同，因此相同
+資料全集、完整評估及 patience 不等於相同訓練權重、FLOPs 或訓練時間；比較須揭露這些差異。
+
+完成的權重／規則參數、最佳 validation 指標、完整 test 預測及指標保存在
+`/runpod-volume/baselines/<baseline-id>/`，全部成功後才發布 `complete.json`。
+主模型啟動前檢查對應 baseline，testing 直接讀快取，**不會再次訓練或推論 baseline**。
+身分包含資料期間／內容、清理與 universe／horizon 語意、prediction task、beta／neutral
+threshold 及 baseline 自身數值參數／實作；不綁主模型 LoRA 容量、training seed、
+README 或部署腳本。修改 task 相關數值設定則必須使用相符結果，不能因日期相同就重用。
+若完整 GBDT 無法放進記憶體預算，流程拒絕執行，不會退回抽樣。
+
+Validation/test 共用 `inputs/<split>/metadata.npy`（membership）與 `targets.npy`，
+個股方向另共用 `absolute_targets.npy`。`evaluation_data` 引用共同資料；每個模型目錄
+只保存自己的預測、權重與指標，不重複保存 `membership.npy`／`targets.npy`。
+獨立任務的 `predictions.npy`：點估計為 `[N,H]`；分類為 `[N,H,3]`，順序 down／neutral／up。
+分類分數在神經模型為 raw logits、GBDT 為 `log(max(probability, 1e-30))`、
+規則為 `0/-30`；統一由 softmax 轉成評分機率，不把這三種來源說成同一個學習式分類頭。
+收尾串流核對內容後原子更新引用、移除副本；
+若中斷，重跑只完成儲存收尾，不重訓。這項整理不改資料、標籤或 baseline 數值身分。
+主模型最終 `validation-benchmark.json` 使用結果 schema `6.0`，明列
+`selection_split=validation`、`evaluation_split=test`，配對檢查完成後才發布 `test_unlocked=true`。
+這些不是 baseline `complete.json` 的欄位；baseline 完成由其 `state=complete`、模型與產物驗證判定。
+相同評估 schema 也須核對任務、有效樣本及尺度，
+不能將不同任務的舊結果冒充完成。不同主模型 seed 可重用匹配結果，不重做 CPU prepare 或下載行情。
+
+##### 保留的分位數／雙成本方向 baseline
+
+以下只適用歷史 quantile／direction64 路徑。GRU、DLinear、PatchTST 保留 alpha 分位數，
+並以共享表徵訓練絕對／alpha 雙三分類；GBDT 保留分位數 regressors，另建每 horizon
+兩組 classifiers。標籤、進出場時點、成本帶與歷史 direction64 相同；啟用雙方向時以固定 reference
+加權 normalized pinball＋雙 CE 選模，quantile-only baseline 則保留分位數目標。
+Rule 的 alpha residual quantiles 以完整 train 校準。
+
+歷史方向設定由 `configs/baseline.json` 的 `direction` 管理：`enabled` 預設 `true`，
 `loss_reference_samples` 預設 1,024（32–8,192），`absolute_weight`／`alpha_weight` 預設
 各 1.0（大於 0、不超過 10）。`costs` 使用與主模型相同的市場別成本欄位，台股 1,000 股、
 美股 50 股；只用截止預測日已知的價格估算門檻。神經模型在更新前估計固定 reference，
@@ -886,28 +1031,11 @@ horizon／市場／月份切面。有機率的模型另列 CE。規則以各自�
 主模型 testing 的 `comparison.direction` 直接彙整快取結果；成本、horizons 或樣本集合
 不一致就拒絕比較。方向模型啟動前也在本機檢查成本一致性，不因此把 baseline 綁定 Kronos 容量。
 
-Baseline 的神經模型維持全 train 動態排列；目前不套主模型的年度衰減權重。
-比較時應同時揭露候選資料範圍、sampling policy、樣本呈現次數與訓練成本。
-
-完成的 baseline 權重、規則參數、最佳 validation 指標、完整 test 預測與指標保存在
-`/runpod-volume/baselines/<baseline-id>/`，最後才發布 `complete.json`。主模型 training 有前置
-檢查，testing 只讀此處的 baseline 指標，**不會再次訓練或推論 baseline**。快取依資料期間、
-資料／universe／horizon 語意與 baseline 訓練程式和 `configs/baseline.json` 數值參數識別；
-修改主模型、README、部署腳本或資源並行上限不會使其失效。不可把不同資料內容只因日期相同
-就視為同一份 baseline。若完整 GBDT 無法放進記憶體預算，流程會拒絕執行，不會退回抽樣。
-baseline 建置收尾會共用既有 `inputs/<split>/metadata.npy`（樣本 membership）與
-`inputs/<split>/targets.npy`，其中 `<split>` 為 `validation` 或 `test`。完成紀錄的
-`evaluation_data` 指向這四個共用檔案；各模型結果目錄只保留自己的預測、權重與指標，
-不保留重複的 `membership.npy`／`targets.npy`。收尾先串流驗證內容一致，再原子更新
-檔案引用，最後移除副本；若清理被中斷，重跑 baseline 流程只完成收尾，不重訓。
-這項儲存整理不改資料期間、標籤、模型參數或 baseline 數值身分。
-方向標籤 `inputs/<split>/absolute_targets.npy` 與 `direction_bands.npy` 同樣每個 split
+歷史成本方向的 `inputs/<split>/absolute_targets.npy` 與 `direction_bands.npy` 同樣每個 split
 只存一份；每個模型只保存自己的 `direction-probabilities.npy`（`N×2×H×3`）或規則的
 `direction-classes.npy`（`N×2×H`）。任務順序為 absolute、alpha，類別順序為 down、neutral、up。
-只有 alpha 分位數的舊 baseline 不能視為雙方向任務已完成；此任務變更需建置一次新 baseline，
-之後相同資料與成本情境的不同主模型 seed 共用它，不重做 CPU prepare 或下載行情。
-結果 schema 為 `6.0`，明列 `selection_split=validation`、`evaluation_split=test`；只有
-完成配對檢查後才發布 `test_unlocked=true`。舊 schema 的完成結果不能直接續用。
+只有 alpha 分位數的舊 baseline 不能視為雙方向任務已完成；也不能將上述 `N×2×H` 的
+雙任務結果當成目前單一 `absolute_direction` 結果。重用前一律檢查目前數值契約。
 
 <a id="operations-zh"></a>
 
@@ -1215,7 +1343,7 @@ mapping 也不能繞過此限制。這不保證涵蓋 provider 未回傳或帳�
 | `--dataset-revision` | 1～64 字元；英數開頭，之後可用英數、`.`、`_`、`-`；預設 `v1` | provider 修訂歷史資料時，用新 label 強制建立新的 immutable dataset namespace |
 | `--start` | `YYYY-MM-DD`；預設 `2016-01-01` | 所有市場共用的 inclusive 起始日，須早於 `2025-06-01` 且留足 context 與 train 資料 |
 | `--end` | `YYYY-MM-DD`；無預設值 | 所有市場共用的 exclusive 結束日，須至少為 `2026-06-01`；超出此日的資料不會進入固定 train／validation／holdout |
-| `--h-start` | `1`、`2`、`3`；預設 `1` | 從第幾個持有交易日起至第 14 日的累積 alpha；仍於 `t+1` raw open 評估進場。只改變 runtime labels 與模型輸出，不改變 dataset identity |
+| `--h-start` | `1`、`2`、`3`；預設 `1` | 最早輸出的累積持有期，之後逐日至第 14 日；仍於 `t+1` raw open 評估進場。依任務輸出 alpha 或個股方向，只改 runtime labels／模型輸出，不改 dataset identity |
 | `--feature-mode` | 新版 production 使用 `scales` 或 `combined`；預設 `combined` | 其他模式只適用關閉 explicit output scale 的自訂／舊設定；不改變 dataset namespace |
 | `--universe` | `all`、`explicit` | 控制美國商品選取方式；對 `tw_only` 只能使用 `all`。非互動模式必填 |
 | `--stocks` | 逗號或空白分隔的美國 ticker；可重複提供 | `explicit` 模式中的美國普通股／ADR，例如 `"AAPL,BABA"`；會用 EODHD discovery 驗證型別，不影響台股 |
@@ -1653,12 +1781,11 @@ bash scripts/runpod_workflow.sh readiness --baseline
 #### 4. 建置或接續獨立 baseline
 
 先完成所需 train 資料及共用 evaluation 資料的 CPU prepare。程式與 active selection
-依前一步同步後，在本機執行：
+依前一步同步後，在本機選定任務。以下建置 A 組 alpha 點估計 baseline，命令自行完成 readiness 檢查：
 
 ```bash
-bash scripts/runpod_workflow.sh readiness --baseline
 bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1
-bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
+bash scripts/runpod_workflow.sh baseline --experiment a-alpha-point64 --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
 `--data-center` 只篩選庫存；需改成已登記 volume 所在的機房。Baseline 建立接受
@@ -1776,18 +1903,17 @@ threshold 必須使用相符的 baseline。資料內容／切分或 baseline 自
 建立對應結果，不能混用不同股票—日期集合或任務。
 
 切換至**已完成 CPU prepare 的** A 組（2021 起始）時，先在本機設定下列完整資料選擇；
-切回 B 組只將 `--start` 改為 `2016-01-01`。其餘選項須維持原先 prepare 的設定：
+此例接著選擇 alpha 點估計任務。切回 B 組時將 `--start` 改為 `2016-01-01`、
+`--experiment` 改為 `b-alpha-point64`；個股方向則改用相應 `*-absolute-direction64`。
+其餘資料選項須維持原先 prepare 設定。程式與實驗 YAML 已同步時，不因切換而重傳：
 
 ```bash
 bash scripts/runpod_workflow.sh configure \
   --stage stage2 --data-profile us_tw_eodhd --dataset-revision v1 \
   --start 2021-01-01 --end 2026-06-01 \
   --h-start 1 --feature-mode combined --universe all
-bash scripts/runpod_workflow.sh sync --dry-run
-bash scripts/runpod_workflow.sh sync --apply
-bash scripts/runpod_workflow.sh readiness --baseline
 bash scripts/runpodctl_project.sh gpu list
-bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
+bash scripts/runpod_workflow.sh baseline --experiment a-alpha-point64 --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
 此流程不執行 prepare、不重新切分或下載行情，也不需要手動調整 manifest、SHA 或路徑。
@@ -1844,7 +1970,7 @@ split，不能把部分結果當成 early stopping 依據。training 保留動�
 仍逐產品完整、固定順序動態取出 windows，沒有展開成常駐記憶體中的巨大資料集。
 
 CPU tabular input cache 每 300 秒先 flush／fsync 再發布續作位置；重啟從已確認的 row
-繼續，不重建已完成 split。GBDT 每完成一個 horizon／quantile 的增量 fitting 就保存；
+繼續，不重建已完成 split。GBDT 每完成一個 horizon（歷史分位數另按 quantile）的增量 fitting 就保存；
 rules 從尚未完成的 rule 接續。中斷中的原生 GBDT fit、完整 validation 或最終 test 會重跑
 該工作單元。這些快取與 checkpoint 屬於 baseline 訓練產物，不需要新行情 API call，
 也不要求重跑 CPU prepare。進度預設每 30 秒輸出，完整結果仍由 `complete.json` 認定。
@@ -1853,7 +1979,7 @@ rules 從尚未完成的 rule 接續。中斷中的原生 GBDT fit、完整 vali
 
 <a id="train-zh"></a>
 
-#### 5. 選擇容量實驗並建立訓練 Pod
+#### 5. 選擇任務／實驗並建立訓練 Pod
 
 <a id="gpu-catalog-zh"></a>
 
@@ -1882,10 +2008,10 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 既有 volume 跨區掛載，也不會重新建立 volume。請把完整 `gpuId` 傳給下列建立命令，
 不要把表格中可能被截短的 GPU 顯示名稱當成 ID。
 
-##### 選擇資料組別與容量實驗
+##### 選擇資料組別、任務與實驗
 
-先完成所需資料組別的 CPU prepare 與 baseline，再建立主模型 Pod。已準備好的資料、
-baseline 與預訓練模型會直接共用；切換容量實驗不重新下載行情、不重新切分資料，
+先完成所需資料組別的 CPU prepare 與各任務 baseline，再建立主模型 Pod。已準備好的資料、
+對應 prediction task 的 baseline 與預訓練模型會直接共用；切換容量實驗不重新下載行情、不重新切分資料，
 也不因 Pod 數量而重訓 baseline。每台 Pod 各自使用一張 GPU，不是 DDP 或多 GPU
 聯合訓練。
 
@@ -1923,8 +2049,8 @@ Stage 2 提供二十份設定。A 的資料起點為 2021-01-01，B 為 2016-01-
 `direction64-v2` 使用等市場／任務／horizon balanced-decision BA 加第一輪完整 validation 的 pinball 護欄。
 `direction64-v3` 使用 population CE／Brier 相對 train prior 的比率、macro-F1、決策誤判／塌縮
 罰分與同一 pinball 護欄；BA 繼續記錄，但不再單獨決定 checkpoint。
-選定 checkpoint 後才用完整
-validation 擬合凍結的上下尾校準。Test 保留 raw 與 `calibrated`；整合版另外保留
+只有啟用校準的分位數 preset，才在選定 checkpoint 後用完整
+validation 擬合凍結的上下尾校準。這些 preset 的 test 保留 raw 與 `calibrated`；adaptive 整合版另外保留
 `calibrated_static` 與延遲回饋的 `calibrated_online`，不使用未成熟報酬，也不保證未來 coverage。
 `FORECAST_METRIC_WORKERS` 可限制診斷／校準執行緒（預設上限 4，另受 CPU／記憶體限制）。
 
@@ -1939,16 +2065,25 @@ bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
 ```
 
-單台實驗：
+目前主線的單台 alpha 點估計實驗：
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-direction64-v2 \
+  --experiment a-alpha-point64 \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-一次建立三台 Pod，比較 A 組的三種容量；每個 `--experiment` 都帶一個名稱：
+個股漲／平／跌使用另一個獨立 run，先完成該任務的 baseline：
+
+```bash
+bash scripts/runpod_workflow.sh train \
+  --experiment a-absolute-direction64 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+保留的分位數容量對照也能一次建立三台 Pod；每個 `--experiment` 都帶一個名稱：
 
 ```bash
 bash scripts/runpod_workflow.sh train \
@@ -1964,11 +2099,11 @@ bash scripts/runpod_workflow.sh train \
 不同名稱，本機啟動並行 worker 上限仍為六。可以在其他實驗已執行時另開不同 run。每個實驗先固定自己的 immutable
 selection，不修改全域 active selection；後續 configure 不會改變已建立 Pod 的設定。
 
-同一組設定比較三個 training seed：
+同一個 alpha 點估計設定比較三個 training seed：
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-direction64-v2 \
+  --experiment a-alpha-point64 \
   --seed 42 --seed 43 --seed 44 \
   --launchWorkers 2 \
   --maxRuntime 72h \
@@ -1976,6 +2111,8 @@ bash scripts/runpod_workflow.sh train \
 ```
 
 這會建立三台 Pod，分別使用 seed 42、43、44，各有獨立 run ID、結果與 guard。
+個股方向的三 seed 對照將名稱換成 `a-absolute-direction64`；兩個任務都做即為六個
+獨立 runs，須分別備妥兩份 task-aligned baseline，不能把它們合成一個加權 loss 模型。
 每個 `--seed` 只帶一個整數；若需要不同 GPU 型號，分開執行三次 `train`，每次只指定
 一個 `--seed` 與所需的 `--gpuId`。同時重複 `--experiment` 與 `--seed` 會建立所有組合，
 例如兩種容量 × 三個 seed＝六台 Pod；每次最多 30 個組合，建立前會列出數量與名稱。
@@ -2060,7 +2197,7 @@ bash scripts/runpod_workflow.sh runs --experiment a-lora32
 歷史紀錄未保存時顯示 `unknown`，不以目前 YAML 補值：
 
 ```bash
-bash scripts/runpod_workflow.sh runs --experiment a-direction64-v2 --seed 43
+bash scripts/runpod_workflow.sh runs --experiment a-alpha-point64 --seed 43
 ```
 
 ```bash
@@ -2319,7 +2456,7 @@ total-loss 定義；方向實驗另包含已記錄係數的 absolute／alpha CE 
 v2 另保存 train priors、固定市場權重、共享梯度診斷、population／balanced-decision 指標
 及第一輪完整 validation 的 pinball anchor；不可把不同版本的 `direction/selection_loss` 混排。
 `validation/loss` 記錄該 run 的 `checkpoint_monitor`，不是所有實驗共用的 loss：
-無方向 head 的預設為完整 validation 各 horizon 平均的 normalized pinball，不含 ranking；
+歷史 `quantiles` 且無雙方向 head 時為完整 validation 各 horizon 平均的 normalized pinball，不含 ranking；
 原版 `direction64` 為 pinball 加上凍結 reference 加權的兩項 CE；
 `direction64-v2` 則為等市場／任務／horizon 的 balanced-decision BA 選模損失，加上
 凍結首輪完整 validation pinball anchor 的退化罰分。
@@ -2328,7 +2465,7 @@ v2 另保存 train priors、固定市場權重、共享梯度診斷、population
 判斷 pinball 的 train/validation gap 時，應比較 `train/pinball_loss` 與
 `validation/aggregate/normalized_pinball`（方向實驗亦另列
 `validation/direction/pinball_loss`），不能把 training total loss 或方向選模損失
-直接當作 validation pinball。兩項方向任務的泛化則分別檢查完整 validation 的
+直接當作 validation pinball。歷史雙方向任務的泛化則分別檢查完整 validation 的
 absolute／alpha CE、accuracy、balanced accuracy 與市場別指標。
 loss 日誌依 `loss_log_points_per_epoch` 分段平均記錄（預設每 epoch 250 點），並涵蓋
 每次 validation 邊界；每次寫入都 flush/fsync，W&B 停用時仍保留在 network volume。
@@ -2374,7 +2511,7 @@ poetry run stock-forecasting-infer \
 兩者不回傳 ranking、五級交易訊號、成本情境或校準分位數。
 下列欄位只適用於舊分位數任務：獨立 `ranking_scores`，以及若存在與此 checkpoint 權重相符的 validation 校準，另外回傳的
 `calibrated_forecast`；否則為 `null` 並附 `interval_calibration_status`。不生成自然語言解釋。
-整合實驗的單次推論使用凍結的 validation regime 校準，狀態為
+歷史 adaptive 分位數實驗的單次推論使用凍結的 validation regime 校準，狀態為
 `validation_fitted_frozen_regime`；不暗中載入 test 的 online 回饋狀態。
 
 <a id="probes-zh"></a>
@@ -2742,7 +2879,7 @@ pytest 的 `-k EXPR` 篩選測試、`-q` 簡潔輸出、`-h` 顯示全部第三�
 5. 獨立任務分別只輸出 `[B,15-h_start]` alpha point 或 `[B,15-h_start,3]` 個股三分類；
    固定 ±1% band 含端點為 neutral，不把 alpha up 當個股上漲、不輸出假分位數。
    舊分位數任務 `alpha_quantiles` 為 `[B,15-h_start,3]`、q10 ≤ q50 ≤ q90；
-   `ranking_scores` 與中位數報酬分開；各版方向 preset 另輸出兩組三分類機率，不生成自然語言。
+   `ranking_scores` 與中位數報酬分開；歷史 direction64 V1／V2／V3 另輸出兩組三分類機率，不生成自然語言。
    v2 的 population probabilities／raw accuracy 與 `balanced_decision` 必須分開，不能偷換指標。
 6. 輸入與 train-only 正規化不使用未來資料。Validation 用於選模；只有啟用校準的分位數任務另做選模後區間校準；
    frozen test 不參與 fitting；獨立 online 診斷只使用到期後的過往標籤，不能混為一談。
@@ -2797,15 +2934,16 @@ Stage 1 證明流程可運作，不證明 alpha。單一 seed、單一 holdout �
 ### Navigation
 
 - [Scope and license](#overview-en), [architecture and outputs](#model-en)
+- [Current independent tasks](#signal-tasks-en), [historical V1/V2/V3 experiments](#model-versions-en)
 - [Data sources, continuity and liquidity](#data-en), [fixed time splits](#splits-en)
 - [Offline pipeline](#pipeline-en), [training, losses and full evaluation](#training-en)
 - [RunPod operations](#operations-en): [account/storage](#setup-en) → [configure/sync](#configure-en)
-  → [CPU preparation](#cpu-en) → [baselines](#baseline-en) → [capacity/multi-Pod training](#train-en)
+  → [CPU preparation](#cpu-en) → [baselines](#baseline-en) → [tasks/experiments and multi-Pod training](#train-en)
   → [downloads](#download-en)
 - [Artifacts and inference](#artifacts-en), [scale diagnostics](#probes-en), [CLI reference](#cli-reference-en)
 - [Acceptance and interpretation](#acceptance-en), [model/data references](#references-en)
 
-If data and the selected task's baselines are ready, start at capacity/multi-Pod training. Synchronize first only
+If data and the selected task's baselines are ready, start at tasks/experiments and multi-Pod training. Synchronize first only
 when source or YAML changed; never overwrite shared source while a Pod owns the volume.
 
 <a id="overview-en"></a>
@@ -2828,6 +2966,9 @@ numerical time series:
 
 This is a research and capability-validation PoC. It is not investment advice,
 a production trading system, or a claim of guaranteed profitability.
+The model supplies testable alpha and absolute-stock direction signals. Downstream systems
+(such as a Hermes agent) combine those signals with conventional indicators to handle trading
+rules, costs, positions, risk controls and backtests; these are not the current prediction targets.
 
 #### License and versions
 
@@ -2849,11 +2990,14 @@ architecture and report snapshots.
 
 ### Architecture and numerical outputs
 
-#### Output contract
+<a id="signal-tasks-en"></a>
 
-`model.prediction_task` explicitly selects the output. Separate tasks use separate runs,
-LoRA weights, heads and checkpoints; regression and classification gradients are not combined
-within one optimizer update:
+#### Current architecture: two independent tasks and output contracts
+
+The current main line selects `alpha_point` or `absolute_direction` through
+`model.prediction_task`. Each task has an independent Kronos/LoRA instance, run, optimizer,
+output head and checkpoint. They do not mix regression and classification losses or share
+trainable weights/gradients. The retained `quantiles` task is a separate historical experiment path:
 
 | Task / preset | Output and meaning | Training and full-validation selection |
 | --- | --- | --- |
@@ -2874,7 +3018,66 @@ disables only the legacy dual-direction multitask module, not the `absolute_dire
 Old experiments retain their output. Point forecasts are not duplicated into synthetic quantiles;
 independent tasks use the `signal-1.0` schema.
 
-The following output contract applies to the existing `quantiles` task:
+`alpha_point > 0` predicts positive benchmark-relative excess log return, not necessarily an
+absolute stock gain or a probability of beating the benchmark. Its sign already expresses the
+predicted relative direction; **no separate alpha classifier is needed**. Regression
+`direction_agreement` measures agreement between predicted and observed alpha signs; it is
+not another head, classification loss or absolute-stock direction accuracy.
+
+Each independent task follows the same input path: asset/benchmark OHLCV through `t` → window
+normalization → Kronos/LoRA → resampling and benchmark conditioning → mean-pooled representation
+plus market/horizon embeddings → selected task head. The 20 historical scale features and
+benchmark latents also directly enter a numerical branch. The point head emits one value per
+horizon; the classifier emits three logits. These are not V3 dual-direction heads: the current
+presets **do not enable** the ten technical channels, horizon-query attention, market-state gates,
+train priors, PCGrad, ranking or representation-perturbation regularization, and use no
+transaction-cost features or labels.
+
+Select the current architecture explicitly with `--experiment a-alpha-point64` or
+`--experiment a-absolute-direction64` (use the `b-` prefix for B). Standard
+`stage1_kronos_base_lora.yaml` / `stage2_kronos_base_lora.yaml` still select `quantiles`.
+Omitting `--experiment` retains configure's active selection; it does **not** automatically
+switch to the latest task.
+
+<a id="model-versions-en"></a>
+
+#### Historical direction experiments V1/V2/V3: scope and differences
+
+V1, V2 and V3 identify the retained **direction64 multitask family**, not Stage 1/Stage 2,
+Git release versions or aliases for the current independent tasks. All three jointly learn
+alpha quantiles, absolute-stock direction, alpha direction and independent ranking. Both
+direction tasks use cost bands. These are reproduction contracts for historical experiments,
+not objectives added back to the new tasks.
+
+| Version | A / B experiment names | Direction architecture / schema |
+| --- | --- | --- |
+| V1 | `a-direction64` / `b-direction64` | `legacy` / direction schema 1 |
+| V2 | `a-direction64-v2` / `b-direction64-v2` | `market_residual_v2` / direction schema 2 |
+| V3 | `a-direction64-v3` / `b-direction64-v3` | `market_ordinal_v3` / direction schema 3 |
+
+| Dimension | V1: initial dual direction | V2: direct scales and prior separation | V3: ordered probabilities and market-state selection |
+| --- | --- | --- | --- |
+| Labels | Separate absolute-stock and alpha down/neutral/up labels with cutoff-known cost bands | Same returns, costs and cleaning rules as V1 | Same as V2; no test-based threshold tuning |
+| Direction head / probability structure | Horizon queries read tokens; three free logits per task | Retained horizon queries; historical signal `f` separated from train prior `π`, population logits `z=f+τ log π` | Two conditional logits yield ordered probabilities `[1-a, a(1-b), ab]`, not three free logits |
+| Scales and market features | Direction heads do not directly read the existing 20-scale branch | Direct access to 20 scales and four cost/volatility ratios; historical residual plus market branch, market ID selects prior | Retained V2 paths; historical benchmark state gates three token streams and scale features |
+| Loss references / task scales | Untrained-model forward pinball / dual CE on at most 1,024 samples; depends on model seed even with fixed sampling seed | Train-only null-quantile reference and fixed `CE=log(3)` on at most 8,192 market/year-stratified samples, independent of model initialization | Same fixed V2 references; classification uses conditional-chain NLL |
+| Shared gradients / PCGrad | One backward pass through the weighted total loss | PCGrad for three task-gradient groups on shared LoRA only; other parameters use the total loss | Same as V2; ordered classification NLL still backpropagates into shared LoRA |
+| Checkpoint / early-stop selection | Reference-weighted pinball plus two CEs | Market/task/horizon mean balanced-decision BA with a frozen pinball-degradation guard | Population CE/Brier skill relative to prior, macro-F1, opposite-error/collapse penalties and pinball guard |
+| Baseline comparison | Matching quantile and dual-cost-direction baselines, not pure absolute-direction baselines | Reuse the same cost-multitask baseline when its numerical contract matches; added balanced/prior diagnostics do not make the baseline a V2 head | Same baseline under a matching contract; it is not a V3 ordinal architecture |
+| Resume | Resume the same V1 run | Start a new V2 run; do not resume a V1 checkpoint | Start a new V3 run; do not resume V1/V2 checkpoints |
+
+Controls shared across the three versions: Kronos-base, LoRA rank 64 / alpha 128, no partial
+unfreezing, five technical channels each for asset and benchmark, horizon-query reading,
+ranking weight `0.05`, representation-perturbation weight `0.05`, task/LoRA LR `3e-5`/`5e-6`,
+dropout `0.05`, weight decay `0.01`, validation-plateau scheduling, and static interval
+calibration fitted only after checkpoint selection. Full loss and selection formulas are in
+the [training section](#training-en). Version changes describe testable design differences,
+not proven accuracy improvements. Compare raw metrics on matching samples, horizons, tasks
+and seeds; `selection_score` values with different version definitions are not directly comparable.
+
+#### Historical `quantiles` outputs and architecture
+
+The following applies only to the existing `quantiles` task, not the two current independent tasks:
 
 - `alpha_quantiles`: `[batch, 15-h_start, 3]`.
 - Dimension two contains holding periods `h_start`, `h_start+1`, ..., 14;
@@ -2937,7 +3140,7 @@ adding market/cost metadata to historical-signal logits.
 Production configs use `NeoQuasar/Kronos-base` and
 `NeoQuasar/Kronos-Tokenizer-base`. Standard LoRA experiments freeze the base weights. LoRA is
 injected into `q_proj`, `k_proj`, `v_proj`, `out_proj`, `w1`, `w2`, and `w3`;
-the resampler, benchmark conditioner, and alpha head remain trainable. The official source is pinned to
+the resampler, benchmark conditioner, and selected task head remain trainable. The official source is pinned to
 commit `67b630e67f6a18c9e9be918d9b4337c960db1e9a`; the required source snapshot
 and MIT license are synchronized with the project. Preflight and model
 construction verify each source file by SHA-256 and never invoke Git on RunPod.
@@ -2953,15 +3156,16 @@ configs, and checkpoints bind those revisions.
 - `latent_tokens`
 
 Downstream systems can reuse these numerical representations in other forecasting,
-ranking or risk-analysis modules without changing the current alpha-output contract.
+ranking or risk-analysis modules without changing the selected task's output contract.
 
-The model predicts the conditional alpha distribution directly; it does not
+The historical `quantiles` task predicts the conditional alpha distribution directly; it does not
 predict a raw-return q50 and subtract a benchmark q50. Historical benchmark
 state affects predictions through both gated cross-attention and a direct
 resampler-latent branch. Historical scales are extracted before Kronos window
 normalization. Benchmark data
 after close t is used only for offline label construction and never enters the
-model input.
+model input. These past-only input and benchmark rules also apply to both independent tasks;
+their outputs remain a robust alpha point or absolute-stock class logits, not quantiles.
 
 #### Small numerical feature branch
 
@@ -2989,7 +3193,14 @@ Checkpoints bind the feature schema, training dataset fingerprint, and aggregate
 in `runtime_scale_features`. Inference restores them without refitting on
 validation, holdout, or the inference batch.
 
-The scale MLP is `20 → 32 → 16`. Mean-pooled benchmark resampler latents use
+For both independent tasks, the scale MLP is `20 → 32 → 16`, mean-pooled benchmark
+latents use `512 → 16`, and the horizon-conditioned trunk uses `512 → 16`. Their
+concatenation passes through `48 → 32 → output_dim`: `output_dim=1` for alpha point
+regression or `3` for absolute direction. The point output is multiplied by its horizon's
+train-only robust scale; class outputs are raw logits. No positive tail-width gates,
+quantile ordering or interval calibration exist on these paths.
+
+For the historical `quantiles` task, the scale MLP is `20 → 32 → 16`. Mean-pooled benchmark resampler latents use
 `512 → 16`; the original horizon-conditioned head hidden state uses another
 `512 → 16`. Concatenated features pass through `48 → 32 → 3` and are added to
 the original raw quantile parameters **after** the head LayerNorm, before the
@@ -3017,11 +3228,12 @@ explicit scale control. Changing the mode preserves the dataset namespace but re
 Predictive improvement must be demonstrated by new evaluation results; adding
 scale information alone is not evidence of improved alpha forecasting.
 
-#### Direction supervision and ten technical channels
+#### Historical V1/V2/V3 direction supervision and ten technical channels
 
 `a-direction64`/`b-direction64` retain the original architecture for reproduction;
 `a-direction64-v2`/`b-direction64-v2` retain market-residual V2, while V3 is defined below.
-All direction presets build on `lora64`:
+All three historical `direction64` versions build on `lora64` (not the independent
+`absolute-direction64` task):
 rank 64, alpha 128, no partial unfreezing,
 task/LoRA LR `3e-5`/`5e-6`, dropout `0.05`, weight decay `0.01`, validation plateau scheduling
 and static interval calibration. Original capacity/adaptive presets remain reproducible.
@@ -3156,10 +3368,12 @@ is required before formal comparisons.
 
 Each sample emits a signal after trading-day `t` closes. Entry occurs at the
 next **market session's** raw regular-session open, which counts as holding day
-one. A horizon `h` exits at the raw close of the `h` th market session. The
-label is the difference between instrument and benchmark total-return log
-returns over identical entry and exit timestamps, for
-`h ∈ {h_start,...,14}` and `h_start ∈ {1,2,3}`.
+one. A horizon `h` exits at the raw close of the `h` th market session, for
+`h ∈ {h_start,...,14}` and `h_start ∈ {1,2,3}`. Alpha point/quantile targets are the
+difference between instrument and benchmark adjusted total-return log returns over
+identical entry and exit timestamps. The independent absolute-direction classifier instead
+labels the instrument's adjusted simple return using its fixed neutral band. Historical
+V1/V2/V3 cost-direction labels retain their separately documented cost bands.
 Missing or zero-volume asset bars never postpone entry or exit to the next available row.
 
 Default benchmark policy:
@@ -3259,9 +3473,10 @@ windows, exclusion reasons, and retained extremes per split/market; `parts/*.jso
 contains per-symbol audits. Excluding unexecutable future labels does not make the
 result a tradable backtest free from halt or delisting risk.
 
-Changing these rules changes training membership and requires one new baseline
-build per A/B history. Old weights/results remain but are not fair references for
-the new population. Changing only LoRA/unfreezing capacity reuses that baseline.
+Changing these rules changes training membership and requires a new matching baseline
+for each A/B history, prediction task and baseline numerical contract. Old weights/results
+remain but are not fair references for the new population. Changing only LoRA/unfreezing
+capacity or main-model seed reuses a matching baseline.
 Existing market data is reused without rerunning CPU preparation or downloading data.
 
 <a id="splits-en"></a>
@@ -3417,7 +3632,7 @@ Training, evaluation, and inference never call EODHD, TWSE, TPEx, or Massive.
 | Training sampler | Annual-decay dynamic sampling, not one fixed 5% membership | Annual-decay dynamic sampling, not exactly-once traversal |
 | Epoch limit | 2 | 5 |
 | Validation cadence | Full validation at 20%/40%/60%/80%/100% of each epoch | Same |
-| Early stopping | Five non-improving evaluations of the configured monitor plus two minimum-LR intervals, active from epoch 1. Original presets use normalized pinball; `direction64` uses fixed-weight pinball plus both CEs; v2 uses equal-market direction BA with a pinball guard | Same |
+| Early stopping | Five non-improving evaluations of the configured monitor plus two minimum-LR intervals, active from epoch 1. Independent tasks use normalized Smooth L1 / CE; legacy quantiles use normalized pinball; V1 uses fixed-weight pinball + dual CE; V2 uses balanced-decision BA + pinball guard; V3 uses probability/decision quality + guard (formulas below) | Same |
 | Stored results | Best five validation-ranked full checkpoints plus compact completion weights | Same |
 | Validation / test | Full eligible populations, no sampling, padding or drop_last | Same |
 | Standard config | `configs/stage1_kronos_base_lora.yaml` | `configs/stage2_kronos_base_lora.yaml` |
@@ -3425,8 +3640,8 @@ Training, evaluation, and inference never call EODHD, TWSE, TPEx, or Massive.
 
 The training DataLoader uses a bounded-state dynamic sampler over valid cutoff ranges. It
 loads one symbol row group on demand, constructs aligned 128-bar asset and
-benchmark contexts, and computes alpha labels from `h_start` through holding
-day 14 in memory. No per-window or per-label dataset is written. Stage 1 presents
+benchmark contexts, and computes task-required alpha or absolute-stock return labels from
+`h_start` through holding day 14 in memory. No per-window or per-label dataset is written. Stage 1 presents
 5% of the valid-train count per epoch, capped at 500,000; Stage 2 presents the full
 valid-train count. Annual decay means newer windows can repeat and older windows
 need not appear in the same epoch. Seed and epoch determine reproducible order and
@@ -3436,7 +3651,7 @@ of every window. This out-of-core design
 handles long full-market history without loading all bars or all potential windows
 into RAM.
 
-The standard stage configs have matching `model_architecture_digest()` values. Capacity
+The standard stage configs retain `quantiles` and have matching `model_architecture_digest()` values. Capacity
 experiments use separate YAML files; see [capacity experiments](#train-en). [Resume](#resume-en)
 continues one interrupted run, not Stage 1 weights into Stage 2.
 
@@ -3451,6 +3666,19 @@ duplicating optimizer/scheduler state that is no longer needed for resume.
 
 #### Objectives, learning rates and calibration
 
+Every monitor uses full validation and is minimized. A shared key does not imply a shared score definition.
+
+| Task / experiment family | Checkpoint monitor | Score definition |
+| --- | --- | --- |
+| Current `alpha_point` | `primary_5d/selection_score` | Mean normalized Smooth L1 across all horizons |
+| Current `absolute_direction` | `primary_5d/selection_score` | Mean absolute-stock three-class CE across all horizons |
+| Historical quantiles without dual-direction heads | `primary_5d/selection_score` | Mean normalized pinball across all horizons |
+| Historical V1 `direction64` | `direction/selection_loss` | Fixed-reference-weighted pinball plus two CEs |
+| Historical V2 `direction64-v2` | `direction/selection_loss` | Balanced-decision BA loss plus frozen pinball guard |
+| Historical V3 `direction64-v3` | `direction/selection_loss` | Population probability quality, macro-F1, mistake/collapse penalties and pinball guard |
+
+##### Current independent point and absolute-direction objectives
+
 Independent `alpha_point` minimizes only
 `mean(SmoothL1((prediction − alpha) / train_scale, beta=1))`; independent
 `absolute_direction` minimizes only fixed-label three-class CE. Both average valid samples
@@ -3459,6 +3687,11 @@ The stable `primary_5d/selection_score` monitor remains `min`, representing full
 normalized Smooth L1 or CE respectively, not just day five. Training logs
 `train/normalized_smooth_l1` or `train/cross_entropy`, alongside `train/loss` and
 `validation/loss`. Selection scores from different tasks are not directly comparable.
+Both current presets use validation-plateau, task/LoRA LR `3e-5`/`5e-6`, dropout `0.05`
+and weight decay `0.01`, not adaptive sample-plateau or market loss weights. Each task's
+scheduler, sampling state and numerical scales persist in its own checkpoint for resume.
+
+##### Historical quantile objectives and shared train-only scales
 
 The following quantile/multitask objectives apply only to existing `quantiles` presets.
 Normalized pinball divides each horizon's quantile error by its **train-only robust scale**
@@ -3483,9 +3716,12 @@ securities; duplicate padding and nearly tied labels are excluded. Each microbat
 uses at most 256 pairs across all forecast horizons. A runtime-only date/market
 index improves within-group batch membership, with annual-decay dynamic sampling
 over cleaned train windows; it does not modify the prepared bar store. Original presets select
-by full-validation normalized pinball; `direction64` uses the fixed multitask score below;
-`direction64-v2` uses equal-market direction metrics with a regression guard.
+by full-validation normalized pinball; V1 uses the fixed multitask score below;
+V2 uses equal-market direction metrics with a regression guard, and V3 uses the probability/
+decision-quality composite below.
 Ranking regularization and holdout never select checkpoints. No prediction ensemble is used.
+
+##### V1: untrained-model references and weighted total loss
 
 `direction64` first estimates untrained-model mean losses `sQ, sAbs, sAlpha` from at most 1,024
 training windows with seed 59, then freezes these references. Default task multipliers are 1:
@@ -3518,6 +3754,8 @@ so neutral collapse is visible. `joint_up` records precision/counts when both he
 Balanced accuracy averages recall over classes present in that slice; macro-F1 averages all
 three fixed classes. Confusion matrices and supports expose absent classes.
 Three-class accuracy is not interchangeable with the old q50 sign agreement.
+
+##### V2: direct scales, fixed references, prior separation and PCGrad
 
 `direction64-v2` references require no untrained-model forward. Fixed calibration seed 59
 selects at most 8,192 train windows using bounded market/year strata and annual-decay weights.
@@ -3609,16 +3847,17 @@ v2 presets are selected with `--experiment`; numerical-contract changes still re
 `absolute_weight`/`alpha_weight` remain 1 (greater than 0, at most 10) and still allow task weighting.
 `representation_weight=0.05` (0–1), `representation_radius=0.01` (greater than 0, at most 0.1)
 and existing cost settings remain. V2 does not change CPU preparation, data cleaning, dynamic
-training sampling or full validation/test. Existing dual-direction baselines remain reusable
-for unchanged data rules and cost scenarios.
+training sampling or full validation/test. Dual-direction baselines are reusable only when
+their complete data, cost, task and baseline numerical/source contracts match; this is not a
+claim that every historical cache ID remains valid after implementation changes.
 
 ##### V3: ordered direction, state-guided selection and probability-aware checkpoints
 
 `a-direction64-v3`/`b-direction64-v3` use `a_direction64_v3.yaml`/`b_direction64_v3.yaml`.
 They retain Kronos-base/LoRA64, alpha quantiles, independent ranking, ten technical channels,
 direct scales, train-only references, market weighting and PCGrad. Only direction reading and
-selection change. Cleaning, baseline labels/costs, sources and splits stay unchanged; existing
-baselines remain reusable. V3 needs a new run, not a V2 checkpoint resumed as V3; same-V3
+selection change. Cleaning, baseline labels/costs, sources and splits stay unchanged; matching
+baseline contracts remain reusable. V3 needs a new run, not a V2 checkpoint resumed as V3; same-V3
 interrupted runs remain resumable.
 
 Following [CORN's conditional ordinal structure](https://arxiv.org/abs/2111.08851),
@@ -3674,7 +3913,7 @@ remain as in V2; coverage is not a direction-selection objective.
 | `selection_opposite_weight` | `0.25`; 0–2 | Opposite-direction mistake penalty multiplier |
 
 These four settings affect V3 only; use `architecture=market_ordinal_v3`. Other direction settings
-retain the table above. Existing CLI options select the model without new required flags:
+retain the table above. Historical V3 reproduction uses the existing CLI options:
 
 ```bash
 bash scripts/runpod_workflow.sh train --experiment a-direction64-v3 --seed 42 \
@@ -3684,12 +3923,15 @@ bash scripts/runpod_workflow.sh train --experiment a-direction64-v3 --seed 42 \
 Use `b-direction64-v3` for B and separate train commands for seeds 43/44. This creates a formal
 training Pod, not local training or QA; existing code sync and readiness gates still apply.
 
-For the original Stage 1/2 and `lora32`/`lora64`/`partial` presets, two non-improving validations after warmup multiply neural learning rates by 0.3,
+##### Shared plateau schedule and historical adaptive calibration
+
+The current independent tasks, original Stage 1/2, `lora32`/`lora64`/`partial` and direction64
+V1–V3 all use validation-driven plateau: two non-improving validations after warmup multiply neural learning rates by 0.3,
 down to 0.09 of their original values. Early stopping additionally requires two
 completed training/validation intervals at the minimum rate. Checkpoints preserve
 the plateau state; resuming or changing runtime batch plans never resets reductions.
 
-Integrated presets use `sample_plateau`: a cosine multiplier decays from 1 to 0.09 between
+Historical `adaptive64` / `adaptive128` presets use `sample_plateau`: a cosine multiplier decays from 1 to 0.09 between
 1,000,000 and 4,000,000 actual window presentations, independently of A/B epoch lengths.
 The lower of this multiplier and the existing plateau multiplier is applied. The 256,000-sample
 warmup, sample counter, plateau state and two minimum-LR evaluation safeguard survive resume.
@@ -3697,15 +3939,16 @@ Configure `training.sample_decay_start`/`sample_decay_end` with `warmup_samples 
 Task/LoRA LR are `1e-5`/`5e-6`; resampler, conditioner, head and LoRA dropout are `0.10`,
 and AdamW weight decay is `0.03`. The epoch budget is not extended.
 
-Integrated `training.market_loss_weights: [1, 2, 2, 1]` orders US, TWSE, TPEx, unknown and
+Those adaptive presets' `training.market_loss_weights: [1, 2, 2, 1]` orders US, TWSE, TPEx, unknown and
 weights training pinball only. Each weight must be in `(0, 4]`; it is not renormalized within
 a single-market microbatch, which would cancel the weighting. Ranking retains weight `0.05`.
 Full validation/test remain unweighted and additionally expose equal-market `market_macro`
 diagnostics. Neither the checkpoint monitor nor baseline objectives change.
 
-After checkpoint selection, full validation fits interval calibration without changing q50
-or ranking scores. `validation.interval_calibration.mode: static` remains the default for
-existing presets. Integrated presets use `regime_adaptive` and keep results distinct:
+For quantile presets with calibration enabled, full validation fits interval calibration after
+checkpoint selection without changing q50 or ranking scores. Independent tasks do not run
+this step. `validation.interval_calibration.mode: static` remains the quantile default;
+adaptive quantile presets use `regime_adaptive` and keep results distinct:
 
 | Result field | Protocol |
 | --- | --- |
@@ -3739,9 +3982,10 @@ runs. The full model recomputes predictions rather than reusing checkpoint valid
 Every routine validation and final test visits its entire split, with
 `evaluation_max_samples` and `baseline_max_samples_per_split` set to `null`.
 Predictions leave the GPU batch by batch and use disk-backed aggregation with exact
-sample weighting. The main model and baselines for one training data group share train-calibrated
-label scales and verified ordered symbol/date SHA-256. A/B train-only scales can differ,
-so cross-group normalized-pinball comparisons must also check their denominators.
+sample weighting. The main model and task-matched baselines for one training data group share
+train-calibrated label scales where applicable and verified ordered symbol/date SHA-256.
+A/B train-only scales can differ, so cross-group normalized pinball or Smooth L1 comparisons
+must also check their denominators.
 Their evaluation populations must match exactly, not merely have the same date limits.
 
 Full evaluation enumerates every valid window in fixed `symbol → cutoff` order.
@@ -3763,15 +4007,25 @@ The result's `execution` section records actual counts, batch size, workers,
 prefetch, throughput and peak GPU memory; these are runtime measurements, not
 predictive-performance scores.
 
-Reports include month, market, and horizon breakdowns plus full-model-minus-baseline
-differences in mean daily normalized pinball. The 95% interval uses a 14-date
-circular moving-block bootstrap (1,000 draws, seed 42), not independent stock-row
-resampling. Intervals are not adjusted for multiple comparisons. Holdout rankings
+Reports include month, market and horizon breakdowns. Paired full-model-minus-baseline
+comparisons use datewise mean loss with equal horizon weights: normalized pinball for
+quantiles, normalized Smooth L1 for alpha point, or CE for absolute direction. Their 95%
+intervals use a 14-date circular moving-block bootstrap (1,000 draws, seed 42), not
+independent stock-row resampling. These are loss-difference intervals, **not** RankIC or
+balanced-accuracy intervals. Intervals are not adjusted for multiple comparisons. Holdout rankings
 are descriptive, never a source for checkpoint selection or repeated tuning,
 and do not establish coverage of every future market regime.
 
-Pinball/coverage apply to quantile tasks. Point tasks report regression, sign and cross-sectional
-ranking metrics, and pure classifiers report probability/class metrics, without synthetic quantiles.
+Metrics are task-specific; fields from another task are not substitutes:
+
+| Task | Quality metrics | Outputs/metrics not supplied |
+| --- | --- | --- |
+| `alpha_point` | Normalized Smooth L1, MAE/RMSE/normalized MAE, bias, correlation and validity status, alpha-sign agreement, date-level RankIC by market/horizon | Quantiles, coverage, absolute-stock class probabilities, long-short performance, Sharpe, five-level trading signals |
+| `absolute_direction` | CE, Brier, accuracy, balanced accuracy and missing-class status, macro-F1, opposite error, ECE, majority accuracy, confusion, class supports/precision/recall/predicted shares | Alpha classification, point-return forecasts, RankIC, quantiles or portfolio performance |
+| Historical `quantiles` | Pinball, coverage/width, q50 error/sign/correlation, ranking and enabled historical direction diagnostics | q50 is not the independent `alpha_point` output; historical cost classification is not fixed ±1% classification |
+
+Independent-task model/baseline comparisons appear in `comparison.rows`; historical dual-cost
+direction also has `comparison.direction`.
 RankIC uses standard Spearman average ties, marked `rank_ic_method=spearman_average_ties_v1`.
 A date with constant predictions or targets has no valid correlation; row order cannot manufacture
 a nonzero RankIC. `rank_ic_status`, `rank_ic_evaluated_dates` and `rank_ic_ir_status` distinguish
@@ -3780,23 +4034,70 @@ are not automatically recomputed or assumed to use the same tie definition.
 
 #### Prerequisite baseline building and reuse
 
-Baselines are an independent prerequisite. Rules, GBDT, GRU, DLinear and PatchTST use
-full train/validation/test. Independent `alpha_point` neural baselines use normalized Smooth L1
-and GBDT uses absolute error. Independent `absolute_direction` uses neural CE/GBDT log loss,
-with the same fixed-return band. Rules provide task-aligned points/hard classes; their probability
-scores use deterministic predictions with an explicitly recorded numerical floor, not learned or
-calibrated probabilities. Neither task trains legacy quantile or dual cost-direction heads.
-The following describes legacy quantile/cost-direction baselines: GRU, DLinear and PatchTST retain alpha quantiles and train
-absolute-stock and alpha three-class heads on their shared representations. GBDT retains
-quantile regressors and adds two classifiers per horizon. Labels, execution timing and cost
-bands match `direction64`. Neural models validate five times per epoch for at most five epochs;
-GBDT validates every eight boosting rounds, up to 200, without sklearn's internal validation
-subsampling. Both select on fixed train-reference-weighted normalized pinball plus both CEs,
-with five-evaluation patience. Neural models also retain validation-plateau and minimum-LR
-observation rules. Fixed rules have no trained classifiers or early stopping; their alpha
-residual quantiles still use all train rows. Equal data is not equal FLOPs or wall-clock cost.
+Baselines are an independent prerequisite for each matching prediction task and dataset.
+Rules, GBDT, GRU, DLinear and PatchTST use full train/validation/test. Historical quantile or
+dual-cost-direction results cannot replace baselines for the current independent tasks.
+See [baseline operations](#baseline-en) for launch commands.
 
-`configs/baseline.json` independently owns `direction`: `enabled` defaults to `true`,
+##### Current independent tasks
+
+| Task | Neural baseline fitting | GBDT fitting | Full-validation selection and final test |
+| --- | --- | --- | --- |
+| `alpha_point` | Train-scale-normalized Smooth L1, with the same beta as the main model | `absolute_error` (MAE), not Smooth L1 | Shared evaluator selects using normalized Smooth L1; complete regression/sign/RankIC metrics |
+| `absolute_direction` | Absolute-stock CE, no alpha classifier | One log-loss classifier per horizon | Same inclusive ±1% neutral band; CE selection and complete probability/class metrics |
+
+Fixed rules supply task-aligned point/hard-class forecasts, not trained classifiers. Probability
+scores use deterministic predictions with an explicit `0/-30` logit floor, not learned or
+calibrated probabilities. Neither current task trains quantile, ranking or dual-cost-direction
+heads or uses legacy direction loss references. Comparisons appear in `comparison.rows`.
+
+##### Shared training, storage and reuse rules
+
+Neural models validate five times per epoch for at most five epochs. GBDT validates after every
+eight additional boosting rounds, up to 200, without sklearn's internal validation subsampling.
+Both use five-evaluation patience and retain the best full-validation model. Neural models
+also retain validation-plateau and minimum-LR observation rules; GBDT has no neural-optimizer
+LR schedule and fixed rules have no early stopping. Neural baselines traverse the full train
+population once per epoch using blockwise permutation. Neither these neural baselines nor GBDT
+applies the main model's annual-decay weights. Equal populations, full evaluation and patience
+therefore do not imply equal training weights, FLOPs or wall-clock costs; disclose the differences.
+
+Weights/rule parameters, best-validation metrics, complete test predictions and metrics live
+under `/runpod-volume/baselines/<baseline-id>/`; `complete.json` is published only after all
+required results succeed. Main training requires this cache; main testing reads its metrics
+**without retraining or re-running baseline inference**. Identity covers data periods/content,
+cleaning/universe/horizon semantics, prediction task, point-loss beta or neutral threshold and
+baseline numerical parameters/implementation, not main-model LoRA capacity, training seed,
+README or deployment scripts. Matching dates alone cannot permit different tasks or numerical
+settings. If full GBDT exceeds the memory budget, it fails instead of silently subsampling.
+
+Validation/test share `inputs/<split>/metadata.npy` (membership) and `targets.npy`; absolute
+direction also shares `absolute_targets.npy`. `evaluation_data` references these common arrays.
+Each model stores its own predictions, weights and metrics, not duplicate membership/target arrays.
+For independent tasks, `predictions.npy` has shape `[N,H]` for point forecasts or `[N,H,3]` for
+absolute-direction scores, ordered down/neutral/up. Neural models store raw logits, GBDT stores
+`log(max(probability, 1e-30))`, and rules store `0/-30`; the common evaluator uses softmax to
+obtain probabilities. These are not all outputs of the same learned classifier structure.
+Finalization streams verification, atomically publishes references, then removes
+redundant copies. Interrupted cleanup resumes storage finalization without retraining; it does
+not change periods, labels or baseline numerical identity. The main model's final
+`validation-benchmark.json` uses result schema `6.0` and records `selection_split=validation`,
+`evaluation_split=test` and, after paired checks pass, `test_unlocked=true`. These are not fields
+of baseline `complete.json`; baseline completion requires its `state=complete` plus model/artifact
+verification. Matching evaluation schemas still require matching tasks, eligible populations
+and scales. Main-model seeds reuse matching results without CPU preparation or market downloads;
+two independent tasks need two baselines, not six baselines for three seeds each.
+
+##### Retained quantile / dual-cost-direction baselines
+
+The following applies only to historical quantile/direction64 paths. GRU, DLinear and PatchTST
+retain alpha quantiles and train absolute-stock/alpha three-class heads on shared representations.
+GBDT retains quantile regressors and adds two classifiers per horizon. Labels, execution timing
+and cost bands match historical direction64. When dual direction is enabled, fixed-reference
+normalized pinball plus both CEs supplies selection; quantile-only baselines retain their quantile
+objective. Fixed-rule residual quantiles use all train rows.
+
+`configs/baseline.json` independently owns the legacy `direction` section: `enabled` defaults to `true`,
 `loss_reference_samples` to 1,024 (32–8,192), and `absolute_weight`/`alpha_weight` to 1.0 each
 (greater than zero, at most 10). `costs` uses the same market-specific fields as the main model,
 with 1,000 Taiwan shares and 50 US shares and only cutoff-known prices. Neural models measure
@@ -3814,38 +4115,15 @@ absolute/relative signals; `always_buy` always predicts up and `zero_return` neu
 not pretend to provide probabilities or CE. Existing q50 sign agreement remains separate from
 cost-sensitive three-class accuracy. Main testing assembles cached metrics in `comparison.direction`
 and rejects mismatched costs, horizons or membership. Local main-model admission also verifies cost
-alignment; this does not bind baseline identity to Kronos capacity.
+alignment; this does not bind baseline identity to Kronos capacity. These legacy cost fields,
+dual outputs and `comparison.direction` do not describe the current independent tasks.
 
-Neural baselines dynamically permute the full training population; they currently do not use
-the main model's annual-decay weights. Comparisons should disclose candidate data, sampling
-policy, sample presentations and training cost.
-
-Baseline weights/rule parameters, best-validation metrics, complete test predictions
-and metrics live under `/runpod-volume/baselines/<baseline-id>/`, with `complete.json`
-published last. Main training requires this cache; main testing reads its metrics
-without retraining or re-running baseline inference. Identity covers data periods,
-universe/horizon/preparation semantics, baseline code and numerical parameters in
-`configs/baseline.json`, not unrelated model/README/deployment edits or concurrency
-limits. A full GBDT job that exceeds the host-memory budget fails before fitting;
-it never silently subsamples. Result schema `6.0` explicitly records
-`selection_split=validation` and `evaluation_split=test`; `test_unlocked=true`
-is published only after paired checks pass. Old-schema completed scores cannot
-be reused.
-
-Baseline finalization reuses `inputs/<split>/metadata.npy` (sample membership) and
-`inputs/<split>/targets.npy` for `validation` and `test`. The completion record's
-`evaluation_data` references these four shared files. Each model retains its own
-predictions, weights and metrics, not duplicate membership/target arrays. Finalization
-streams checksum verification, atomically publishes shared references, then removes
-redundant copies. If cleanup is interrupted, the baseline workflow finishes publication
-without retraining. This storage change does not alter periods, labels, parameters
-or baseline numerical identity.
-
-Direction labels `inputs/<split>/absolute_targets.npy` and `direction_bands.npy` also have one
+For historical dual-direction baselines, labels `inputs/<split>/absolute_targets.npy` and `direction_bands.npy` also have one
 copy per split. Each model retains only its `direction-probabilities.npy` (`N×2×H×3`) or rule
 `direction-classes.npy` (`N×2×H`), ordered absolute/alpha and down/neutral/up.
-An alpha-quantile-only baseline is not a completed dual-direction baseline. Build the new task once;
-subsequent main-model seeds with matching data/costs share it, without CPU preparation or market downloads.
+An alpha-quantile-only baseline is not a completed dual-direction baseline, and the `N×2×H`
+dual outputs are not current single-task `absolute_direction` outputs. Reuse always checks
+the current numerical contract.
 
 <a id="operations-en"></a>
 
@@ -4195,7 +4473,7 @@ All user-facing `configure` options are:
 | `--dataset-revision` | 1-64 characters; start with an alphanumeric character, followed by alphanumerics, `.`, `_`, or `-`; default `v1` | Use a new label to force a new immutable dataset namespace after a provider revises historical data |
 | `--start` | `YYYY-MM-DD`; default `2016-01-01` | Inclusive start shared by all markets; must precede `2025-06-01` and leave enough context/training history |
 | `--end` | `YYYY-MM-DD`; no default | Exclusive end shared by all markets; must be at least `2026-06-01`. Later rows never enter the fixed train/validation/holdout splits |
-| `--h-start` | `1`, `2`, or `3`; default `1` | First cumulative holding-day horizon through day 14; entry stays at the `t+1` raw open. Changes runtime labels and model output, not dataset identity |
+| `--h-start` | `1`, `2`, or `3`; default `1` | First cumulative holding-day horizon through day 14; entry stays at the `t+1` raw open. The task selects alpha or absolute direction; changes runtime labels/model output, not dataset identity |
 | `--feature-mode` | Production uses `scales` or `combined`; default `combined` | Other modes require custom/legacy configs with explicit output scale disabled; dataset namespace is unchanged |
 | `--universe` | `all`, `explicit` | Select the US-instrument strategy; `tw_only` accepts only `all`. Required in non-interactive mode |
 | `--stocks` | Comma- or space-separated US tickers; repeatable | US common stocks/ADRs in `explicit` mode, such as `"AAPL,BABA"`; provider type is verified against EODHD discovery and does not affect Taiwan data |
@@ -4343,7 +4621,8 @@ a prepared namespace. For Stage 1 → Stage 2 on the same data, retain the origi
 arguments, change only `--stage stage2`, and synchronize the selection as described here.
 Do not run `cpu prepare --max-api-calls 1` for this switch.
 
-Once all capacity and integrated YAML files are uploaded, choose A/B and capacity with
+Once all task, capacity and historical adaptive/direction YAML files are uploaded, choose
+A/B and an experiment with
 `train --experiment`. The launcher publishes that experiment's immutable selection without
 changing the global active selection or uploading source again. Missing data/baselines fail
 before paid creation; complete only the missing prerequisite, never rewrite manifests or
@@ -4708,9 +4987,8 @@ Prepare both the required training data and the shared evaluation source first.
 After synchronizing source and the active selection as described above, run locally:
 
 ```bash
-bash scripts/runpod_workflow.sh readiness --baseline
 bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1
-bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
+bash scripts/runpod_workflow.sh baseline --experiment a-alpha-point64 --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 4090"
 ```
 
 Replace the catalog's `--data-center` with the registered volume's data center; this only
@@ -4846,19 +5124,18 @@ threshold requires a matching baseline, as do changed data/splits or baseline nu
 contracts; different stock-date populations or tasks cannot be mixed.
 
 To select an A dataset (starting in 2021) whose **CPU preparation is already complete**,
-run the full selection below locally. To switch back to B, change only `--start` to
-`2016-01-01`; retain the other options used for its original preparation:
+use the following after the current source/YAML release has been synchronized. To switch
+to B, change `--start` to `2016-01-01` and `--experiment` to `b-alpha-point64`; retain the
+other options used for its original preparation. For pure direction use the corresponding
+`a-absolute-direction64` or `b-absolute-direction64` instead:
 
 ```bash
 bash scripts/runpod_workflow.sh configure \
   --stage stage2 --data-profile us_tw_eodhd --dataset-revision v1 \
   --start 2021-01-01 --end 2026-06-01 \
   --h-start 1 --feature-mode combined --universe all
-bash scripts/runpod_workflow.sh sync --dry-run
-bash scripts/runpod_workflow.sh sync --apply
-bash scripts/runpod_workflow.sh readiness --baseline
 bash scripts/runpodctl_project.sh gpu list
-bash scripts/runpod_workflow.sh baseline --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 5090"
+bash scripts/runpod_workflow.sh baseline --experiment a-alpha-point64 --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 4090"
 ```
 
 This does not prepare/split data again or download market data. No manual manifest,
@@ -4928,8 +5205,9 @@ Training remains dynamically sampled; validation/test dynamically enumerate ever
 valid per-instrument window in fixed order without a giant resident window dataset.
 
 The CPU tabular input cache flushes/fsyncs before committing its row cursor every 300
-seconds and retains completed splits. GBDT saves after each horizon/quantile incremental
-fit; rule jobs reuse completed rules. An interrupted native GBDT fit, full validation
+seconds and retains completed splits. GBDT saves after each horizon's incremental fit for
+independent tasks, or each horizon/quantile for quantile regressors; rule jobs reuse
+completed rules. An interrupted native GBDT fit, full validation
 or final test restarts that work unit. These are baseline artifacts: no new market-data
 API calls or CPU prepare reruns are required. Progress is reported every 30 seconds
 by default; only `complete.json` denotes a complete baseline result.
@@ -4938,7 +5216,7 @@ by default; only `complete.json` denotes a complete baseline result.
 
 <a id="train-en"></a>
 
-#### 5. Choose capacity experiments and create training Pods
+#### 5. Choose tasks/experiments and create training Pods
 
 <a id="gpu-catalog-en"></a>
 
@@ -4970,11 +5248,13 @@ must be created in that volume's data center: querying another location neither 
 the volume attachable across regions nor creates a replacement volume. Pass the complete
 `gpuId` to creation commands, not a potentially truncated GPU display name.
 
-##### Choose the data group and capacity experiment
+##### Choose the data group, task and experiment
 
-Complete CPU preparation and baseline building for each required data group before creating
-main-model Pods. Prepared data, baselines and pretrained models are shared. Changing capacity
-or Pod count does not download market data, split datasets again, or retrain baselines.
+Complete CPU preparation for each required data group and a matching baseline for each
+prediction task before creating main-model Pods. Prepared data and pretrained models are
+shared; baselines are shared only within matching data/task/numerical contracts. Changing
+capacity, seed or Pod count does not download market data, split datasets again, or retrain
+a matching baseline.
 Each Pod runs its own single-GPU model; this is not DDP or distributed model training.
 
 Stage 2 offers twenty configs. A starts on 2021-01-01 and B on 2016-01-01; both end on
@@ -5014,8 +5294,9 @@ pinball plus both CEs on the same full validation set; `direction64-v2` uses equ
 balanced-decision BA with a pinball guard anchored to the first full validation.
 V3 uses population CE/Brier ratios against train priors, macro-F1, opposite-error/collapse penalties
 and the same pinball guard; components are logged and BA is no longer the sole selection objective.
-Frozen tail calibration is fitted on full validation after checkpoint selection;
-test retains raw and `calibrated` metrics. Integrated presets also retain `calibrated_static`
+For calibration-enabled quantile presets only, frozen tail calibration is fitted on full
+validation after checkpoint selection; test retains raw and `calibrated` metrics.
+Adaptive quantile presets also retain `calibrated_static`
 and delayed-feedback `calibrated_online`, never using immature labels. Future 80% coverage
 is not guaranteed. `FORECAST_METRIC_WORKERS` caps diagnostic/calibration
 threads (default cap 4, additionally constrained by CPU and memory).
@@ -5031,16 +5312,26 @@ bash scripts/runpod_workflow.sh sync --dry-run
 bash scripts/runpod_workflow.sh sync --apply
 ```
 
-Create one experiment:
+Create one current alpha-point experiment:
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-direction64-v2 \
+  --experiment a-alpha-point64 \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
 
-Create three Pods to compare A's three capacities. Each repeated `--experiment` takes one name:
+Create a separate current absolute-direction experiment with its own run and matching baseline:
+
+```bash
+bash scripts/runpod_workflow.sh train \
+  --experiment a-absolute-direction64 \
+  --maxRuntime 12h \
+  --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+For the retained historical capacity controls, create three Pods to compare A's three
+capacities. Each repeated `--experiment` takes one name:
 
 ```bash
 bash scripts/runpod_workflow.sh train \
@@ -5057,11 +5348,11 @@ per command. Additional different runs may be created while experiments are alre
 Each launch pins its own immutable selection without changing the global active selection.
 Later configure commands do not change a previously created Pod's settings.
 
-Compare three training seeds with the same configuration:
+Compare three training seeds with the same alpha-point configuration:
 
 ```bash
 bash scripts/runpod_workflow.sh train \
-  --experiment a-direction64-v2 \
+  --experiment a-alpha-point64 \
   --seed 42 --seed 43 --seed 44 \
   --launchWorkers 2 \
   --maxRuntime 72h \
@@ -5069,6 +5360,9 @@ bash scripts/runpod_workflow.sh train \
 ```
 
 This creates three Pods for seeds 42, 43 and 44, each with its own run ID, results and guard.
+For the independent absolute-direction task, replace the experiment with
+`a-absolute-direction64`. Running both three-seed experiments creates six runs/Pods and requires
+two task-matched baselines, not one shared cross-task baseline or a baseline per seed.
 Each `--seed` takes one integer. For different GPUs, issue three separate `train` commands,
 each with one `--seed` and the desired `--gpuId`. Repeating both `--experiment` and `--seed`
 launches their Cartesian product: two capacities × three seeds means six Pods. A command
@@ -5159,7 +5453,7 @@ Filter a specific experiment by seed. `runs` and `status RUN_ID` display the rec
 seed, or `unknown` for historical records without one, never the current YAML's value:
 
 ```bash
-bash scripts/runpod_workflow.sh runs --experiment a-direction64-v2 --seed 43
+bash scripts/runpod_workflow.sh runs --experiment a-alpha-point64 --seed 43
 ```
 
 ```bash
@@ -5445,7 +5739,8 @@ V2 additionally persists train priors, fixed market weights, shared-gradient dia
 population/balanced-decision metrics and the first full-validation pinball anchor. Different
 versions' `direction/selection_loss` values are not comparable rankings.
 `validation/loss` records the run's `checkpoint_monitor`, not one common loss across experiments:
-the default without direction heads is mean normalized pinball over all full-validation
+independent tasks use their normalized Smooth L1 or CE; legacy quantiles without the dual-direction
+module use mean normalized pinball over all full-validation
 horizons, without ranking; original `direction64` uses pinball plus both CE terms weighted
 by frozen references; `direction64-v2` uses equal-market/task/horizon balanced-decision BA
 selection loss plus the regression penalty against its frozen first full-validation pinball anchor.
@@ -5507,7 +5802,7 @@ inclusive neutral-band boundaries. Neither task emits ranking, five-level tradin
 cost scenarios or calibrated quantiles. The following fields apply only to legacy quantile
 tasks: independent `ranking_scores`, and `calibrated_forecast` when matching validation-fitted
 checkpoint calibration exists; otherwise the latter is `null`, with `interval_calibration_status`.
-Integrated single-point inference uses frozen validation-regime calibration with status
+Single-observation inference for adaptive quantile presets uses frozen validation-regime calibration with status
 `validation_fitted_frozen_regime`; it never implicitly imports holdout online feedback state.
 No natural-language explanation is generated.
 
@@ -5925,10 +6220,11 @@ options. Run these only on the cloud Pod.
    last-written CPU summary need not match stage/config, but profile, universe and content cannot
    be silently substituted.
 5. Independent tasks output only `[B,15-h_start]` alpha points or `[B,15-h_start,3]`
-   absolute-stock classes. The fixed ±1% neutral band includes its boundaries; alpha up is
+   absolute-stock logits (probabilities after softmax). The fixed ±1% neutral band includes its boundaries; positive alpha is
    not absolute stock up, and no synthetic quantiles are emitted.
    Legacy `alpha_quantiles` has shape `[B,15-h_start,3]` with q10 ≤ q50 ≤ q90.
-   `ranking_scores` is separate from median return; both direction presets add dual three-class probabilities, not generated text.
+   `ranking_scores` is separate from median return; historical V1/V2/V3 direction presets add
+   dual three-class probabilities, not generated text.
    V2 population probabilities/raw accuracy and `balanced_decision` remain separately identified metrics.
 6. Inputs and train-only normalization exclude future data. Validation selects checkpoints;
    only calibration-enabled quantile tasks subsequently fit frozen intervals. Separate online
