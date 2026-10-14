@@ -16,8 +16,8 @@ runpod_load_create_env "${LOCAL_PROJECT_ROOT}"
 # shellcheck source=lib/runpod_selection.sh
 source "${SCRIPT_DIR}/lib/runpod_selection.sh"
 
-if [[ $# -ne 1 ]]; then
-    echo "Usage: verify_runpod_stage_readiness.sh --code-only|--gpu|--baseline" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "Usage: verify_runpod_stage_readiness.sh --code-only|--gpu|--baseline [--local-selection]" >&2
     exit 2
 fi
 case "$1" in
@@ -29,6 +29,14 @@ case "$1" in
         exit 2
         ;;
 esac
+LOCAL_SELECTION=0
+if [[ $# -eq 2 ]]; then
+    [[ "$2" == --local-selection && "${MODE}" != code-only ]] || {
+        echo "--local-selection is valid only for GPU/baseline admission" >&2
+        exit 2
+    }
+    LOCAL_SELECTION=1
+fi
 if [[ "${MODE}" == "baseline" ]]; then
     runpod_load_active_selection "${LOCAL_PROJECT_ROOT}" baseline
 else
@@ -71,12 +79,14 @@ if [[ "${MODE}" == "code-only" ]]; then
 fi
 
 if [[ "${MODE}" == "baseline" ]]; then
-    REMOTE_SELECTION_JSON="$(bash "${S3_WRAPPER}" s3 cp \
-        "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" - \
-        --only-show-errors)"
-    printf '%s\n' "${REMOTE_SELECTION_JSON}" \
-        | python3 "${SCRIPT_DIR}/runpod_selection.py" verify-selection-copy --data-only \
-            --project-root "${LOCAL_PROJECT_ROOT}" --selection "${RUNPOD_SELECTION_FILE}" --candidate -
+    if [[ "${LOCAL_SELECTION}" == 0 ]]; then
+        REMOTE_SELECTION_JSON="$(bash "${S3_WRAPPER}" s3 cp \
+            "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" - \
+            --only-show-errors)"
+        printf '%s\n' "${REMOTE_SELECTION_JSON}" \
+            | python3 "${SCRIPT_DIR}/runpod_selection.py" verify-selection-copy --data-only \
+                --project-root "${LOCAL_PROJECT_ROOT}" --selection "${RUNPOD_SELECTION_FILE}" --candidate -
+    fi
     python3 "${SCRIPT_DIR}/runpod_baseline_readiness.py" --project-root "${LOCAL_PROJECT_ROOT}" \
         --selection "${RUNPOD_SELECTION_FILE}" \
         --verified-code-release "$(printf '%s' "${CODE_JSON}" \
@@ -84,14 +94,16 @@ if [[ "${MODE}" == "baseline" ]]; then
     exit 0
 fi
 
-REMOTE_SELECTION_JSON="$(bash "${S3_WRAPPER}" s3 cp \
-    "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" - \
-    --only-show-errors)"
-printf '%s\n' "${REMOTE_SELECTION_JSON}" \
-    | python3 "${SCRIPT_DIR}/runpod_selection.py" verify-selection-copy \
-        --project-root "${LOCAL_PROJECT_ROOT}" \
-        --selection "${RUNPOD_SELECTION_FILE}" \
-        --candidate -
+if [[ "${LOCAL_SELECTION}" == 0 ]]; then
+    REMOTE_SELECTION_JSON="$(bash "${S3_WRAPPER}" s3 cp \
+        "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" - \
+        --only-show-errors)"
+    printf '%s\n' "${REMOTE_SELECTION_JSON}" \
+        | python3 "${SCRIPT_DIR}/runpod_selection.py" verify-selection-copy \
+            --project-root "${LOCAL_PROJECT_ROOT}" \
+            --selection "${RUNPOD_SELECTION_FILE}" \
+            --candidate -
+fi
 python3 "${SCRIPT_DIR}/runpod_training_readiness.py" \
     --project-root "${LOCAL_PROJECT_ROOT}" --selection "${RUNPOD_SELECTION_FILE}"
 

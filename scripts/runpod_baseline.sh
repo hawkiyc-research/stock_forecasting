@@ -20,4 +20,7 @@ mkdir -p "${TMPDIR}"
 cd "${PROJECT_ROOT}"
 export NETWORK_VOLUME_ROOT PROJECT_ROOT
 bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
+if [[ -n "${RUNPOD_PAIRED_PLAN_PATH:-}" ]]; then
+    exec "${PROJECT_PYTHON}" "${SCRIPT_DIR}/runpod_paired_baseline.py"
+fi
 exec "${PROJECT_PYTHON}" -m stock_forecasting.cli.build_baselines

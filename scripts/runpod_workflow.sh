@@ -21,15 +21,16 @@ Usage:
   bash scripts/runpod_workflow.sh selection show
   bash scripts/runpod_workflow.sh sync [--dry-run|--apply]
   bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
-  bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline]
-  bash scripts/runpod_workflow.sh train [--experiment NAME ...] [--seed N ...] [--launchWorkers N] [--maxRuntime DURATION] [--gpuId GPU_ID]
-  bash scripts/runpod_workflow.sh baseline [--experiment NAME] [--maxRuntime DURATION] [--gpuId GPU_ID]
+  bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline [--experiment a-signal64|b-signal64]]
+  bash scripts/runpod_workflow.sh train [--experiment a-signal64|b-signal64|NAME ...] [--seed N ...] [--launchWorkers N] [--maxRuntime DURATION] [--gpuId GPU_ID]
+  bash scripts/runpod_workflow.sh baseline [--experiment a-signal64|b-signal64|NAME] [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh resume [--maxRuntime DURATION] [--gpuId GPU_ID] [RUN_ID]
   bash scripts/runpod_workflow.sh validate [VALIDATION OPTIONS]
   bash scripts/runpod_workflow.sh runs [--experiment NAME] [--seed N] [--state STATE] [--limit N] [--offset N] [--workers N] [--output table|json] [--timezone ZONE]
   bash scripts/runpod_workflow.sh status [RUN_ID] [--output table|json] [--timezone ZONE]
   bash scripts/runpod_workflow.sh gpu-status [--pod-id POD_ID] [--run-id RUN_ID] [--output table|json] [--guard-dir PATH]
   bash scripts/runpod_workflow.sh gpu-notify-test
+  bash scripts/runpod_workflow.sh cleanup-monitors --pod-id POD_ID [--apply] [--guard-dir PATH]
   bash scripts/runpod_workflow.sh recover [--apply] [--pod-id POD_ID]
   bash scripts/runpod_workflow.sh download [--resume] [--checkpointScope all|best] [RUN_ID]
   bash scripts/runpod_workflow.sh download-probes [PROBE_RUN_ID]
@@ -357,6 +358,15 @@ EOF
         exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
         ;;
     readiness)
+        if [[ $# -eq 3 && "$1" == "--baseline" && "$2" == "--experiment" ]]; then
+            case "$3" in
+                a-signal64|b-signal64) ;;
+                *) echo "Paired baseline status requires a-signal64 or b-signal64" >&2; exit 2 ;;
+            esac
+            source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
+            runpod_load_create_env "${SCRIPT_DIR}/.."
+            exec python3 "${SCRIPT_DIR}/runpod_paired_control.py" status --experiment "$3"
+        fi
         if [[ $# -eq 1 && "$1" == "--baseline" ]]; then
             # Status retains the full data-rule check and uses the same result
             # validator as launch. Deployment checks remain in the launch gate.
@@ -433,18 +443,23 @@ EOF
             exec python3 "${SCRIPT_DIR}/runpod_concurrency.py" "${train_launch_options[@]}"
         fi
         if [[ -n "${baseline_experiment}" ]]; then
+            case "${baseline_experiment}" in
+                a-signal64|b-signal64)
+                    exec python3 "${SCRIPT_DIR}/runpod_paired_control.py" launch-baseline \
+                        --experiment "${baseline_experiment}"
+                    ;;
+            esac
             python3 "${SCRIPT_DIR}/runpod_selection.py" select-experiment \
                 --project-root "${SCRIPT_DIR}/.." --experiment "${baseline_experiment}"
             unset RUNPOD_LAUNCH_SELECTION_FILE
-            bash "${SCRIPT_DIR}/publish_runpod_selection.sh"
         fi
         exec env RUNPOD_GPU_WORKFLOW="${COMMAND}" bash "${SCRIPT_DIR}/create_runpod_pod.sh"
         ;;
     resume)
-        exec bash "${SCRIPT_DIR}/create_runpod_resume_pod.sh" "$@"
+        exec python3 "${SCRIPT_DIR}/runpod_paired_relaunch.py" resume "$@"
         ;;
     validate)
-        exec bash "${SCRIPT_DIR}/create_runpod_validation_pod.sh" "$@"
+        exec python3 "${SCRIPT_DIR}/runpod_paired_relaunch.py" validate "$@"
         ;;
     probe-scales)
         exec bash "${SCRIPT_DIR}/runpod_probe_scales.sh" "$@"
@@ -469,6 +484,9 @@ EOF
         ;;
     recover)
         exec python3 "${SCRIPT_DIR}/recover_runpod_after_wake.py" "$@"
+        ;;
+    cleanup-monitors)
+        exec python3 "${SCRIPT_DIR}/runpod_cleanup_monitors.py" "$@"
         ;;
     download)
         exec bash "${SCRIPT_DIR}/download_runpod_results.sh" "$@"

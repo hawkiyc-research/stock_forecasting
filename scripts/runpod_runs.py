@@ -88,7 +88,7 @@ class RunRecords:
                 if re.fullmatch(
                     r"lifecycle/runs/"
                     + RUN
-                    + r"/(training|validation|training-completed|wandb)\.json",
+                    + r"/(training|validation|training-completed|wandb|pair)\.json",
                     key,
                 ):
                     validate_run(key.split("/")[2])
@@ -113,6 +113,15 @@ class RunRecords:
             raise ValueError("Lifecycle ownership mismatch")
         return result or {}
 
+    def validate_pair(self, payload, run_id):
+        contract = runpy.run_path(str(self.root / "scripts/runpod_paired.py"))
+        return contract["validate_manifest"](payload, run_id=run_id)
+
+    def pair(self, run_id):
+        validate_run(run_id)
+        payload = self.read(f"lifecycle/runs/{run_id}/pair.json", optional=True)
+        return self.validate_pair(payload, run_id) if payload is not None else None
+
     def records(self):
         # Metadata only: at most two outstanding requests and 64 records per batch.
         batch = []
@@ -128,6 +137,7 @@ class RunRecords:
     def choose(self, purpose):
         candidates = {}
         completed = set()
+        pairs = {}
 
         def nominate(run_id, value):
             stamp = timestamp(value)
@@ -135,7 +145,9 @@ class RunRecords:
 
         for key, record in self.records():
             run_id = key.split("/")[2]
-            if key.endswith("/training-completed.json"):
+            if key.endswith("/pair.json"):
+                pairs[run_id] = self.validate_pair(record, run_id)
+            elif key.endswith("/training-completed.json"):
                 if (
                     record.get("run_id") != run_id
                     or record.get("kind") != "stage1-training-completion"
@@ -188,8 +200,30 @@ class RunRecords:
                 } and not legacy.get("training_completed")
             if eligible and run_id not in candidates:
                 nominate(run_id, legacy.get("generated_at"))
+        if pairs:
+            inspect = runpy.run_path(str(self.root / "scripts/runpod_run_status.py"))["inspect_pair"]
+            for run_id, pair in pairs.items():
+                candidates.pop(run_id, None)
+                for child in pair["children"].values():
+                    candidates.pop(child["run_id"], None)
+                if pair.get("workflow") == "baseline":
+                    continue
+                status = inspect(self, run_id, pair)
+                if purpose == "resume":
+                    eligible = status["state"] in {"incomplete", "trained"}
+                elif purpose == "completed":
+                    eligible = all(
+                        child.get("training", {}).get("state") == "complete"
+                        for child in status["children"].values()
+                    )
+                else:
+                    eligible = status["state"] == "complete"
+                if eligible:
+                    nominate(run_id, status["last_activity_at"] or pair["created_at"])
         if purpose == "resume":
-            candidates = {k: v for k, v in candidates.items() if k not in completed}
+            # Paired resume also finishes a missing task evaluation; completed
+            # training alone must not hide an unfinished outer experiment.
+            candidates = {k: v for k, v in candidates.items() if k not in completed or k in pairs}
             if len(candidates) > 1:
                 raise ValueError(
                     "Multiple interrupted runs; specify RUN_ID: " + ", ".join(sorted(candidates))
@@ -223,7 +257,7 @@ def main(argv=None):
         query = runpy.run_path(str(ROOT / "scripts/runpod_run_status.py"))
         return query["main"](RunRecords(), arguments[0], arguments[1:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("latest", "lifecycle", "selection", "list", "status"))
+    parser.add_argument("command", choices=("latest", "lifecycle", "selection", "pair", "list", "status"))
     parser.add_argument("--run-id")
     parser.add_argument("--kind", choices=("training", "validation"), default="training")
     parser.add_argument(
@@ -237,6 +271,8 @@ def main(argv=None):
         print(json.dumps(reader.lifecycle(args.run_id, args.kind)))
     elif args.command == "selection":
         print(reader.selection(args.run_id))
+    elif args.command == "pair":
+        print(json.dumps(reader.pair(args.run_id)))
     return 0
 
 

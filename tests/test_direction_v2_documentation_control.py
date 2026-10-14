@@ -212,11 +212,11 @@ class DirectionV2DocumentationTests(unittest.TestCase):
             multi_seed = [
                 command
                 for command in commands
-                if "--seed" in command and "a-alpha-point64" in command
+                if command.count("--seed") == 3 and "a-signal64" in command
             ]
             self.assertEqual(len(multi_seed), 1, language)
             command = multi_seed[0]
-            self.assertEqual(command[command.index("--experiment") + 1], "a-alpha-point64")
+            self.assertEqual(command[command.index("--experiment") + 1], "a-signal64")
             self.assertEqual(
                 [command[i + 1] for i, value in enumerate(command) if value == "--seed"],
                 ["42", "43", "44"],

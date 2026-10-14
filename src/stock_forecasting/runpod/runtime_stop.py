@@ -39,7 +39,41 @@ def stop_at_saved_boundary(
     if not raw_volume_root.is_absolute() or raw_volume_root == Path("/workspace"):
         raise ValueError("Runtime stop requires a persistent network volume")
     volume_root = raw_volume_root.resolve()
-    signal_dir = volume_root / "lifecycle" / "runs" / run_id / "pods" / pod_id
+    owner_run_id = os.environ.get("RUNPOD_PARENT_RUN_ID", "") or run_id
+    if owner_run_id != run_id:
+        if SAFE_RUN_ID.fullmatch(owner_run_id) is None or "--" in owner_run_id:
+            raise ValueError("Runtime stop parent identity is invalid")
+        plan_path = volume_root / "lifecycle/runs" / owner_run_id / "pair.json"
+        configured_plan = os.environ.get("RUNPOD_PAIRED_PLAN_PATH", "")
+        if (
+            not configured_plan
+            or Path(configured_plan).resolve() != plan_path
+            or plan_path.is_symlink()
+            or not plan_path.is_file()
+            or plan_path.stat().st_size > 1024 * 1024
+        ):
+            raise ValueError("Runtime stop parent requires its immutable paired plan")
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if not isinstance(plan, dict):
+            raise ValueError("Runtime stop paired plan must be an object")
+        children = plan.get("children", {})
+        expected_children = {
+            "alpha_point": owner_run_id + "-alpha",
+            "absolute_direction": owner_run_id + "-direction",
+        }
+        if (
+            plan.get("schema_version") != 1
+            or plan.get("kind") != "paired-training"
+            or plan.get("workflow") != "train"
+            or plan.get("run_id") != owner_run_id
+            or not isinstance(children, dict)
+            or set(children) != set(expected_children)
+            or any(not isinstance(children[task], dict) or children[task].get("run_id") != child_id
+                   for task, child_id in expected_children.items())
+            or run_id not in expected_children.values()
+        ):
+            raise ValueError("Runtime stop parent does not own this model run")
+    signal_dir = volume_root / "lifecycle" / "runs" / owner_run_id / "pods" / pod_id
     request_path = signal_dir / "stop-request.json"
     try:
         if request_path.is_symlink() or request_path.stat().st_size > 8192:
@@ -51,7 +85,7 @@ def stop_at_saved_boundary(
         "schema_version": 1,
         "kind": "runtime-stop-request",
         "pod_id": pod_id,
-        "run_id": run_id,
+        "run_id": owner_run_id,
     }:
         return
     artifact = artifact.resolve(strict=True)
@@ -89,12 +123,14 @@ def stop_at_saved_boundary(
         "schema_version": 1,
         "kind": "runtime-stop-ready",
         "pod_id": pod_id,
-        "run_id": run_id,
+        "run_id": owner_run_id,
         "section_kind": section_kind,
         "section_id": section_id,
         "artifact": str(artifact),
         "saved_at": datetime.now(UTC).isoformat(),
     }
+    if owner_run_id != run_id:
+        acknowledgement["child_run_id"] = run_id
     temporary = signal_dir / f"stop-ready.json.tmp.{os.getpid()}"
     temporary.write_text(json.dumps(acknowledgement, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, signal_dir / "stop-ready.json")

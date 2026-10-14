@@ -563,7 +563,9 @@ def test_stable_runpod_lifecycle_and_synchronization_boundaries_remain() -> None
     assert "rest.runpod.io" not in create_cpu
     assert "runpod_rest_v2_control.py" in create_cpu
     assert "runpodctl_project.sh" in create_gpu
-    assert "pod create" in create_gpu
+    create_request = (ROOT / "scripts/runpod_create_request.py").read_text(encoding="utf-8")
+    assert 'python3 "${SCRIPT_DIR}/runpod_create_request.py"' in create_gpu
+    assert '["bash", str(root / "scripts/runpodctl_project.sh"), "pod", "create-gpu"]' in create_request
     assert "--dry-run" in sync
     assert "--apply" in sync
     assert 'CODE_MARKER_KEY="lifecycle/stage1/code.json"' in sync

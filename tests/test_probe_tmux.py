@@ -280,7 +280,10 @@ class ProbeTmuxTests(unittest.TestCase):
         ):
             with self.subTest(heading=heading):
                 section = readme.split(heading, 1)[1].split("\n### ", 1)[0]
-                self.assertIn("bash scripts/runpod_workflow.sh train --maxRuntime 2h", section)
+                language = "zh" if "歷史" in heading else "en"
+                self.assertIn(f"#single-model-{language}", section)
+                advanced = readme.split(f'<a id="single-model-{language}"></a>', 1)[1].split("\n## ", 1)[0]
+                self.assertIn("bash scripts/runpod_workflow.sh train --experiment a-alpha-point64 --seed 42 --maxRuntime 2h", advanced)
                 self.assertIn("bash scripts/runpod_tmux_launch.sh probe-scales\n", section)
                 self.assertIn("bash scripts/runpod_tmux_launch.sh probe-scales --help", section)
                 self.assertNotIn("runpod_workflow.sh probe-scales", section)
@@ -356,7 +359,11 @@ class ProbeTmuxTests(unittest.TestCase):
         self.assertEqual(harness.read("waiting-for-local-guard"), "lease-held\n")
         self.assertFalse((harness.root / "shutdown-called").exists())
         self.assertEqual(harness.read("timeout-options").splitlines()[-1], "120s")
-        self.assertIn("fixture worker finished", Path(harness.status()["log_path"]).read_text())
+        self.assertIn(
+            "fixture worker finished",
+            Path(harness.status()["log_path"]).read_text(),
+            runner.stdout + runner.stderr,
+        )
         self.assertFalse((harness.runners()[0].parent / "pod-shutdown/shutdown.json").exists())
         self.assert_no_training_markers(harness)
 

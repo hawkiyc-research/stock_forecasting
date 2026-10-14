@@ -37,6 +37,18 @@ fi
 
 case "$1:$2" in
     s3:cp|s3:ls|s3api:head-bucket|s3api:head-object|s3api:list-objects-v2) ;;
+    s3api:delete-object)
+        # Only an exact failed-launch selection record may be removed. The
+        # caller must verify it was never started and preserve a local backup.
+        if [[ $# -ne 6 || "${3:-}" != --bucket \
+            || "${4:-}" != "${RUNPOD_NETWORK_VOLUME_ID}" || "${5:-}" != --key \
+            || ! "${RUNPOD_NETWORK_VOLUME_ID}" =~ ^[A-Za-z0-9_-]+$ \
+            || ! "${6:-}" =~ ^lifecycle/runs/[A-Za-z0-9][A-Za-z0-9._-]{0,119}/selection\.json$ \
+            || "${6:-}" == *..* || "${6:-}" == *--* ]]; then
+            echo "Deletion is limited to one exact lifecycle/runs/RUN_ID/selection.json in the configured volume; extra arguments are forbidden" >&2
+            exit 2
+        fi
+        ;;
     *)
         echo "Unsupported AWS operation for the RunPod S3 wrapper" >&2
         exit 2

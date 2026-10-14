@@ -69,21 +69,23 @@ def pages(reader, prefix, *, delimiter=False):
     raise ValueError("Run inventory exceeded its page limit")
 
 
-def discover(reader):
+def discover(reader, *, experiment=None):
     """List only metadata and run prefixes, never checkpoint or dataset contents."""
-    runs = {}
+    runs, pairs = {}, set()
     for page in pages(reader, "lifecycle/runs/"):
         for item in page.get("Contents", []):
             match = re.fullmatch(
                 r"lifecycle/runs/("
                 + RUN_PATTERN
-                + r")/(selection|training|validation|training-completed|wandb)\.json",
+                + r")/(selection|training|validation|training-completed|wandb|pair)\.json",
                 item["Key"],
             )
             if match:
                 run_id = match[1]
                 modified = item.get("LastModified") or ""
                 runs[run_id] = max(runs.get(run_id, ""), modified)
+                if match[2] == "pair":
+                    pairs.add(run_id)
     for page in pages(reader, "savedModel/", delimiter=True):
         for item in page.get("CommonPrefixes", []):
             match = re.fullmatch(r"savedModel/(" + RUN_PATTERN + r")/", item["Prefix"])
@@ -91,6 +93,18 @@ def discover(reader):
                 runs.setdefault(match[1], "")
     if len(runs) > 10000:
         raise ValueError("Run inventory exceeded 10000 runs; narrow the stored inventory")
+    # Read only pair metadata, with a small bounded request pool. Explicit task
+    # filters retain access to individual models without duplicating default rows.
+    iterator = iter(sorted(pairs))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        while batch := list(islice(iterator, 16)):
+            payloads = pool.map(lambda run: reader.pair(run), batch)
+            for pair in payloads:
+                if pair.get("workflow") == "baseline":
+                    runs.pop(pair["run_id"], None)
+                for child in pair["children"].values():
+                    if experiment != child["experiment"]:
+                        runs.pop(child["run_id"], None)
 
     def order(run_id):
         match = re.match(r"run-(\d{8}T\d{6}Z)-", run_id)
@@ -141,13 +155,92 @@ def configuration(selection, manifest):
         "runtime": selection.get("runtime") or {},
         "lora": model.get("lora"),
         "unfreeze_last_blocks": model.get("unfreeze_last_blocks"),
+        "prediction_task": model.get("prediction_task"),
     }
 
 
-def inspect_run(reader, run_id):
+def inspect_pair(reader, run_id, pair):
+    """Aggregate task artifacts, never treat a parent lifecycle alone as completion."""
+    pair = reader.validate_pair(pair, run_id)
+    if pair.get("workflow") == "baseline":
+        return {
+            "run_id": run_id, "kind": "paired-baseline", "state": "unknown",
+            "configuration": {"experiment": pair["experiment"], "seed": pair["seed"]},
+            "initialized_at": pair.get("created_at"),
+            "last_activity_at": pair.get("updated_at") or pair.get("created_at"),
+            "message": "Use readiness --baseline --experiment " + pair["experiment"]
+            + " to verify both task-specific baseline results.",
+        }
+    children = {}
+    for task, child in pair["children"].items():
+        try:
+            children[task] = inspect_run(reader, child["run_id"], allow_pair=False)
+        except ValueError as error:
+            if str(error) != f"Run not found: {child['run_id']}":
+                raise
+            children[task] = {
+                "run_id": child["run_id"], "state": "not_started",
+                "configuration": {"experiment": child["experiment"], "seed": pair["seed"]},
+            }
+        configured = children[task]["configuration"]
+        if configured.get("experiment") not in (None, child["experiment"]):
+            raise ValueError(f"Paired child experiment mismatch: {task}")
+        if configured.get("seed") not in (None, pair["seed"]):
+            raise ValueError(f"Paired child seed mismatch: {task}")
+        if children[task].get("model_initialized") and configured.get("prediction_task") != task:
+            raise ValueError(f"Paired child training prediction task mismatch: {task}")
+        evaluated = children[task].get("evaluation", {})
+        if evaluated.get("state") == "complete" and evaluated.get("prediction_task") != task:
+            raise ValueError(f"Paired child evaluation prediction task mismatch: {task}")
+    states = {child["state"] for child in children.values()}
+    parent_training = reader.lifecycle(run_id, "training")
+    parent_state = parent_training.get("state")
+    if states == {"complete"} and all(
+        child["evaluation"]["split"] == "test" for child in children.values()
+    ):
+        state = "complete"
+    elif parent_state in {"failed", "timed_out", "waiting_for_resume", "interrupted"}:
+        state = "incomplete"
+    elif "incomplete" in states or "error" in states:
+        state = "incomplete"
+    elif "training" in states:
+        state = "training"
+    elif "evaluating" in states:
+        state = "evaluating"
+    elif parent_state in {"running", "preparing", "training", "finalizing"}:
+        state = "training"
+    elif states <= {"complete", "trained"}:
+        state = "trained"
+    elif states == {"not_started"}:
+        state = "not_started"
+    else:
+        state = "incomplete"
+    activity = [pair.get("created_at"), pair.get("updated_at"), parent_training.get("generated_at")]
+    activity.extend(child.get("last_activity_at") for child in children.values())
+    configured = next(
+        (dict(child["configuration"]) for child in children.values()
+         if child["configuration"].get("source")),
+        configuration(next(iter(pair["children"].values()))["selection"], {}),
+    )
+    configured.update(experiment=pair["experiment"], seed=pair["seed"])
+    return {
+        "run_id": run_id, "kind": "paired-training", "state": state,
+        "configuration": configured, "initialized_at": pair.get("created_at"),
+        "last_activity_at": max((value for value in activity if value), key=stamp, default=None),
+        "children": children,
+        "pod_id": parent_training.get("pod_id"),
+    }
+
+
+def inspect_run(reader, run_id, *, allow_pair=True):
     if not re.fullmatch(RUN_PATTERN, run_id) or "--" in run_id:
         raise ValueError("Invalid run ID")
     prefix = f"lifecycle/runs/{run_id}"
+    pair = reader.read(f"{prefix}/pair.json", optional=True)
+    if pair is not None:
+        if not allow_pair:
+            raise ValueError("Nested paired runs are not supported")
+        return inspect_pair(reader, run_id, pair)
     manifest = owned(
         reader.read(f"savedModel/{run_id}/run-manifest.json", optional=True), run_id, "run_id"
     )
@@ -252,6 +345,7 @@ def inspect_run(reader, run_id):
     latest = max((value for value in activity if value), key=stamp, default=None)
     return {
         "run_id": run_id,
+        "model_initialized": bool(manifest),
         "state": state,
         "configuration": configured,
         "initialized_at": manifest.get("created_at"),
@@ -274,6 +368,7 @@ def inspect_run(reader, run_id):
             "state": evaluation_state,
             "lifecycle_state": evaluation.get("state"),
             "split": report.get("evaluation_split") or report.get("selection_split"),
+            "prediction_task": report.get("prediction_task"),
             "started_at": report.get("started_at"),
             "completed_at": report.get("completed_at") if evaluation_done else None,
             "pod_id": evaluation.get("pod_id"),
@@ -321,7 +416,7 @@ def worker_count(reader, requested):
 
 
 def inventory(reader, *, limit, offset, experiment, state, workers, seed=None):
-    runs = discover(reader)
+    runs = discover(reader, experiment=experiment)
     selected, errors, matched, scanned = [], [], 0, 0
 
     def query(run_id):
@@ -379,6 +474,26 @@ def print_run(item, zone, *, detail=False):
     )
     if item.get("error"):
         print(f"  Error: {item['error']}")
+        return
+    if item.get("kind") == "paired-baseline":
+        print("  " + item["message"])
+        return
+    if item.get("kind") == "paired-training":
+        print(
+            f"  Paired experiment: one Pod, two independent models | "
+            f"Initialized: {time_text(item['initialized_at'])}"
+        )
+        dates = config.get("date_range") or {}
+        print(
+            f"  Configure: stage={value(config.get('stage'))} "
+            f"data-profile={value(config.get('data_profile'))} "
+            f"start={value(dates.get('start_inclusive'))} "
+            f"end(exclusive)={value(dates.get('end_exclusive'))}"
+        )
+        for task, child in item["children"].items():
+            print(f"  {task}: {child['run_id']}  {child['state'].upper()}")
+            if detail and "training" in child:
+                print_run(child, zone, detail=True)
         return
     train, evaluation = item["training"], item["evaluation"]
     print(

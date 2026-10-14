@@ -80,6 +80,13 @@ fi
 if [[ -z "${RUN_ID}" ]]; then
     RUN_ID="$(python3 "${SCRIPT_DIR}/runpod_runs.py" latest --purpose results)"
 fi
+PAIR_JSON="$(python3 "${SCRIPT_DIR}/runpod_runs.py" pair --run-id "${RUN_ID}")"
+if [[ "${PAIR_JSON}" != null ]]; then
+    pair_options=(--pair-json "${PAIR_JSON}" --download-script "${BASH_SOURCE[0]}"
+        --checkpoint-scope "${CHECKPOINT_SCOPE}")
+    [[ "${RESUME}" != "1" ]] || pair_options+=(--resume)
+    exec python3 "${SCRIPT_DIR}/download_runpod_pair.py" "${pair_options[@]}"
+fi
 TRAINING_JSON="$(python3 "${SCRIPT_DIR}/runpod_runs.py" lifecycle --run-id "${RUN_ID}")"
 if [[ ! "${RUN_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ \
     || "${RUN_ID}" == *--* ]]; then

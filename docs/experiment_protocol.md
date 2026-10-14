@@ -8,8 +8,9 @@
 下，以金融 K-line 預訓練的 Kronos-base 經 LoRA 微調後，能否比簡單規則、傳統 ML
 與小型 causal DL baseline 更準確地預測個別股票／ETF 從可設定的第 1、2 或 3 個
 持有交易日起至固定第 14 日、
-相對市場 benchmark 的 alpha，以及個股絕對方向？`alpha-point64` 與
-`absolute-direction64` 分別測試單任務穩健回歸與固定報酬帶三分類；既有分位數與
+相對市場 benchmark 的 alpha，以及個股絕對方向？`a-signal64`／`b-signal64`
+每個組別與 seed 以一個實驗流程、單一 Pod 依序訓練 `alpha_point` 與
+`absolute_direction`，分別測試單任務穩健回歸與固定報酬帶三分類；既有分位數與
 成本敏感雙方向實驗保留作對照，不將其結果視為同一任務。
 
 本協定不把 validation Sharpe 或單次回測視為「可交易 alpha」的充分證據，也不把模型
@@ -34,6 +35,9 @@
 單任務假說：在相同 Kronos-base／LoRA-64、資料及尺度路徑下，將穩健 alpha 點估計與
 個股漲／平／跌分開訓練，能否得到可重現、超越任務對齊 baseline 的 holdout 改善？
 每個任務有自己的 encoder 微調權重、head、optimizer 與 checkpoint；不預設分開必然較好。
+兩個模型從相同 pretrained revision 各自初始化，沒有共享可訓練參數或合併 loss；
+「一次實驗」指同一父 run 管理兩個子模型，不是兩個需要分別手動啟動的實驗。
+同 Pod 依序執行使兩個完整模型不需同時占用 GPU 記憶體；多個 seed 可在不同 Pod 並行。
 ±1% 是初始候選，不宣稱最佳。完整 train 的市場／持有期類別稽核必須先通過；門檻不得由 test 挑選。
 
 既有多任務假說：共享金融預訓練 encoder、歷史 benchmark conditioning 與可讀出的歷史尺度
@@ -119,7 +123,7 @@ script smoke 當成額外訓練資料。
 
 #### 7.1 當前主線：兩個獨立任務
 
-`alpha-point64`／`absolute-direction64` 各自以以下一個 objective 訓練與選模：
+成對入口 `a-signal64`／`b-signal64` 內的兩個子模型，各自以下列一個 objective 訓練與選模：
 
 ```text
 alpha_point: mean(SmoothL1((prediction - alpha) / train_scale[h], beta=1.0))
@@ -228,9 +232,12 @@ pinball 與 normalized Smooth L1 適合各 run 內的選模，不能只憑其跨
 
 ### 8. Comparator suite
 
-Baseline 依任務分開建置與保存。`baseline --experiment a-alpha-point64`（或 B）使用
-點估計 baseline；`baseline --experiment a-absolute-direction64` 使用同 ±1% 標籤的
-純三分類 baseline。不同任務結果不得混用；同資料與任務的 training seeds 共用一次
+Baseline 依任務獨立保存，但使用單一 `baseline --experiment a-signal64`（B 組為
+`b-signal64`）流程，先在本機核對兩個 task cache；皆完成直接跳過，不租用 Pod。
+若尚未完成，單一 Pod 依序建置點估計與同 ±1% 標籤的純三分類 baseline，略過已完成部分。
+`readiness --baseline --experiment a-signal64` 同時查詢兩者的資料篩選規則及完成結果。
+成對入口不改 active selection；個別任務的進階入口仍保留，見 README 附錄。
+不同任務結果不得混用；同資料與任務的 training seeds 共用一次
 完成結果，不因主模型 LoRA 容量或 seed 重訓 baseline。新 baseline 不重做 CPU prepare。
 點估計神經 baseline 使用 normalized Smooth L1；tree 訓練使用 absolute-error（MAE），
 仍以完整 validation normalized Smooth L1 選模，此 training／selection objective
@@ -385,13 +392,15 @@ Stage 2 與獨立任務：
 
 ### 13. 優先 ablation
 
-當前主線分別測試 `alpha-point64` 與 `absolute-direction64`，各任務在同資料組別
+當前主線以 `a-signal64`／`b-signal64` 成對實驗測試兩個獨立模型，在同資料組別
 使用至少三個 training seeds（42、43、44），對照各自已完成的 task-aligned baseline。
 先比較同任務共同 holdout 的指標與 seed dispersion，再研究容量或其他單因子；
 不可把 point 與分類 selection score 互相比大小。CLI 使用
-`train --experiment a-alpha-point64` 或 `train --experiment a-absolute-direction64`
-（B 組改用 `b-`），每個 seed 各自執行
-獨立命令；runtime、GPU 型號及多 Pod 參數維持原規則，完整命令見
+`train --experiment a-signal64 --seed 42 --seed 43 --seed 44`
+（B 組改用 `b-signal64`），建立三台 Pod、三個父 run、六個獨立模型；也可每個 seed
+分別下命令以選擇不同 GPU。每台 runtime 是兩模型共用的整體上限，不是各自重新計時。
+父 `status` 只有在兩個正確任務都完成訓練與完整 test 後才標記 COMPLETE；`resume` 略過已完成
+模型、補齊未完成訓練或 test，`download` 一次取得兩份子模型結果而不複製權重。完整命令見
 [README 訓練操作](../README.md#train-zh)。
 
 保留的歷史多任務比較是同資料組別的 `direction64-v2` 與 `direction64-v3`，亦需
@@ -415,7 +424,7 @@ V3 selection loss 等市場／任務／horizon 平均 `(CE/priorCE+Brier/priorBr
 BA、population 與 balanced-decision accuracy、per-class precision／recall、confidence bins
 均保留，另報 ordinal MAE、相反方向錯誤、Brier skill、塌縮類別與各選模分項。
 Test 不擬合任何先驗或門檻；V2/V3 不跨架構 resume，selection loss 不跨 run 排名。
-參數及完整公式見 [README V3 模型](../README.md#training-zh)。
+參數及完整公式見 [README 歷史 V3 訓練目標](../README.md#legacy-objectives-zh)。
 
 後續可在不改 output contract 與資料切分下，另作以下單因子消融：
 
@@ -445,7 +454,8 @@ Under strict point-in-time inputs, next-open execution, and chronological
 evaluation, can a finance-K-line-pretrained Kronos-base with LoRA predict an individual stock's
 or ETF's `h_start`-through-14 holding-day benchmark-relative alpha and absolute direction
 more accurately than simple rules, traditional ML, and compact causal DL
-baselines? `alpha-point64` and `absolute-direction64` test independent robust point regression
+baselines? Each `a-signal64`/`b-signal64` group/seed uses one experiment workflow and one Pod
+to train `alpha_point` then `absolute_direction`, testing independent robust point regression
 and fixed-return-band classification. Existing quantile and cost-sensitive dual-direction
 experiments remain controls; their outcomes are not interchangeable task results.
 
@@ -473,6 +483,10 @@ The independent-task hypothesis asks whether separating robust alpha-point predi
 absolute-stock down/neutral/up classification improves reproducible holdout results against
 task-aligned baselines with the same Kronos-base/LoRA-64, data and scale path. Each task has
 its own fine-tuned encoder, head, optimizer and checkpoint; separation is not presumed superior.
+Both initialize independently from the same pretrained revision, without shared trainable
+parameters or mixed losses. One parent workflow manages both child models, rather than requiring
+two manually launched experiments. Sequential execution avoids holding both full models in GPU
+memory at once; different seeds can run concurrently on separate Pods.
 The ±1% band is an initial candidate, not a proven optimum. Full-train market/horizon class
 audits must pass before fitting; test labels never select the threshold.
 
@@ -555,7 +569,7 @@ pretrained revisions so the Stage 1 smoke run is not hidden extra training.
 
 #### 7.1 Current primary path: two independent tasks
 
-`alpha-point64` and `absolute-direction64` each train and select by one objective:
+The two child models in `a-signal64`/`b-signal64` each train and select by one objective:
 
 ```text
 alpha_point: mean(SmoothL1((prediction - alpha) / train_scale[h], beta=1.0))
@@ -678,9 +692,12 @@ accuracy, BA, macro-F1 and class support on the same holdout, not coverage.
 
 ### 8. Comparator suite
 
-Build/store baselines separately by task. `baseline --experiment a-alpha-point64` (or B)
-selects point baselines; `baseline --experiment a-absolute-direction64` selects pure classification
-with the same ±1% labels. Task results are not interchangeable. Runs sharing data and task
+Store baselines independently by task, but use one `baseline --experiment a-signal64`
+(or `b-signal64`) workflow. It checks both task caches locally and rents no Pod when both are complete.
+Otherwise one Pod builds point and same-±1%-label classification families sequentially, skipping
+completed work. `readiness --baseline --experiment a-signal64` checks both current cleaning rules
+and completion. Paired entries do not change active selection; advanced individual-task entries
+remain in the README appendix. Task results are not interchangeable. Runs sharing data and task
 reuse the completed baseline across training seeds; main-model LoRA capacity/seed does not
 trigger retraining. New baselines do not redo CPU preparation. Neural point baselines use
 normalized Smooth L1. Trees train with absolute error (MAE), but still select by full-validation
@@ -841,13 +858,16 @@ Stronger claims require multiple seeds, dispersion, and predefined ablations.
 
 ### 13. Priority ablations
 
-The current primary path tests `alpha-point64` and `absolute-direction64` separately, each with
-at least three training seeds (42, 43, 44) within one data group and its own completed task-aligned
+The current primary path uses `a-signal64`/`b-signal64` to manage two independent models, with
+at least three training seeds (42, 43, 44) within one data group and each model's completed task-aligned
 baselines. First compare same-task shared-holdout metrics and seed dispersion, then study capacity
 or another single factor; never compare point and classifier selection scores against each other.
-Use `train --experiment a-alpha-point64` or `train --experiment a-absolute-direction64`
-(`b-` for group B), with an independent command per seed. Runtime, GPU selection and multi-Pod
-options retain their existing behavior. Complete commands are in
+Use `train --experiment a-signal64 --seed 42 --seed 43 --seed 44` (`b-signal64` for B):
+three Pods, three parents and six independent models. Separate commands per seed remain available
+for choosing different GPUs. Each Pod's runtime applies to the whole pair, not separately to each model.
+Parent `status` is COMPLETE only after both correct tasks finish training and full test; `resume`
+skips completed children and finishes outstanding training/test, and `download` obtains both child
+results without duplicating weights. Complete commands are in
 [README training operations](../README.md#train-en).
 
 The retained historical multitask comparison is `direction64-v2` versus `direction64-v3` within
@@ -874,7 +894,7 @@ at least 5% and predicted share below 1%; configurable thresholds/weights never 
 BA, population/balanced decision accuracy, per-class precision/recall and confidence bins remain;
 ordinal MAE, opposite errors, Brier skill, collapsed classes and score components are added.
 Test fits no prior/threshold. V2/V3 cannot resume across architectures; selection loss does not
-rank runs. See [README V3 model](../README.md#training-en) for parameters and the full formula.
+rank runs. See [README historical V3 objectives](../README.md#legacy-objectives-en) for parameters and the full formula.
 
 Optional later single-factor ablations, without changing outputs or splits, include:
 

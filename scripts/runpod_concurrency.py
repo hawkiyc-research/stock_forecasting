@@ -40,10 +40,13 @@ def safe_run_id(value: str) -> str:
     return value
 
 
-def check_admission(pods: list, volume: str, mode: str, run_id: str) -> None:
+def check_admission(pods: list, volume: str, mode: str, run_id: str,
+                    requested_children: set[str] | None = None) -> None:
     """Only distinct, run-scoped train/validation consumers may share a volume."""
     if not isinstance(pods, list):
         raise ValueError("Cannot establish active Pod inventory")
+    requested = {safe_run_id(run_id)} if mode in {"train", "validation"} else set()
+    requested.update(safe_run_id(value) for value in (requested_children or set()))
     for pod in pods:
         if not isinstance(pod, dict):
             raise ValueError("Invalid Pod inventory entry")
@@ -57,10 +60,21 @@ def check_admission(pods: list, volume: str, mode: str, run_id: str) -> None:
             and env.get("RUNPOD_ROLE") in {"gpu-train", "gpu-validation"}
             and env.get("WANDB_RUN_ID")
         )
+        active_owners = set()
+        if shared_reader:
+            parent = safe_run_id(str(env["WANDB_RUN_ID"]))
+            active_owners.add(parent)
+            pair_path = env.get("RUNPOD_PAIRED_PLAN_PATH")
+            if pair_path:
+                mount = env.get("NETWORK_VOLUME_ROOT") or env.get("RUNPOD_VOLUME_ROOT")
+                if (not isinstance(mount, str) or not mount.startswith("/")
+                        or pair_path != f"{mount}/lifecycle/runs/{parent}/pair.json"):
+                    raise ValueError("Active paired Pod has an invalid ownership plan path")
+                active_owners.update((safe_run_id(parent + "-alpha"), safe_run_id(parent + "-direction")))
         if (
             mode in {"train", "validation"}
             and shared_reader
-            and safe_run_id(str(env["WANDB_RUN_ID"])) != safe_run_id(run_id)
+            and requested.isdisjoint(active_owners)
         ):
             continue
         # Stopped Pods still own a mount and can be restarted. Do not assume idle
@@ -75,6 +89,11 @@ def admit(root: Path, mode: str, run_id: str = "") -> None:
     volume = os.environ.get("RUNPOD_NETWORK_VOLUME_ID", "")
     if re.fullmatch(r"[A-Za-z0-9_-]+", volume) is None:
         raise ValueError("Network volume ID must be loaded from .env")
+    requested_children = set()
+    if mode in {"train", "validation"} and os.environ.get("RUNPOD_PAIRED_MANIFEST"):
+        paired = runpy.run_path(str(root / "scripts/runpod_paired.py"))
+        plan = paired["load_manifest"](Path(os.environ["RUNPOD_PAIRED_MANIFEST"]), run_id=run_id)
+        requested_children = {child["run_id"] for child in plan["children"].values()}
     result = subprocess.run(
         ["bash", str(root / "scripts/runpodctl_project.sh"), "pod", "list", "--output", "json"],
         capture_output=True,
@@ -113,7 +132,8 @@ def admit(root: Path, mode: str, run_id: str = "") -> None:
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         for start in range(0, len(pods), 16):
-            check_admission(list(pool.map(details, pods[start : start + 16])), volume, mode, run_id)
+            check_admission(list(pool.map(details, pods[start : start + 16])), volume, mode,
+                            run_id, requested_children=requested_children)
 
 
 def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | None = None) -> int:
@@ -125,7 +145,8 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
     )
     if len(experiments) != len(set(experiments)):
         raise ValueError("Each experiment may be selected only once per launch")
-    if len(experiments) > len(selection["EXPERIMENT_CONFIGS"]):
+    paired_experiments = {"a-signal64", "b-signal64"}
+    if len(experiments) > len(selection["EXPERIMENT_CONFIGS"]) + len(paired_experiments):
         raise ValueError("Launch exceeds the number of distinct configured experiments")
     seeds = [] if seeds is None else list(seeds)
     for seed in seeds:
@@ -137,6 +158,13 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
         raise ValueError(f"At most {MAX_LAUNCH_RUNS} experiment/seed runs can be launched together")
     jobs = []
     for name in experiments or [""]:
+        if name in paired_experiments:
+            paired = runpy.run_path(str(root / "scripts/runpod_paired_control.py"))
+            for seed in seeds or [None]:
+                plan, _path, env = paired["prepare_launch"](root, original, name, seed)
+                env["RUNPOD_LAUNCH_CONTROL_LOCK_HELD"] = "1"
+                jobs.append((f"{name}-seed{plan['seed']}", env))
+            continue
         base = selection["_with_experiment"](original, name, root) if name else original
         for seed in seeds or [None]:
             payload = (
@@ -155,7 +183,7 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
                 env["RUNPOD_POD_NAME"] = "stock-forecasting-" + name
             jobs.append((label, env))
     print(
-        f"Training launch plan: {len(jobs)} independent run(s): "
+        f"Training launch plan: {len(jobs)} Pod(s): "
         + ", ".join(name for name, _env in jobs),
         flush=True,
     )
@@ -165,9 +193,10 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
         env = dict(env)
         if preflight:
             env["RUNPOD_PREFLIGHT_ONLY"] = "1"
+        invocation = ["bash", str(root / "scripts" / script)]
         try:
             completed = subprocess.run(
-                ["bash", str(root / "scripts" / script)],
+                invocation,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -194,11 +223,8 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
         ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool,
     ):
         for script, preflight in (
-            ("publish_runpod_selection.sh", False),
             ("create_runpod_pod.sh", True),
         ):
-            if script == "publish_runpod_selection.sh" and not experiments and not seeds:
-                continue
             results = list(
                 pool.map(
                     lambda job, script=script, preflight=preflight: command(

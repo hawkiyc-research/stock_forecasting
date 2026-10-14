@@ -343,7 +343,14 @@ fi
 USE_DEFAULT_COMMAND=0
 if [[ $# -eq 0 ]]; then
     USE_DEFAULT_COMMAND=1
-    set -- bash "${SCRIPT_DIR}/runpod_train_then_validate.sh" "${RUNPOD_CONFIG}"
+    if [[ -n "${RUNPOD_PAIRED_PLAN_PATH:-}" ]]; then
+        runpod_validate_path_in_root "${RUNPOD_PAIRED_PLAN_PATH}" "${NETWORK_VOLUME_ROOT}" \
+            RUNPOD_PAIRED_PLAN_PATH NETWORK_VOLUME_ROOT
+        set -- "${PROJECT_VENV}/bin/python" "${SCRIPT_DIR}/runpod_paired_train.py" \
+            --manifest "${RUNPOD_PAIRED_PLAN_PATH}"
+    else
+        set -- bash "${SCRIPT_DIR}/runpod_train_then_validate.sh" "${RUNPOD_CONFIG}"
+    fi
 fi
 
 cd "${PROJECT_ROOT}"

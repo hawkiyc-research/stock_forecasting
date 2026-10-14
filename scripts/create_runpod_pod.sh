@@ -122,6 +122,15 @@ fi
 # Allocate a fresh run identity on the control host so the paid Pod, the external
 # guard, W&B, checkpoints, logs, and lifecycle records all share one exact ID.
 FRESH_TRAINING_RUN=0
+if [[ -n "${RUNPOD_PAIRED_MANIFEST:-}" ]]; then
+    python3 "${SCRIPT_DIR}/runpod_paired_control.py" validate \
+        --manifest "${RUNPOD_PAIRED_MANIFEST}"
+    if [[ -n "${RESUME_CHECKPOINT}" ]]; then
+        echo "Paired runs resume each child independently; a single RESUME_CHECKPOINT is invalid" >&2
+        exit 2
+    fi
+    FRESH_TRAINING_RUN=1
+fi
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "train" \
     && -z "${WANDB_RUN_ID}" && -z "${RESUME_CHECKPOINT}" ]]; then
     WANDB_RUN_ID="run-$(date -u +%Y%m%dT%H%M%SZ)-$(python3 -c 'import uuid; print(uuid.uuid4().hex[:16])')"
@@ -305,7 +314,16 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
-    if [[ "${RUNPOD_GPU_WORKFLOW}" == "baseline" ]]; then
+    if [[ -n "${RUNPOD_PAIRED_MANIFEST:-}" ]]; then
+        if [[ "${RUNPOD_GPU_WORKFLOW}" == baseline ]]; then
+            BASELINE_CACHE_STATUS="$(python3 "${SCRIPT_DIR}/runpod_paired_control.py" baseline-status \
+                --manifest "${RUNPOD_PAIRED_MANIFEST}")"
+            if [[ "$(printf '%s' "${BASELINE_CACHE_STATUS}" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["complete"]))')" == 1 ]]; then
+                echo "Both task baselines are complete; skipped without creating a GPU Pod."
+                exit 0
+            fi
+        fi
+    elif [[ "${RUNPOD_GPU_WORKFLOW}" == "baseline" ]]; then
         BASELINE_CACHE_STATUS="$(python3 "${SCRIPT_DIR}/runpod_baseline_cache.py" check)"
         if [[ "$(printf '%s' "${BASELINE_CACHE_STATUS}" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["complete"]))')" == "1" ]]; then
             echo "Matching full-data baselines are complete; skipped without creating a GPU Pod."
@@ -315,7 +333,7 @@ if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
         python3 "${SCRIPT_DIR}/runpod_baseline_cache.py" require >/dev/null
     fi
 fi
-if [[ "${RUNPOD_GPU_WORKFLOW}" == "baseline" ]]; then
+if [[ "${RUNPOD_GPU_WORKFLOW}" == "baseline" && -z "${RUNPOD_PAIRED_MANIFEST:-}" ]]; then
     WANDB_RUN_ID="baseline-run-$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}"
 fi
 
@@ -326,10 +344,13 @@ if [[ "${RUNPOD_TEST_READINESS_READY:-0}" == "1" ]]; then
     fi
 else
     # This gate runs before the paid GPU Pod creation request.
-    if [[ "${RUNPOD_GPU_WORKFLOW}" == "baseline" ]]; then
-        bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" --baseline
+    if [[ -n "${RUNPOD_PAIRED_MANIFEST:-}" ]]; then
+        python3 "${SCRIPT_DIR}/runpod_paired_control.py" preflight \
+            --manifest "${RUNPOD_PAIRED_MANIFEST}"
+    elif [[ "${RUNPOD_GPU_WORKFLOW}" == "baseline" ]]; then
+        bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" --baseline --local-selection
     else
-        bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" --gpu
+        bash "${SCRIPT_DIR}/verify_runpod_stage_readiness.sh" --gpu --local-selection
     fi
 fi
 
@@ -522,6 +543,10 @@ payload = {
 payload["env"]["RUNPOD_SCOPED_LIFECYCLE"] = os.environ["RUNPOD_SCOPED_LIFECYCLE"]
 if os.environ.get("RUNPOD_TRAINING_SEED"):
     payload["env"]["RUNPOD_TRAINING_SEED"] = os.environ["RUNPOD_TRAINING_SEED"]
+if os.environ.get("RUNPOD_PAIRED_PLAN_PATH"):
+    payload["env"]["RUNPOD_PAIRED_PLAN_PATH"] = os.environ["RUNPOD_PAIRED_PLAN_PATH"]
+    if os.environ.get("RUNPOD_PAIRED_ACTION"):
+        payload["env"]["RUNPOD_PAIRED_ACTION"] = os.environ["RUNPOD_PAIRED_ACTION"]
 print(json.dumps(payload, separators=(",", ":")))
 ')"
 
@@ -544,12 +569,8 @@ if [[ ! -r "${RUNPOD_GUARD_LAUNCHER}" ]]; then
     exit 127
 fi
 
-if [[ "${RUNPOD_SCOPED_LIFECYCLE}" == 1 ]]; then
-    bash "${S3_WRAPPER}" s3 cp "${RUNPOD_SELECTION_FILE}" \
-        "s3://${RUNPOD_NETWORK_VOLUME_ID}/lifecycle/runs/${WANDB_RUN_ID}/selection.json" --only-show-errors
-fi
 CREATE_OUTPUT="$(printf '%s' "${POD_CREATE_JSON}" \
-    | bash "${SCRIPT_DIR}/runpodctl_project.sh" pod create-gpu)"
+    | python3 "${SCRIPT_DIR}/runpod_create_request.py")"
 POD_ID="$(printf '%s' "${CREATE_OUTPUT}" | python3 -c \
     'import json, sys; payload=json.load(sys.stdin); print(payload.get("id", ""))')"
 if [[ ! "${POD_ID}" =~ ^[A-Za-z0-9_-]+$ ]]; then
@@ -560,7 +581,7 @@ fi
 mkdir -p "${RUNPOD_GUARD_LOG_DIR}"
 GUARD_LOG="${RUNPOD_GUARD_LOG_DIR}/${POD_ID}.log"
 
-GUARD_PID="$(RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}" \
+if GUARD_PID="$(RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}" \
     RUNPOD_GUARD_RUN_ID="${VALIDATION_RUN_ID:-${WANDB_RUN_ID}}" \
     RUNPOD_GUARD_SOFT_LIMIT_SECONDS="${GUARD_SOFT_LIMIT_SECONDS}" \
     RUNPOD_GUARD_SECTION_SAFE="${SECTION_SAFE_STOP}" \
@@ -568,7 +589,35 @@ GUARD_PID="$(RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}" \
     RUNPOD_GUARD_DATASET_REQUEST_SHA256="${RUNPOD_DATASET_REQUEST_SHA256}" \
     bash "${RUNPOD_GUARD_LAUNCHER}" \
     "${POD_ID}" "${RUNPOD_HARD_LIMIT_SECONDS}" \
-    "${RUNPOD_GUARD_LIFECYCLE_KEY}" "${GUARD_LOG}")"
+    "${RUNPOD_GUARD_LIFECYCLE_KEY}" "${GUARD_LOG}")"; then
+    :
+else
+    guard_exit=$?
+    printf 'Pod %s was CREATED, but guard startup failed. The guard launcher may have issued emergency deletion; confirm Pod inventory before retrying. No run metadata was published.\n' \
+        "${POD_ID}" >&2
+    exit "${guard_exit}"
+fi
+
+# Do not create remote run records for rejected capacity requests. Arm the
+# paid Pod's guard before publishing anything it needs for manual tmux startup.
+publish_created_pod_records() {
+    if [[ -n "${RUNPOD_PAIRED_MANIFEST:-}" ]]; then
+        python3 "${SCRIPT_DIR}/runpod_paired_control.py" publish \
+            --manifest "${RUNPOD_PAIRED_MANIFEST}" || return $?
+    else
+        bash "${S3_WRAPPER}" s3 cp "${RUNPOD_SELECTION_FILE}" \
+            "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" --only-show-errors || return $?
+    fi
+    if [[ "${RUNPOD_SCOPED_LIFECYCLE}" == 1 ]]; then
+        bash "${S3_WRAPPER}" s3 cp "${RUNPOD_SELECTION_FILE}" \
+            "s3://${RUNPOD_NETWORK_VOLUME_ID}/lifecycle/runs/${WANDB_RUN_ID}/selection.json" --only-show-errors || return $?
+    fi
+}
+if ! publish_created_pod_records; then
+    printf 'Pod %s was CREATED, but metadata publication failed. Guard %s remains armed. Do not start training; inspect this Pod before retrying.\n' \
+        "${POD_ID}" "${GUARD_PID}" >&2
+    exit 4
+fi
 
 printf 'Created Pod: %s\n' "${POD_ID}"
 printf 'Run ID: %s\n' "${WANDB_RUN_ID}"
@@ -576,6 +625,9 @@ if [[ -n "${RUNPOD_TRAINING_SEED:-}" ]]; then
     printf 'Training seed: %s\n' "${RUNPOD_TRAINING_SEED}"
 fi
 printf 'Experiment config: %s\n' "${RUNPOD_CONFIG}"
+if [[ -n "${RUNPOD_PAIRED_MANIFEST:-}" ]]; then
+    python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); print("Paired experiment: " + p["experiment"]); [print("  " + task + ": " + child["run_id"] + " (" + child["config_path"] + ")") for task,child in p["children"].items()]' "${RUNPOD_PAIRED_MANIFEST}"
+fi
 printf 'External hard-limit guard PID: %s\n' "${GUARD_PID}"
 printf 'Guard log: %s\n' "${GUARD_LOG}"
 printf 'Guard readiness: %s\n' "${GUARD_LOG%.log}.ready.json"

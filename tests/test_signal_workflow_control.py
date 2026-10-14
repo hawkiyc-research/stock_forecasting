@@ -77,7 +77,7 @@ class SignalWorkflowControlTests(unittest.TestCase):
             (self.root / ".runpod/selections" / (pointer["selection_id"] + ".json")).read_text()
         )
 
-    def test_baseline_selects_and_publishes_task_before_creation(self):
+    def test_baseline_selects_task_without_publishing_before_creation(self):
         result = self.command(
             "baseline",
             "--experiment",
@@ -89,7 +89,7 @@ class SignalWorkflowControlTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(
-            (self.root / "events.txt").read_text().splitlines(), ["published", "created"]
+            (self.root / "events.txt").read_text().splitlines(), ["created"]
         )
         self.assertEqual(
             self.active()["baseline_task"],
