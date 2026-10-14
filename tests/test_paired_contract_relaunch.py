@@ -9,8 +9,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = runpy.run_path(str(ROOT / "tests/test_runpod_paired_results_control.py"))
@@ -109,16 +108,39 @@ class PairedContractRelaunchTests(unittest.TestCase):
             "runpod_runs.py": {"RunRecords": lambda *a, **kw: reader, "validate_run": lambda value: value},
         }
         checks = Mock()
-        with patch.dict(RELAUNCH["main"].__globals__, {"ROOT": self.root, "check_children": checks}), \
-             patch("runpy.run_path", side_effect=lambda path: paths[Path(path).name]), \
-             patch("subprocess.check_output", return_value="259200\n"), \
-             patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(RELAUNCH["main"](["validate", "--force", "--maxRuntime", "72h", self.plan["run_id"]]), 0)
-            self.assertEqual(os.environ["VALIDATION_RESUME"], "0")
-            self.assertEqual(os.environ["VALIDATION_FORCE_RECOMPUTE"], "1")
-            self.assertEqual(os.environ["RUNPOD_CLI_MAX_RUNTIME_SECONDS"], "259200")
-            launch.assert_called_once_with(self.root, self.plan, "validate")
-            checks.assert_called_once_with(self.root, reader, self.plan, "validate", force=True)
+        for arguments in (
+            ["validate", "--force", "--maxRuntime", "72h", self.plan["run_id"]],
+            ["validate", self.plan["run_id"], "--force", "--maxRuntime", "72h"],
+            ["validate", "--force", self.plan["run_id"], "--max-runtime", "72h"],
+        ):
+            with (
+                self.subTest(arguments=arguments),
+                patch.dict(
+                    RELAUNCH["main"].__globals__, {"ROOT": self.root, "check_children": checks}
+                ),
+                patch("runpy.run_path", side_effect=lambda path: paths[Path(path).name]),
+                patch("subprocess.check_output", return_value="259200\n"),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                launch.reset_mock()
+                checks.reset_mock()
+                self.assertEqual(RELAUNCH["main"](arguments), 0)
+                self.assertEqual(os.environ["VALIDATION_RESUME"], "0")
+                self.assertEqual(os.environ["VALIDATION_FORCE_RECOMPUTE"], "1")
+                self.assertEqual(os.environ["RUNPOD_CLI_MAX_RUNTIME_SECONDS"], "259200")
+                launch.assert_called_once_with(self.root, self.plan, "validate")
+                checks.assert_called_once_with(self.root, reader, self.plan, "validate", force=True)
+
+    def test_unknown_cli_flags_are_rejected_before_reading_remote_runs(self):
+        with (
+            patch("runpy.run_path") as read,
+            patch("os.execvp") as legacy,
+            self.assertRaises(SystemExit) as error,
+        ):
+            RELAUNCH["main"](["validate", "--unknown-option", self.plan["run_id"]])
+        self.assertEqual(error.exception.code, 2)
+        read.assert_not_called()
+        legacy.assert_not_called()
 
     def test_legacy_command_is_forwarded_without_dropping_options(self):
         reader = Mock()

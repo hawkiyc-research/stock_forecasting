@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import importlib.util
@@ -237,13 +238,66 @@ class PairedTrainingRuntimeTests(unittest.TestCase):
         self.write(report_path, report)
         self.assertEqual(RUNTIME.completed_child(child, self.volume, self.project), (True, False))
 
-    def test_source_selection_mismatch_fails_before_any_model(self):
+    def test_first_writer_timestamp_is_not_a_different_experiment(self):
+        for child in self.plan["children"].values():
+            mounted = dict(child["selection"], created_at="2000-01-01T00:00:00+00:00")
+            self.write(self.volume / child["selection_path"], mounted)
+        self.assertEqual(self.run_pair(), 0)
+        self.assertEqual([call[1] for call in self.calls if call[0] != "readiness"],
+                         ["alpha_point", "absolute_direction"])
+
+    def test_repeated_launches_for_three_seeds_reuse_immutable_selections(self):
+        original = self.plan["children"]["alpha_point"]["selection"]
+        for group in ("a-signal64", "b-signal64"):
+            for seed in (42, 43, 44):
+                with self.subTest(group=group, seed=seed):
+                    first = PAIR["build_plan"](self.project, original, group, seed=seed,
+                                               run_id=f"run-{group}-{seed}-first")
+                    PAIR["store_plan"](self.project, first)
+                    repeated = PAIR["build_plan"](self.project, original, group, seed=seed,
+                                                  run_id=f"run-{group}-{seed}-repeat")
+                    PAIR["store_plan"](self.project, repeated)
+                    for task, child in repeated["children"].items():
+                        stored_path = (
+                            self.project / ".runpod/selections" / Path(child["selection_path"]).name
+                        )
+                        stored = json.loads(stored_path.read_text())
+                        self.assertEqual(stored, first["children"][task]["selection"])
+                        self.assertNotEqual(stored["created_at"], child["selection"]["created_at"])
+                        self.write(self.volume / child["selection_path"], stored)
+                        env = RUNTIME.child_environment(child, repeated, self.environment,
+                                                        self.volume, self.project)
+                        self.assertEqual(env["RUNPOD_TRAINING_SEED"], str(seed))
+                        self.assertEqual(env["RUNPOD_CONFIG"], child["config_path"])
+                        self.assertEqual(env["WANDB_RUN_ID"], child["run_id"])
+
+    def test_valid_but_different_seed_selection_fails_before_any_model(self):
         child = self.plan["children"]["absolute_direction"]
-        modified = dict(child["selection"], created_at="2000-01-01T00:00:00+00:00")
+        modified = SELECTION["_with_training_seed"](child["selection"], 44, self.project)
         self.write(self.volume / child["selection_path"], modified)
         with self.assertRaisesRegex(ValueError, "Mounted child selection"):
             self.run_pair()
         self.assertEqual(self.calls, [])
+
+    def test_same_claimed_digest_does_not_hide_tampered_mounted_fields(self):
+        child = self.plan["children"]["absolute_direction"]
+        for field in ("seed", "config", "dataset", "task", "digest"):
+            with self.subTest(field=field):
+                modified = copy.deepcopy(child["selection"])
+                if field == "seed":
+                    modified["stage"]["training_seed"] = 44
+                elif field == "config":
+                    modified["stage"]["config_sha256"] = "0" * 64
+                elif field == "dataset":
+                    modified["dataset_request"]["date_range"]["start_inclusive"] = "2016-01-01"
+                elif field == "task":
+                    modified["baseline_task"]["neutral_return_threshold"] = 0.02
+                else:
+                    modified["selection_sha256"] = "0" * 64
+                self.write(self.volume / child["selection_path"], modified)
+                with self.assertRaises(ValueError):
+                    self.run_pair()
+                self.assertEqual(self.calls, [])
 
     def test_sibling_run_lease_contention_prevents_both_models_starting(self):
         child = self.plan["children"]["absolute_direction"]
@@ -281,6 +335,9 @@ class PairedTrainingRuntimeTests(unittest.TestCase):
     def test_real_tmux_entrypoint_child_shells_and_guard_parent_completion(self):
         # This is a fixture executable, not a local Python/ML environment. Only
         # numerical CLI calls are replaced; shell handoff and lifecycle are real.
+        for child in self.plan["children"].values():
+            self.write(self.volume / child["selection_path"],
+                       dict(child["selection"], created_at="2000-01-01T00:00:00+00:00"))
         (self.project / "scripts").unlink()
         shutil.copytree(ROOT / "scripts", self.project / "scripts")
         (self.project / "src").symlink_to(ROOT / "src", target_is_directory=True)

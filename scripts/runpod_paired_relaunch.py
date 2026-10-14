@@ -64,7 +64,9 @@ def main(argv=None):
     parser.add_argument("--resume", dest="evaluation_resume", action="store_const", const="1", default=None)
     parser.add_argument("--no-resume", dest="evaluation_resume", action="store_const", const="0")
     parser.add_argument("run_id", nargs="?")
-    args = parser.parse_args(arguments)
+    # Python 3.12 otherwise rejects an optional run ID following CLI flags.
+    # Preserve both documented argument orders without dropping unknown flags.
+    args = parser.parse_intermixed_args(arguments)
     if args.action == "resume" and (args.force or args.evaluation_resume is not None):
         parser.error("Evaluation flags are only supported by validate")
     legacy_script = "create_runpod_resume_pod.sh" if args.action == "resume" else "create_runpod_validation_pod.sh"

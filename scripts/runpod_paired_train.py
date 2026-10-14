@@ -54,9 +54,15 @@ def child_environment(child, plan, environment, volume: Path, project: Path):
         child["selection"], project_root=project
     )
     selection_path = inside(volume / child["selection_path"], volume)
-    if load_json(selection_path) != selection:
+    mounted = selection_tools["_validate_selection"](
+        load_json(selection_path), project_root=project
+    )
+    # Immutable selections retain their first creation timestamp across launches.
+    # Validate both documents before comparing the semantic contract digest; a
+    # freshly built plan can have different provenance without different inputs.
+    if mounted["selection_sha256"] != selection["selection_sha256"]:
         raise ValueError("Mounted child selection differs from the paired experiment")
-    exports = selection_tools["_selection_exports"](selection_path, selection)
+    exports = selection_tools["_selection_exports"](selection_path, mounted)
     result = dict(environment)
     # Resume and evaluation pointers must never cross from one task to its sibling.
     for key in ("RESUME_CHECKPOINT", "VALIDATION_CHECKPOINT", "RUNPOD_SOURCE_CONFIG_SHA256"):
