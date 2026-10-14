@@ -63,7 +63,25 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 各自完成完整 validation／test。兩個子模型各有 Kronos／LoRA、optimizer、輸出頭與
 checkpoint，不混合回歸與分類 loss，也不共享可訓練權重或梯度。
 依序執行使兩個完整模型不必同時常駐 VRAM；不是合併 loss，也不是要求分開租兩台 Pod。
-查詢、下載與接續使用父 run ID，仍可指定子 run ID 查閱單一模型。任務契約如下：
+查詢、下載與接續使用父 run ID，仍可指定子 run ID 查閱單一模型。
+
+##### 成對模型架構圖
+
+下圖表示資料與 loss 的關係，不表示兩個模型同時訓練。同一台 Pod 先完成 alpha 模型的
+訓練與 test，再執行方向模型；兩者共用唯讀資料，不共用可訓練參數、optimizer 或梯度。
+
+```mermaid
+flowchart TD
+    D["相同資料組別與 seed<br/>截至 t 的個股與 benchmark OHLCV"]
+    D --> A["模型一：alpha_point<br/>獨立 Kronos／LoRA-64、resampler、conditioner、尺度分支與 head"]
+    D --> C["模型二：absolute_direction<br/>另一套獨立 Kronos／LoRA-64、resampler、conditioner、尺度分支與 head"]
+    A --> AP["各持有期的 alpha 點估計"]
+    AP --> AL["train-only 尺度正規化 Smooth L1<br/>只更新 alpha 模型"]
+    C --> CP["各持有期的 down／neutral／up logits<br/>softmax 轉成三類機率"]
+    CP --> CL["Cross entropy 直接讀 logits<br/>固定 ±1% 標籤；只更新方向模型"]
+```
+
+任務契約如下：
 
 | 組內模型任務 | 輸出與語意 | 訓練與完整 validation 選模 |
 | --- | --- | --- |
@@ -92,6 +110,32 @@ embedding → 所選任務 head；20 維歷史尺度特徵與 benchmark latent �
 點估計 head 每個 horizon 輸出一個值，分類 head 輸出三個 logits。
 目前兩個 preset **不啟用**十技術通道、horizon-query attention、市場狀態 gating、train prior、
 PCGrad、ranking 或表徵擾動正則化，也不使用交易成本特徵／標籤。
+
+##### 每個獨立模型內部的特徵路徑
+
+下圖由兩個模型**各自建立一套**。單一模型內的個股與 benchmark 共用該模型的 encoder
+與 resampler；不同任務之間不共享權重。尺度統計在視窗標準化前取得，僅使用截至 `t` 的資料。
+
+```mermaid
+flowchart TD
+    D["截至 t 的個股與 benchmark OHLCV"]
+    D --> N["個股與 benchmark 各自做視窗標準化"]
+    N --> K["固定 tokenizer → Kronos-base／LoRA-64"]
+    K --> R["Resampler：個股與 benchmark latent tokens"]
+    R --> G["Benchmark conditioning<br/>個股 latent 讀取 benchmark latent"]
+    G --> H["Mean pooling ＋ market／horizon embeddings<br/>Head trunk"]
+    H --> P["主任務輸出投影"]
+    D --> S["20 維歷史尺度特徵<br/>train-only median／IQR 標準化與尺度 MLP"]
+    R --> B["Benchmark latent mean pooling ＋ projection"]
+    H --> F["數值 residual fusion"]
+    S --> F
+    B --> F
+    P --> ADD["主任務輸出 ＋ 數值 residual"]
+    F --> ADD
+    ADD --> O["依該模型任務輸出：<br/>alpha：每持有期 1 值，乘 train-fitted robust scale<br/>方向：每持有期 3 個 logits，不乘報酬尺度"]
+```
+
+每個模型只建立所選任務的輸出層；圖末的兩種輸出是兩套模型各自的結果，不是共享主幹的雙頭模型。
 
 要使用目前成對架構，明確指定 `--experiment a-signal64` 或 `--experiment b-signal64`。
 組內兩份 YAML 分別設定模型，不需手動建立兩個實驗。標準
@@ -3120,7 +3164,26 @@ absolute-stock down/neutral/up models, including each model's complete validatio
 Each child has independent Kronos/LoRA weights, optimizer, head and checkpoints. The losses
 and gradients are not combined. Sequential execution avoids holding two full models in VRAM;
 it does not require two rented Pods. Query, download and resume by the parent run ID; child
-IDs remain available for individual inspection. The two model contracts are:
+IDs remain available for individual inspection.
+
+##### Paired-model architecture
+
+This diagram shows data and loss paths, not concurrent training. One Pod finishes alpha training
+and test before running the direction model. The models reuse read-only data, not trainable
+parameters, optimizers or gradients.
+
+```mermaid
+flowchart TD
+    D["Same data group and seed<br/>Asset and benchmark OHLCV through t"]
+    D --> A["Model one: alpha_point<br/>Independent Kronos/LoRA-64, resampler, conditioner, scale branch and head"]
+    D --> C["Model two: absolute_direction<br/>Separate Kronos/LoRA-64, resampler, conditioner, scale branch and head"]
+    A --> AP["Alpha point estimate for each horizon"]
+    AP --> AL["Train-scale-normalized Smooth L1<br/>Updates only the alpha model"]
+    C --> CP["Down/neutral/up logits for each horizon<br/>Softmax produces class probabilities"]
+    CP --> CL["Cross entropy consumes logits directly<br/>Fixed ±1% labels; updates only the direction model"]
+```
+
+The two model contracts are:
 
 | Model task within the pair | Output and meaning | Training and full-validation selection |
 | --- | --- | --- |
@@ -3154,6 +3217,34 @@ horizon; the classifier emits three logits. The current
 presets **do not enable** the ten technical channels, horizon-query attention, market-state gates,
 train priors, PCGrad, ranking or representation-perturbation regularization, and use no
 transaction-cost features or labels.
+
+##### Feature paths inside each independent model
+
+Each model instantiates its **own copy** of the structure below. Asset and benchmark share the
+encoder and resampler within one model, never across tasks. Scale statistics use only observations
+through `t` and are extracted before window normalization.
+
+```mermaid
+flowchart TD
+    D["Asset and benchmark OHLCV through t"]
+    D --> N["Separate asset and benchmark window normalization"]
+    N --> K["Fixed tokenizer → Kronos-base/LoRA-64"]
+    K --> R["Resampler: asset and benchmark latent tokens"]
+    R --> G["Benchmark conditioning<br/>Asset latents attend to benchmark latents"]
+    G --> H["Mean pooling + market/horizon embeddings<br/>Head trunk"]
+    H --> P["Main task output projection"]
+    D --> S["20 historical scale features<br/>Train-only median/IQR normalization and scale MLP"]
+    R --> B["Benchmark latent mean pooling and projection"]
+    H --> F["Numerical residual fusion"]
+    S --> F
+    B --> F
+    P --> ADD["Main task output + numerical residual"]
+    F --> ADD
+    ADD --> O["Output for the selected model task:<br/>Alpha: one value per horizon times train-fitted robust scale<br/>Direction: three logits per horizon, no return-scale multiplier"]
+```
+
+Each model constructs only its selected task's output layer. The two output forms describe
+separate model instances, not two heads sharing a trainable backbone.
 
 Select the current paired architecture explicitly with `--experiment a-signal64` or
 `--experiment b-signal64`. Each pair uses two task-specific YAML files without requiring

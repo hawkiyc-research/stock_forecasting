@@ -59,6 +59,29 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
         chinese, english = cls.markdown.split("\n## English\n", 1)
         cls.languages = {"zh": chinese, "en": english}
 
+    def test_current_architecture_diagrams_remain_in_both_main_sections(self):
+        diagrams = {}
+        for language, text in self.languages.items():
+            section = anchored_section(text, f"signal-tasks-{language}")
+            diagrams[language] = re.findall(r"(?ms)^```mermaid\n(.*?)^```", section)
+            with self.subTest(language=language):
+                self.assertEqual(len(diagrams[language]), 2)
+                overview, features = diagrams[language]
+                for token in ("alpha_point", "absolute_direction", "Smooth L1", "logits"):
+                    self.assertIn(token, overview)
+                for edge in ("D --> A", "D --> C", "A --> AP", "AP --> AL", "C --> CP", "CP --> CL"):
+                    self.assertIn(edge, overview)
+                for edge in ("D --> N", "N --> K", "K --> R", "R --> G", "G --> H",
+                             "D --> S", "R --> B", "H --> F", "S --> F", "B --> F",
+                             "H --> P", "P --> ADD", "F --> ADD", "ADD --> O"):
+                    self.assertIn(edge, features)
+                historical = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[1]
+                self.assertIn("OHLCV through close t (asset + benchmark)", historical)
+        # Both translations must retain the same graph topology.
+        for chinese, english in zip(diagrams["zh"], diagrams["en"], strict=True):
+            self.assertEqual(re.findall(r"\b(\w+) --> (\w+)\b", chinese),
+                             re.findall(r"\b(\w+) --> (\w+)\b", english))
+
     def test_complete_chinese_precedes_complete_english(self):
         self.assertEqual(self.markdown.count("\n## English\n"), 1)
         for name in ("model-versions", "signal-tasks", "historical-experiments"):
