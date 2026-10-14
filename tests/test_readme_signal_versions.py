@@ -92,6 +92,47 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                     other = "en" if language == "zh" else "zh"
                     self.assertNotIn(f'<a id="{name}-{other}"></a>', text)
 
+    def test_feature_paths_distinguish_current_and_retained_architectures(self):
+        for language, text in self.languages.items():
+            current = anchored_section(text, f"signal-tasks-{language}")
+            historical = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[1]
+            with self.subTest(language=language):
+                for marker in (
+                    "V × (O+H+L+C)/4", "1e-5", "[-5, 5]",
+                    "model.direction.enabled", "technical_channels",
+                    "src/stock_forecasting/models/scale_features.py",
+                    "src/stock_forecasting/factory.py",
+                ):
+                    self.assertIn(marker, current)
+                for channel in (
+                    "close_sma20", "sma5_sma20", "sma20_sma60",
+                    "prior20_range", "signed_volume20",
+                ):
+                    self.assertIn(channel, historical)
+                for variant in HISTORICAL_VARIANTS:
+                    self.assertIn(f"`{variant}`", historical)
+
+    def test_retained_architectures_have_current_cli_lifecycle_examples(self):
+        commands = (
+            "baseline --experiment a-direction64-v2",
+            "readiness --baseline",
+            "train --experiment a-direction64-v2 --seed 42",
+            "runs --experiment a-direction64-v2 --seed 42",
+            'status "<RUN_ID>"',
+            'download "<RUN_ID>"',
+            "resume --maxRuntime 72h",
+        )
+        for language, text in self.languages.items():
+            section = anchored_section(text, f"legacy-presets-{language}")
+            with self.subTest(language=language):
+                for command in commands:
+                    self.assertIn(f"bash scripts/runpod_workflow.sh {command}", section)
+                self.assertIn("bash scripts/runpod_tmux_launch.sh baseline", section)
+                self.assertIn("bash scripts/runpod_tmux_launch.sh stage1-train", section)
+                self.assertNotIn("git checkout", section)
+                self.assertNotIn("git worktree", section)
+                self.assertNotIn("git reset", section)
+
     def test_historical_versions_are_in_each_languages_final_appendix(self):
         for language, text in self.languages.items():
             appendix_marker = f'<a id="historical-experiments-{language}"></a>'

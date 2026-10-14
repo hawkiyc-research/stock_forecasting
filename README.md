@@ -137,6 +137,31 @@ flowchart TD
 
 每個模型只建立所選任務的輸出層；圖末的兩種輸出是兩套模型各自的結果，不是共享主幹的雙頭模型。
 
+##### OHLCV 前處理與人工特徵的分工
+
+目前不是把未處理的 raw OHLCV 直接送進輸出 head，也不是先把行情完全替換成技術指標。
+兩個獨立模型各自使用以下三條路徑：
+
+| 路徑 | 實際處理 | 接入位置 |
+| --- | --- | --- |
+| 行情序列與學習式表徵 | 清理、對齊與 point-in-time 調整後的 OHLCV；另以 `V × (O+H+L+C)/4` 估算 amount，形成六個通道 | 個股與 benchmark 分別做視窗標準化，再進 tokenizer → Kronos／LoRA → resampler／conditioning |
+| 20 維歷史統計 | 波動、歷史報酬、價格變異係數、相關性、beta、下行波動、相對量與 benchmark 回撤；完整定義見下方「小型數值特徵分支」 | 使用標準化前的歷史資料計算，經 train-only 統計標準化後直接接入任務 head 的數值 residual；不送入 tokenizer |
+| Benchmark latent | Benchmark 經 Kronos／resampler 學出的表徵 | 除 conditioning 外，也經 mean pooling／projection 直接接入數值 residual |
+
+六通道各自沿輸入時間視窗減去平均、除以母體標準差（下限 `1e-5`），預設裁切至
+`[-5, 5]`。amount 是 OHLCV 推導的成交金額近似值，不是額外下載的實際逐筆成交金額。
+這個輸入裁切不是刪除極端報酬樣本；資料清理與 label 規則仍依[資料章節](#data-zh)。
+Tokenizer 固定不訓練；Kronos／LoRA 負責學習序列表徵，20 維分支則補上視窗標準化容易弱化的尺度資訊。
+
+**目前沒有啟用歷史 direction64 系列的十技術通道。** 那是個股與 benchmark 各五個
+因果趨勢／區間／成交量通道，投影後加在 Kronos token embedding 上，不是這裡的六通道
+tokenizer 輸入，也不是 20 維尺度統計。程式只有在 `model.direction.enabled` 與
+`technical_channels` 同時為真時建立該 adapter；目前獨立任務的前者為 `false`。
+不能只打開舊雙方向開關就把它接到獨立任務：現有設定驗證會拒絕這種任務組合。
+Baseline 的技術指標／規則模型也不代表主模型自動讀取同樣指標。
+實作對照：[Kronos 前處理](src/stock_forecasting/models/backbones.py)、
+[尺度特徵](src/stock_forecasting/models/scale_features.py)、[模型組裝](src/stock_forecasting/factory.py)。
+
 要使用目前成對架構，明確指定 `--experiment a-signal64` 或 `--experiment b-signal64`。
 組內兩份 YAML 分別設定模型，不需手動建立兩個實驗。標準
 `stage1_kronos_base_lora.yaml`／`stage2_kronos_base_lora.yaml` 仍是 `quantiles`；
@@ -2493,6 +2518,30 @@ Stage 1 證明流程可運作，不證明 alpha。單一 seed、單一 holdout �
 目前架構與新實驗入口請使用[兩個獨立任務](#signal-tasks-zh)及[主模型訓練](#train-zh)。
 歷史 preset 的資料、baseline、loss 與 checkpoint 契約不能當成目前獨立任務的結果。
 
+「歷史／obsolete」表示退出預設研究主線，**不是不能訓練**。目前程式仍支援下列架構，
+直接使用[歷史設定與 CLI 流程](#legacy-presets-zh)選擇 `--experiment` 即可。
+
+#### 各架構實際啟用的特徵路徑
+
+以下為所列 preset 的設定，不代表所有功能同時啟用。各系列都使用六通道行情前處理、
+Kronos／LoRA、resampler 與 benchmark conditioning；`combined` 提供 20 維統計及 benchmark 直連。
+
+| 系列 | 十技術通道 → Kronos embedding | 20 維統計與輸出讀取 | 額外市場／持有期路徑 |
+| --- | --- | --- | --- |
+| `lora32`／`lora64`／`partial` | 未啟用 | 直連 alpha 分位數 head；獨立 ranking，不另建方向分類器 | Mean pooling 加 market／horizon embeddings；partial 改可訓練層，不改特徵定義 |
+| `adaptive64`／`adaptive128` | 未啟用 | 直連分位數 head，ranking 也讀數值特徵 | 額外市場 residual 分支；配合適應式區間校準，不等同 V3 的市場狀態 gate |
+| V1 `direction64` | 啟用，各五通道 | 直連分位數 head；方向 head **沒有**直接尺度路徑 | 方向使用 horizon-query attention；分位數仍走 pooled head |
+| V2 `direction64-v2` | 啟用，各五通道 | 保留分位數路徑，方向另直接讀 20 維統計與四個成本／波動比值 | Horizon query、歷史訊號與市場 prior 分離；共享 LoRA 使用 PCGrad |
+| V3 `direction64-v3` | 啟用，各五通道 | 保留 V2 直連，加入尺度特徵 gate | Benchmark 歷史狀態控制 token／尺度選擇；有序方向機率與多指標選模 |
+| 現行 `signal64` 對照 | 未啟用 | 兩套獨立 head 各自讀 20 維統計與 benchmark 直連 | Mean pooling 加 market／horizon embeddings；不使用上述雙方向、query、prior 或 PCGrad |
+
+歷史十通道是每個行情流各自計算 `close_sma20`、`sma5_sma20`、`sma20_sma60`、
+`prior20_range`、`signed_volume20`，**不是把十個值串成 tokenizer 的輸入**。
+各流的五維向量經同一模型內共用的線性 adapter 投影，再加到該流的 token embedding；
+不足歷史長度的通道設為零，通道裁切至 `[-5, 5]`，不讀未來資料。
+公式與文獻保留於下方歷史方向技術通道段落；實作見
+[technical_channels.py](src/stock_forecasting/models/technical_channels.py)。
+
 <a id="model-versions-zh"></a>
 
 #### 歷史方向實驗 V1／V2／V3：範圍與差異
@@ -3023,6 +3072,78 @@ bash scripts/runpod_workflow.sh train \
 上述命令會建立三台付費訓練 Pod；僅在重現歷史容量對照時使用。
 將 `a-` 改成 `b-` 可重現 B 組，`--seed` 與其他建立參數沿用[CLI 參數速查](#cli-reference-zh)。
 
+##### 使用目前程式訓練舊架構：完整 CLI 流程
+
+以下以 **A 組 V2、seed 42** 為例；不是目前成對獨立任務，一個 run 只訓練一個歷史多任務模型。
+使用上表任一名稱替換 `a-direction64-v2` 即可選其他舊架構；不需修改 YAML 或切換程式版本。
+先完成主文的憑證、configure、程式同步與所需資料準備；所有 preset 已同步後，只切換名稱不需重傳程式。
+若既有 bar-store 符合所選資料範圍，沿用資料，不必為選舊架構重跑 CPU prepare 或下載行情。
+本流程依**目前**資料清理規則建立有效樣本，並不宣稱還原過去某次 run 的舊資料快照。
+
+**1. 在本機建立／檢查此任務的 baseline。** 此命令會選定該實驗；已有匹配的完成結果時
+直接重用，否則建立付費 baseline Pod，不能拿目前 `signal64` 的 baseline 代替。
+
+```bash
+bash scripts/runpod_workflow.sh baseline --experiment a-direction64-v2 \
+  --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 4090"
+```
+
+若建立了 Pod，依終端連線資訊登入，在 **baseline Pod 內**啟動：
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_tmux_launch.sh baseline
+```
+
+回到**本機**查詢完成狀態。以下查 active selection；在 baseline 完成確認前，不要切換
+configure／其他 baseline 實驗。此入口同時檢查資料篩選規則與 baseline 結果完成狀態：
+
+```bash
+bash scripts/runpod_workflow.sh readiness --baseline
+```
+
+`readiness --baseline --experiment` 的顯式名稱入口目前只接受 `a-signal64`／`b-signal64`；
+舊架構使用上面的 active-selection 查詢，不把 V2 名稱塞進成對任務入口。
+
+**2. Baseline 完成後，在本機建立訓練 Pod。** 可各自選 GPU；`--maxRuntime` 是執行期限，
+不是保證訓練會跑滿的時間。未指定的建立參數沿用[CLI 參數速查](#cli-reference-zh)。
+
+```bash
+bash scripts/runpod_workflow.sh train --experiment a-direction64-v2 --seed 42 \
+  --maxRuntime 72h --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+記下輸出的 run ID，依連線資訊登入**訓練 Pod**後執行：
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_tmux_launch.sh stage1-train
+```
+
+`stage1-train` 是共用 tmux 入口名稱；實際 stage／preset 依 Pod 的 selection，
+上述 A/B 實驗使用 stage2，不因入口名稱變回 stage1。
+
+**3. 本機查詢、下載與接續。** `runs` 顯示實驗／seed、設定與執行時間；把下列
+`<RUN_ID>` 替換成該歷史實驗的實際 run ID。查詢或下載不會建立 GPU Pod。
+
+```bash
+bash scripts/runpod_workflow.sh runs --experiment a-direction64-v2 --seed 42
+bash scripts/runpod_workflow.sh status "<RUN_ID>"
+bash scripts/runpod_workflow.sh download "<RUN_ID>"
+```
+
+只有中斷且需要繼續時才建立接續 Pod：
+
+```bash
+bash scripts/runpod_workflow.sh resume --maxRuntime 72h \
+  --gpuId "NVIDIA GeForce RTX 5090" "<RUN_ID>"
+```
+
+接續 Pod 仍使用上述 `stage1-train` tmux 入口。Resume 依該 run 的已儲存設定與 checkpoint，
+不是切換架構；V1 → V2、V2 → V3 或改成目前獨立任務，都應使用 `train --experiment` 建立新 run。
+完成判讀、下載選項與 GPU 查詢參數分別見[狀態查詢](#run-status-zh)、
+[下載](#download-zh)與[CLI 參數速查](#cli-reference-zh)。
+
 <a id="legacy-results-zh"></a>
 
 #### 歷史日誌、產物與驗收
@@ -3245,6 +3366,34 @@ flowchart TD
 
 Each model constructs only its selected task's output layer. The two output forms describe
 separate model instances, not two heads sharing a trainable backbone.
+
+##### OHLCV preprocessing versus engineered features
+
+The model neither passes untreated raw OHLCV straight to its output head nor replaces the
+entire price sequence with technical indicators. Each independent model uses three paths:
+
+| Path | Processing | Entry point |
+| --- | --- | --- |
+| Market sequence and learned representation | Cleaned, aligned, point-in-time-adjusted OHLCV plus approximate amount `V × (O+H+L+C)/4`, making six channels | Separate asset/benchmark window normalization → tokenizer → Kronos/LoRA → resampling/conditioning |
+| 20 historical statistics | Volatility, past returns, price coefficient of variation, correlation, beta, downside volatility, relative volume and benchmark drawdown; definitions follow in the numerical-feature section | Computed before window normalization, transformed with train-only statistics, then connected directly to the task head's numerical residual, not the tokenizer |
+| Benchmark latents | Representations learned by Kronos/resampling | In addition to conditioning, mean pooling/projection connects them directly to the numerical residual |
+
+Each of the six channels is centered and divided by its population standard deviation across
+the input window, with a `1e-5` floor, then clipped to `[-5, 5]` by default. Amount is an OHLCV-derived
+proxy, not separately downloaded transaction-level turnover. Input clipping does not remove
+extreme-return samples; cleaning and labels follow the [data rules](#data-en). The tokenizer is
+fixed; Kronos/LoRA learns sequence representations while the 20-feature branch restores scale
+information that window normalization can weaken.
+
+**The current tasks do not enable the historical direction64 family's ten technical channels.**
+Those are five causal trend/range/volume channels per asset and benchmark stream, projected and
+added to Kronos token embeddings—not the six tokenizer inputs or the 20 scale statistics.
+The adapter is created only when both `model.direction.enabled` and `technical_channels` are
+true; the former is `false` for the independent tasks. Enabling the old dual-direction switch
+is not a supported way to add them to an independent task: configuration validation rejects
+that task combination. Technical-indicator/rule baselines do not imply that the main model
+automatically consumes their indicators. Source: [Kronos preprocessing](src/stock_forecasting/models/backbones.py),
+[scale features](src/stock_forecasting/models/scale_features.py), [model assembly](src/stock_forecasting/factory.py).
 
 Select the current paired architecture explicitly with `--experiment a-signal64` or
 `--experiment b-signal64`. Each pair uses two task-specific YAML files without requiring
@@ -5952,6 +6101,32 @@ reproduction and result interpretation. Nothing is removed or silently redirecte
 use archived launch examples to test current-model changes or resume an old run under a
 different task. Historical baselines cannot substitute for current task-matched baselines.
 
+“Obsolete” means superseded as the default research line, **not unavailable for training**.
+The current code supports these architectures directly through the
+[retained presets and CLI workflow](#legacy-presets-en).
+
+#### Feature paths enabled by each architecture
+
+These are preset settings, not features enabled simultaneously everywhere. All families use
+six-channel market preprocessing, Kronos/LoRA, resampling and benchmark conditioning;
+`combined` supplies the 20 statistics and direct benchmark path.
+
+| Family | Ten technical channels → Kronos embeddings | Statistics and output reading | Additional market/horizon paths |
+| --- | --- | --- | --- |
+| `lora32` / `lora64` / `partial` | Disabled | 20 statistics directly feed the quantile head; separate ranking, no direction classifier | Mean pooling plus market/horizon embeddings; partial changes trainable layers, not feature definitions |
+| `adaptive64` / `adaptive128` | Disabled | Quantile direct path; ranking also reads numerical features | Additional market residual branch and adaptive interval calibration, distinct from V3 market-state gates |
+| V1 `direction64` | Enabled, five per stream | Direct quantile path; direction heads have **no** direct scale path | Horizon-query attention for direction; quantiles retain pooled reading |
+| V2 `direction64-v2` | Enabled, five per stream | Quantile path retained; direction directly reads 20 statistics plus four cost/volatility ratios | Horizon queries, separated historical signal/market prior, shared-LoRA PCGrad |
+| V3 `direction64-v3` | Enabled, five per stream | V2 direct paths plus scale-feature gates | Historical benchmark state gates tokens/scales; ordered direction probabilities and multi-metric selection |
+| Current `signal64` comparison | Disabled | Two independent heads each read 20 statistics and direct benchmark latents | Mean pooling plus market/horizon embeddings; no old dual-direction heads, queries, priors or PCGrad |
+
+The historical channels are `close_sma20`, `sma5_sma20`, `sma20_sma60`, `prior20_range` and
+`signed_volume20` for each stream, **not ten concatenated tokenizer inputs**. Each five-channel
+vector is projected by a linear adapter shared between streams within one model and added to
+that stream's token embedding. Channels with insufficient history are zero; values are clipped
+to `[-5, 5]` and never use future observations. Formulas and references remain in the historical
+technical-channel subsection below; implementation: [technical_channels.py](src/stock_forecasting/models/technical_channels.py).
+
 <a id="legacy-presets-en"></a>
 
 #### Archived experiment names and capacity controls
@@ -5985,6 +6160,87 @@ bash scripts/runpod_workflow.sh train \
   --maxRuntime 12h \
   --gpuId "NVIDIA GeForce RTX 5090"
 ```
+
+##### Train a retained architecture with the current CLI
+
+This example runs **group A V2, seed 42**: one historical multitask model per run, not the
+current independent-model pair. Replace `a-direction64-v2` with any name in the table above
+to select another retained architecture; no YAML editing or code-version switch is required.
+First complete the main guide's credentials, configure, code synchronization and required data
+preparation. Once all presets are synchronized, selecting another name does not require another
+upload. Reuse a matching prepared bar-store; selecting an old architecture alone does not require
+CPU prepare or new market-data downloads. Eligibility follows **current** cleaning rules; this
+does not claim to restore a previous run's historical data snapshot.
+
+**1. Build/check the task-matched baseline locally.** This command selects the experiment and
+reuses matching completed results if available; otherwise it creates a paid baseline Pod.
+A current `signal64` baseline cannot substitute for this task's baseline.
+
+```bash
+bash scripts/runpod_workflow.sh baseline --experiment a-direction64-v2 \
+  --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 4090"
+```
+
+If a Pod was created, use the printed connection details and run **inside the baseline Pod**:
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_tmux_launch.sh baseline
+```
+
+Back **locally**, query completion. This checks the active selection, so do not change configure
+or select another baseline experiment before confirming completion. It checks both data-cleaning
+rules and baseline-result completion:
+
+```bash
+bash scripts/runpod_workflow.sh readiness --baseline
+```
+
+The explicit `readiness --baseline --experiment` form currently accepts only `a-signal64` or
+`b-signal64`. Use the active-selection form above for retained architectures, not a V2 name
+in the paired-task status entry point.
+
+**2. After baseline completion, create the training Pod locally.** GPU choices can differ.
+`--maxRuntime` is a runtime deadline, not a promise to train for that entire duration;
+other creation options follow the [CLI reference](#cli-reference-en).
+
+```bash
+bash scripts/runpod_workflow.sh train --experiment a-direction64-v2 --seed 42 \
+  --maxRuntime 72h --gpuId "NVIDIA GeForce RTX 5090"
+```
+
+Record the printed run ID, connect to the **training Pod**, and run:
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_tmux_launch.sh stage1-train
+```
+
+`stage1-train` is the shared tmux entry-point name. The Pod's selection determines its actual
+stage/preset; these A/B experiments use stage2, not stage1 despite the wrapper name.
+
+**3. Query, download and resume locally.** `runs` shows experiment/seed, configuration and
+execution time. Replace `<RUN_ID>` with the actual historical experiment run ID.
+Queries and downloads do not create GPU Pods.
+
+```bash
+bash scripts/runpod_workflow.sh runs --experiment a-direction64-v2 --seed 42
+bash scripts/runpod_workflow.sh status "<RUN_ID>"
+bash scripts/runpod_workflow.sh download "<RUN_ID>"
+```
+
+Only create a resume Pod when an interrupted run needs continuation:
+
+```bash
+bash scripts/runpod_workflow.sh resume --maxRuntime 72h \
+  --gpuId "NVIDIA GeForce RTX 5090" "<RUN_ID>"
+```
+
+Use the same `stage1-train` tmux entry point inside the resume Pod. Resume uses that run's saved
+configuration and checkpoint; it does not switch architectures. V1 → V2, V2 → V3 or switching
+to current independent tasks requires a new `train --experiment` run. Replace `a-` with `b-`
+for group B. Completion interpretation, download options and GPU-list parameters are documented
+under [run status](#run-status-en), [downloads](#download-en) and the [CLI reference](#cli-reference-en).
 
 <a id="model-versions-en"></a>
 
