@@ -1,0 +1,125 @@
+{
+  "archive_date": "2026-10-16",
+  "architecture": "pre-a-signal64",
+  "archived_docx": [
+    {
+      "original_path": "reports/analysis_report_template.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/templates-and-guide/analysis_report_template.docx",
+      "sha256": "548b5be69ed4ffd8b0166380ee488cc27d943ec42a1d6b13613503ec282b2a30",
+      "bytes": 65458
+    },
+    {
+      "original_path": "reports/evaluation_metrics_reference_guide.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/templates-and-guide/evaluation_metrics_reference_guide.docx",
+      "sha256": "4baa631aa2c4ddb8d3b39de0659d04151a7c445764b05143542c21ddfd94f678",
+      "bytes": 65400
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261007T085308Z-2debcc6e669b4522.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261007-a-group/training_result_analysis_run-20261007T085308Z-2debcc6e669b4522.docx",
+      "sha256": "a8329751f1da8de0272a5fef76bff83e63bb94ad15cf6225c3a3b70dba034689",
+      "bytes": 62546
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261007T085627Z-cc5f9ef13b484d90.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261007-a-group/training_result_analysis_run-20261007T085627Z-cc5f9ef13b484d90.docx",
+      "sha256": "7ea61cfcadb3fa5ce785e1765cc75ffa0ed0847f960f07f0eea7d71ff184a178",
+      "bytes": 62246
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261007T085635Z-bc59d5bbd2d84ad4.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261007-a-group/training_result_analysis_run-20261007T085635Z-bc59d5bbd2d84ad4.docx",
+      "sha256": "6cc36f894e7a681cc7e5868d007cc15ca757fe8a90d9de769e93c7474fc5c0d0",
+      "bytes": 62521
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261008T084331Z-3e990331418d46d0.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261008-adaptive64/training_result_analysis_run-20261008T084331Z-3e990331418d46d0.docx",
+      "sha256": "82ea97284fe712078b8935ac1ce4aca56d72b974b4bdb21b716147748148c713",
+      "bytes": 90380
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261008T084336Z-993a064dae124ab0.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261008-adaptive64/training_result_analysis_run-20261008T084336Z-993a064dae124ab0.docx",
+      "sha256": "1fe84cf62aed8961272333e9998d62fcb8c496fc43f8d61070065b778c8ef74b",
+      "bytes": 90089
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261008T084341Z-d677229bb2c44a32.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261008-adaptive64/training_result_analysis_run-20261008T084341Z-d677229bb2c44a32.docx",
+      "sha256": "faaa33ae5ba33524d909214e26b34f45af80f3586a5a3371cd91e97f78d3de4b",
+      "bytes": 90402
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261010T112317Z-a2128baabec94c55.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261010-direction64/training_result_analysis_run-20261010T112317Z-a2128baabec94c55.docx",
+      "sha256": "be7b4ffb455400fda0407476f7211ca5f7150f1451f1e8515986efb0342448aa",
+      "bytes": 111566
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261010T112319Z-bb81bfdd1b4545f5.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261010-direction64/training_result_analysis_run-20261010T112319Z-bb81bfdd1b4545f5.docx",
+      "sha256": "e479d3e81351ab20b12cafc412b04d3c921f4437ba2da0ec6e15fb1b2e2d7902",
+      "bytes": 111550
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261010T112320Z-1531ef3bf22949ad.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261010-direction64/training_result_analysis_run-20261010T112320Z-1531ef3bf22949ad.docx",
+      "sha256": "2625b595f0cc0e47efac81e417204ab612308d1eab68e0207b3e0c532a6509c9",
+      "bytes": 111639
+    },
+    {
+      "original_path": "reports/training_result_analysis_run-20261011T200040Z-6a76903c49f1459f.docx",
+      "archive_path": "reports/deprecated/pre-a-signal64-20261016/20261011-direction64-v2/training_result_analysis_run-20261011T200040Z-6a76903c49f1459f.docx",
+      "sha256": "af9a4f3869e5ab3a04ab3029bac7e4734c10b9abdfe83791635148e53c0e5e60",
+      "bytes": 154163
+    }
+  ],
+  "index_snapshot": {
+    "path": "reports/deprecated/pre-a-signal64-20261016/archive-index-before-20261016.md",
+    "sha256": "f08bcb0027f82bb6b60d748bb8e515d673695bac536ded335f9a9bdb62f0ce4e"
+  },
+  "older_archive_files_verified_unchanged": [
+    "reports/deprecated/analysis_report_template.docx",
+    "reports/deprecated/pre-20261009/training_result_analysis_run-20261007T085308Z-2debcc6e669b4522.docx",
+    "reports/deprecated/pre-20261009/training_result_analysis_run-20261007T085627Z-cc5f9ef13b484d90.docx",
+    "reports/deprecated/pre-20261009/training_result_analysis_run-20261007T085635Z-bc59d5bbd2d84ad4.docx",
+    "reports/deprecated/training_result_analysis_run-20260903T140429Z-1247813592.docx",
+    "reports/deprecated/training_result_analysis_run-20260903T184811Z-81563229.docx",
+    "reports/deprecated/training_result_analysis_run-20260905T203327Z-270337978.docx",
+    "reports/deprecated/training_result_analysis_run-20260915T091153Z-918316277.docx",
+    "reports/deprecated/training_result_analysis_run-20260917T110811Z-1986920595.docx",
+    "reports/deprecated/training_result_analysis_run-20260922T182053Z-1388222581.docx",
+    "reports/deprecated/training_result_analysis_run-20260923T095302Z-311336160.docx"
+  ],
+  "published_docx": [
+    {
+      "path": "reports/training_result_analysis_run-20261015T064558Z-f04e155d4299416f.docx",
+      "sha256": "7c40cb42b7ea11ea9e62b259512754b2b0ee9db24be5f466ae06c65a2c4459c1",
+      "rendered_pages": 39
+    },
+    {
+      "path": "reports/training_result_analysis_run-20261015T064559Z-624f212a27894308.docx",
+      "sha256": "71f5de29b4b2637c3219c91fbc54f273c2e4fd5e3b7f92960ad2e57909bc75fc",
+      "rendered_pages": 39
+    },
+    {
+      "path": "reports/evaluation_metrics_reference_guide.docx",
+      "sha256": "bd2095cc70b05ee3a1e9713c6e25e789f1b4ae00516950b28455997f21787ca8",
+      "rendered_pages": 30
+    },
+    {
+      "path": "reports/analysis_report_template.docx",
+      "sha256": "7d7c4a316487adf929f86d0b115ee29aa6d920e81a1a7de82143f58ace90df1e",
+      "rendered_pages": 41
+    }
+  ],
+  "archive_index": {
+    "updated_path": "reports/deprecated/README.md",
+    "original_preserved_as": "reports/deprecated/pre-a-signal64-20261016/archive-index-before-20261016.md"
+  },
+  "notes": {
+    "zh": "12 份舊 DOCX 原始位元組已分組搬移；較早歸檔的 11 份 DOCX 不變。歸檔總索引已更新，更新前原文另存且保留原始 SHA256。頁數依本次 CJK-enabled LibreOffice 渲染，Word 可能因字型及排版引擎而不同。",
+    "en": "Twelve legacy DOCX files were moved into separate subgroups without rewriting their bytes. Eleven earlier archived DOCX files are unchanged. The archive index was updated, with its original bytes and SHA256 preserved separately. Page counts refer to this CJK-enabled LibreOffice render and can differ in Word."
+  }
+}

@@ -2,36 +2,46 @@
 
 ## 繁體中文
 
-歸檔日期：2026-10-09。此資料夾保留歷史報告、過時模板與本次修訂前的原版文件，僅供版本追溯，不作目前模型或正式策略績效的判斷依據。所有歸檔 DOCX 均保留搬移前的原始位元組，未重寫內容。
+索引更新日期：2026-10-16。所有舊 DOCX 均保留原始位元組，只供版本追溯，不能拿不同架構的指標名稱直接解讀目前模型，也不能作為正式策略績效的證明。
 
-- 本層：7 份 2026-09-03 至 2026-09-23 的歷史訓練報告，以及舊版 `analysis_report_template.docx`。
-- [pre-20261009](pre-20261009/)：A-LoRA32、A-LoRA64、A-partial 三份 2026-10-07 實驗報告在本次修訂前的原版。
-- 最新模板：[analysis_report_template.docx](../analysis_report_template.docx)。模板以已完成的 A-LoRA64 holdout test 作為數值範例；新一輪報告必須替換全部身分、數值、來源與結論。
+| 版本群 | 保留內容 | DOCX 數 |
+| --- | --- | ---: |
+| 本層較早文件 | 2026-09-03 至 2026-09-23 的 7 份歷史報告，以及更早的模板；本次未移動或修改 | 8 |
+| [pre-20261009](pre-20261009/) | 2026-10-07 A-LoRA32、A-LoRA64、A-partial 在 10 月 9 日修訂前的原版；本次未移動或修改 | 3 |
+| [pre-a-signal64-20261016](pre-a-signal64-20261016/README.md) | 此次改版前的 10 份正式報告、舊模板及舊手冊；依實驗輪次與文件用途再分 5 個子資料夾 | 12 |
 
-本次修訂後的正式報告位於上層 `reports/`：
+新版本群與較早版本群分開保存，不合併、不覆蓋同名舊檔。此次搬移的完整清單及 SHA-256 見 [archive-manifest.json](pre-a-signal64-20261016/archive-manifest.json)。本索引更新前的原始內容亦已 [完整保存](pre-a-signal64-20261016/archive-index-before-20261016.md)。
 
-- [A-LoRA32](../training_result_analysis_run-20261007T085635Z-bc59d5bbd2d84ad4.docx)
-- [A-LoRA64](../training_result_analysis_run-20261007T085627Z-cc5f9ef13b484d90.docx)
-- [A-partial](../training_result_analysis_run-20261007T085308Z-2debcc6e669b4522.docx)
+現行文件位於上層 `reports/`，適用 `a-signal64`／`signal-1.0`：
 
-修訂版保留完整 1～14 日結果，補齊 raw／calibrated、市場別校準、training 固定分布方向 baseline 與獨立 ranking head 的比較，並記錄資料來源及缺口。
+- [Seed 42 模型效能分析報告](../training_result_analysis_run-20261015T064558Z-f04e155d4299416f.docx)
+- [Seed 347 模型效能分析報告](../training_result_analysis_run-20261015T064559Z-624f212a27894308.docx)
+- [模型指標與參數說明手冊](../evaluation_metrics_reference_guide.docx)
+- [雙模型評估報告模板](../analysis_report_template.docx)
 
-重要限制：本次沒有修正評估程式或重算投資組合序列。2026-10-07 這三組既有的成本後報酬、Sharpe 與最大回撤存在持倉、報酬及成本資金尺度不一致，只能作舊版簡化診斷的追溯，不能支持可部署、穩定獲利或策略優劣的結論；也不能直接除以二當成修正值。完整說明請以修訂版報告為準。模型指標手冊未修改。
+現行架構分別訓練 alpha 點估計與個股三分類兩套獨立模型；不沿用舊分位數、區間校準或獨立 ranking head 的解讀。模板以 seed 42 的已完成 test 為完整範例，另列 seed 347 對照；新一輪必須重建全部身分、數值、來源及結論。
+
+歷史限制仍須保留：2026-10-07 三組舊評估的成本後報酬、Sharpe 與最大回撤存在持倉／報酬／成本尺度不一致，不能當作可靠策略績效，也不能直接除以二修正。請查閱本次歸檔的已修訂報告。新架構目前只評估預測訊號，未執行正式交易回測；兩者不可混用。
 
 ## English
 
-Archive date: 2026-10-09. This directory retains historical reports, the obsolete template and the originals before this revision for version traceability only. They are not evidence of current model readiness or formal strategy performance. All archived DOCX files retain their original bytes; their contents were not rewritten.
+Index updated: 2026-10-16. All historical DOCX files retain their original bytes and are kept for traceability. Metric names from different architectures must not be carried into current-model interpretation or treated as proof of formal strategy performance.
 
-- This level: seven historical training reports dated 2026-09-03 through 2026-09-23 and the old `analysis_report_template.docx`.
-- [pre-20261009](pre-20261009/): the original A-LoRA32, A-LoRA64 and A-partial reports for the 2026-10-07 experiments before this revision.
-- Current template: [analysis_report_template.docx](../analysis_report_template.docx). It uses the completed A-LoRA64 holdout test as a worked numerical example. Future reports must replace every identity, value, source and conclusion.
+| Version group | Retained contents | DOCX count |
+| --- | --- | ---: |
+| Earlier files at this level | Seven historical reports dated 2026-09-03 through 2026-09-23 and the earlier template, neither moved nor modified in this update | 8 |
+| [pre-20261009](pre-20261009/) | Original 2026-10-07 A-LoRA32, A-LoRA64 and A-partial reports before the October 9 revision, unchanged here | 3 |
+| [pre-a-signal64-20261016](pre-a-signal64-20261016/README.md) | Ten previously current reports, the previous template and handbook, further divided into five experiment/purpose subdirectories | 12 |
 
-The revised current reports are in the parent `reports/` directory:
+The new group remains separate from older groups. No groups were merged and no older same-named file was overwritten. See [archive-manifest.json](pre-a-signal64-20261016/archive-manifest.json) for exact paths and SHA-256 hashes. The original text of this index has also been [preserved in full](pre-a-signal64-20261016/archive-index-before-20261016.md).
 
-- [A-LoRA32](../training_result_analysis_run-20261007T085635Z-bc59d5bbd2d84ad4.docx)
-- [A-LoRA64](../training_result_analysis_run-20261007T085627Z-cc5f9ef13b484d90.docx)
-- [A-partial](../training_result_analysis_run-20261007T085308Z-2debcc6e669b4522.docx)
+Current `a-signal64` / `signal-1.0` documents are in the parent `reports/` directory:
 
-The revised reports retain complete day-1-to-day-14 results and add raw/calibrated distributions, market-specific calibration, direction versus the training-fixed distribution baseline, and independent ranking-head comparisons, with source provenance and evidence gaps.
+- [Seed 42 performance analysis](../training_result_analysis_run-20261015T064558Z-f04e155d4299416f.docx)
+- [Seed 347 performance analysis](../training_result_analysis_run-20261015T064559Z-624f212a27894308.docx)
+- [Model metrics and parameter handbook](../evaluation_metrics_reference_guide.docx)
+- [Independent-model evaluation report template](../analysis_report_template.docx)
 
-Important limitation: this revision does not correct the evaluator or recompute portfolio sequences. The existing net returns, Sharpe ratios and maximum drawdowns for these three 2026-10-07 experiments use inconsistent capital scales for positions, returns and costs. They are retained only as legacy simplified diagnostics, not evidence of deployment readiness, stable profit or strategy superiority. Simply dividing old values by two is not a valid correction. Refer to the revised reports for the complete limitations. The metric handbook remains unchanged.
+The current architecture independently trains alpha point estimation and stock three-class classification. Legacy quantile, interval-calibration and independent ranking-head interpretations do not apply. The template contains the completed seed-42 test as a full worked example and an identified seed-347 comparison. Every new report must rebuild all identities, values, sources and conclusions.
+
+Historical limits remain important: the legacy 2026-10-07 net returns, Sharpe and maximum drawdown use inconsistent position/return/cost scales. They are not reliable strategy results and cannot be corrected by simply dividing by two. Consult the revised reports archived in the new group. The current architecture evaluates predictive signals, not a formal trading backtest; these forms of evidence are not interchangeable.
