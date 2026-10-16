@@ -18,6 +18,16 @@
 本專案不撤銷原始 Kronos 元件的 MIT 權利。此例外不代表本專案自有的 pipeline、head、
 特徵工程或新增模型參數也採 MIT。本專案發布的模型新增部分另見 [MODEL_LICENSE](MODEL_LICENSE)。
 
+### Chronos-2
+
+可選的 `chronos2` backend 使用 Amazon 的
+[chronos-forecasting](https://github.com/amazon-science/chronos-forecasting) 與
+[amazon/chronos-2](https://huggingface.co/amazon/chronos-2)。套件與模型保留上游
+Apache-2.0 授權及著作權；完整條文見
+[上游 LICENSE](https://github.com/amazon-science/chronos-forecasting/blob/v2.3.2/LICENSE)。
+固定版本及 revision 見 [研究設定](docs/MODEL_PERFORMANCE_RANDOM_CHRONOS2.md)。
+本專案自有 pipeline、adapter、head 與新增參數的授權不因此改變。
+
 ### 套件與行情資料
 
 第三方相依套件保留各自授權。本專案不將 EODHD、TWSE、TPEx 或其他供應商的資料納入
@@ -44,6 +54,17 @@ Dependencies, models, and data remain subject to their respective terms.
 Original Kronos components retain their MIT rights. This exception does not make
 project-owned pipelines, heads, feature engineering, or added trained parameters
 MIT-licensed. See [MODEL_LICENSE](MODEL_LICENSE) for project-released model additions.
+
+### Chronos-2
+
+The optional `chronos2` backend uses Amazon's
+[chronos-forecasting](https://github.com/amazon-science/chronos-forecasting) and
+[amazon/chronos-2](https://huggingface.co/amazon/chronos-2). The package and model
+retain upstream Apache-2.0 terms and copyright; see the complete
+[upstream LICENSE](https://github.com/amazon-science/chronos-forecasting/blob/v2.3.2/LICENSE).
+Pinned versions/revisions are documented in the
+[research presets](docs/MODEL_PERFORMANCE_RANDOM_CHRONOS2.md#english).
+Project-owned pipeline, adapter, head and added parameters retain their own license.
 
 ### Dependencies and market data
 

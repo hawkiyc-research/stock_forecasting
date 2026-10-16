@@ -40,11 +40,14 @@ _RETRYABLE_DOWNLOAD_ERROR_NAMES = frozenset(
 
 
 def repositories_from_config(config: Any) -> dict[str, str]:
-    """Return exact non-mock Kronos repository revisions used by an experiment."""
+    """Return exact non-mock repository revisions used by an experiment."""
 
     if config.model.time_series_backend == "mock":
         return {}
     model_revision = config.model.time_series_model_revision
+    if config.model.time_series_backend == "chronos2":
+        assert model_revision is not None
+        return {config.model.time_series_model_id: model_revision}
     tokenizer_revision = config.model.time_series_tokenizer_revision
     assert model_revision is not None
     assert tokenizer_revision is not None
@@ -157,7 +160,7 @@ def smoke_test_time_series_backbone(
     *,
     backbone_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
-    """Instantiate the cached Kronos adapter and verify its hidden-state contract on CPU."""
+    """Instantiate a cached adapter and verify its hidden-state contract on cloud CPU."""
 
     if config.model.time_series_backend == "mock":
         return {"backend": "mock", "skipped": True}
@@ -168,17 +171,28 @@ def smoke_test_time_series_backbone(
     from stock_forecasting.models import KronosBackbone
 
     revision = config.model.kronos_source_revision
-    assert revision is not None
-    _prepare_kronos_import(config.model.kronos_source_root, revision)
-    factory = backbone_factory or KronosBackbone.from_pretrained
-    backbone = factory(
-        model_name_or_path=config.model.time_series_model_id,
-        tokenizer_name_or_path=config.model.time_series_tokenizer_id,
-        model_revision=config.model.time_series_model_revision,
-        tokenizer_revision=config.model.time_series_tokenizer_revision,
-        local_files_only=True,
-        max_context=config.data.input_length,
-    )
+    if config.model.time_series_backend == "chronos2":
+        from stock_forecasting.models.chronos2 import Chronos2Backbone
+
+        factory = backbone_factory or Chronos2Backbone.from_pretrained
+        backbone = factory(
+            model_name_or_path=config.model.time_series_model_id,
+            model_revision=config.model.time_series_model_revision,
+            local_files_only=True,
+            max_context=config.data.input_length,
+        )
+    else:
+        assert revision is not None
+        _prepare_kronos_import(config.model.kronos_source_root, revision)
+        factory = backbone_factory or KronosBackbone.from_pretrained
+        backbone = factory(
+            model_name_or_path=config.model.time_series_model_id,
+            tokenizer_name_or_path=config.model.time_series_tokenizer_id,
+            model_revision=config.model.time_series_model_revision,
+            tokenizer_revision=config.model.time_series_tokenizer_revision,
+            local_files_only=True,
+            max_context=config.data.input_length,
+        )
     backbone.to(torch.device("cpu")).eval()
 
     bars = config.data.input_length
@@ -212,13 +226,17 @@ def smoke_test_time_series_backbone(
             timestamps=timestamps,
         )
     hidden = output.last_hidden_state
-    expected = (1, bars, int(backbone.hidden_size))
+    output_tokens = bars
+    if config.model.time_series_backend == "chronos2":
+        patch_size = backbone.model.chronos_config.input_patch_size
+        output_tokens = 5 * ((bars + patch_size - 1) // patch_size)
+    expected = (1, output_tokens, int(backbone.hidden_size))
     if tuple(hidden.shape) != expected:
-        raise RuntimeError(f"Kronos smoke test returned {tuple(hidden.shape)}, expected {expected}")
+        raise RuntimeError(f"Time-series smoke test returned {tuple(hidden.shape)}, expected {expected}")
     if not torch.isfinite(hidden).all():
-        raise RuntimeError("Kronos smoke test returned non-finite hidden states")
+        raise RuntimeError("Time-series smoke test returned non-finite hidden states")
     if hidden.requires_grad or any(parameter.requires_grad for parameter in backbone.parameters()):
-        raise RuntimeError("Kronos smoke test found an unfrozen backbone")
+        raise RuntimeError("Time-series smoke test found an unfrozen backbone")
     return {
         "backend": str(config.model.time_series_backend),
         "hidden_size": int(backbone.hidden_size),

@@ -243,7 +243,7 @@ class DirectionConfig(StrictModel):
 class ModelConfig(StrictModel):
     """Shared Kronos encoder, benchmark conditioner, and alpha quantile head."""
 
-    time_series_backend: Literal["kronos", "mock"] = "kronos"
+    time_series_backend: Literal["kronos", "chronos2", "mock"] = "kronos"
     prediction_task: Literal["quantiles", "alpha_point", "absolute_direction"] = "quantiles"
     point_loss_beta: float = Field(default=1.0, gt=0.0)
     neutral_return_threshold: float = Field(default=0.01, gt=0.0, lt=1.0)
@@ -356,6 +356,25 @@ class ModelConfig(StrictModel):
                     "Production Kronos requires pinned 40-character lowercase revisions for: "
                     + ", ".join(invalid_revisions)
                 )
+        elif self.time_series_backend == "chronos2":
+            if self.prediction_task not in ("alpha_point", "absolute_direction"):
+                raise ValueError("Chronos-2 currently supports the two independent signal tasks")
+            if self.time_series_model_id != "amazon/chronos-2" or (
+                self.time_series_model_revision != "29ec3766d36d6f73f0696f85560a422f50e8498c"
+            ):
+                raise ValueError("Chronos-2 requires the approved pinned amazon/chronos-2 snapshot")
+            if (
+                self.time_series_tokenizer_id != "none"
+                or self.time_series_tokenizer_revision is not None
+                or self.kronos_source_revision is not None
+            ):
+                raise ValueError("Chronos-2 uses native patching and must not load a Kronos tokenizer")
+            if self.gradient_checkpointing:
+                raise ValueError("Chronos-2 gradient checkpointing is not yet validated")
+            if self.lora.enabled and not set(self.lora.target_modules) <= {
+                "q", "k", "v", "o", "wi", "wo"
+            }:
+                raise ValueError("Chronos-2 LoRA targets must be native encoder linear layers")
         elif any(
             revision is not None
             for revision in (
@@ -458,6 +477,9 @@ class TrainingConfig(StrictModel):
     unfrozen_learning_rate: float = Field(default=1e-6, gt=0.0)
     warmup_samples: int | None = Field(default=None, ge=1)
     yearly_sampling_decay: float | None = Field(default=None, gt=0.0, le=1.0)
+    sampling_strategy: Literal["legacy_blocks", "sample_random"] = "legacy_blocks"
+    sampling_scratch_max_gib: float = Field(default=1.0, gt=0.0, le=64.0)
+    sampling_audit_updates: int = Field(default=128, ge=1, le=10000)
     weight_decay: float = Field(default=0.01, ge=0.0)
     warmup_ratio: float = Field(default=0.03, ge=0.0, lt=1.0)
     max_grad_norm: float = Field(default=1.0, gt=0.0)
@@ -684,6 +706,8 @@ class ExperimentConfig(StrictModel):
 
     @model_validator(mode="after")
     def validate_stage_contract(self) -> ExperimentConfig:
+        if self.training.sampling_strategy == "sample_random" and self.model.ranking_loss_weight:
+            raise ValueError("Sample-random training cannot also require grouped ranking batches")
         if self.model.prediction_task != "quantiles" and self.validation.calibrate_intervals:
             raise ValueError("Independent signal tasks do not produce intervals to calibrate")
         if self.validation.interval_calibration.mode == "regime_adaptive" and (
@@ -710,7 +734,7 @@ class ExperimentConfig(StrictModel):
             raise ValueError(
                 f"{self.training.stage} requires data.train_fraction={expected_fraction}"
             )
-        if self.model.time_series_backend == "kronos":
+        if self.model.time_series_backend in ("kronos", "chronos2"):
             expected_max_samples = sample_contract["max_samples"]
             if self.data.max_samples != expected_max_samples:
                 raise ValueError(
