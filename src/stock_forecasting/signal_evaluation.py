@@ -116,10 +116,18 @@ class SignalMoments:
             if self.task == "alpha_point":
                 covariance = m[8, i] - m[4, i] * m[5, i]
                 denom = np.sqrt(max(0, m[6, i] - m[4, i] ** 2) * max(0, m[7, i] - m[5, i] ** 2))
+                bias_scaled = abs(float(m[9, i])) / float(self.scales[i])
+                bias_smooth_l1 = (
+                    0.5 * (bias_scaled**2) / self.beta
+                    if bias_scaled < self.beta
+                    else bias_scaled - 0.5 * self.beta
+                )
                 item = {
                     "normalized_smooth_l1": float(m[0, i]),
+                    "debiased_selection_score": float(max(0.0, m[0, i] - bias_smooth_l1)),
                     "mae": float(m[1, i]),
                     "rmse": float(np.sqrt(m[2, i])),
+                    "centered_rmse": float(np.sqrt(max(0.0, m[2, i] - m[9, i] ** 2))),
                     "normalized_mae": float(m[1, i] / self.scales[i]),
                     "direction_agreement": float(m[3, i]),
                     "correlation": float(np.clip(covariance / denom, -1, 1))
@@ -437,6 +445,21 @@ class SignalEvaluationStore:
             )
             for key in result["aggregate"]
         }
+        result["primary_5d"]["market_macro_selection_score"] = result["market_macro"][
+            "selection_score"
+        ]
+        if self.task == "alpha_point":
+            by_market = result["cross_sectional"]["by_market"]
+            rank_ics = [
+                float(horizon_stats.get("rank_ic_mean", 0.0) or 0.0)
+                for market_horizons in by_market.values()
+                for horizon_stats in market_horizons.values()
+                if np.isfinite(float(horizon_stats.get("rank_ic_mean", 0.0) or 0.0))
+            ]
+            mean_rank_ic = float(np.mean(rank_ics)) if rank_ics else 0.0
+            result["primary_5d"]["ic_selection_score"] = float(
+                result["aggregate"]["debiased_selection_score"] - 0.1 * mean_rank_ic
+            )
         self._result = result
         return result
 
