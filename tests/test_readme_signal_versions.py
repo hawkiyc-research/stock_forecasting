@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CURRENT_VARIANTS = ("signal64",)
+CURRENT_VARIANTS = ("signal64", "signal64-datemix")
 INDIVIDUAL_VARIANTS = ("alpha-point64", "absolute-direction64")
 HISTORICAL_VARIANTS = (
     "lora32",

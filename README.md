@@ -58,7 +58,8 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 
 #### 目前架構：一組實驗、兩個獨立模型
 
-目前入口為 A 組 `a-signal64` 與 B 組 `b-signal64`。每次選一個資料組別及 seed，
+目前入口為 A 組 `a-signal64` 與 B 組 `b-signal64`；`a-signal64-datemix`／`b-signal64-datemix`
+是只改訓練順序的對照（見[訓練與評估協定](#training-zh)）。每次選一個資料組別及 seed，
 建立一台 Pod 與一個父 run ID；在同一台 Pod 依序訓練 alpha 點估計及個股漲／平／跌兩個模型，
 各自完成完整 validation／test。兩個子模型各有 Kronos／LoRA、optimizer、輸出頭與
 checkpoint，不混合回歸與分類 loss，也不共享可訓練權重或梯度。
@@ -506,6 +507,25 @@ row group、建立 128-bar asset/benchmark context，並在記憶體中計算從
 大小 batch，最後不足一個 batch 時確定性補齊並記錄數量。年度／市場分組索引採 mmap，
 不在 RAM 展開所有 windows。這個 out-of-core 設計可直接處理
 完整長歷史資料，不需要把全部 bars 或所有可能 window 載入 RAM。
+
+#### 訓練順序與 date mixing
+
+年度／市場索引依（日期, 市場）排序，sampler 以 128 筆連續區塊輸出，因此歷史 preset 的
+每個 micro-batch 來自同一日期與市場，256 筆有效 batch 約只涵蓋 2 個日期×市場。
+`training.date_mixing_buffer_samples` 啟用有界局部混洗：以固定容量 buffer 重新排列
+sampler 輸出，同一 epoch 的樣本集合、年度配額，以及由 seed／epoch 決定的可重現順序與
+接續位置都不變，只讓每次 optimizer step 混入多個日期。混洗使用獨立的 seeded random
+stream，不改變年度區塊抽選。
+
+| 設定 | 預設 | 說明 |
+| --- | --- | --- |
+| `training.date_mixing_buffer_samples` | `null` | `null` 保留歷史順序；可設 256–262,144。buffer 只保存 index，16,384 筆約 0.6 MB，不預載 windows |
+
+此設定要求 `yearly_sampling_decay`，且不可與需要同日配對的 `ranking_loss_weight` 併用，
+違反時 config 驗證即失敗。每個 run 啟動時輸出 `Training batch composition`，並在
+`summary.json` 的 `training_batch_composition` 記錄前 256 個 optimizer steps 的每
+micro-batch／每 step 相異「日期×市場」與日期數；啟用混洗時另記錄同 epoch 的未混洗參考順序。
+這是訓練順序的讀取診斷，不消耗訓練 RNG，也不改變 batch 內容。
 
 Stage 是訓練資料預算與流程層級，不是模型版本。目前兩個獨立任務使用各自的 Stage 2
 實驗 YAML，必須在[主模型訓練](#train-zh)明確選擇；上列底層 Stage YAML 仍是歷史分位數預設，
@@ -1434,7 +1454,8 @@ alpha／方向設定，不改全域 active selection。省略 `--experiment` 仍
 它核對所選 training bar-store、`configs/data_cleaning.json` 指定的共用 validation／test
 bar-store，以及符合當前資料與 baseline 訓練契約的完整結果。A 組不能以自己的評估快照
 代替共用 B 組來源。不要求 Kronos／HF cache，也不讀取主模型 YAML 的訓練設定或
-「最近一次 CPU prepare」紀錄；不建立 Pod、不重新訓練。
+「最近一次 CPU prepare」紀錄；不建立 Pod、不重新訓練。`a-signal64-datemix`／`b-signal64-datemix`
+與同組 `*-signal64` 使用相同 task baselines，以任一名稱查詢或建置都指向同一份結果。
 
 預設只顯示完成狀態、資料規則、有效樣本筆數、baseline ID 及下一步：
 
@@ -1642,6 +1663,14 @@ bash scripts/runpodctl_project.sh gpu list --data-center EU-RO-1 --output json
 | --- | --- | --- |
 | `a-signal64` | 2021-01-01 | `a_alpha_point64.yaml`、`a_absolute_direction64.yaml` |
 | `b-signal64` | 2016-01-01 | `b_alpha_point64.yaml`、`b_absolute_direction64.yaml` |
+| `a-signal64-datemix` | 2021-01-01 | `a_alpha_point64_datemix.yaml`、`a_absolute_direction64_datemix.yaml` |
+| `b-signal64-datemix` | 2016-01-01 | `b_alpha_point64_datemix.yaml`、`b_absolute_direction64_datemix.yaml` |
+
+`*-signal64-datemix` 是單因子對照：各 YAML 與對應 `*-signal64` 設定只差
+`training.date_mixing_buffer_samples: 16384`、實驗／W&B 名稱與 `date-mixing` tag。
+模型架構 digest、標籤、loss、資料與 baseline 身分相同，因此沿用已完成的 task baselines，
+不重做 CPU prepare 或 baseline。訓練順序不同屬於新的 run identity，不能接續 `*-signal64`
+的 checkpoint；比較方式見[實驗協定](docs/experiment_protocol.md)。
 
 資料終點皆為 2026-06-01（不含）；A/B 共用相同 validation/test 來源及有效樣本規則。
 `--experiment` 保留 configure 的 profile、universe、revision 與 h_start。
@@ -1698,9 +1727,19 @@ bash scripts/runpod_workflow.sh train \
 分開執行三次 `train`，各自選一個 seed 與 GPU。每個組合只帶自己的不可變 selection、
 pair manifest、run ID、log 與 guard；之後 configure 不改變已建立的實驗。
 
+date-mixing 對照的操作相同，只換實驗名稱；以下為 A 組、seed 42：
+
+```bash
+bash scripts/runpod_workflow.sh train \
+  --experiment a-signal64-datemix \
+  --seed 42 \
+  --maxRuntime 72h \
+  --gpuId "NVIDIA GeForce RTX 5090"
+```
+
 | 參數 | 預設 | 用法與限制 |
 | --- | --- | --- |
-| `--experiment NAME` | 沿用 active selection | 現行入口 `a-signal64`／`b-signal64`；可重複不同名稱，與 seed 建立笛卡兒組合；含進階／歷史名稱至多 22 種，每次至多 30 個組合 |
+| `--experiment NAME` | 沿用 active selection | 現行入口 `a-signal64`／`b-signal64`，date-mixing 對照 `a-signal64-datemix`／`b-signal64-datemix`；可重複不同名稱，與 seed 建立笛卡兒組合；含進階／歷史名稱至多 28 種，每次至多 30 個組合 |
 | `--seed N` | 所選 YAML／run 的 training seed | 可重複不同整數，0–4294967295；每個組別／seed 一台 Pod，組內兩個模型同 seed，各自獨立 RNG／權重 |
 | `--launchWorkers N`／`--launch-workers N` | `2` | 本機建立請求的 worker 上限，1–6；不是模型並行數、GPU 數或 DataLoader workers |
 | `--maxRuntime DURATION`／`--max-runtime DURATION` | `12h` | 每台 Pod 的共同停止請求期限，涵蓋兩個模型與評估，不是每個子模型各獲一次 runtime；正整數加 `m`／`h`／`d` |
@@ -2336,8 +2375,8 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `selection show` | 無額外參數；顯示 active selection |
 | `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
 | `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
-| `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 同時核對當前資料篩選規則與 baseline 完成結果、不要求主模型 HF cache。`--baseline --experiment a-signal64`（或 `b-signal64`）查詢兩個任務，省略實驗沿用 active selection；`--experiment` 只供 baseline 模式使用。完成為 exit 0、尚未完成／待整理為 1、驗證錯誤為 2 |
-| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。`train` 接受可重複的 `--experiment NAME`、`--seed N`（0–4294967295；省略沿用 training seed）及 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；實驗 × seeds 最多 30 個組合。`a-signal64`／`b-signal64` 每組別、每 seed 建立一台 Pod，依序執行兩個獨立模型，runtime 共用。`baseline` 接受單一 `--experiment NAME`，成對入口先在本機查兩個 task cache、只建置未完成部分，不改 active selection；不接受 seed／launchWorkers。省略實驗仍使用 active selection，**不自動變成成對實驗**；進階單模型入口見附錄。兩者無 run ID 位置參數 |
+| `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 同時核對當前資料篩選規則與 baseline 完成結果、不要求主模型 HF cache。`--baseline --experiment a-signal64`（或 `b-signal64`、`a-signal64-datemix`、`b-signal64-datemix`）查詢兩個任務，省略實驗沿用 active selection；`--experiment` 只供 baseline 模式使用。完成為 exit 0、尚未完成／待整理為 1、驗證錯誤為 2 |
+| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。`train` 接受可重複的 `--experiment NAME`、`--seed N`（0–4294967295；省略沿用 training seed）及 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；實驗 × seeds 最多 30 個組合。`a-signal64`／`b-signal64` 及其 `-datemix` 對照每組別、每 seed 建立一台 Pod，依序執行兩個獨立模型，runtime 共用。`baseline` 接受單一 `--experiment NAME`，成對入口先在本機查兩個 task cache、只建置未完成部分，不改 active selection；不接受 seed／launchWorkers。省略實驗仍使用 active selection，**不自動變成成對實驗**；進階單模型入口見附錄。兩者無 run ID 位置參數 |
 | `resume [RUN_ID]` | 父 ID 接續未完成模型或補齊其 test，略過已完成模型；整對已完成則拒絕、不開 Pod。單模型保留原接續功能。省略 ID 須唯一可接續候選，多個候選拒絕猜測。自動讀取原 selection；`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是 best |
 | `validate [RUN_ID]` | 省略 ID 選最新完成 training 的 run，使用原 selection。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設沿用完成工作；`--no-resume` 停用續評估；`--force` 重算並停用續評估，三者擇一。父 ID 在一 Pod 處理兩模型；兩份 test 已完成且無 `--force` 時本機跳過、不開 Pod；`--force` 重算兩份。不重訓 baseline |
 | `runs` | `--experiment NAME`、`--seed N`、`--state STATE`、`--limit N`、`--offset N`、`--workers N`、`--output table\|json`、`--timezone ZONE`；列出 run ID、seed、執行時間與固定設定，詳見[查詢 run](#run-status-zh) |
@@ -3279,7 +3318,9 @@ architecture and report snapshots.
 
 #### Current architecture: one experiment, two independent models
 
-The current entry points are `a-signal64` and `b-signal64`. Choose a data group and seed once
+The current entry points are `a-signal64` and `b-signal64`; `a-signal64-datemix` and
+`b-signal64-datemix` are controls that change only the training order (see
+[training protocol](#training-en)). Choose a data group and seed once
 to create one Pod and one parent run ID. That Pod sequentially trains the alpha-point and
 absolute-stock down/neutral/up models, including each model's complete validation/test.
 Each child has independent Kronos/LoRA weights, optimizer, head and checkpoints. The losses
@@ -3808,6 +3849,28 @@ padding. The compact date/market index is memory-mapped, not an in-memory expans
 of every window. This out-of-core design
 handles long full-market history without loading all bars or all potential windows
 into RAM.
+
+#### Training order and date mixing
+
+The annual/market index is sorted by (date, market) and the sampler emits contiguous
+128-sample blocks. Historical presets therefore draw each micro-batch from one date and
+market, and a 256-sample effective batch covers only about two date/market groups.
+`training.date_mixing_buffer_samples` enables a bounded local shuffle: a fixed-capacity
+buffer reorders the sampler output while each epoch's samples, annual quotas, and the
+seed/epoch-determined reproducible order and resume position stay unchanged; only each
+optimizer step now mixes many dates. The shuffle uses its own seeded random stream and
+does not change the annual block draws.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `training.date_mixing_buffer_samples` | `null` | `null` keeps the historical order; accepted range 256–262,144. The buffer holds indices only, about 0.6 MB for 16,384, and never preloads windows |
+
+The setting requires `yearly_sampling_decay` and cannot be combined with the same-date
+pairs needed by `ranking_loss_weight`; config validation fails otherwise. Every run prints
+`Training batch composition` at startup and records `training_batch_composition` in
+`summary.json`: distinct date/market groups and dates per micro-batch and per optimizer step
+for the first 256 optimizer steps. Mixed runs also record the same epoch's unmixed reference
+order. This read-only diagnostic consumes no training RNG and does not change batch contents.
 
 The standard stage configs retain `quantiles` and have matching `model_architecture_digest()` values. Current tasks
 use explicit experiment YAML files; see [task selection](#train-en). [Resume](#resume-en)
@@ -4876,7 +4939,9 @@ baseline completion**. It verifies the selected training bar store, the shared v
 source selected by `configs/data_cleaning.json`, and complete results matching the current data
 and baseline training contract. A cannot substitute its own evaluation snapshot for the shared
 B source. No Kronos/HF cache, main-model training YAML, or shared "most recent CPU prepare"
-record is required. This query never creates a Pod or retrains models.
+record is required. This query never creates a Pod or retrains models. `a-signal64-datemix`/
+`b-signal64-datemix` use the same task baselines as their `*-signal64` group, so querying or
+building with either name refers to the same results.
 
 The default output contains completion, data-rule status, eligible counts, baseline ID and next action:
 
@@ -5116,6 +5181,15 @@ This is not DDP, a combined-loss model, or two separately operated training jobs
 | --- | --- | --- |
 | `a-signal64` | 2021-01-01 | `a_alpha_point64.yaml`, `a_absolute_direction64.yaml` |
 | `b-signal64` | 2016-01-01 | `b_alpha_point64.yaml`, `b_absolute_direction64.yaml` |
+| `a-signal64-datemix` | 2021-01-01 | `a_alpha_point64_datemix.yaml`, `a_absolute_direction64_datemix.yaml` |
+| `b-signal64-datemix` | 2016-01-01 | `b_alpha_point64_datemix.yaml`, `b_absolute_direction64_datemix.yaml` |
+
+`*-signal64-datemix` is a single-factor control: each YAML differs from its `*-signal64`
+counterpart only by `training.date_mixing_buffer_samples: 16384`, experiment/W&B names and
+the `date-mixing` tag. Model architecture digest, labels, loss, data and baseline identity are
+identical, so completed task baselines are reused without CPU preparation or baseline rebuilds.
+A different training order is a new run identity and cannot resume a `*-signal64`
+checkpoint; see the [experiment protocol](docs/experiment_protocol.md) for comparisons.
 
 Both data ranges end at 2026-06-01 exclusive and use the same validation/test source and
 eligibility rules. `--experiment` preserves configure's profile, universe, revision and h_start.
@@ -5176,9 +5250,20 @@ For different GPUs, issue three commands with one seed and the desired GPU each.
 per-launch selections and pair manifests isolate run IDs, logs and guards; later configure
 operations cannot change existing launches.
 
+The date-mixing control uses the same operations with a different experiment name; group A,
+seed 42:
+
+```bash
+bash scripts/runpod_workflow.sh train \
+  --experiment a-signal64-datemix \
+  --seed 42 \
+  --maxRuntime 72h \
+  --gpuId "NVIDIA GeForce RTX 5090"
+```
+
 | Option | Default | Behavior |
 | --- | --- | --- |
-| `--experiment NAME` | Active selection | Current choices `a-signal64`/`b-signal64`; repeat distinct names to combine with seeds; up to 22 names including advanced/archived presets, at most 30 combinations |
+| `--experiment NAME` | Active selection | Current choices `a-signal64`/`b-signal64`, date-mixing controls `a-signal64-datemix`/`b-signal64-datemix`; repeat distinct names to combine with seeds; up to 28 names including advanced/archived presets, at most 30 combinations |
 | `--seed N` | Selected YAML/run training seed | Repeat distinct integers, 0–4294967295; one Pod per group/seed; both children use that seed with independent RNG/weights |
 | `--launchWorkers N` / `--launch-workers N` | `2` | Local creation-request workers, 1–6; not model concurrency, GPU count or DataLoader workers |
 | `--maxRuntime DURATION` / `--max-runtime DURATION` | `12h` | One shared stop-request deadline per Pod covering both models and evaluations, not a fresh runtime for each child; positive integer plus `m`/`h`/`d` |
@@ -5898,8 +5983,8 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `selection show` | No extra options; display the active selection |
 | `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
 | `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
-| `readiness` | Choose one: `--code-only` checks uploaded code; `--gpu` checks main-model dependencies; `--baseline` checks current data-cleaning rules and baseline completion without the main-model HF cache. Add `--experiment a-signal64` or `b-signal64` to `--baseline` to check both tasks; omission retains active selection. `--experiment` is only accepted in baseline mode. Exit 0: complete; 1: incomplete/pending finalization; 2: verification error |
-| `train`, `baseline` | `--maxRuntime D`: `12h`; `--gpuId ID`: `NVIDIA GeForce RTX 5090`. `train` accepts repeated `--experiment NAME`, repeated `--seed N` (0–4294967295; training seed when omitted), and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`), at most 30 experiment × seed combinations. Each `a-signal64`/`b-signal64` group/seed creates one Pod running two independent models sequentially under one runtime. `baseline` accepts one `--experiment NAME`: a paired entry checks both task caches locally and builds only unfinished work without changing active selection; no seed/launchWorkers. Omitting experiment keeps active selection, **not an implicit pair**. Advanced individual entries remain in the appendix. Neither accepts a positional run ID |
+| `readiness` | Choose one: `--code-only` checks uploaded code; `--gpu` checks main-model dependencies; `--baseline` checks current data-cleaning rules and baseline completion without the main-model HF cache. Add `--experiment a-signal64`, `b-signal64`, `a-signal64-datemix` or `b-signal64-datemix` to `--baseline` to check both tasks; omission retains active selection. `--experiment` is only accepted in baseline mode. Exit 0: complete; 1: incomplete/pending finalization; 2: verification error |
+| `train`, `baseline` | `--maxRuntime D`: `12h`; `--gpuId ID`: `NVIDIA GeForce RTX 5090`. `train` accepts repeated `--experiment NAME`, repeated `--seed N` (0–4294967295; training seed when omitted), and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`), at most 30 experiment × seed combinations. Each `a-signal64`/`b-signal64` group/seed, and each `-datemix` control, creates one Pod running two independent models sequentially under one runtime. `baseline` accepts one `--experiment NAME`: a paired entry checks both task caches locally and builds only unfinished work without changing active selection; no seed/launchWorkers. Omitting experiment keeps active selection, **not an implicit pair**. Advanced individual entries remain in the appendix. Neither accepts a positional run ID |
 | `resume [RUN_ID]` | A parent resumes unfinished models or missing test evaluation, skipping completed models; a complete pair rejects before renting. Individual-model resume remains supported. Omission requires exactly one eligible candidate. Restore original selection; `--maxRuntime D`: `12h`, GPU as above; use latest usable checkpoint, not best |
 | `validate [RUN_ID]` | Omission selects latest completed training with original selection; `--maxRuntime D`: `12h`, GPU as above. `--resume` (default) reuses completed jobs; `--no-resume` disables continuation; `--force` recomputes and disables resume; choose one. Parent validation handles both models in one Pod. Both tests complete without `--force`: skip locally/no Pod; `--force`: recompute both. No baseline retraining |
 | `runs` | `--experiment NAME`, `--seed N`, `--state STATE`, `--limit N`, `--offset N`, `--workers N`, `--output table\|json`, `--timezone ZONE`; list run IDs, seeds, execution times and frozen settings; see [run queries](#run-status-en) |

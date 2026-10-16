@@ -437,6 +437,39 @@ Test 不擬合任何先驗或門檻；V2/V3 不跨架構 resume，selection loss
 一次只改一個因子，並產生新的 experiment/run identity；不得用同一 checkpoint 名稱
 覆寫不同語意。
 
+#### 13.1 訓練順序單因子對照：`*-signal64-datemix`
+
+歷史 `DateMarketSampler` 依（日期, 市場）排序後輸出 128 筆連續區塊；主模型每個
+micro-batch 來自同一日期與市場，256 筆有效 batch 約只涵蓋 2 個日期×市場。同日股票共享
+市場與風格衝擊，因此每次更新都由少數日期的共同結果主導；baseline 神經模型的區塊則是單一
+股票的連續日期，兩者的 batch 組成並不相同。
+
+假說：日期集中的 batch 讓模型追逐日期層級的共同衝擊，表現為早期最佳點、seed 敏感、
+長天期類別偏移與逐日 loss 波動。`a-signal64-datemix`／`b-signal64-datemix` 只加入
+`training.date_mixing_buffer_samples: 16384` 的有界局部混洗，其餘數值設定與對應
+`*-signal64` 相同：同一 epoch 的樣本集合與年度配額不變、模型架構 digest 不變、task
+baselines 重用。這是新的 run identity，不接續舊 checkpoint。
+
+```bash
+bash scripts/runpod_workflow.sh readiness --baseline --experiment a-signal64-datemix
+bash scripts/runpod_workflow.sh train --experiment a-signal64-datemix --seed 42
+```
+
+比較程序：
+
+1. 先以 seed 42 與既有 `a-signal64` seed 42 的**完整 validation** 比較；不以 test 選擇方案。
+2. 確認 `summary.json` 的 `training_batch_composition`：混洗順序每 optimizer step 的相異
+   日期×市場數應遠高於 `unmixed_reference_order`。
+3. 事先固定、只用 `metrics.jsonl` 已記錄 validation 指標的判準：
+   - alpha：最佳 normalized Smooth L1 低於歷史 seed 42 最佳值 0.4548，且最佳點不是首次評估；
+   - 方向：最佳 CE 低於 1.0284；該點 10–14 日 ECE 低於歷史 seed 42 最佳點的
+     0.0864–0.1037；market-macro CE（1.0197）與 macro-F1（0.3592）不得變差。
+4. 只有 validation 判準成立時，才補齊其他 seeds 並讀取最終 test，以逐日配對區間對照
+   GRU／GBDT 等 learned baselines；test 期間已多次用於比較，不能稱為完全未見資料的確認。
+   最終 benchmark 的 `daily_signal_loss` 與各 horizon 預測類別比例作為輔助診斷，
+   檢查逐日 loss 波動與長天期類別偏移是否減少。
+5. 任一判準不成立也保留結果；不在同一輪加入其他改動，以免無法歸因。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -906,6 +939,46 @@ Optional later single-factor ablations, without changing outputs or splits, incl
 
 Each ablation needs a new run identity and must never overwrite a checkpoint
 with different semantics.
+
+#### 13.1 Single-factor training-order control: `*-signal64-datemix`
+
+The historical `DateMarketSampler` sorts by (date, market) and emits contiguous 128-sample
+blocks. Each main-model micro-batch therefore comes from one date and market, and a
+256-sample effective batch covers only about two date/market groups. Stocks on one date share
+market and style shocks, so each update is dominated by the common outcome of very few dates.
+Neural baseline blocks instead hold consecutive dates of one stock; the batch compositions differ.
+
+Hypothesis: date-concentrated batches make the model chase date-level common shocks, visible as
+early best checkpoints, seed sensitivity, long-horizon class drift and volatile per-date losses.
+`a-signal64-datemix`/`b-signal64-datemix` add only the bounded local shuffle
+`training.date_mixing_buffer_samples: 16384`; every other numerical setting equals the matching
+`*-signal64`. Each epoch keeps the same samples and annual quotas, the model architecture digest is
+unchanged, and task baselines are reused. This is a new run identity and resumes no old checkpoint.
+
+```bash
+bash scripts/runpod_workflow.sh readiness --baseline --experiment a-signal64-datemix
+bash scripts/runpod_workflow.sh train --experiment a-signal64-datemix --seed 42
+```
+
+Comparison procedure:
+
+1. Compare seed 42 with the existing `a-signal64` seed 42 on the **complete validation set**
+   first; do not choose a method from test results.
+2. Check `training_batch_composition` in `summary.json`: distinct date/market groups per
+   optimizer step in the mixed order should far exceed `unmixed_reference_order`.
+3. Pre-registered criteria that use only validation metrics already recorded in `metrics.jsonl`:
+   - alpha: best normalized Smooth L1 below the historical seed 42 best of 0.4548, with the best
+     point after the first evaluation;
+   - direction: best CE below 1.0284; at that point, 10–14 day ECE below the historical seed 42
+     best-point range of 0.0864–0.1037; market-macro CE (1.0197) and macro-F1 (0.3592) must not
+     worsen.
+4. Only if the validation criteria hold, complete the other seeds and read the final test,
+   comparing GRU/GBDT and other learned baselines with date-paired intervals. The test period has
+   been used repeatedly, so it is not confirmation on entirely unseen data. The final benchmark's
+   `daily_signal_loss` and per-horizon predicted class shares are supporting diagnostics for
+   per-date loss volatility and long-horizon class drift.
+5. Retain the result even if any criterion fails, and add no other change in the same round so the
+   effect remains attributable.
 
 ### 14. Remote-validation boundary
 
