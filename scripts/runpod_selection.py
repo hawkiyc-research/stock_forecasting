@@ -64,6 +64,10 @@ EXPERIMENT_CONFIGS = {
         "direction64-v3",
         "alpha-point64",
         "absolute-direction64",
+        "alpha-point64-v2",
+        "absolute-direction64-v2",
+        "alpha-point64-timexer",
+        "absolute-direction64-timexer",
     )
 }
 STAGE_RUNTIME = {
@@ -436,9 +440,9 @@ def _validate_selection(
         expected_config_path = EXPERIMENT_CONFIGS[experiment]["config_path"]
     task_name = (
         "alpha_point"
-        if experiment and experiment.endswith("-alpha-point64")
+        if experiment and ("-alpha-point64" in experiment)
         else "absolute_direction"
-        if experiment and experiment.endswith("-absolute-direction64")
+        if experiment and ("-absolute-direction64" in experiment)
         else None
     )
     if (payload.get("baseline_task") or {}).get("prediction_task") != task_name:

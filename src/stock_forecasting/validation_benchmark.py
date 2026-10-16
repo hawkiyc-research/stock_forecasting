@@ -91,6 +91,7 @@ SIGNAL_EVALUATION_IMPLEMENTATION_PATHS = (
     "signal_evaluation.py",
     "signal_training.py",
     "models/signal.py",
+    "models/timexer.py",
 )
 VALIDATION_NON_NUMERICAL_CONFIG_FIELDS = (
     "enabled",

@@ -34,16 +34,20 @@ def model_contract(config_path):
             values[key] = READINESS["_resolve_environment_default"](
                 READINESS["_strip_yaml_scalar"](value)
             )
-    if values.get("time_series_backend") != "kronos" or values.get("local_files_only") != "true":
-        raise ValueError("Production training requires the offline Kronos backend")
-    for name in (
-        "kronos_source_revision", "time_series_model_revision", "time_series_tokenizer_revision"
-    ):
-        if not re.fullmatch(r"[0-9a-f]{40}", values.get(name, "")):
-            raise ValueError(f"Model readiness requires an immutable revision: {name}")
-    for name in ("time_series_model_id", "time_series_tokenizer_id"):
-        if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", values.get(name, "")):
-            raise ValueError(f"Invalid model repository: {name}")
+    backend = values.get("time_series_backend")
+    if backend not in {"kronos", "timexer"} or values.get("local_files_only") != "true":
+        raise ValueError("Production training requires an offline Kronos or TimeXer backend")
+    if backend == "kronos":
+        for name in (
+            "kronos_source_revision",
+            "time_series_model_revision",
+            "time_series_tokenizer_revision",
+        ):
+            if not re.fullmatch(r"[0-9a-f]{40}", values.get(name, "")):
+                raise ValueError(f"Model readiness requires an immutable revision: {name}")
+        for name in ("time_series_model_id", "time_series_tokenizer_id"):
+            if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", values.get(name, "")):
+                raise ValueError(f"Invalid model repository: {name}")
     if not re.fullmatch(r"[1-9][0-9]*", values.get("input_length", "")):
         raise ValueError("Model readiness requires a positive input length")
     return values
@@ -87,6 +91,8 @@ def verify_snapshot_file(reader, repository, revision, filename):
 
 def verify_models(config_path, reader, *, workers):
     values = model_contract(config_path)
+    if values.get("time_series_backend") == "timexer":
+        return {"state": "ready", "backend": "timexer", "repository_revisions": {}, "verified_files": 0}
     payload = json.loads(reader.read("cache/hf-models.json"))
     expected = {
         values["time_series_model_id"]: values["time_series_model_revision"],

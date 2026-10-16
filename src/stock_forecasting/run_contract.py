@@ -65,6 +65,7 @@ DIRECTION_IMPLEMENTATION_PATHS = (
 
 SIGNAL_IMPLEMENTATION_PATHS = (
     "models/signal.py",
+    "models/timexer.py",
     "signal_evaluation.py",
     "signal_training.py",
 )

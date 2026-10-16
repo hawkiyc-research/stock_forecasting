@@ -120,7 +120,7 @@ def run_preflight(
                         fixed_split=config.data.fixed_split,
                         minimum_evaluation_dates=(
                             MIN_FIXED_EVALUATION_DATES
-                            if config.model.time_series_backend == "kronos" else 0
+                            if config.model.time_series_backend in {"kronos", "timexer"} else 0
                         ),
                     )
                 except ValueError as error:
@@ -161,6 +161,11 @@ def run_preflight(
             report.errors.append("Production Kronos quant fine-tuning requires predictor LoRA")
         if on_runpod and not torch.cuda.is_available():
             report.errors.append("RunPod Kronos training requires a visible CUDA GPU")
+    elif config.model.time_series_backend == "timexer":
+        if config.model.lora.enabled:
+            report.errors.append("TimeXer backbone cannot enable Kronos LoRA")
+        if on_runpod and not torch.cuda.is_available():
+            report.errors.append("RunPod TimeXer training requires a visible CUDA GPU")
     elif config.model.lora.enabled:
         report.errors.append("Mock backbone cannot enable Kronos LoRA")
 
@@ -171,8 +176,8 @@ def run_preflight(
         )
         if config.training.mixed_precision == "bf16" and not torch.cuda.is_bf16_supported():
             report.errors.append("Configured BF16 training is not supported by this GPU")
-    elif config.model.time_series_backend == "kronos":
-        report.warnings.append("Kronos will run on CPU outside RunPod and may be slow")
+    elif config.model.time_series_backend in {"kronos", "timexer"}:
+        report.warnings.append("Production backbone will run on CPU outside RunPod and may be slow")
 
     sample_contract = PRODUCTION_STAGE_SAMPLE_CONTRACTS[config.training.stage]
     if config.data.train_fraction != sample_contract["train_fraction"]:
@@ -181,7 +186,7 @@ def run_preflight(
             f"{sample_contract['train_fraction']}"
         )
     if (
-        config.model.time_series_backend == "kronos"
+        config.model.time_series_backend in {"kronos", "timexer"}
         and config.data.max_samples != sample_contract["max_samples"]
     ):
         report.errors.append(

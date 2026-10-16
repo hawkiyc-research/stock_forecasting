@@ -14,7 +14,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PAIRED_EXPERIMENTS = ("a-signal64", "b-signal64")
+PAIRED_EXPERIMENTS = (
+    "a-signal64",
+    "b-signal64",
+    "a-signal64-v2",
+    "b-signal64-v2",
+    "a-signal64-timexer",
+    "b-signal64-timexer",
+)
 
 
 def read_plan(root: Path, path: Path) -> dict:

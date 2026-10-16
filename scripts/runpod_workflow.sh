@@ -360,8 +360,8 @@ EOF
     readiness)
         if [[ $# -eq 3 && "$1" == "--baseline" && "$2" == "--experiment" ]]; then
             case "$3" in
-                a-signal64|b-signal64) ;;
-                *) echo "Paired baseline status requires a-signal64 or b-signal64" >&2; exit 2 ;;
+                a-signal64|b-signal64|a-signal64-v2|b-signal64-v2|a-signal64-timexer|b-signal64-timexer) ;;
+                *) echo "Paired baseline status requires a-signal64* or b-signal64*" >&2; exit 2 ;;
             esac
             source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
             runpod_load_create_env "${SCRIPT_DIR}/.."
@@ -434,7 +434,7 @@ EOF
                     ;;
             esac
         done
-        runpod_validate_gpu_id "${train_gpu_id}"
+        runpod_validate_gpu_id "${train_max_runtime:+$train_gpu_id}"
         train_max_seconds="$(runpod_duration_seconds "${train_max_runtime}" --maxRuntime)"
         export RUNPOD_CLI_MAX_RUNTIME_SECONDS="${train_max_seconds}"
         export RUNPOD_CLI_HARD_LIMIT_SECONDS="$((train_max_seconds + 3600))"
@@ -444,7 +444,7 @@ EOF
         fi
         if [[ -n "${baseline_experiment}" ]]; then
             case "${baseline_experiment}" in
-                a-signal64|b-signal64)
+                a-signal64|b-signal64|a-signal64-v2|b-signal64-v2|a-signal64-timexer|b-signal64-timexer)
                     exec python3 "${SCRIPT_DIR}/runpod_paired_control.py" launch-baseline \
                         --experiment "${baseline_experiment}"
                     ;;

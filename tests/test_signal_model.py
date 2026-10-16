@@ -342,6 +342,12 @@ def test_mask_validation_and_separate_encoding_keep_the_pair_contract():
         {"robust_scales": [0.1]},
         {"robust_scales": [float("nan")] * 14},
         {"feature_mode": "baseline"},
+        {"signal_architecture": "v3"},
+        {"signal_attention_heads": 0},
+        {"alpha_ic_loss_weight": -0.1},
+        {"alpha_bias_penalty_weight": -0.1},
+        {"direction_label_smoothing": 0.5},
+        {"direction_focal_gamma": -1.0},
     ),
 )
 def test_invalid_head_configuration_fails_early(overrides):
@@ -349,3 +355,105 @@ def test_invalid_head_configuration_fails_early(overrides):
     arguments.update(overrides)
     with pytest.raises(ValueError):
         SingleTaskHead(16, **arguments)
+
+
+@pytest.mark.parametrize("task", ("alpha_point", "absolute_direction"))
+@pytest.mark.parametrize("device", DEVICES)
+def test_v2_signal_head_forward_gradients_and_eval_loss_parity(task, device):
+    from stock_forecasting.signal_evaluation import SignalMoments
+
+    torch.manual_seed(29)
+    head = SingleTaskHead(
+        16,
+        prediction_task=task,
+        horizons=HORIZONS,
+        robust_scales=[0.02 * math.sqrt(h) for h in HORIZONS],
+        feature_mode="combined",
+        explicit_output_scale=True,
+        market_aware=True,
+        signal_architecture="v2",
+        signal_attention_heads=2,
+        alpha_ic_loss_weight=0.15 if task == "alpha_point" else 0.0,
+        alpha_bias_penalty_weight=0.25 if task == "alpha_point" else 0.0,
+        direction_label_smoothing=0.04 if task == "absolute_direction" else 0.0,
+        direction_focal_gamma=1.5 if task == "absolute_direction" else 0.0,
+    )
+    instance = SignalForecastModel(
+        TinyLoRABackbone(),
+        CausalPerceiverResampler(16, 16, num_soft_tokens=4, num_heads=2, depth=1),
+        GatedBenchmarkConditioner(16, num_heads=2),
+        head,
+    ).to(device)
+    asset, benchmark = bars(device)
+    values = historical_scale_features(asset, benchmark, extended=True).cpu().numpy()
+    head.numeric_branch.set_statistics(fit_scale_feature_statistics(values, {"split": "train"}))
+    kwargs = batch(device)
+    kwargs["ranking_group_ids"] = torch.tensor([0, 0, 1, 1], device=device)
+
+    instance.train()
+    train_out = instance(**kwargs)
+    assert torch.isfinite(train_out.loss)
+    train_out.loss.backward()
+    assert all(torch.isfinite(p.grad).all() for p in instance.parameters() if p.grad is not None)
+
+    instance.eval()
+    eval_out = instance(**kwargs)
+    prediction = (
+        eval_out.alpha_point if task == "alpha_point" else eval_out.absolute_direction_logits
+    )
+    target = kwargs["target_alpha"] if task == "alpha_point" else kwargs["target_absolute"]
+    moments = SignalMoments(HORIZONS, instance.alpha_head.robust_scales.cpu().tolist(), task)
+    moments.add(target.detach().cpu().numpy(), prediction.detach().float().cpu().numpy())
+    assert moments.result()["aggregate"]["selection_score"] == pytest.approx(
+        eval_out.loss.detach().item(), rel=2e-6, abs=1e-7
+    )
+
+
+def test_timexer_backbone_causality_and_signal_model_integration():
+    from stock_forecasting.models.timexer import MarketGuidedTimeXerBackbone
+
+    torch.manual_seed(41)
+    backbone = MarketGuidedTimeXerBackbone(hidden_size=32, num_layers=2, num_heads=4, dropout=0.0)
+    backbone.eval()
+    asset, benchmark = bars()
+    joined = torch.cat([asset, benchmark], dim=0)
+    perturbed = joined.clone()
+    perturbed[:, 64:] = perturbed[:, 64:] * 1.35 + 2.0
+
+    with torch.inference_mode():
+        original_out = backbone.encode(joined)
+        perturbed_out = backbone.encode(perturbed)
+    assert original_out.tokens.shape == (8, 128, 32)
+    torch.testing.assert_close(
+        original_out.tokens[:, :64], perturbed_out.tokens[:, :64], rtol=1e-5, atol=1e-6
+    )
+
+    head = SingleTaskHead(
+        16,
+        prediction_task="alpha_point",
+        horizons=HORIZONS,
+        robust_scales=[0.02 * math.sqrt(h) for h in HORIZONS],
+        feature_mode="combined",
+        explicit_output_scale=True,
+        market_aware=True,
+        signal_architecture="v2",
+        signal_attention_heads=2,
+        alpha_ic_loss_weight=0.15,
+        alpha_bias_penalty_weight=0.25,
+    )
+    values = historical_scale_features(asset, benchmark, extended=True).cpu().numpy()
+    head.numeric_branch.set_statistics(fit_scale_feature_statistics(values, {"split": "train"}))
+    instance = SignalForecastModel(
+        backbone,
+        CausalPerceiverResampler(32, 16, num_soft_tokens=4, num_heads=2, depth=1),
+        GatedBenchmarkConditioner(16, num_heads=2),
+        head,
+    )
+    instance.train()
+    kwargs = batch()
+    kwargs["ranking_group_ids"] = torch.tensor([0, 0, 1, 1])
+    out = instance(**kwargs)
+    assert torch.isfinite(out.loss)
+    out.loss.backward()
+    assert all(torch.isfinite(p.grad).all() for p in instance.parameters() if p.grad is not None)
+

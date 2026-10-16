@@ -17,6 +17,7 @@ from stock_forecasting.models import (
     DeterministicTimeSeriesBackbone,
     GatedBenchmarkConditioner,
     KronosBackbone,
+    MarketGuidedTimeXerBackbone,
     MultiHorizonAlphaHead,
     QuantForecastModel,
     lora_parameter_names,
@@ -106,6 +107,15 @@ def build_model_bundle(
             hidden_size=config.model.encoder_dim,
             max_context=config.data.input_length,
         )
+    elif config.model.time_series_backend == "timexer":
+        backbone = MarketGuidedTimeXerBackbone(
+            input_dim=5,
+            hidden_size=config.model.timexer_hidden_size,
+            max_context=config.data.input_length,
+            num_layers=config.model.timexer_layers,
+            num_heads=config.model.timexer_heads,
+            dropout=config.model.timexer_dropout,
+        )
     else:
         revision = config.model.kronos_source_revision
         assert revision is not None
@@ -179,6 +189,12 @@ def build_model_bundle(
             "prediction_task": config.model.prediction_task,
             "point_loss_beta": config.model.point_loss_beta,
             "neutral_return_threshold": config.model.neutral_return_threshold,
+            "signal_architecture": config.model.signal_architecture,
+            "signal_attention_heads": config.model.signal_attention_heads,
+            "alpha_ic_loss_weight": config.model.alpha_ic_loss_weight,
+            "alpha_bias_penalty_weight": config.model.alpha_bias_penalty_weight,
+            "direction_label_smoothing": config.model.direction_label_smoothing,
+            "direction_focal_gamma": config.model.direction_focal_gamma,
         }
     alpha_head = alpha_head_type(
         config.model.encoder_dim,

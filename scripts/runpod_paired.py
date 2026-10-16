@@ -14,10 +14,23 @@ from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PAIR_EXPERIMENTS = ("a-signal64", "b-signal64")
+PAIR_EXPERIMENTS = (
+    "a-signal64",
+    "b-signal64",
+    "a-signal64-v2",
+    "b-signal64-v2",
+    "a-signal64-timexer",
+    "b-signal64-timexer",
+)
 TASKS = ("alpha_point", "absolute_direction")
 VARIANTS = {"alpha_point": "alpha-point64", "absolute_direction": "absolute-direction64"}
 SUFFIXES = {"alpha_point": "alpha", "absolute_direction": "direction"}
+
+
+def _child_variant(experiment: str, task: str) -> str:
+    prefix = f"{experiment[0]}-signal64"
+    suffix = experiment[len(prefix) :] if experiment.startswith(prefix) else ""
+    return f"{VARIANTS[task]}{suffix}"
 
 
 @lru_cache(maxsize=8)
@@ -63,7 +76,7 @@ def validate_manifest(payload: dict, run_id: str | None = None) -> dict:
         if child.get("run_id") != f"{parent}-{SUFFIXES[task]}":
             raise ValueError("Paired child is not owned by its parent run")
         safe_run_id(child["run_id"])
-        expected = f"{experiment[0]}-{VARIANTS[task]}"
+        expected = f"{experiment[0]}-{_child_variant(experiment, task)}"
         selected = child.get("selection")
         if not isinstance(selected, dict):
             raise ValueError("Paired child selection is missing")
@@ -95,7 +108,8 @@ def build_plan(root: Path, original_selection: dict, experiment: str, seed: int 
     if seed is None:
         # The current preset default is explicit and must agree across both tasks.
         values = []
-        for variant in VARIANTS.values():
+        for task in TASKS:
+            variant = _child_variant(experiment, task)
             source = (root / f"configs/experiments/{experiment[0]}_{variant.replace('-', '_')}.yaml").read_text()
             training = source.split("\ntraining:\n", 1)[1]
             found = re.search(r"(?m)^  seed: (\d+)\s*$", training)
@@ -112,7 +126,7 @@ def build_plan(root: Path, original_selection: dict, experiment: str, seed: int 
     safe_run_id(parent)
     children = {}
     for task in TASKS:
-        name = f"{experiment[0]}-{VARIANTS[task]}"
+        name = f"{experiment[0]}-{_child_variant(experiment, task)}"
         selected = api["_with_experiment"](copy.deepcopy(original_selection), name, root)
         selected = api["_with_training_seed"](selected, seed, root)
         children[task] = {

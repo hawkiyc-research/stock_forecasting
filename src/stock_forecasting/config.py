@@ -243,10 +243,20 @@ class DirectionConfig(StrictModel):
 class ModelConfig(StrictModel):
     """Shared Kronos encoder, benchmark conditioner, and alpha quantile head."""
 
-    time_series_backend: Literal["kronos", "mock"] = "kronos"
+    time_series_backend: Literal["kronos", "timexer", "mock"] = "kronos"
     prediction_task: Literal["quantiles", "alpha_point", "absolute_direction"] = "quantiles"
     point_loss_beta: float = Field(default=1.0, gt=0.0)
     neutral_return_threshold: float = Field(default=0.01, gt=0.0, lt=1.0)
+    signal_architecture: Literal["legacy", "v2"] = "legacy"
+    signal_attention_heads: int = 4
+    alpha_ic_loss_weight: float = 0.0
+    alpha_bias_penalty_weight: float = 0.0
+    direction_label_smoothing: float = 0.0
+    direction_focal_gamma: float = 0.0
+    timexer_hidden_size: int = 256
+    timexer_layers: int = 4
+    timexer_heads: int = 8
+    timexer_dropout: float = 0.1
     time_series_model_id: str = "NeoQuasar/Kronos-base"
     time_series_tokenizer_id: str = "NeoQuasar/Kronos-Tokenizer-base"
     time_series_model_revision: str | None = None
@@ -296,6 +306,32 @@ class ModelConfig(StrictModel):
                 "Independent signal tasks cannot enable auxiliary direction, ranking, "
                 "interval-scale or residual-head objectives"
             )
+        if self.prediction_task == "quantiles" and (
+            self.signal_architecture != "legacy"
+            or self.alpha_ic_loss_weight != 0.0
+            or self.alpha_bias_penalty_weight != 0.0
+            or self.direction_label_smoothing != 0.0
+            or self.direction_focal_gamma != 0.0
+        ):
+            raise ValueError("Signal V2 options require an independent signal prediction_task")
+        if self.signal_attention_heads < 1 or self.encoder_dim % self.signal_attention_heads != 0:
+            raise ValueError("encoder_dim must be divisible by signal_attention_heads")
+        if not 0.0 <= self.alpha_ic_loss_weight <= 2.0:
+            raise ValueError("alpha_ic_loss_weight must be in [0.0, 2.0]")
+        if not 0.0 <= self.alpha_bias_penalty_weight <= 2.0:
+            raise ValueError("alpha_bias_penalty_weight must be in [0.0, 2.0]")
+        if not 0.0 <= self.direction_label_smoothing < 0.25:
+            raise ValueError("direction_label_smoothing must be in [0.0, 0.25)")
+        if not 0.0 <= self.direction_focal_gamma <= 5.0:
+            raise ValueError("direction_focal_gamma must be in [0.0, 5.0]")
+        if (
+            self.timexer_hidden_size < 32
+            or self.timexer_layers < 1
+            or self.timexer_heads < 1
+            or self.timexer_hidden_size % self.timexer_heads != 0
+            or not 0.0 <= self.timexer_dropout < 1.0
+        ):
+            raise ValueError("Invalid TimeXer backbone hyperparameters")
         if self.direction.enabled and self.encoder_dim % self.direction.attention_heads:
             raise ValueError("encoder_dim must be divisible by direction.attention_heads")
         if self.direction.enabled and self.direction.architecture in (
@@ -336,8 +372,8 @@ class ModelConfig(StrictModel):
             raise ValueError(
                 "Ranking feature fusion requires an independent head and combined features"
             )
-        if self.time_series_backend == "mock" and self.lora.enabled:
-            raise ValueError("The mock backbone does not expose Kronos LoRA targets")
+        if self.time_series_backend in {"mock", "timexer"} and self.lora.enabled:
+            raise ValueError("The mock/timexer backbone does not expose Kronos LoRA targets")
         if self.time_series_backend == "kronos":
             if "Kronos-base" not in self.time_series_model_id:
                 raise ValueError("The approved production architecture requires Kronos-base")
@@ -364,7 +400,7 @@ class ModelConfig(StrictModel):
                 self.kronos_source_revision,
             )
         ):
-            raise ValueError("Mock experiments must not declare Kronos or model revisions")
+            raise ValueError("Mock/TimeXer experiments must not declare Kronos or model revisions")
         return self
 
     def architecture_digest(self) -> str:
@@ -381,6 +417,17 @@ class ModelConfig(StrictModel):
                 if self.prediction_task == "alpha_point"
                 else "point_loss_beta"
             )
+        if self.signal_architecture == "legacy":
+            semantics.pop("signal_architecture", None)
+            semantics.pop("signal_attention_heads", None)
+        if self.time_series_backend != "timexer":
+            for name in (
+                "timexer_hidden_size",
+                "timexer_layers",
+                "timexer_heads",
+                "timexer_dropout",
+            ):
+                semantics.pop(name, None)
         if self.direction.enabled and self.direction.architecture != "market_ordinal_v3":
             # V3-only selection defaults do not alter retained architecture identities.
             for name in (
@@ -423,9 +470,13 @@ class ModelConfig(StrictModel):
             ("unfreeze_last_blocks", 0),
             ("ranking_loss_weight", 0.0),
             ("ranking_max_pairs", 256),
+            ("alpha_ic_loss_weight", 0.0),
+            ("alpha_bias_penalty_weight", 0.0),
+            ("direction_label_smoothing", 0.0),
+            ("direction_focal_gamma", 0.0),
         ):
-            if semantics[name] == default:
-                semantics.pop(name)
+            if semantics.get(name) == default:
+                semantics.pop(name, None)
         payload = json.dumps(
             semantics,
             ensure_ascii=False,
@@ -710,7 +761,7 @@ class ExperimentConfig(StrictModel):
             raise ValueError(
                 f"{self.training.stage} requires data.train_fraction={expected_fraction}"
             )
-        if self.model.time_series_backend == "kronos":
+        if self.model.time_series_backend in {"kronos", "timexer"}:
             expected_max_samples = sample_contract["max_samples"]
             if self.data.max_samples != expected_max_samples:
                 raise ValueError(

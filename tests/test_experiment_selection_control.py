@@ -69,8 +69,18 @@ class ExperimentSelectionTests(unittest.TestCase):
             identities = {BASELINE["baseline_contract"](ROOT, reference)["baseline_id"]}
             for variant, task in (
                 ("alpha-point64", {"prediction_task": "alpha_point", "point_loss_beta": 1.0}),
+                ("alpha-point64-v2", {"prediction_task": "alpha_point", "point_loss_beta": 1.0}),
+                ("alpha-point64-timexer", {"prediction_task": "alpha_point", "point_loss_beta": 1.0}),
                 (
                     "absolute-direction64",
+                    {"prediction_task": "absolute_direction", "neutral_return_threshold": 0.01},
+                ),
+                (
+                    "absolute-direction64-v2",
+                    {"prediction_task": "absolute_direction", "neutral_return_threshold": 0.01},
+                ),
+                (
+                    "absolute-direction64-timexer",
                     {"prediction_task": "absolute_direction", "neutral_return_threshold": 0.01},
                 ),
             ):

@@ -1,6 +1,11 @@
 """Quant-only model components."""
 
-from .backbones import DeterministicTimeSeriesBackbone, KronosBackbone, freeze_module
+from .backbones import (
+    DeterministicTimeSeriesBackbone,
+    KronosBackbone,
+    MarketGuidedTimeXerBackbone,
+    freeze_module,
+)
 from .exceptions import ModelCapabilityError, OptionalDependencyError
 from .forecast import GatedBenchmarkConditioner, MultiHorizonAlphaHead
 from .lora import LoRALinear, inject_lora, lora_parameter_names, merge_lora_weights
@@ -21,6 +26,7 @@ __all__ = [
     "GatedBenchmarkConditioner",
     "KronosBackbone",
     "LoRALinear",
+    "MarketGuidedTimeXerBackbone",
     "ModelCapabilityError",
     "MultiHorizonAlphaHead",
     "OptionalDependencyError",

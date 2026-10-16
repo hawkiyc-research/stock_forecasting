@@ -42,7 +42,7 @@ _RETRYABLE_DOWNLOAD_ERROR_NAMES = frozenset(
 def repositories_from_config(config: Any) -> dict[str, str]:
     """Return exact non-mock Kronos repository revisions used by an experiment."""
 
-    if config.model.time_series_backend == "mock":
+    if config.model.time_series_backend != "kronos":
         return {}
     model_revision = config.model.time_series_model_revision
     tokenizer_revision = config.model.time_series_tokenizer_revision
@@ -159,8 +159,8 @@ def smoke_test_time_series_backbone(
 ) -> dict[str, Any]:
     """Instantiate the cached Kronos adapter and verify its hidden-state contract on CPU."""
 
-    if config.model.time_series_backend == "mock":
-        return {"backend": "mock", "skipped": True}
+    if config.model.time_series_backend != "kronos":
+        return {"backend": str(config.model.time_series_backend), "skipped": True}
 
     import torch
 

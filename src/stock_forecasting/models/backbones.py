@@ -412,3 +412,7 @@ class KronosBackbone(nn.Module):
             dim=0,
         )
         return TimeSeriesBackboneOutput(last_hidden_state=hidden, attention_mask=mask)
+
+
+from .timexer import MarketGuidedTimeXerBackbone  # noqa: E402, F401
+

@@ -202,7 +202,7 @@ def _load_stage_contract(config_path):
             "Training config has no model readiness values: " + ", ".join(missing_model_keys)
         )
     repositories = []
-    if model_values["time_series_backend"] != "mock":
+    if model_values["time_series_backend"] == "kronos":
         repositories.extend(
             [
                 model_values["time_series_model_id"],
@@ -220,7 +220,7 @@ def _load_stage_contract(config_path):
     if abs(train_fraction - expected_fraction) > 1e-12:
         raise ValueError("Training config stage and train_fraction disagree")
     if (
-        model_values["time_series_backend"] == "kronos"
+        model_values["time_series_backend"] in {"kronos", "timexer"}
         and max_samples != sample_contract["max_samples"]
     ):
         raise ValueError("Training config stage and max_samples disagree")
