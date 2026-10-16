@@ -145,7 +145,7 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
     )
     if len(experiments) != len(set(experiments)):
         raise ValueError("Each experiment may be selected only once per launch")
-    paired_experiments = {"a-signal64", "b-signal64"}
+    paired_experiments = {"a-signal64", "b-signal64", "a-signal64-datemix", "b-signal64-datemix"}
     if len(experiments) > len(selection["EXPERIMENT_CONFIGS"]) + len(paired_experiments):
         raise ValueError("Launch exceeds the number of distinct configured experiments")
     seeds = [] if seeds is None else list(seeds)

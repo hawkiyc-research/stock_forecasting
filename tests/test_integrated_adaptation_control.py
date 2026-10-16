@@ -84,7 +84,10 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
         )
         expected = {f"{g}-{v}" for g in ("a", "b") for v in variants}
         independent = {
-            f"{g}-{v}" for g in ("a", "b") for v in ("alpha-point64", "absolute-direction64")
+            f"{g}-{v}{suffix}"
+            for g in ("a", "b")
+            for v in ("alpha-point64", "absolute-direction64")
+            for suffix in ("", "-datemix")
         }
         self.assertEqual(set(names), expected | independent)
         args = argparse.Namespace(

@@ -14,10 +14,20 @@ from functools import lru_cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PAIR_EXPERIMENTS = ("a-signal64", "b-signal64")
+PAIR_EXPERIMENTS = ("a-signal64", "b-signal64", "a-signal64-datemix", "b-signal64-datemix")
 TASKS = ("alpha_point", "absolute_direction")
 VARIANTS = {"alpha_point": "alpha-point64", "absolute_direction": "absolute-direction64"}
 SUFFIXES = {"alpha_point": "alpha", "absolute_direction": "direction"}
+# Each paired variant maps both tasks to child presets sharing one variant suffix.
+PAIR_VARIANT_SUFFIXES = {"signal64": "", "signal64-datemix": "-datemix"}
+
+
+def child_experiment(experiment: str, task: str) -> str:
+    """Return the individual task preset owned by a paired experiment."""
+    if experiment not in PAIR_EXPERIMENTS:
+        raise ValueError("Unknown paired experiment: " + str(experiment))
+    group, _, variant = experiment.partition("-")
+    return f"{group}-{VARIANTS[task]}{PAIR_VARIANT_SUFFIXES[variant]}"
 
 
 @lru_cache(maxsize=8)
@@ -63,7 +73,7 @@ def validate_manifest(payload: dict, run_id: str | None = None) -> dict:
         if child.get("run_id") != f"{parent}-{SUFFIXES[task]}":
             raise ValueError("Paired child is not owned by its parent run")
         safe_run_id(child["run_id"])
-        expected = f"{experiment[0]}-{VARIANTS[task]}"
+        expected = child_experiment(experiment, task)
         selected = child.get("selection")
         if not isinstance(selected, dict):
             raise ValueError("Paired child selection is missing")
@@ -95,8 +105,9 @@ def build_plan(root: Path, original_selection: dict, experiment: str, seed: int 
     if seed is None:
         # The current preset default is explicit and must agree across both tasks.
         values = []
-        for variant in VARIANTS.values():
-            source = (root / f"configs/experiments/{experiment[0]}_{variant.replace('-', '_')}.yaml").read_text()
+        for task in TASKS:
+            child = child_experiment(experiment, task)
+            source = (root / f"configs/experiments/{child.replace('-', '_')}.yaml").read_text()
             training = source.split("\ntraining:\n", 1)[1]
             found = re.search(r"(?m)^  seed: (\d+)\s*$", training)
             if found is None:
@@ -112,7 +123,7 @@ def build_plan(root: Path, original_selection: dict, experiment: str, seed: int 
     safe_run_id(parent)
     children = {}
     for task in TASKS:
-        name = f"{experiment[0]}-{VARIANTS[task]}"
+        name = child_experiment(experiment, task)
         selected = api["_with_experiment"](copy.deepcopy(original_selection), name, root)
         selected = api["_with_training_seed"](selected, seed, root)
         children[task] = {

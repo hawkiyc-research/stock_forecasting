@@ -458,6 +458,9 @@ class TrainingConfig(StrictModel):
     unfrozen_learning_rate: float = Field(default=1e-6, gt=0.0)
     warmup_samples: int | None = Field(default=None, ge=1)
     yearly_sampling_decay: float | None = Field(default=None, gt=0.0, le=1.0)
+    # Bounded local shuffle of the date/market training order; None keeps the
+    # historical same-date blocks. The epoch's samples and annual quotas are unchanged.
+    date_mixing_buffer_samples: int | None = Field(default=None, ge=256, le=262_144)
     weight_decay: float = Field(default=0.01, ge=0.0)
     warmup_ratio: float = Field(default=0.03, ge=0.0, lt=1.0)
     max_grad_norm: float = Field(default=1.0, gt=0.0)
@@ -700,6 +703,17 @@ class ExperimentConfig(StrictModel):
             raise ValueError("unfrozen_learning_rate cannot exceed lora_learning_rate")
         if self.model.feature_mode in ("scales", "combined") and self.data.input_length < 61:
             raise ValueError("The scale branch requires at least 61 observed bars")
+        if self.training.date_mixing_buffer_samples is not None:
+            if self.training.yearly_sampling_decay is None:
+                raise ValueError(
+                    "date_mixing_buffer_samples requires yearly_sampling_decay "
+                    "(the date/market training sampler)"
+                )
+            if self.model.ranking_loss_weight:
+                raise ValueError(
+                    "date_mixing_buffer_samples removes the same-date pairs required by "
+                    "ranking_loss_weight"
+                )
         if self.data.fixed_split and (
             self.training.evaluation_max_samples != self.validation.baseline_max_samples_per_split
         ):

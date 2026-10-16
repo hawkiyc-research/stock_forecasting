@@ -64,7 +64,17 @@ EXPERIMENT_CONFIGS = {
         "direction64-v3",
         "alpha-point64",
         "absolute-direction64",
+        "alpha-point64-datemix",
+        "absolute-direction64-datemix",
     )
+}
+# Independent signal presets name their supervised task explicitly; the datemix
+# variants change only the training order, never the task or baseline contract.
+SIGNAL_TASK_VARIANTS = {
+    "alpha-point64": "alpha_point",
+    "absolute-direction64": "absolute_direction",
+    "alpha-point64-datemix": "alpha_point",
+    "absolute-direction64-datemix": "absolute_direction",
 }
 STAGE_RUNTIME = {
     # Keep terminate_after in immutable selection hashes created before REST v2 migration.
@@ -434,13 +444,7 @@ def _validate_selection(
         if experiment not in EXPERIMENT_CONFIGS or stage["name"] != "stage2":
             _fail("Unknown Stage 2 experiment")
         expected_config_path = EXPERIMENT_CONFIGS[experiment]["config_path"]
-    task_name = (
-        "alpha_point"
-        if experiment and experiment.endswith("-alpha-point64")
-        else "absolute_direction"
-        if experiment and experiment.endswith("-absolute-direction64")
-        else None
-    )
+    task_name = SIGNAL_TASK_VARIANTS.get(experiment.partition("-")[2]) if experiment else None
     if (payload.get("baseline_task") or {}).get("prediction_task") != task_name:
         _fail("Experiment and baseline task semantics disagree")
     if stage.get("config_path") != expected_config_path:

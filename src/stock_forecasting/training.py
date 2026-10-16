@@ -1185,6 +1185,7 @@ def _training_sampler(config, train_source, worker_plan, ranking_sampling=True):
             train_source,
             requested_workers=max(1, worker_plan.effective_workers),
             yearly_decay=config.training.yearly_sampling_decay,
+            shuffle_buffer=config.training.date_mixing_buffer_samples,
             fraction=config.data.train_fraction,
             max_samples=config.data.max_samples,
             seed=config.training.seed,
@@ -3682,6 +3683,15 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
         train_loader.batch_sampler,
     )
     selected_train_samples = len(train_batch_sampler.sampler)
+    # Diagnostic only: an independent read of the sampler order, no training RNG use.
+    batch_composition = getattr(train_batch_sampler.sampler, "batch_composition", None)
+    training_batch_composition = (
+        batch_composition(batch_plan.training_batch_size, batch_plan.gradient_accumulation_steps)
+        if callable(batch_composition)
+        else None
+    )
+    if training_batch_composition is not None:
+        print("Training batch composition: " + json.dumps(training_batch_composition), flush=True)
     parameter_groups, trainable = _optimizer_parameter_groups(bundle, config)
     task_manager = _shared_task_gradient_manager(bundle, config)
     bundle.model._task_gradient_manager = task_manager
@@ -3835,6 +3845,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             "ranking_loss_weight": config.model.ranking_loss_weight,
             "warmup_samples": config.training.warmup_samples,
             "yearly_sampling_decay": config.training.yearly_sampling_decay,
+            "date_mixing_buffer_samples": config.training.date_mixing_buffer_samples,
         }
     )
     runtime_execution_plan_path = atomic_write_json(
@@ -4285,6 +4296,7 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 "selected_datasets": config.data.selected_datasets,
                 "selected_train_samples_per_epoch": selected_train_samples,
                 "yearly_sampling": getattr(train_batch_sampler.sampler, "sampling_summary", None),
+                "training_batch_composition": training_batch_composition,
                 "sample_universes": {
                     split: {
                         "identity": dataset.sample_universe_identity,

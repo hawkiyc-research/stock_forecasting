@@ -21,7 +21,7 @@ Usage:
   bash scripts/runpod_workflow.sh selection show
   bash scripts/runpod_workflow.sh sync [--dry-run|--apply]
   bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
-  bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline [--experiment a-signal64|b-signal64]]
+  bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline [--experiment a-signal64|b-signal64|a-signal64-datemix|b-signal64-datemix]]
   bash scripts/runpod_workflow.sh train [--experiment a-signal64|b-signal64|NAME ...] [--seed N ...] [--launchWorkers N] [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh baseline [--experiment a-signal64|b-signal64|NAME] [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh resume [--maxRuntime DURATION] [--gpuId GPU_ID] [RUN_ID]
@@ -360,8 +360,8 @@ EOF
     readiness)
         if [[ $# -eq 3 && "$1" == "--baseline" && "$2" == "--experiment" ]]; then
             case "$3" in
-                a-signal64|b-signal64) ;;
-                *) echo "Paired baseline status requires a-signal64 or b-signal64" >&2; exit 2 ;;
+                a-signal64|b-signal64|a-signal64-datemix|b-signal64-datemix) ;;
+                *) echo "Paired baseline status requires a-signal64, b-signal64, a-signal64-datemix or b-signal64-datemix" >&2; exit 2 ;;
             esac
             source "${SCRIPT_DIR}/lib/runpod_project_env.sh"
             runpod_load_create_env "${SCRIPT_DIR}/.."
@@ -444,7 +444,7 @@ EOF
         fi
         if [[ -n "${baseline_experiment}" ]]; then
             case "${baseline_experiment}" in
-                a-signal64|b-signal64)
+                a-signal64|b-signal64|a-signal64-datemix|b-signal64-datemix)
                     exec python3 "${SCRIPT_DIR}/runpod_paired_control.py" launch-baseline \
                         --experiment "${baseline_experiment}"
                     ;;
