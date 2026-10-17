@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from stock_forecasting.checkpoint_resume_migrations import CHECKPOINT_RETENTION_MIGRATIONS
-from stock_forecasting.config import DataConfig, ExperimentConfig, ModelConfig
+from stock_forecasting.config import DataConfig, ExperimentConfig, ModelConfig, TrainingConfig
 from stock_forecasting.data.manifest import load_dataset_manifest, sha256_file
 from stock_forecasting.models import MODEL_OUTPUT_SCHEMA_VERSION
 from stock_forecasting.run_paths import validate_run_id, validate_training_resume_path
@@ -328,6 +328,10 @@ def readonly_checkpoint_contract_digest(
     semantics = {key: value for key, value in stored.items() if key != "training_implementation"}
     semantics["data"] = DataConfig.model_validate(semantics.get("data")).model_dump(mode="json")
     semantics["model"] = ModelConfig.model_validate(semantics.get("model")).model_dump(mode="json")
+    # Additive opt-in training fields default to the historical behavior.
+    training = TrainingConfig.model_validate(semantics.get("training")).model_dump(mode="json")
+    training.pop("resume_checkpoint", None)
+    semantics["training"] = training
     expected = {key: value for key, value in current.items() if key != "training_implementation"}
     if semantics != expected:
         raise ValueError("Historical checkpoint model, data, or training settings differ")

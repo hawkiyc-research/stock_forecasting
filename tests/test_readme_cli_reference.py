@@ -68,6 +68,8 @@ class ReadmeCliReferenceTests(unittest.TestCase):
             ("src/stock_forecasting/cli/prepare_data.py", "parser"),
             ("src/stock_forecasting/cli/infer.py", "parser"),
             ("src/stock_forecasting/cli/probe_scales.py", "parser"),
+            ("src/stock_forecasting/cli/export_signal_predictions.py", "parser"),
+            ("scripts/analyze_signal_decomposition.py", "parser"),
             ("scripts/runpod_selection.py", "create"),
             ("scripts/recover_runpod_after_wake.py", "parser"),
             ("scripts/runpod_rest_v2_control.py", "gpu_list"),
@@ -87,6 +89,7 @@ class ReadmeCliReferenceTests(unittest.TestCase):
             "scripts/create_runpod_validation_pod.sh",
             "scripts/download_runpod_results.sh",
             "scripts/download_runpod_probes.sh",
+            "scripts/download_runpod_signal_predictions.sh",
         ):
             self.assert_documented(shell_options(relative), relative)
 

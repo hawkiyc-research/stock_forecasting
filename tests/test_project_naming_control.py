@@ -172,7 +172,10 @@ class ProjectNamingTests(unittest.TestCase):
     def test_new_tmux_sessions_use_the_project_prefix(self):
         script = (ROOT / "scripts/runpod_tmux_launch.sh").read_text()
         sessions = re.findall(r"(?m)^[ \t]*SESSION_NAME=(\S+)[ \t]*$", script)
-        roles = ("cpu-prepare", "cpu-finalize", "train", "baseline", "validation", "probe-scales")
+        roles = (
+            "cpu-prepare", "cpu-finalize", "train", "baseline", "validation", "probe-scales",
+            "export-predictions",
+        )
         self.assertEqual(sorted(sessions), sorted(SLUG + "-" + role for role in roles))
 
     def test_gpu_workflows_reuse_the_interpreter_and_import_namespace(self):
@@ -182,6 +185,10 @@ class ProjectNamingTests(unittest.TestCase):
             "runpod_validation.sh": ("${PROJECT_VENV}/bin/python", "cli.validate_benchmarks"),
             "runpod_baseline.sh": ("${PROJECT_PYTHON}", "cli.build_baselines"),
             "runpod_probe_scales.sh": ("${PROJECT_ROOT}/.venv/bin/python", "cli.probe_scales"),
+            "runpod_export_signal_predictions.sh": (
+                "${PROJECT_ROOT}/.venv/bin/python",
+                "cli.export_signal_predictions",
+            ),
         }
         for script, (interpreter, module) in workflows.items():
             with self.subTest(script=script):

@@ -2352,6 +2352,85 @@ cd /runpod-volume/stock_forecasting
 .venv/bin/python -m pytest tests/test_representation_scale_probe.py
 ```
 
+#### 逐樣本預測匯出與誤差拆解
+
+一般評估只保存彙總指標，不保留主模型的逐樣本預測。`export-signal-predictions` 以唯讀方式
+載入既有 signal 子模型的 validation 最佳 checkpoint，對完整 validation／test 重新推論，
+保存逐樣本預測供誤差拆解使用；不重訓，也不修改 checkpoint、baseline、W&B 或
+training／validation lifecycle 標記。
+
+Pod 建立與 guard 規則與 `probe-scales` 相同：在沒有 Pod 使用 volume 時同步程式，
+再以[進階單模型操作](#single-model-zh)建立專用診斷 Pod，不啟動訓練。SSH 進入 Pod 後，
+每個子模型執行一次：
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_tmux_launch.sh export-signal-predictions \
+  --checkpoint "<MODEL_RUN_ID>" \
+  --splits validation test \
+  --confirm-test
+```
+
+`--checkpoint` 填子模型 run ID（`-alpha` 或 `-direction`），必填且沒有「最新」預設；
+`--splits` 可選 validation、test 或兩者，預設兩者；匯出 test 時必須加 `--confirm-test`。
+設定一律取自該 checkpoint 的 `resolved-config.yaml`。歷史 checkpoint 以唯讀語意檢查載入：
+之後新增、預設維持歷史行為的訓練欄位不會阻擋載入，但模型、資料或訓練設定不同仍會拒絕。
+
+結果保存於 `/runpod-volume/diagnostics/signal-predictions/<run>/<checkpoint>/export-*/`：
+
+```text
+<split>/predictions.npy   # float32 alpha points [N,14] or direction logits [N,14,3]
+<split>/split.json        # Shape, SHA-256, row-order digest and recomputed metrics
+export.json               # Checkpoint identity, splits and runtime
+status.json               # running / complete / failed
+export.log
+```
+
+列順序與完整循序評估相同，也就是 baseline 共用評估陣列的順序；`split.json` 的重算指標
+可與已記錄的 benchmark 對照。每個 split 約 30 MB（alpha）或 90 MB（分類），寫入前會檢查
+可用空間。tmux session 為 `stock-forecasting-export-predictions`，沿用 `probe-scales` 的
+診斷 lifecycle，本機 guard 在成功、失敗或逾時後終止 Pod；查看用法：
+
+```bash
+bash scripts/runpod_tmux_launch.sh export-signal-predictions --help
+```
+
+在本機下載匯出結果，以及誤差拆解所需的 baseline 評估陣列：
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions "<ALPHA_RUN_ID>" "<DIRECTION_RUN_ID>"
+```
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays
+```
+
+前者一次最多 16 個子模型 run ID，各自下載最新完成的匯出並核對 SHA-256，存於被 Git 排除的
+`artifacts/diagnostics/signal-predictions/`。`--baseline-arrays` 下載現行兩個 baseline 的
+validation／test 評估陣列與 GRU／GBDT 預測，約 1.3 GB，依 baseline manifest 的 SHA-256
+驗證後存於 `artifacts/diagnostics/signal-decomposition/baselines/`；已驗證的檔案重跑時略過。
+下載 I/O 執行緒預設 2 個，可用 `RUNPOD_SIGNAL_PREDICTION_DOWNLOAD_WORKERS=1..4` 調整；
+單檔傳輸逾時預設 1,800 秒，可用 `RUNPOD_SIGNAL_PREDICTION_TRANSFER_TIMEOUT` 調整。
+
+誤差拆解只用系統 Python 標準函式庫，在本機執行：
+
+```bash
+python3 -I scripts/analyze_signal_decomposition.py \
+  --baselines artifacts/diagnostics/signal-decomposition/baselines \
+  --predictions artifacts/diagnostics/signal-predictions \
+  --model A42="<ALPHA_RUN_ID_SEED42>" --model A347="<ALPHA_RUN_ID_SEED347>" \
+  --ensemble A_MEAN=A42,A347 \
+  --output artifacts/diagnostics/signal-decomposition/results.json
+```
+
+`--baselines` 與 `--output` 必填。`--predictions` 搭配可重複的 `--model LABEL=RUN_ID` 加入
+匯出的主模型；`--ensemble LABEL=A,B` 平均同任務成員（alpha 平均點估計、分類平均機率）；
+`--daily-benchmarks` 讀取「標籤對 benchmark 路徑樣板」的 JSON，把已記錄的主模型 test 逐日
+loss 與日期層級結果做相關；`--workers` 或 `DECOMPOSITION_WORKERS` 設定程序數，預設依 CPU、
+可用記憶體與 4 個工作決定，1 表示在同一程序內執行。每個匯出 split 的樣本順序 digest 必須
+與 baseline 陣列一致，否則中止。方法、指標定義與限制見
+[誤差拆解報告](docs/error_decomposition_audit.md)。
+
 <a id="cli-reference-zh"></a>
 
 ### CLI 參數速查
@@ -2388,6 +2467,7 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `cleanup-monitors` | 必填 `--pod-id ID`；預設 dry-run，`--apply` 才終止已核對的本機 guard／GPU monitor／guard-owned caffeinate。先查 API 證實 Pod 不存在；存在、API 失敗或程序身分異常皆拒絕。`--guard-dir PATH` 預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help`。不刪日誌、不關共用 SSH、不操作遠端 |
 | `download [RUN_ID]` | 父 ID 一次下載兩模型；省略 ID 選最新完整完成的結果，成對子模型不當成額外實驗自動選用。`--checkpointScope all` 預設下載各自 retained checkpoints，`best` 取各自最佳；`--resume` 補齊／更新兩份本機結果，**不是接續訓練**；`-h`／`--help` 顯示說明。明確子 ID 保留單模型下載 |
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
+| `download-signal-predictions RUN_ID [RUN_ID ...]`／`--baseline-arrays` | 必填其一 | 1–16 個子模型 run ID：各自下載最新完成的預測匯出並核對 SHA-256；`--baseline-arrays`：下載誤差拆解所需的現行 baseline 評估陣列並依 manifest 驗證；`-h`／`--help` 顯示說明 |
 
 時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
 可用的同義旗標：`--max-runtime` = `--maxRuntime`、`--gpu-id` = `--gpuId`、
@@ -2404,7 +2484,8 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 
 `bash scripts/runpod_tmux_launch.sh WORKFLOW` 的一般 `WORKFLOW` 為 `cpu-prepare`、
 `cpu-finalize`、`stage1-train`、`stage1-validate`、`baseline`；這些名稱後面不接受額外參數，
-設定由建立 Pod 時的 selection／環境傳入。只有 `probe-scales` 轉交下列診斷參數：
+設定由建立 Pod 時的 selection／環境傳入。只有兩個診斷會轉交參數：`probe-scales` 使用下表，
+`export-signal-predictions` 使用再下一張表。
 
 | 參數 | 預設值／限制 | 說明 |
 | --- | --- | --- |
@@ -2417,6 +2498,15 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 | `--seed N` | `42`，整數 0–4294967293 | 固定抽樣與 shuffled-label 對照 |
 | `--selection-workers N` | auto，範圍 1–8 | 掃描完成訓練 metadata 的 I/O 上限，另受 CPU／可用記憶體限制 |
 | `-h`、`--help` | 無值 flag | 顯示診斷參數，不啟動診斷 |
+
+`export-signal-predictions` 的參數：
+
+| 參數 | 預設值／限制 | 說明 |
+| --- | --- | --- |
+| `--checkpoint MODEL_RUN_ID` | 必填，恰好一次 | signal 子模型（`-alpha`／`-direction`）的 run ID；使用其 validation-selected best checkpoint，沒有「最新」預設 |
+| `--splits SPLIT [SPLIT]` | `validation test` | 要完整重新推論並保存的評估切分 |
+| `--confirm-test` | 無值 flag | 匯出 test 時必填，避免無意中重複使用 test |
+| `-h`、`--help` | 無值 flag | 顯示參數，不啟動匯出 |
 
 `bash scripts/runpod_wandb_sync.sh [MODEL_RUN_ID]` 在新建 run-scoped Pod 中只處理自身 run；
 省略 ID 也不掃描別的實驗，指定不同 run 或 `--help` 會在取得工作 lease 前拒絕。
@@ -5959,6 +6049,95 @@ cd /runpod-volume/stock_forecasting
 .venv/bin/python -m pytest tests/test_representation_scale_probe.py
 ```
 
+#### Per-sample prediction export and error decomposition
+
+Regular evaluation saves aggregate metrics only and keeps no main-model per-sample
+predictions. `export-signal-predictions` loads an existing signal child's validation-selected
+best checkpoint read-only, re-infers the complete validation/test splits and saves per-sample
+predictions for error decomposition. It never retrains and changes no checkpoint, baseline, W&B
+record or training/validation lifecycle marker.
+
+Pod creation and guard rules equal `probe-scales`: synchronize code while no Pod uses the
+volume, then create a dedicated diagnostic Pod through the
+[advanced individual-model operations](#single-model-en) without starting training. After SSH
+login, run once per child model:
+
+```bash
+cd /runpod-volume/stock_forecasting
+bash scripts/runpod_tmux_launch.sh export-signal-predictions \
+  --checkpoint "<MODEL_RUN_ID>" \
+  --splits validation test \
+  --confirm-test
+```
+
+`--checkpoint` takes the child run ID (`-alpha` or `-direction`); it is required and has no
+latest default. `--splits` selects validation, test or both (default both), and exporting test
+requires `--confirm-test`. The configuration always comes from the checkpoint's
+`resolved-config.yaml`. Historical checkpoints load under read-only semantic checks: later
+additive training fields whose defaults keep historical behavior do not block loading, while
+different model, data or training settings are still rejected.
+
+Results are stored in `/runpod-volume/diagnostics/signal-predictions/<run>/<checkpoint>/export-*/`:
+
+```text
+<split>/predictions.npy   # float32 alpha points [N,14] or direction logits [N,14,3]
+<split>/split.json        # Shape, SHA-256, row-order digest and recomputed metrics
+export.json               # Checkpoint identity, splits and runtime
+status.json               # running / complete / failed
+export.log
+```
+
+Rows follow the complete sequential evaluation order, the order of the shared baseline
+evaluation arrays; the recomputed metrics in `split.json` can be compared with the recorded
+benchmark. Each split needs about 30 MB (alpha) or 90 MB (classification), and free space is
+checked before writing. The tmux session is `stock-forecasting-export-predictions` and shares the
+`probe-scales` diagnostic lifecycle: the local guard terminates the Pod after success, failure or
+timeout. Show usage with:
+
+```bash
+bash scripts/runpod_tmux_launch.sh export-signal-predictions --help
+```
+
+Download exports, and the baseline evaluation arrays required for decomposition, locally:
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions "<ALPHA_RUN_ID>" "<DIRECTION_RUN_ID>"
+```
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays
+```
+
+The first form accepts up to 16 child run IDs, downloads each latest completed export with
+SHA-256 checks and stores it in Git-ignored `artifacts/diagnostics/signal-predictions/`.
+`--baseline-arrays` fetches the current two baselines' validation/test evaluation arrays and
+GRU/GBDT predictions, about 1.3 GB, verified against the baseline manifests' SHA-256 values,
+into `artifacts/diagnostics/signal-decomposition/baselines/`; verified files are skipped on
+reruns. Download I/O uses 2 threads by default, adjustable with
+`RUNPOD_SIGNAL_PREDICTION_DOWNLOAD_WORKERS=1..4`; the per-file transfer timeout defaults to 1,800
+seconds and is adjustable with `RUNPOD_SIGNAL_PREDICTION_TRANSFER_TIMEOUT`.
+
+Error decomposition uses only the system Python standard library and runs locally:
+
+```bash
+python3 -I scripts/analyze_signal_decomposition.py \
+  --baselines artifacts/diagnostics/signal-decomposition/baselines \
+  --predictions artifacts/diagnostics/signal-predictions \
+  --model A42="<ALPHA_RUN_ID_SEED42>" --model A347="<ALPHA_RUN_ID_SEED347>" \
+  --ensemble A_MEAN=A42,A347 \
+  --output artifacts/diagnostics/signal-decomposition/results.json
+```
+
+`--baselines` and `--output` are required. `--predictions` with repeatable
+`--model LABEL=RUN_ID` adds exported main models; `--ensemble LABEL=A,B` averages members of one
+task (alpha points or classification probabilities); `--daily-benchmarks` reads a JSON map from
+labels to benchmark path templates and correlates recorded main-model test daily losses with
+date-level outcomes; `--workers` or `DECOMPOSITION_WORKERS` sets the process count, defaulting to a
+bound from CPU, available memory and the 4 jobs, where 1 runs in-process. Every exported split's
+row-order digest must match the baseline arrays or the analysis stops. See the
+[error decomposition report](docs/error_decomposition_audit.md) for methods, metric definitions
+and limits.
+
 <a id="cli-reference-en"></a>
 
 ### CLI parameter reference
@@ -5996,6 +6175,7 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `cleanup-monitors` | Required `--pod-id ID`; dry-run by default, `--apply` terminates verified local guard/GPU-monitor/guard-owned caffeinate processes. API must confirm Pod absence; existence, API failures or identity errors block cleanup. `--guard-dir PATH` defaults to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help`. No log deletion, shared-SSH closure or remote changes |
 | `download [RUN_ID]` | A parent downloads both models; omission selects latest complete results without separately auto-selecting linked children. `--checkpointScope all` (default) obtains each retained checkpoint set; `best` selects each best. `--resume` fills/refreshes both local results, **not training continuation**; `-h`/`--help` shows help. Explicit child IDs retain individual downloads |
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
+| `download-signal-predictions RUN_ID [RUN_ID ...]`/`--baseline-arrays` | One form required | 1–16 child run IDs: download each latest completed prediction export with SHA-256 checks; `--baseline-arrays`: download the current baselines' evaluation arrays needed for decomposition, verified against their manifests; `-h`/`--help` shows help |
 
 Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,
 `12h`, `2d`), not `1.5h`. Supported aliases are `--max-runtime` = `--maxRuntime`,
@@ -6015,7 +6195,8 @@ under [Query GPU resources](#gpu-catalog-en).
 Normal `WORKFLOW` values for `bash scripts/runpod_tmux_launch.sh WORKFLOW` are
 `cpu-prepare`, `cpu-finalize`, `stage1-train`, `stage1-validate` and `baseline`. They take
 no extra arguments: selection/environment values are passed when the Pod is created.
-Only `probe-scales` forwards the following diagnostic options:
+Only two diagnostics forward options: `probe-scales` uses the table below and
+`export-signal-predictions` uses the next one.
 
 | Option | Default or limit | Behavior |
 | --- | --- | --- |
@@ -6028,6 +6209,15 @@ Only `probe-scales` forwards the following diagnostic options:
 | `--seed N` | `42`, integer 0–4294967293 | Reproducible sampling and shuffled-label control |
 | `--selection-workers N` | Auto, range 1–8 | I/O concurrency cap for scanning completed-training metadata, also limited by CPU/available memory |
 | `-h`, `--help` | Flag with no value | Show diagnostic options without launching a diagnostic |
+
+`export-signal-predictions` options:
+
+| Option | Default or limit | Behavior |
+| --- | --- | --- |
+| `--checkpoint MODEL_RUN_ID` | Required, exactly once | Signal child run ID (`-alpha`/`-direction`); uses its validation-selected best checkpoint, with no latest default |
+| `--splits SPLIT [SPLIT]` | `validation test` | Evaluation splits to re-infer completely and save |
+| `--confirm-test` | Flag with no value | Required whenever test is exported, to avoid accidental repeated test use |
+| `-h`, `--help` | Flag with no value | Show options without starting an export |
 
 `bash scripts/runpod_wandb_sync.sh [MODEL_RUN_ID]` in a new run-scoped Pod processes only its
 own run, even when the ID is omitted. A different ID or `--help` is rejected before lease

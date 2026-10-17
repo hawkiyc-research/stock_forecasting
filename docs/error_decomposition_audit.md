@@ -107,7 +107,7 @@
 - Oracle 使用群組自身的標籤，是樂觀上限，不是可部署模型。
 - Baseline 只有 seed 42；主模型只有逐日彙總資料，不能做逐樣本拆解。
 - Test 期間已多次用於研究比較；本報告的 test 數值不用於選擇方案。
-- 分析程式與輸出放在本分支 worktree 的 `artifacts/audit/`（`decomposition_audit.py`、`decomposition-results.json`），不受 Git 追蹤，移交時需另行攜帶。
+- 本報告的數值由一次性程式產生，輸出保存在本分支 worktree 的 `artifacts/audit/`（不受 Git 追蹤）。同一方法已移入 [scripts/analyze_signal_decomposition.py](../scripts/analyze_signal_decomposition.py)，在相同輸入上重算 48 項指標與逐日值的最大差距為 0；重現步驟見 [README 逐樣本預測匯出與誤差拆解](../README.md#probes-zh)。下載的 14 個 baseline 陣列已依 baseline manifest 的 SHA-256 與大小驗證。
 
 ## English
 
@@ -216,4 +216,4 @@ Daily means weight dates equally and need not equal the sample-weighted aggregat
 - The oracles use each group's own labels and are optimistic bounds, not deployable models.
 - Baselines exist only for seed 42; the main model has only per-date aggregates, not per-sample decomposition.
 - The test period has been used repeatedly in research; test values here select nothing.
-- The analysis program and outputs live in this branch worktree's `artifacts/audit/` (`decomposition_audit.py`, `decomposition-results.json`), which Git does not track and must be carried separately.
+- This report's values came from a one-off program whose outputs live in this branch worktree's untracked `artifacts/audit/`. The same method now lives in [scripts/analyze_signal_decomposition.py](../scripts/analyze_signal_decomposition.py); on identical inputs it reproduces all 48 metrics and their daily values with a maximum difference of 0. See [README per-sample prediction export and error decomposition](../README.md#probes-en) for reproduction steps. The 14 downloaded baseline arrays were verified against the baseline manifests' SHA-256 values and sizes.
