@@ -499,3 +499,87 @@ def test_v2_cross_sectional_loss_is_invariant_to_same_date_target_shocks():
     torch.testing.assert_close(ic_base, ic_shocked, rtol=1e-6, atol=1e-6)
     assert bias_base.item() > 0.0
 
+
+def test_v3_last_bar_extraction_and_james_stein_shrinkage_bounds_dispersion():
+    from stock_forecasting.models.signal import _extract_last_bar_hidden
+
+    hidden = torch.arange(2 * 5 * 4, dtype=torch.float32).reshape(2, 5, 4)
+    mask = torch.tensor([[True, True, True, False, False], [True, True, True, True, True]])
+    extracted = _extract_last_bar_hidden(hidden, mask)
+    torch.testing.assert_close(extracted[0], hidden[0, 2])
+    torch.testing.assert_close(extracted[1], hidden[1, 4])
+
+    scales = [0.02 * math.sqrt(h) for h in HORIZONS]
+    head = SingleTaskHead(
+        16,
+        prediction_task="alpha_point",
+        horizons=HORIZONS,
+        robust_scales=scales,
+        feature_mode="combined",
+        explicit_output_scale=True,
+        market_aware=True,
+        signal_architecture="v2",
+        signal_attention_heads=2,
+        backbone_dim=32,
+    )
+    assert head.benchmark_regime_head is None
+    with torch.no_grad():
+        head.prediction.weight.mul_(50.0)
+        head.prediction.bias.fill_(100.0)
+    tokens = torch.randn(8, 4, 16)
+    asset_last = torch.randn(8, 32)
+    bench_last = torch.randn(8, 32)
+    groups = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
+    markets = torch.zeros(8, dtype=torch.long)
+    out = head(
+        tokens,
+        market_ids=markets,
+        ranking_group_ids=groups,
+        asset_last_hidden=asset_last,
+        benchmark_last_hidden=bench_last,
+    )
+    scale_tensor = torch.tensor(scales, dtype=torch.float32)[None, :]
+    # Even under extreme raw weights (+100 bias, 50x weight), shrinkage locks output magnitude <= 0.22 * s_h.
+    assert (out.abs() <= 0.2201 * scale_tensor).all()
+
+
+def test_v3_student_t4_direction_centering_and_validation_calibration():
+    torch.manual_seed(99)
+    scales = [0.02 * math.sqrt(h) for h in HORIZONS]
+    head = SingleTaskHead(
+        16,
+        prediction_task="absolute_direction",
+        horizons=HORIZONS,
+        robust_scales=scales,
+        feature_mode="combined",
+        explicit_output_scale=True,
+        market_aware=True,
+        signal_architecture="v2",
+        signal_attention_heads=2,
+    )
+    assert head.benchmark_regime_head is None
+    groups = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
+    mu = torch.randn(8, 14)
+    shocked_mu = mu.clone()
+    shocked_mu[:4] += 2.5
+    shocked_mu[4:] -= 1.8
+    c1 = head._cross_sectional_center(mu, ranking_group_ids=groups)
+    c2 = head._cross_sectional_center(shocked_mu, ranking_group_ids=groups)
+    torch.testing.assert_close(c1, c2, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(c1[:4].mean(dim=0), torch.zeros(14), atol=1e-6, rtol=0.0)
+
+    # Validation temperature and prior calibration must never worsen validation CE.
+    n_val = 128
+    cdf_logits = torch.randn(n_val, 14, 3) * 2.5
+    targets = torch.randn(n_val, 14) * 0.03
+    market_ids = torch.zeros(n_val, dtype=torch.long)
+    labels = head.direction_labels(targets)
+    before_logits = head.apply_direction_calibration(cdf_logits, market_ids)
+    before_ce = F.cross_entropy(before_logits.reshape(-1, 3), labels.reshape(-1))
+    head.fit_validation_calibration(cdf_logits, targets, market_ids, min_samples=32)
+    after_logits = head.apply_direction_calibration(cdf_logits, market_ids)
+    after_ce = F.cross_entropy(after_logits.reshape(-1, 3), labels.reshape(-1))
+    assert after_ce.item() <= before_ce.item() + 1e-6
+    tau = 1.0 + F.softplus(head.market_horizon_log_temp[0, :, 0])
+    assert (tau >= 1.0).all()
+

@@ -32,8 +32,8 @@ model:
   neutral_return_threshold: 0.01
   signal_architecture: v2
   signal_attention_heads: 4
-  direction_label_smoothing: 0.03
-  direction_focal_gamma: 1.5
+  direction_label_smoothing: 0.0
+  direction_focal_gamma: 0.0
   timexer_hidden_size: 256
   timexer_layers: 4
   timexer_heads: 8

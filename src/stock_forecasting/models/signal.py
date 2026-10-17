@@ -55,6 +55,44 @@ def fixed_direction_labels(target_absolute: Tensor, threshold: float = 0.01) -> 
     return (target_absolute >= lower).long() + (target_absolute > upper).long()
 
 
+def _extract_last_bar_hidden(
+    hidden_state: Tensor,
+    attention_mask: Tensor | None = None,
+) -> Tensor:
+    """Extract the true chronological last valid bar hidden state before Perceiver resampling."""
+    if hidden_state.ndim != 3 or hidden_state.shape[1] == 0:
+        raise ValueError("hidden_state must have shape [batch, sequence_length, hidden_dim]")
+    if attention_mask is None:
+        return hidden_state[:, -1, :]
+    valid = attention_mask.to(device=hidden_state.device, dtype=torch.bool)
+    positions = torch.arange(hidden_state.shape[1], device=hidden_state.device).unsqueeze(0)
+    last_indices = (positions * valid.long()).amax(dim=1)
+    batch_indices = torch.arange(hidden_state.shape[0], device=hidden_state.device)
+    return hidden_state[batch_indices, last_indices]
+
+
+def _past_drawdown_tensor(
+    close: Tensor,
+    attention_mask: Tensor | None = None,
+) -> Tensor:
+    """Compute causal historical maximum drawdown in [0, 1] from context close prices."""
+    close_f = close.float()
+    tiny = torch.finfo(close_f.dtype).tiny
+    if attention_mask is None:
+        peak = close_f.cummax(dim=1).values.clamp_min(tiny)
+        return (1.0 - close_f / peak).clamp(min=0.0, max=1.0).amax(dim=1)
+    valid = attention_mask.to(device=close_f.device, dtype=torch.bool)
+    peak = close_f.masked_fill(~valid, 0.0).cummax(dim=1).values.clamp_min(tiny)
+    declines = (1.0 - close_f / peak).masked_fill(~valid, 0.0).clamp(min=0.0, max=1.0)
+    return declines.amax(dim=1)
+
+
+def _student_t4_cdf(z: Tensor) -> Tensor:
+    """Exact closed-form CDF of the heavy-tailed Student-t distribution with df=4."""
+    w = 4.0 + z.square()
+    return 0.5 + (0.5 * z * w.rsqrt()) * (1.0 + 2.0 / w)
+
+
 class SingleTaskHead(nn.Module):
     """Keep horizon/market/scale readout while fitting one statistical objective."""
 
@@ -79,6 +117,7 @@ class SingleTaskHead(nn.Module):
         alpha_bias_penalty_weight: float = 0.0,
         direction_label_smoothing: float = 0.0,
         direction_focal_gamma: float = 0.0,
+        backbone_dim: int | None = None,
     ) -> None:
         super().__init__()
         if prediction_task not in SIGNAL_TASKS:
@@ -87,6 +126,8 @@ class SingleTaskHead(nn.Module):
             raise ValueError("signal_architecture must be 'legacy' or 'v2'")
         if input_dim <= 0 or (hidden_dim is not None and hidden_dim <= 0):
             raise ValueError("Signal head dimensions must be positive")
+        if backbone_dim is not None and backbone_dim <= 0:
+            raise ValueError("backbone_dim must be positive")
         if signal_architecture == "v2" and (
             signal_attention_heads <= 0 or input_dim % signal_attention_heads != 0
         ):
@@ -121,6 +162,7 @@ class SingleTaskHead(nn.Module):
         hidden_dim = hidden_dim or max(32, input_dim // 2)
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.backbone_dim = int(backbone_dim or input_dim)
         self.prediction_task = prediction_task
         self.signal_architecture = signal_architecture
         self.point_loss_beta = float(point_loss_beta)
@@ -143,8 +185,14 @@ class SingleTaskHead(nn.Module):
             nn.GELU(),
             nn.Dropout(dropout),
         )
+        self.benchmark_regime_head = None
         if signal_architecture == "v2":
-            output_dim = 1 if prediction_task == "alpha_point" else 5
+            output_dim = 1 if prediction_task == "alpha_point" else 2
+            self.last_bar_projection = nn.Sequential(
+                nn.LayerNorm(self.backbone_dim),
+                nn.Linear(self.backbone_dim, input_dim),
+                nn.LayerNorm(input_dim),
+            )
             self.recency_gate = nn.Sequential(
                 nn.LayerNorm(input_dim * 2),
                 nn.Linear(input_dim * 2, input_dim),
@@ -170,36 +218,61 @@ class SingleTaskHead(nn.Module):
             )
             nn.init.normal_(self.trunk_residual[-1].weight, std=0.01)
             nn.init.zeros_(self.trunk_residual[-1].bias)
-            regime_dim = 1 if prediction_task == "alpha_point" else 2
-            regime_hidden = max(16, hidden_dim // 2)
-            self.benchmark_regime_head = nn.Sequential(
-                nn.LayerNorm(input_dim * 2),
-                nn.Linear(input_dim * 2, regime_hidden),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(regime_hidden, len(self.horizons) * regime_dim),
-            )
-            nn.init.normal_(self.benchmark_regime_head[-1].weight, std=0.01)
-            nn.init.zeros_(self.benchmark_regime_head[-1].bias)
-            if prediction_task == "absolute_direction":
+            if prediction_task == "alpha_point":
+                init_theta = math.log(0.10 / (0.22 - 0.10))
+                self.alpha_shrinkage_logit = nn.Parameter(
+                    torch.full((1, len(self.horizons)), init_theta, dtype=torch.float32)
+                )
+                self.alpha_damping_mlp = nn.Sequential(
+                    nn.LayerNorm(4),
+                    nn.Linear(4, 16),
+                    nn.GELU(),
+                    nn.Linear(16, len(self.horizons)),
+                )
+                nn.init.zeros_(self.alpha_damping_mlp[-1].weight)
+                nn.init.zeros_(self.alpha_damping_mlp[-1].bias)
+                self.direction_vol_mlp = None
+                self.market_horizon_boundary_delta = None
+                self.market_horizon_loc_bias = None
+                self.market_horizon_log_temp = None
+                self.market_horizon_prior = None
+            else:
+                self.alpha_shrinkage_logit = None
+                self.alpha_damping_mlp = None
+                self.direction_vol_mlp = nn.Sequential(
+                    nn.LayerNorm(4),
+                    nn.Linear(4, 16),
+                    nn.GELU(),
+                    nn.Linear(16, len(self.horizons)),
+                )
+                nn.init.zeros_(self.direction_vol_mlp[-1].weight)
+                nn.init.zeros_(self.direction_vol_mlp[-1].bias)
+                self.market_horizon_boundary_delta = nn.Parameter(
+                    torch.zeros(4, len(self.horizons))
+                )
+                self.market_horizon_loc_bias = nn.Parameter(
+                    torch.zeros(4, len(self.horizons))
+                )
                 self.market_horizon_log_temp = nn.Parameter(
-                    torch.zeros(4, len(self.horizons), 1)
+                    torch.full((4, len(self.horizons), 1), -2.0)
                 )
                 self.market_horizon_prior = nn.Parameter(
                     torch.zeros(4, len(self.horizons), 3)
                 )
-            else:
-                self.market_horizon_log_temp = None
-                self.market_horizon_prior = None
         else:
             output_dim = 1 if prediction_task == "alpha_point" else 3
+            self.last_bar_projection = None
             self.recency_gate = None
             self.query_norm = None
             self.token_norm = None
             self.horizon_attention = None
             self.attention_gate = None
             self.trunk_residual = None
-            self.benchmark_regime_head = None
+            self.alpha_shrinkage_logit = None
+            self.alpha_damping_mlp = None
+            self.direction_vol_mlp = None
+            self.market_horizon_boundary_delta = None
+            self.market_horizon_loc_bias = None
             self.market_horizon_log_temp = None
             self.market_horizon_prior = None
 
@@ -223,6 +296,23 @@ class SingleTaskHead(nn.Module):
             torch.tensor(self.horizons, dtype=torch.float32),
             persistent=False,
         )
+        self._last_eval_alpha: tuple[Tensor, Tensor] | None = None
+        self._last_eval_direction: tuple[Tensor, Tensor, Tensor] | None = None
+
+    def set_backbone_dim(self, backbone_dim: int) -> None:
+        """Align the pre-Perceiver last-bar projection dimension with the backbone."""
+        if backbone_dim <= 0:
+            raise ValueError("backbone_dim must be positive")
+        if self.signal_architecture != "v2" or int(backbone_dim) == self.backbone_dim:
+            return
+        device = self.prediction.weight.device
+        dtype = self.prediction.weight.dtype
+        self.backbone_dim = int(backbone_dim)
+        self.last_bar_projection = nn.Sequential(
+            nn.LayerNorm(self.backbone_dim),
+            nn.Linear(self.backbone_dim, self.input_dim),
+            nn.LayerNorm(self.input_dim),
+        ).to(device=device, dtype=dtype)
 
     def forward(
         self,
@@ -231,6 +321,10 @@ class SingleTaskHead(nn.Module):
         scale_features: Tensor | None = None,
         benchmark_tokens: Tensor | None = None,
         market_ids: Tensor | None = None,
+        ranking_group_ids: Tensor | None = None,
+        asset_last_hidden: Tensor | None = None,
+        benchmark_last_hidden: Tensor | None = None,
+        past_drawdown: Tensor | None = None,
     ) -> Tensor:
         if self.fp32_head:
             with torch.autocast(device_type=conditioned_tokens.device.type, enabled=False):
@@ -239,8 +333,272 @@ class SingleTaskHead(nn.Module):
                     None if scale_features is None else scale_features.float(),
                     None if benchmark_tokens is None else benchmark_tokens.float(),
                     market_ids,
+                    ranking_group_ids=ranking_group_ids,
+                    asset_last_hidden=(
+                        None if asset_last_hidden is None else asset_last_hidden.float()
+                    ),
+                    benchmark_last_hidden=(
+                        None if benchmark_last_hidden is None else benchmark_last_hidden.float()
+                    ),
+                    past_drawdown=None if past_drawdown is None else past_drawdown.float(),
                 )
-        return self._forward(conditioned_tokens, scale_features, benchmark_tokens, market_ids)
+        return self._forward(
+            conditioned_tokens,
+            scale_features,
+            benchmark_tokens,
+            market_ids,
+            ranking_group_ids=ranking_group_ids,
+            asset_last_hidden=asset_last_hidden,
+            benchmark_last_hidden=benchmark_last_hidden,
+            past_drawdown=past_drawdown,
+        )
+
+    def _project_true_last_bar(
+        self,
+        conditioned_tokens: Tensor,
+        benchmark_tokens: Tensor | None,
+        asset_last_hidden: Tensor | None,
+        benchmark_last_hidden: Tensor | None,
+    ) -> Tensor:
+        assert self.last_bar_projection is not None
+        if asset_last_hidden is not None:
+            rel_last_raw = (
+                asset_last_hidden
+                if benchmark_last_hidden is None
+                else asset_last_hidden - benchmark_last_hidden
+            )
+            if rel_last_raw.shape[-1] == self.backbone_dim:
+                return self.last_bar_projection(rel_last_raw)
+            if rel_last_raw.shape[-1] == self.input_dim:
+                return F.layer_norm(rel_last_raw, (self.input_dim,))
+            raise ValueError(
+                f"Expected last_hidden dim {self.backbone_dim} or {self.input_dim}, "
+                f"got {rel_last_raw.shape[-1]}"
+            )
+        fallback_raw = (
+            conditioned_tokens[:, -1]
+            if benchmark_tokens is None
+            else conditioned_tokens[:, -1] - benchmark_tokens[:, -1]
+        )
+        if fallback_raw.shape[-1] == self.backbone_dim:
+            return self.last_bar_projection(fallback_raw)
+        return F.layer_norm(fallback_raw, (self.input_dim,))
+
+    @staticmethod
+    def _build_anchor_features(
+        batch_size: int,
+        scale_features: Tensor | None,
+        past_drawdown: Tensor | None,
+        *,
+        device: torch.device,
+    ) -> Tensor:
+        if scale_features is not None and scale_features.shape[1] >= 3:
+            asset_vol = scale_features[:, 0:1].float().clamp(min=1e-4, max=0.25)
+            bench_vol = scale_features[:, 1:2].float().clamp(min=1e-4, max=0.25)
+            rel_vol = scale_features[:, 2:3].float().clamp(min=1e-4, max=0.25)
+            a0 = (asset_vol / 0.02).log().clamp(min=-3.0, max=3.0)
+            a1 = (bench_vol / 0.015).log().clamp(min=-3.0, max=3.0)
+            a2 = (rel_vol / 0.02).log().clamp(min=-3.0, max=3.0)
+        else:
+            a0 = torch.zeros((batch_size, 1), device=device, dtype=torch.float32)
+            a1 = torch.zeros((batch_size, 1), device=device, dtype=torch.float32)
+            a2 = torch.zeros((batch_size, 1), device=device, dtype=torch.float32)
+        if past_drawdown is not None:
+            dd = past_drawdown.float().clamp(min=0.0, max=1.0).reshape(batch_size, 1)
+            a3 = ((dd - 0.20) / 0.20).clamp(min=-1.0, max=4.0)
+        else:
+            a3 = torch.zeros((batch_size, 1), device=device, dtype=torch.float32)
+        return torch.cat((a0, a1, a2, a3), dim=-1)
+
+    def _cross_sectional_standardize(
+        self,
+        scores: Tensor,
+        *,
+        market_ids: Tensor | None = None,
+        ranking_group_ids: Tensor | None = None,
+        eps_std: float = 0.1,
+    ) -> Tensor:
+        """Standardize raw scores to zero mean and unit std within same-(date, market) groups."""
+        z_tilde = scores.clone()
+        min_size = 2 if ranking_group_ids is not None else 4
+        masks = self._iter_cross_sectional_groups(
+            scores.shape[0],
+            market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+            min_group_size=min_size,
+        )
+        for mask in masks:
+            group_scores = scores[mask]
+            mean = group_scores.mean(dim=0, keepdim=True)
+            var = (group_scores - mean).square().mean(dim=0, keepdim=True)
+            z_tilde[mask] = (group_scores - mean) / (var + eps_std * eps_std).sqrt()
+        return z_tilde
+
+    def _cross_sectional_center(
+        self,
+        values: Tensor,
+        *,
+        market_ids: Tensor | None = None,
+        ranking_group_ids: Tensor | None = None,
+    ) -> Tensor:
+        """Center location scores to zero mean within same-(date, market) groups."""
+        centered = values.clone()
+        min_size = 2 if ranking_group_ids is not None else 4
+        masks = self._iter_cross_sectional_groups(
+            values.shape[0],
+            market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+            min_group_size=min_size,
+        )
+        for mask in masks:
+            group_values = values[mask]
+            centered[mask] = group_values - group_values.mean(dim=0, keepdim=True)
+        return centered
+
+    def compute_alpha_from_standardized(
+        self,
+        z_tilde: Tensor,
+        damping: Tensor,
+    ) -> Tensor:
+        """Apply Grinold-Kahn / James-Stein shrinkage gate and anchor damping to standardized z."""
+        assert self.alpha_shrinkage_logit is not None
+        scales = self.robust_scales.float().to(device=z_tilde.device)[None, :]
+        gamma = 0.22 * torch.sigmoid(self.alpha_shrinkage_logit.float().to(device=z_tilde.device))
+        return (gamma * damping.float() * torch.tanh(z_tilde.float())) * scales
+
+    def compute_direction_cdf_logits(
+        self,
+        mu_centered: Tensor,
+        sigma: Tensor,
+        market_ids: Tensor | None = None,
+    ) -> Tensor:
+        """Compute heavy-tailed Student-t (df=4) interval log-probabilities."""
+        assert self.market_horizon_boundary_delta is not None
+        assert self.market_horizon_loc_bias is not None
+        device = mu_centered.device
+        scales = self.robust_scales.float().to(device=device)[None, :]
+        if market_ids is not None:
+            m_ids = market_ids.to(device=device, dtype=torch.long).clamp(min=0, max=3)
+            delta_b = 0.7 * torch.tanh(
+                self.market_horizon_boundary_delta.to(device=device)[m_ids].float() / 0.7
+            )
+            beta = 1.5 * torch.tanh(
+                self.market_horizon_loc_bias.to(device=device)[m_ids].float() / 1.5
+            )
+        else:
+            delta_b = 0.7 * torch.tanh(
+                self.market_horizon_boundary_delta.to(device=device)[0:1].float() / 0.7
+            )
+            beta = 1.5 * torch.tanh(
+                self.market_horizon_loc_bias.to(device=device)[0:1].float() / 1.5
+            )
+        b_low = (math.log1p(-self.neutral_return_threshold) / scales) * delta_b.exp()
+        b_high = (math.log1p(self.neutral_return_threshold) / scales) * delta_b.exp()
+        loc = mu_centered.float() + beta
+        sigma_safe = sigma.float().clamp(min=0.25, max=6.0)
+        z_low = ((b_low - loc) / sigma_safe).clamp(min=-12.0, max=12.0)
+        z_high = ((b_high - loc) / sigma_safe).clamp(min=-12.0, max=12.0)
+        z_high = torch.maximum(z_high, z_low + 1e-4)
+        p_down = _student_t4_cdf(z_low).clamp(min=1e-7, max=1.0)
+        p_neutral = (_student_t4_cdf(z_high) - _student_t4_cdf(z_low)).clamp(min=1e-7, max=1.0)
+        p_up = _student_t4_cdf(-z_high).clamp(min=1e-7, max=1.0)
+        return torch.stack((p_down.log(), p_neutral.log(), p_up.log()), dim=-1)
+
+    def apply_direction_calibration(
+        self,
+        cdf_logits: Tensor,
+        market_ids: Tensor | None = None,
+    ) -> Tensor:
+        """Apply lower-bounded temperature scaling (tau >= 1.0) and static log-prior adjustment."""
+        assert self.market_horizon_log_temp is not None
+        assert self.market_horizon_prior is not None
+        device = cdf_logits.device
+        if market_ids is not None:
+            m_ids = market_ids.to(device=device, dtype=torch.long).clamp(min=0, max=3)
+            phi = self.market_horizon_log_temp.to(device=device)[m_ids].float()
+            raw_prior = self.market_horizon_prior.to(device=device)[m_ids].float()
+        else:
+            phi = self.market_horizon_log_temp.to(device=device)[0:1].float()
+            raw_prior = self.market_horizon_prior.to(device=device)[0:1].float()
+        tau = 1.0 + F.softplus(phi)
+        prior = raw_prior - raw_prior.mean(dim=-1, keepdim=True)
+        return (cdf_logits.float() / tau + prior).float()
+
+    @torch.no_grad()
+    def fit_validation_calibration(
+        self,
+        cdf_logits: Tensor,
+        target_absolute: Tensor,
+        market_ids: Tensor,
+        *,
+        min_samples: int = 64,
+    ) -> None:
+        """Calibrate per-(market, horizon) temperature tau >= 1.0 and log-prior on validation."""
+        if (
+            self.signal_architecture != "v2"
+            or self.prediction_task != "absolute_direction"
+            or self.market_horizon_log_temp is None
+            or self.market_horizon_prior is None
+        ):
+            return
+        device = self.market_horizon_log_temp.device
+        logits_dev = cdf_logits.to(device=device, dtype=torch.float32)
+        targets_dev = target_absolute.to(device=device, dtype=torch.float32)
+        markets_dev = market_ids.to(device=device, dtype=torch.long).clamp(min=0, max=3)
+        valid_mask = torch.isfinite(targets_dev)
+        safe_targets = torch.where(valid_mask, targets_dev, torch.zeros_like(targets_dev))
+        all_labels = self.direction_labels(safe_targets)
+        tau_grid = torch.linspace(1.0, 2.5, 25, device=device, dtype=torch.float32)
+
+        for m in range(4):
+            m_rows = markets_dev == m
+            if int(m_rows.sum()) < min_samples:
+                continue
+            for h in range(len(self.horizons)):
+                valid_rows = m_rows & valid_mask[:, h]
+                n_valid = int(valid_rows.sum())
+                if n_valid < min_samples:
+                    continue
+                l_mh = logits_dev[valid_rows, h, :]
+                y_mh = all_labels[valid_rows, h]
+
+                # Baseline candidate: current (tau, prior) parameters.
+                cur_phi = self.market_horizon_log_temp.data[m, h, 0].float()
+                cur_tau = 1.0 + F.softplus(cur_phi)
+                cur_raw_prior = self.market_horizon_prior.data[m, h, :].float()
+                cur_prior = cur_raw_prior - cur_raw_prior.mean()
+                best_ce = F.cross_entropy(l_mh / cur_tau + cur_prior[None, :], y_mh)
+                best_phi = cur_phi
+                best_prior = cur_prior
+
+                # Empirical class frequencies with Dirichlet(2.0) smoothing.
+                counts = torch.bincount(y_mh, minlength=3).float()
+                pi_emp = (counts + 2.0) / (float(n_valid) + 6.0)
+                log_pi_emp = pi_emp.log()
+
+                for tau_val in tau_grid:
+                    scaled = l_mh / tau_val
+                    delta = torch.zeros(3, device=device, dtype=torch.float32)
+                    for _ in range(5):
+                        probs = F.softmax(scaled + delta[None, :], dim=-1)
+                        mean_p = probs.mean(dim=0).clamp_min(1e-6)
+                        delta = (0.85 * (delta + log_pi_emp - mean_p.log())).clamp(
+                            min=-0.40, max=0.40
+                        )
+                        delta = delta - delta.mean()
+                    ce_val = F.cross_entropy(scaled + delta[None, :], y_mh)
+                    if bool(ce_val < best_ce - 1e-6):
+                        best_ce = ce_val
+                        excess = (tau_val - 1.0).clamp_min(1e-4)
+                        best_phi = torch.log(torch.expm1(excess))
+                        best_prior = delta
+
+                self.market_horizon_log_temp.data[m, h, 0] = best_phi.to(
+                    dtype=self.market_horizon_log_temp.dtype
+                )
+                self.market_horizon_prior.data[m, h, :] = best_prior.to(
+                    dtype=self.market_horizon_prior.dtype
+                )
 
     def _forward(
         self,
@@ -248,22 +606,31 @@ class SingleTaskHead(nn.Module):
         scale_features: Tensor | None,
         benchmark_tokens: Tensor | None,
         market_ids: Tensor | None,
+        *,
+        ranking_group_ids: Tensor | None = None,
+        asset_last_hidden: Tensor | None = None,
+        benchmark_last_hidden: Tensor | None = None,
+        past_drawdown: Tensor | None = None,
     ) -> Tensor:
         if conditioned_tokens.ndim != 3 or conditioned_tokens.shape[-1] != self.input_dim:
             raise ValueError(f"conditioned_tokens must be [batch, tokens, {self.input_dim}]")
+        batch_size = conditioned_tokens.shape[0]
         mean_pooled = conditioned_tokens.mean(dim=1)
         if self.signal_architecture == "v2":
-            last_token = conditioned_tokens[:, -1]
-            recency_weight = self.recency_gate(torch.cat((mean_pooled, last_token), dim=-1))
-            pooled = mean_pooled + recency_weight * (last_token - mean_pooled)
+            rel_last_token = self._project_true_last_bar(
+                conditioned_tokens,
+                benchmark_tokens,
+                asset_last_hidden,
+                benchmark_last_hidden,
+            )
+            recency_weight = self.recency_gate(torch.cat((mean_pooled, rel_last_token), dim=-1))
+            pooled = mean_pooled + recency_weight * (rel_last_token - mean_pooled)
         else:
             pooled = mean_pooled
-        market_offset = None
         if self.market_embedding is not None:
             if market_ids is None or market_ids.shape != (pooled.shape[0],):
                 raise ValueError("Market-aware signal forecasts require one market ID per sample")
-            market_offset = self.market_embedding(market_ids)
-            pooled = pooled + market_offset
+            pooled = pooled + self.market_embedding(market_ids)
         horizon_ids = torch.arange(len(self.horizons), device=pooled.device, dtype=torch.long)
         horizon_queries = pooled[:, None] + self.horizon_embeddings(horizon_ids)[None]
         if self.signal_architecture == "v2":
@@ -285,67 +652,70 @@ class SingleTaskHead(nn.Module):
                 return raw.squeeze(-1).float() * self.robust_scales.float()[None]
             return raw.float()
 
-        # V2 regime conditioning from benchmark tokens (or conditioned tokens if absent).
-        source_tokens = conditioned_tokens if benchmark_tokens is None else benchmark_tokens
-        bench_mean = source_tokens.mean(dim=1)
-        bench_last = source_tokens[:, -1]
-        if market_offset is not None:
-            bench_mean = bench_mean + market_offset
-            bench_last = bench_last + market_offset
-        bench_input = torch.cat((bench_mean, bench_last), dim=-1)
-        regime_out = self.benchmark_regime_head(bench_input)
         scales = self.robust_scales.float().to(device=hidden.device)[None, :]
+        anchors = self._build_anchor_features(
+            batch_size,
+            scale_features,
+            past_drawdown,
+            device=hidden.device,
+        )
 
         if self.prediction_task == "alpha_point":
-            regime_drift = 0.25 * torch.tanh(regime_out)
-            z_total = 8.0 * torch.tanh((raw.squeeze(-1) + regime_drift) / 8.0)
-            return z_total.float() * scales
+            assert self.alpha_damping_mlp is not None
+            raw_u = raw.squeeze(-1).float()
+            damping = 2.0 * torch.sigmoid(self.alpha_damping_mlp(anchors).float())
+            z_tilde = self._cross_sectional_standardize(
+                raw_u,
+                market_ids=market_ids,
+                ranking_group_ids=ranking_group_ids,
+                eps_std=0.1,
+            )
+            if not self.training:
+                self._last_eval_alpha = (raw_u.detach(), damping.detach())
+            return self.compute_alpha_from_standardized(z_tilde, damping).float()
 
-        # V2 Volatility-Aware Gaussian-CDF Interval Logit Head for absolute_direction.
-        batch_size = hidden.shape[0]
-        regime = regime_out.reshape(batch_size, len(self.horizons), 2)
-        z_bench = 2.0 * torch.tanh(regime[..., 0])
-        v_bench = 0.5 * torch.tanh(regime[..., 1])
-        z_loc = 6.0 * torch.tanh((raw[..., 0] + z_bench) / 6.0)
-        mu = z_loc.float() * scales
-
+        # V3 Heavy-Tailed Student-t (df=4) Ordinal Cumulative Head for absolute_direction.
+        assert self.direction_vol_mlp is not None
+        mu_raw = 3.0 * torch.tanh(raw[..., 0].float() / 3.0)
+        mu_centered = self._cross_sectional_center(
+            mu_raw,
+            market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+        )
         if scale_features is not None:
             horizon_sqrt = self._horizon_values.to(
                 device=hidden.device, dtype=torch.float32
             ).sqrt()[None, :]
             asset_vol = scale_features[:, 0:1].float().clamp(min=1e-4, max=0.25) * horizon_sqrt
             bench_vol = scale_features[:, 1:2].float().clamp(min=1e-4, max=0.25) * horizon_sqrt
-            hist_anchor = (0.7 * asset_vol + 0.3 * bench_vol).clamp(
-                min=0.25 * scales, max=4.0 * scales
+            hist_ratio = ((0.7 * asset_vol + 0.3 * bench_vol) / scales).clamp(min=0.35, max=3.5)
+            dd_boost = (
+                1.0
+                if past_drawdown is None
+                else 1.0 + 0.5 * past_drawdown.float().clamp(min=0.0, max=1.0).reshape(batch_size, 1)
             )
-            base_sigma = 0.5 * scales + 0.5 * hist_anchor
+            base_sigma = (0.5 + 0.5 * hist_ratio) * dd_boost
         else:
-            base_sigma = scales.expand(batch_size, -1)
+            base_sigma = torch.ones(
+                (batch_size, len(self.horizons)),
+                device=hidden.device,
+                dtype=torch.float32,
+            )
 
-        log_vol_mult = math.log(3.0) * torch.tanh(raw[..., 1].float() + v_bench.float())
-        sigma = (base_sigma * log_vol_mult.exp()).clamp(min=1e-4)
+        vol_anchor_shift = self.direction_vol_mlp(anchors).float()
+        log_vol_mult = math.log(2.5) * torch.tanh(0.5 * (raw[..., 1].float() + vol_anchor_shift))
+        sigma = (base_sigma * log_vol_mult.exp()).clamp(min=0.25, max=6.0)
 
-        lower_edge = math.log1p(-self.neutral_return_threshold)
-        upper_edge = math.log1p(self.neutral_return_threshold)
-        a = ((lower_edge - mu) / sigma).clamp(min=-8.0, max=8.0)
-        b = ((upper_edge - mu) / sigma).clamp(min=-8.0, max=8.0)
-        b = torch.maximum(b, a + 1e-4)
-        p_down = torch.special.ndtr(a).clamp(min=1e-7, max=1.0)
-        p_neutral = (torch.special.ndtr(b) - torch.special.ndtr(a)).clamp(min=1e-7, max=1.0)
-        p_up = torch.special.ndtr(-b).clamp(min=1e-7, max=1.0)
-        cdf_logits = torch.stack((p_down.log(), p_neutral.log(), p_up.log()), dim=-1)
+        if not self.training:
+            m_ids_saved = (
+                torch.zeros(batch_size, dtype=torch.long, device=hidden.device)
+                if market_ids is None
+                else market_ids.to(device=hidden.device, dtype=torch.long).clamp(min=0, max=3)
+            )
+            self._last_eval_direction = (mu_raw.detach(), sigma.detach(), m_ids_saved.detach())
 
-        if market_ids is not None:
-            m_ids = market_ids.clamp(min=0, max=3)
-            log_temp = self.market_horizon_log_temp[m_ids].float().clamp(min=-1.0, max=1.0)
-            prior = self.market_horizon_prior[m_ids].float()
-        else:
-            log_temp = self.market_horizon_log_temp[0:1].float().clamp(min=-1.0, max=1.0)
-            prior = self.market_horizon_prior[0:1].float()
-
-        residual_logits = 1.5 * torch.tanh(raw[..., 2:5].float() / 1.5)
-        logits = cdf_logits * (-log_temp).exp() + prior + residual_logits
-        return logits.float()
+        cdf_logits = self.compute_direction_cdf_logits(mu_centered, sigma, market_ids)
+        return self.apply_direction_calibration(cdf_logits, market_ids)
 
     def point_loss(
         self,
@@ -413,15 +783,17 @@ class SingleTaskHead(nn.Module):
         min_group_size: int = 4,
     ) -> list[Tensor]:
         masks: list[Tensor] = []
-        for group_tensor in (ranking_group_ids, market_ids):
-            if group_tensor is None or group_tensor.shape != (batch_size,):
-                continue
-            for group_id in torch.unique(group_tensor):
-                mask = group_tensor == group_id
+        if ranking_group_ids is not None and ranking_group_ids.shape == (batch_size,):
+            for group_id in torch.unique(ranking_group_ids):
+                mask = ranking_group_ids == group_id
                 if int(mask.sum()) >= min_group_size:
                     masks.append(mask)
-            if masks:
-                return masks
+            return masks
+        if market_ids is not None and market_ids.shape == (batch_size,):
+            for group_id in torch.unique(market_ids):
+                mask = market_ids == group_id
+                if int(mask.sum()) >= min_group_size:
+                    masks.append(mask)
         return masks
 
     def _cross_sectional_demeaned_smooth_l1(
@@ -637,6 +1009,7 @@ class SignalForecastModel(QuantForecastModel):
     ) -> None:
         # Preserve the alpha_head attribute used by existing statistics/checkpoint
         # plumbing while constructing no quantile, ranking, or auxiliary head.
+        alpha_head.set_backbone_dim(resampler.input_dim)
         super().__init__(backbone, resampler, benchmark_conditioner, alpha_head)
         self.prediction_task = alpha_head.prediction_task
 
@@ -722,12 +1095,30 @@ class SignalForecastModel(QuantForecastModel):
                 attention_mask=benchmark_attention_mask,
                 timestamps=benchmark_timestamps,
             )
+        asset_last_hidden = None
+        benchmark_last_hidden = None
+        past_drawdown = None
+        if head.signal_architecture == "v2":
+            asset_last_hidden = _extract_last_bar_hidden(
+                asset.last_hidden_state, asset.attention_mask
+            )
+            benchmark_last_hidden = _extract_last_bar_hidden(
+                benchmark.last_hidden_state, benchmark.attention_mask
+            )
+            with torch.autocast(device_type=asset_ohlcv.device.type, enabled=False):
+                past_drawdown = _past_drawdown_tensor(
+                    asset_ohlcv[..., 3].float(), asset.attention_mask
+                )
         conditioned, gate = self.benchmark_conditioner(asset.latent_tokens, benchmark.latent_tokens)
         prediction = head(
             conditioned,
             scale_features=scales,
             benchmark_tokens=benchmark.latent_tokens,
             market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+            asset_last_hidden=asset_last_hidden,
+            benchmark_last_hidden=benchmark_last_hidden,
+            past_drawdown=past_drawdown,
         )
         point = logits = point_loss = classification_loss = None
         if self.prediction_task == "alpha_point":

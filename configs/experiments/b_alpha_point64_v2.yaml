@@ -32,8 +32,8 @@ model:
   neutral_return_threshold: 0.01
   signal_architecture: v2
   signal_attention_heads: 4
-  alpha_ic_loss_weight: 0.15
-  alpha_bias_penalty_weight: 0.25
+  alpha_ic_loss_weight: 0.05
+  alpha_bias_penalty_weight: 0.10
   direction:
     enabled: false
   time_series_backend: kronos

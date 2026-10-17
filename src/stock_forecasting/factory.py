@@ -195,6 +195,7 @@ def build_model_bundle(
             "alpha_bias_penalty_weight": config.model.alpha_bias_penalty_weight,
             "direction_label_smoothing": config.model.direction_label_smoothing,
             "direction_focal_gamma": config.model.direction_focal_gamma,
+            "backbone_dim": int(backbone.hidden_size),
         }
     alpha_head = alpha_head_type(
         config.model.encoder_dim,
