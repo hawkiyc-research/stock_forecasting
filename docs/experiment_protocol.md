@@ -498,13 +498,18 @@ loss 只差 0.2%–2%，cross-sectional 排序品質的差距卻可能大得多�
 | R23 alpha | `checkpoint-018399` | 0.519 | `checkpoint-018399` | 0.519 | 否（相同） |
 
 執行：以 `export-signal-predictions --checkpoint RUN_ID/checkpoint-NNNNNN` 推論完整 validation
-與 test；指定的 checkpoint 必須在 leaderboard 上，否則拒絕。重算的 validation 指標必須與
-`metrics.jsonl` 同一步的記錄一致。分析時，loss 選模與 eqIR 選模各自計算三 seed 集成與誤差拆解。
+與 test；指定的 checkpoint 必須在 leaderboard 上，否則拒絕。`split.json` 重算的 validation
+loss 與各市場 Rank IC-IR 必須與 `metrics.jsonl` 同一步的記錄一致。分析時，loss 選模與 eqIR 選模各自計算三 seed 集成與誤差拆解。
 Test 只記錄，不得用來修改本規則、選 seed 或回頭換 checkpoint。
 
 判讀限制：
 
 - 從 5 個保留 checkpoint 中取最大值有選擇偏差，validation eqIR 會高估。
+- 每個市場的 validation Rank IC 只有 112 個有效日期，候選間的 eqIR 差距（例如 R22 的
+  0.432 對 0.490）可能仍在雜訊內。R22 的 eqIR 選擇也以平均 Rank IC 換取穩定度
+  （eqIC 0.0637→0.0525）。
+- 報告時並列 loss 選中與 eqIR 選中兩組，以及各自的三 seed 集成，並分市場列出 Rank IC。
+  兩組的 test 差異只作描述性對照，不得解讀為選模規則的優劣。
 - 市場等權分數主要來自台股：US 的 1–14 日平均 Rank IC 只有 0.017–0.047，而台股 validation IC
   曾在 test 反轉（TPEX）。因此 eqIR 不一定代表可轉移的訊號。
 - 結果只作為日後是否正式改 `checkpoint_monitor` 的證據；正式變更需要程式修改、新 preset 與
@@ -1056,8 +1061,8 @@ Results computed from `metrics.jsonl`:
 
 Execution: run complete validation and test inference with
 `export-signal-predictions --checkpoint RUN_ID/checkpoint-NNNNNN`; a named checkpoint must be on
-the leaderboard or it is refused. Recomputed validation metrics must match the same step in
-`metrics.jsonl`. The analysis computes three-seed ensembles and the error decomposition separately
+the leaderboard or it is refused. The validation loss and per-market Rank IC-IR recomputed in
+`split.json` must match the same step in `metrics.jsonl`. The analysis computes three-seed ensembles and the error decomposition separately
 for loss-selected and eqIR-selected checkpoints. Test is recorded only and must not change this
 rule, choose seeds or swap checkpoints afterwards.
 
@@ -1065,6 +1070,12 @@ Limits:
 
 - Taking the maximum over five retained checkpoints is selection-biased, so validation eqIR is
   optimistic.
+- Each market's validation Rank IC has only 112 valid dates, so eqIR gaps between candidates
+  (for example R22's 0.432 against 0.490) may still be noise. R22's eqIR choice also trades mean
+  Rank IC for stability (eqIC 0.0637→0.0525).
+- Reports list the loss-selected and eqIR-selected groups side by side, each with its three-seed
+  ensemble, and show Rank IC per market. Test differences between the groups are descriptive only
+  and must not be read as evidence about which selection rule is better.
 - The equal-market score is driven by Taiwan: US 1–14 day mean Rank IC is only 0.017–0.047, and
   Taiwan's validation IC has reversed on test before (TPEX). eqIR therefore need not represent
   transferable signal.

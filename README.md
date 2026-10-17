@@ -2395,7 +2395,8 @@ export.log
 ```
 
 列順序與完整循序評估相同，也就是 baseline 共用評估陣列的順序；`split.json` 的重算指標
-可與已記錄的 benchmark 對照。每個 split 約 30 MB（alpha）或 90 MB（分類），寫入前會檢查
+可與已記錄的 benchmark 對照，alpha 另含各市場×天期的 Rank IC 與 IC-IR，可與
+`metrics.jsonl` 同一步的 validation 記錄核對。每個 split 約 30 MB（alpha）或 90 MB（分類），寫入前會檢查
 可用空間。tmux session 為 `stock-forecasting-export-predictions`，沿用 `probe-scales` 的
 診斷 lifecycle，本機 guard 在成功、失敗或逾時後終止 Pod；查看用法：
 
@@ -6109,7 +6110,8 @@ export.log
 
 Rows follow the complete sequential evaluation order, the order of the shared baseline
 evaluation arrays; the recomputed metrics in `split.json` can be compared with the recorded
-benchmark. Each split needs about 30 MB (alpha) or 90 MB (classification), and free space is
+benchmark, and for alpha they include per-market, per-horizon Rank IC and IC-IR that can be
+checked against the same validation step in `metrics.jsonl`. Each split needs about 30 MB (alpha) or 90 MB (classification), and free space is
 checked before writing. The tmux session is `stock-forecasting-export-predictions` and shares the
 `probe-scales` diagnostic lifecycle: the local guard terminates the Pod after success, failure or
 timeout. Show usage with:

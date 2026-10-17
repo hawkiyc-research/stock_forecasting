@@ -26,6 +26,7 @@ The resolved checkpoint config is used, never the active stage selection.
 Results: NETWORK_VOLUME_ROOT/diagnostics/signal-predictions/<run>/<checkpoint>/export-*/
   <split>/predictions.npy   float32 alpha points [N,14] or direction logits [N,14,3]
   <split>/split.json        Shape, SHA-256, membership digest and recomputed metrics
+                            (alpha adds per-market/horizon Rank IC and IC-IR)
   export.json, status.json, export.log
 This command starts detached tmux session stock-forecasting-export-predictions; SSH may
 disconnect afterward. It does not create a Pod. It shares the diagnostic lifecycle of

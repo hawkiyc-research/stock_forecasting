@@ -117,6 +117,13 @@ def test_export_split_streams_every_row_and_recomputes_metrics(
     assert json.loads((tmp_path / "out" / "split.json").read_text()) == summary
     assert not (tmp_path / "out" / "predictions.partial.npy").exists()
     assert np.isfinite(summary["loss"])
+    if task == "alpha_point":
+        by_market = summary["cross_sectional"]["by_market"]
+        assert set(by_market) == {"US", "TWSE"}
+        assert set(by_market["US"]) == {f"{h}d" for h in range(1, HORIZONS + 1)}
+        assert by_market["US"]["1d"]["rank_ic_method"] == "spearman_average_ties_v1"
+    else:
+        assert summary["cross_sectional"] is None
 
 
 class _TinyModel(nn.Module):

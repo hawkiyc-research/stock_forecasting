@@ -240,6 +240,8 @@ def export_split(bundle, loader, config, device, output: Path) -> dict[str, Any]
         "loss": metrics.get("loss"),
         "aggregate": metrics.get("aggregate"),
         "market_macro": metrics.get("market_macro"),
+        # Alpha only: per-market/horizon Rank IC and IC-IR, comparable with metrics.jsonl.
+        "cross_sectional": metrics.get("cross_sectional"),
         "seconds": time.perf_counter() - started,
     }
     atomic_write_json(output / "split.json", summary)
