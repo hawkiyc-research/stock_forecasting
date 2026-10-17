@@ -8,6 +8,8 @@
 
 **目前仍未建立穩健、跨市場、跨 seed 的預測優勢。** 最新 `a-signal64` 的三個 seed 已全部有 alpha 與個股分類的最終 test 結果；先前「seed 5067 分類器尚在訓練」是較早快照，已被本次檔案核對更新。Alpha seed 42 的單一整體 loss 稍優於 GRU，但逐日配對區間跨零；另外兩個 seed 的 alpha loss 落後可訓練 baseline。分類器的整體 accuracy 約 42.36%–44.59%，CE 都落後主要可訓練 baseline，台股長持有期 neutral 漏判與市場間不穩定仍然存在。[S1–S3]
 
+**2026-10-17 增補（分支 `claude/model-performance-20261016`）：** A9 date-mixing 單因子對照（R24，seed 42）未通過事先固定的 validation 判準。只改訓練順序、讓每次更新涵蓋的日期×市場數由中位數 2 增為 166 後，train loss 降得更快，alpha 最佳 val loss 0.46363 卻差於歷史三 seed 的 0.45311–0.45476；分類器在 test 的 10–14 日約九成預測為「跌」，CE 1.118239。退化集中在日期層級的共同成分（點估計與市場方向機率），選中 checkpoint 的橫斷面排序沒有明顯變差。詳見第 5.6 節；後續候選見第 9 節。[S11]
+
 現行架構是兩套獨立模型，不是方向 V1／V2／V3 的新名稱，也不是共享 backbone 的雙頭多任務模型。歷史中曾有 **validation 已顯示品質不佳、使用者要求直接停止訓練** 的實驗；第 6 節特別保留，不把它們包裝成完成的 holdout 實驗，也不與硬體、OOM 或啟動失敗混為一談。
 
 本文件的三個用途：
@@ -67,7 +69,7 @@ W&B 的 `crashed`、舊 lifecycle 的 `preparing` 或 Pod 消失，都不是獨�
 
 ### 4 架構開發 roadmap
 
-本節的 A0–A8 是本文件的沿革編號，不是既有 CLI／schema。Git release `v0.x`、方向系列 `V1/V2/V3`、Stage 1／2 與 A／B 資料組別是不同概念。
+本節的 A0–A9 是本文件的沿革編號，不是既有 CLI／schema。Git release `v0.x`、方向系列 `V1/V2/V3`、Stage 1／2 與 A／B 資料組別是不同概念。
 
 | 沿革 | 要解決的問題與實際變更 | 主要 commit | 已觀察結果 |
 | --- | --- | --- | --- |
@@ -81,6 +83,7 @@ W&B 的 `crashed`、舊 lifecycle 的 `preparing` 或 Pod 消失，都不是獨�
 | A7 方向 V2 | 方向尺度直連；市場 prior 與個股 residual 分離；固定、seed 無關 train reference；共享 LoRA PCGrad；BA 導向選模＋pinball guard | `d2238a7`；CUDA 驗收快照 `f6271e7` | 部分指標改善但未超越歷史 A-LoRA64 的 alpha；選模可能犧牲 alpha 最佳點。有限梯度／PCGrad 執行不證明泛化有效 |
 | A8a 方向 V3 | 有序 conditional-chain 機率；benchmark 狀態 gate 選 token／尺度特徵；CE／Brier prior skill、macro-F1、反向錯誤與塌縮懲罰選模 | `346cae0` | **Validation 已顯示退化、方向偏向與 tiny prior skill，依使用者要求直接停訓；無最終 test** |
 | A8b 現行 signal64 | 回歸改 normalized Smooth L1 alpha 點估計；分類改固定 ±1% 個股三分類；兩套 Kronos／LoRA64 完全獨立，移除主線中跨任務梯度干擾與成本標籤；沿用尺度與 benchmark 路徑 | 數值架構 `bc84d49`；成對流程 `8bae2db`；selection／Python 3.12 修復 `3b7cccb` | 三 seed 全部完成；仍未建立跨 seed、跨市場且勝過 learned baseline 的穩健優勢。這是簡化後的結果，不是沿用 V3 頭 |
+| A9 date-mixing 對照（未採用） | 假說：歷史 `DateMarketSampler` 以同日同市場的 128 筆區塊輸出，每次更新約只涵蓋 2 個日期×市場，使模型追逐日期共同衝擊。以有界局部混洗 `training.date_mixing_buffer_samples=16384` 讓每次更新混入多個日期；每 epoch 樣本與年度配額不變，其餘與 signal64 相同、baseline 重用 | 實作 `31ef7c1`；文件 `64a7b3f` | **Validation 未通過**：train loss 降得更快，validation 更差；分類器長天期「跌」偏誤加劇。反證原假說，混洗預設關閉、保留作重現 |
 
 #### 4.1 尺度診斷到數值分支的因果邊界
 
@@ -184,6 +187,41 @@ V1 在 5d alpha 分類的 balanced accuracy 約 33.62%／34.84%／34.09%，即�
 - 訓練沒有全面改善 early peak：alpha 的最佳點隨 seed 後移到 0.2／0.6／1.0 epoch，但分類仍在 0.4／0.4／0.6 epoch；不能把「後移」當作泛化退化根因已解決。
 - Seed42 micro-batch 為 32×8 accumulation；347／5067 為 64×4。有效 batch 均 256，仍不是控制全部執行條件的純 seed 消融。Baseline learned results 固定 seed42，也不是每個主模型 seed 的同 seed baseline 重訓。
 
+#### 5.6 A9 date-mixing 單因子對照
+
+R24 與 R21 使用相同 seed、資料、標籤、loss、模型架構與 baseline；唯一數值差異是訓練順序。兩個子 run 的 45 個 manifest 數值檔均與 `31ef7c1` 相符；與 `c7b5550` 相比只差 `config.py`、`training.py`、`date_market_sampler.py`。RTX 5090 四次建立請求被拒，實際使用 RTX 4090；自動 batch 規劃仍為 32×8、有效 batch 256，與 R21 相同。判準事先固定於[實驗協定 13.1](docs/experiment_protocol.md)，只以 validation 決策。[S11]
+
+| ID | 父 run ID／seed | Alpha 子 run／最佳 checkpoint | 分類子 run／最佳 checkpoint | 狀態 |
+| --- | --- | --- | --- | --- |
+| R24 | `run-20261016T165022Z-32d734a0cb644e44`／42 | `run-20261016T165022Z-32d734a0cb644e44-alpha`／`checkpoint-007360`，第 2 次／8 次 validation，約 0.4 epoch | `run-20261016T165022Z-32d734a0cb644e44-direction`／`checkpoint-003680`，第 1 次／7 次，約 0.2 epoch | `TEST_COMPLETE`；兩者正常 early stop；**validation 判準未通過** |
+
+**Batch 組成**（`summary.json` 的 `training_batch_composition`，前 256 個 optimizer steps）：未混洗參考順序每次更新的相異日期×市場數中位數為 2（每個 micro-batch 為 1）；混洗後為 166（每個 micro-batch 為 30）。這是以真實訓練索引確認的歷史 batch 組成，不是推論。
+
+**Validation（決策依據）：**
+
+| 指標 | R24 datemix | R21 seed42 | R21–R23 三 seed 範圍 |
+| --- | ---: | ---: | ---: |
+| Alpha 最佳 normalized Smooth L1 ↓ | 0.46363 | 0.45476 | 0.45311–0.45476 |
+| Alpha 最後一次 validation ↓ | 0.47878 | 0.45883 | 0.45883–0.46297 |
+| 分類最佳 CE ↓ | 1.02728 | 1.02844 | 1.01311–1.02844 |
+| 分類最佳點 12／14 日 ECE ↓ | 0.1026／0.1380 | 0.0949／0.1037 | — |
+| 分類最佳點 market-macro CE ↓／macro-F1 ↑ | 1.0430／0.3299 | 1.0197／0.3592 | — |
+| Alpha 最佳點美股 14 日 Rank IC ↑ | 0.0161 | 0.0048 | 0.0048–0.0413 |
+
+Alpha 判準（最佳值低於 0.45476 且不是首次評估）與分類判準（CE、10–14 日 ECE、market-macro CE／F1 同時不劣化）皆未成立。鄰近 train batch loss 在混洗下降得更快：alpha 約 1.4–1.6 epoch 時約 0.396，R21 約 0.42；分類約 1.2 epoch 時約 0.864，R21 約 0.894。這是鄰近 batch loss，不是全量 train loss 或無偏的泛化差距，但方向與 validation 退化一致。
+
+**Test（只記錄，不用於選擇方案）：**
+
+| Run | Alpha normalized Smooth L1 ↓ | Alpha MAE ↓ | Alpha Pearson ↑ | Alpha 符號一致率 ↑ | 分類 CE ↓ | 分類 accuracy ↑ | Balanced accuracy ↑ | Macro-F1 ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| R24 datemix 42 | 0.535295 | 0.061161 | 0.095170 | 52.67% | 1.118239 | 42.84% | 36.51% | 0.300239 |
+
+- 逐日配對 loss 差（主模型減 baseline，負值有利主模型；14 日 block bootstrap、1,000 次）：alpha 對 GRU +0.006578［−0.002895, +0.016329］、對 GBDT +0.003796［−0.008078, +0.015085］；分類對 GBDT +0.116751［+0.053923, +0.183887］、對 GRU +0.115948［+0.045455, +0.191853］。分類 CE 明顯劣於 learned baselines。
+- 分類器 10／14 日預測「跌」占 90.2%／91.8%，真實為 42.7%；ECE 0.212／0.227；逐日 CE 標準差 0.152，R21 為 0.087。
+- Alpha 14 日 test Rank IC：US +0.0718、TWSE −0.0385、TPEX −0.0737；美股落在歷史 seed 範圍內，台股仍為負。
+
+**解讀（推論，待驗證）：** 結果與原假說相反。混洗後模型更有效率地擬合訓練期，但 validation 變差；退化集中在點估計與市場方向機率等日期層級共同成分，選中 checkpoint 的橫斷面排序沒有明顯變差。同一 micro-batch 內 benchmark 完全相同時，日期共同成分的梯度在相鄰 step 間方向不一致而互相抵消，歷史同日 batch 因此可能對訓練期日期／市場狀態的擬合有隱性抑制作用；混洗讓這類模式變成一致、可學的訊號，但不轉移到新期間。依協定不補跑其他 datemix seed，也不以 R24 test 選擇方案；`date_mixing_buffer_samples` 預設 `null`，歷史 preset 的訓練順序不受影響。
+
 ### 6 提前終止與失敗的實驗帳本
 
 #### 6.1 因 validation 已顯示品質差而直接停訓
@@ -285,15 +323,17 @@ Baseline 包含 always_buy、zero_return、momentum_5d、reversal_5d、ma_crosso
 
 | 優先 | 待解問題／候選工作 | 既有證據 | 最低驗收要求 |
 | --- | --- | --- | --- |
+| P0 | **日期層級與同日橫斷面的誤差分解（不需 GPU）**：以共用評估 targets／membership 量化 alpha loss 與分類 CE 中，可由「日期×市場×horizon 共同成分」解釋的比例；再以已保存的 GRU／GBDT／zero-return 預測拆解兩部分技能 | R24 退化集中在日期層級；R21–R23 分類逐日 CE 標準差約為 GBDT 的 2.5 倍；長天期「跌」偏誤 | 只讀既有檔案、不重抓行情、不重建 baseline；validation 定案，test 只作同口徑記錄；主模型逐樣本預測未保存，不能聲稱已拆解主模型 |
+| P1 | **保留同日 batch，改為同日去均值的 alpha 目標＋強收縮的日期項**（候選，需設計確認與付費授權） | R24 反證「更 iid 的 batch 較好」；同日 batch 隱性抑制日期擬合的推論；選中 checkpoint 的橫斷面排序未退化 | 單因子新 preset；`alpha_point` 輸出語意不變；三 seed、事先固定 validation 判準；分類任務另行設計，不沿用 alpha 方案冒充完成 |
 | P0 | 先確認模型實際從哪些路徑取得增益：Kronos latent、尺度分支、benchmark、market/horizon embeddings 的容量匹配消融；必要時以同訓練預算比較凍結 readout／LoRA | Signal alpha 僅 seed42 微幅領先 GRU；多次複雜化失敗 | 同一有效集合與 train-only scales；固定 batch執行條件；不能為做消融刪除原 feature；不預設 Kronos 無效 |
-| P0 | 針對 early peak／validation反彈研究正則化、更新量、取樣分布與 learning curves；查每市場、年份、類別的梯度／誤差 | 現行分類仍在0.4–0.6epoch最佳；train batch loss下降而full val無相同改善 | 保存所有 validation 點與明確 loss 定義；同分布的 train診斷不得冒充已存在；不能只增加驗證頻率或延長訓練宣稱解決 |
+| P0 | 針對 early peak／validation反彈研究正則化、更新量、取樣分布與 learning curves；查每市場、年份、類別的梯度／誤差 | 現行分類仍在0.4–0.6epoch最佳；train batch loss下降而full val無相同改善；**R24：混洗日期使 train 擬合加快、validation 變差，取樣不是越 iid 越好** | 保存所有 validation 點與明確 loss 定義；同分布的 train診斷不得冒充已存在；不能只增加驗證頻率或延長訓練宣稱解決 |
 | P1 | 固定±1%三分類的 horizon／市場不平衡與neutral漏判；先稽核support、預測機率、decision rule與loss，再提出最小變更 | 14d台股neutral recall極低；pooled與market-macro結論相反 | 只用train/validation定案；不把成本帶或alpha classifier自行加回；保留per-market/per-H confusion與CE／F1 |
 | P1 | 數值幅度、alpha sign、每日橫截面排序分開處理；檢查台股長H負RankIC與seed敏感性 | 5067排序改善但alpha loss不最佳；不同市場有反向結果 | 保存可重算逐日IC／預測證據；核對ties方法、有效日期，不以單一總分遮掩市場退化 |
 | P1 | 修復證據保存缺口與可攜性：輕量逐日／分組證據、精確版本關聯及停止原因 | 舊未完成runs已清理；本機主要是彙總JSON；部分baseline只有seed42 | 不預設永久保存巨大逐筆資料；設定容量上限；清理前保留小型研究帳本；不能要求重抓行情補metadata |
 | P2 | 如要重測長歷史，用清理後共用評估的B模型，或先以既有bar-store預先固定rolling windows | 舊A/B受不同membership／尺度影響；現行只有A的三seed完成證據 | 所有跨度變更須列清train/validation/test與尺度；不以既有test反覆選方案；付費工作另授權 |
 | P2 | 容量仍可研究LoRA，partial作次要對照；暫不把rank128／Kronos-large當保證解法 | LoRA64在舊組較好；partial失敗，Adaptive128僅定義 | 清楚區分已定義／已跑；控制訓練預算與多seed；不再只報工程驗收數量 |
 
-**不得再次直接複製的失敗路徑：** 為提高coverage而偏離方向問題；把成本／交易規則揉入預測標籤；只看accuracy掩蓋類別塌縮；以PCGrad有梯度或CUDA smoke通過當品質提升；只換seed選好看的test；把B較大但少數指標較差的現象直接斷言為容量不足。
+**不得再次直接複製的失敗路徑：** 為提高coverage而偏離方向問題；把成本／交易規則揉入預測標籤；只看accuracy掩蓋類別塌縮；以PCGrad有梯度或CUDA smoke通過當品質提升；只換seed選好看的test；把B較大但少數指標較差的現象直接斷言為容量不足；假設跨日期混洗的 batch 必然改善泛化（R24 已反證）。
 
 ### 10 證據路徑與接手檢查表
 
@@ -309,6 +349,7 @@ Baseline 包含 always_buy、zero_return、momentum_5d、reversal_5d、ma_crosso
 - **S8** [V2 GPU降頻 incident](artifacts/runpod_incidents/20261012T032735+0800-9apjlhs763hd72/INCIDENT_REPORT.txt) 與同目錄 `incident-summary.json`。
 - **S9** 本對話及當時保存的V3診斷／授權停訓紀錄；run身分由S7再核對，數值屬當時validation診斷，無今日重評估或holdout。
 - **S10** [README現行架構及歷史附錄](README.md)、[架構文件](docs/architecture.md)、[實驗協定](docs/experiment_protocol.md)、[版本tag說明](RELEASES.md)；若與run不一致，以該run的保存設定／程式身分解讀歷史。
+- **S11** R24 產物：分支 `claude/model-performance-20261016` worktree 的 `artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44/`（`pair.json`、`download-result.json`），以及 `-alpha`／`-direction` 子目錄的 manifest、resolved config、`metrics.jsonl`、`summary.json`、leaderboard 與最終 `validation-benchmark.json`。`artifacts/` 不受 Git 追蹤，移交時需另行攜帶。
 
 Git 已追蹤文件會隨 repository 移交；`artifacts/` 與 `.runpod/` 通常被忽略，不會因 clone 自動取得。移交其他工具時，至少附本文件、三份最新DOCX與必要run的metadata／metrics；不要把私鑰、`.env`、API token或整個W&B原始環境一起打包。已被清理的run不再要求從已不存在的路徑讀取。
 
@@ -359,6 +400,8 @@ This handoff roadmap combines the development decisions in this conversation, Gi
 
 **A robust cross-market, cross-seed forecasting advantage has not been established.** All three current `a-signal64` parents now have completed alpha and stock-classification final tests. The earlier observation that seed 5067 classification was still running is superseded by the downloaded final artifacts. Alpha seed 42 narrowly leads GRU on the aggregate loss, but its date-paired interval crosses zero. The other two seeds trail the learned alpha baselines. Classification accuracy is approximately 42.36%–44.59%; all three have worse CE than the main learned baselines, with persistent long-horizon Taiwan neutral-class failures.[S1–S3]
 
+**2026-10-17 addendum (branch `claude/model-performance-20261016`):** the A9 date-mixing single-factor control (R24, seed 42) failed its pre-registered validation criteria. Changing only the training order, which raised the median date/market groups per update from 2 to 166, made training loss fall faster, yet the best alpha validation loss of 0.46363 trails the three historical seeds' 0.45311–0.45476. On test, the classifier predicts "down" for about nine tenths of 10–14 day windows, with CE 1.118239. The degradation concentrates in date-level common components (point estimates and market-direction probabilities); cross-sectional ranking at the selected checkpoint did not clearly worsen. See section 5.6 and the follow-up candidates in section 9.[S11]
+
 The current pair consists of two independent models. It is not a renamed direction V1/V2/V3 shared-backbone multitask model. Section 6 explicitly retains the experiment stopped because **validation already demonstrated poor and deteriorating quality**, separately from GPU throttling, memory-boundary failures, and wrong-preset launches.
 
 ### 2 Project boundaries that must survive the handoff
@@ -393,7 +436,7 @@ All six current signal models have membership `93e2e6a0b74edbdce616b82628aed180d
 
 ### 4 Architecture roadmap
 
-A0–A8are labels used in this document, not existing CLI/schema identifiers. Direction V1/V2/V3, Git v0.x tags, Stage 1/2, and A/B history groups are separate concepts.
+A0–A9 are labels used in this document, not existing CLI/schema identifiers. Direction V1/V2/V3, Git v0.x tags, Stage 1/2, and A/B history groups are separate concepts.
 
 | Generation | Changes and intended problem | Introduction/support commits | Observed outcome |
 | --- | --- | --- | --- |
@@ -407,6 +450,7 @@ A0–A8are labels used in this document, not existing CLI/schema identifiers. Di
 | A7 direction V2 | Direct scales, market-prior/signal separation, seed-invariant train references, shared-LoRA PCGrad, BA-led selection with pinball guard | `d2238a7`, acceptance snapshot `f6271e7` | Some improvement, no alpha breakthrough; direction selection could sacrifice alpha-optimal checkpoints |
 | A8a direction V3 | Ordered conditional probabilities, benchmark-state token/scale gates, prior-relative probability skill and decision penalties | `346cae0` | **Manually stopped for poor and deteriorating validation; no final test** |
 | A8b current signal64 | Two independent LoRA 64 models: robust alpha point loss and fixed ±1% stock CE; no shared gradients or cost labels | `bc84d49`, pairing `8bae2db`, repair `3b7cccb` | Three completed seeds; no stable cross-seed/cross-market learned-baseline advantage |
+| A9 date-mixing control (not adopted) | Hypothesis: the historical `DateMarketSampler` emits 128-sample same-date/market blocks, so each update covers about two date/market groups and the model chases date-level common shocks. A bounded local shuffle, `training.date_mixing_buffer_samples=16384`, mixes many dates per update while keeping each epoch's samples and annual quotas; everything else equals signal64 and baselines are reused | Implementation `31ef7c1`; docs `64a7b3f` | **Validation failed**: faster training-loss decline, worse validation and a stronger long-horizon "down" classifier bias. It contradicts the hypothesis; mixing stays off by default and is kept for reproducibility |
 
 The main historical probe used R04/checkpoint 018145, `probe-20260914T101527Z-105a4d66`; another retained probe is `probe-20260914T091728Z-18045a54`. It used 16,384 train and 4,096 validation samples without future-alpha targets or test. Conditioned readout asset 20/60d validation R²≈0.552/0.605, benchmark≈−0.322/−0.548, and benchmark context-CV≈0.00073. This motivated explicit scales and benchmark access, not a claim that all scale information had vanished.[S6]
 
@@ -502,6 +546,41 @@ Key unresolved findings:
 - Alpha best points move to 0.2/0.6/1.0 epoch, while classifiers remain at 0.4/0.4/0.6. A later peak is not proof the generalization problem is solved.
 - Runtime micro-batches differ:32×8 accumulation for 42 versus 64×4 for 347/5067. Effective batch 256 does not make this a fully controlled seed-only ablation. Learned baselines remain persisted seed 42 results.
 
+#### 5.6 A9 date-mixing single-factor control
+
+R24 shares R21's seed, data, labels, loss, model architecture and baselines; the only numerical difference is the training order. All 45 recorded manifest numerical files of both children match `31ef7c1`; relative to `c7b5550` only `config.py`, `training.py` and `date_market_sampler.py` differ. Four RTX 5090 creation requests were rejected and an RTX 4090 ran instead; the automatic batch plan remained 32×8 with effective batch 256, as in R21. Criteria were fixed beforehand in [experiment protocol 13.1](docs/experiment_protocol.md) and decided on validation only.[S11]
+
+| ID | Parent run ID /seed | Alpha child /best checkpoint | Classification child /best checkpoint | State |
+| --- | --- | --- | --- | --- |
+| R24 | `run-20261016T165022Z-32d734a0cb644e44` /42 | `run-20261016T165022Z-32d734a0cb644e44-alpha` /`checkpoint-007360`, 2nd/8 validations, ~0.4 epoch | `run-20261016T165022Z-32d734a0cb644e44-direction` /`checkpoint-003680`, 1st/7, ~0.2 epoch | `TEST_COMPLETE`; both stopped early normally; **validation criteria failed** |
+
+**Batch composition** (`training_batch_composition` in `summary.json`, first 256 optimizer steps): the unmixed reference order has a median of 2 distinct date/market groups per update (1 per micro-batch); the mixed order has 166 (30 per micro-batch). This confirms the historical batch composition on the real training index; it is not an inference.
+
+**Validation (decision basis):**
+
+| Metric | R24 datemix | R21 seed 42 | R21–R23 three-seed range |
+| --- | ---: | ---: | ---: |
+| Best alpha normalized Smooth L1 ↓ | 0.46363 | 0.45476 | 0.45311–0.45476 |
+| Last alpha validation ↓ | 0.47878 | 0.45883 | 0.45883–0.46297 |
+| Best classification CE ↓ | 1.02728 | 1.02844 | 1.01311–1.02844 |
+| 12/14 day ECE at the best classifier ↓ | 0.1026/0.1380 | 0.0949/0.1037 | — |
+| Market-macro CE ↓/macro-F1 ↑ at the best classifier | 1.0430/0.3299 | 1.0197/0.3592 | — |
+| US 14 day Rank IC at the best alpha point ↑ | 0.0161 | 0.0048 | 0.0048–0.0413 |
+
+Neither the alpha criterion (best value below 0.45476 and not the first evaluation) nor the classification criterion (no deterioration in CE, 10–14 day ECE, market-macro CE and F1) held. Nearby training-batch loss fell faster under mixing: alpha about 0.396 at 1.4–1.6 epochs versus about 0.42 for R21; classification about 0.864 at 1.2 epochs versus about 0.894. These are nearby-batch losses, not full-train losses or an unbiased generalization gap, but they move consistently with the validation deterioration.
+
+**Test (recorded only, not used for method selection):**
+
+| Run | Alpha normalized Smooth L1 ↓ | Alpha MAE ↓ | Alpha Pearson ↑ | Alpha sign ↑ | Classification CE ↓ | Accuracy ↑ | Balanced accuracy ↑ | Macro-F1 ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| R24 datemix 42 | 0.535295 | 0.061161 | 0.095170 | 52.67% | 1.118239 | 42.84% | 36.51% | 0.300239 |
+
+- Date-paired loss differences (main minus baseline, negative favors the main model; 14-date block bootstrap, 1,000 replicates): alpha versus GRU +0.006578 [−0.002895, +0.016329], versus GBDT +0.003796 [−0.008078, +0.015085]; classification versus GBDT +0.116751 [+0.053923, +0.183887], versus GRU +0.115948 [+0.045455, +0.191853]. Classification CE is clearly worse than the learned baselines.
+- The classifier predicts "down" for 90.2%/91.8% of 10/14 day windows against a true 42.7%, with ECE 0.212/0.227; the per-date CE standard deviation is 0.152 versus 0.087 for R21.
+- Day 14 alpha test Rank IC: US +0.0718, TWSE −0.0385, TPEX −0.0737. The US value lies inside the historical seed range; Taiwan remains negative.
+
+**Interpretation (inference, not yet verified):** the result contradicts the hypothesis. With mixing, the model fits the training period more efficiently while validation worsens; the deterioration concentrates in date-level common components such as point estimates and market-direction probabilities, while cross-sectional ranking at the selected checkpoint did not clearly worsen. When every sample in a micro-batch shares the same benchmark, gradients for the date-common component point in inconsistent directions across neighboring steps and largely cancel, so the historical same-date batches may implicitly suppress fitting of training-period date/market states. Mixing turns those patterns into consistent, learnable signals that do not transfer to a new period. Per protocol, no further datemix seeds run and R24's test selects nothing; `date_mixing_buffer_samples` defaults to `null`, so historical presets keep their training order.
+
 ### 6 Manually stopped and failed experiments
 
 #### 6.1 Explicit stop for poor validation
@@ -588,19 +667,21 @@ These are **candidate tasks and acceptance requirements, not implemented changes
 
 | Priority | Candidate investigation | Existing evidence | Acceptance boundary |
 | --- | --- | --- | --- |
+| P0 | **Date-level versus within-date cross-sectional error decomposition (no GPU):** quantify how much alpha loss and classification CE the shared evaluation targets/membership attribute to date×market×horizon common components, then split the skill of persisted GRU/GBDT/zero-return predictions into both parts | R24 degraded mainly at the date level; R21–R23 per-date classification CE standard deviation is about 2.5× GBDT's; long-horizon "down" bias | Read existing files only; no market redownload or baseline rebuild; decide on validation and record test in the same form; main-model per-sample predictions were not persisted, so do not claim the main model was decomposed |
+| P1 | **Keep same-date batches and use a same-date demeaned alpha target plus a strongly shrunk date-level term** (candidate; needs design approval and paid authorization) | R24 refutes "more i.i.d. batches are better"; inference that same-date batches suppress date fitting; cross-sectional ranking at the selected checkpoint did not degrade | New single-factor preset; unchanged `alpha_point` output semantics; three seeds with pre-registered validation criteria; design the classification task separately and never present the alpha plan as covering it |
 | P0 | Capacity-matched contribution checks for Kronos latents, scales, benchmark, market/horizon features; frozen-readout versus LoRA when appropriate | Only alpha seed 42 narrowly leads GRU; repeated complexity additions failed | Same population/scales/runtime budget; preserve existing features; do not presume Kronos useless |
-| P0 | Diagnose early peaks through update budget, regularization, sampling distribution and per-group learning curves | Current stock best points 0.4–0.6 epoch; falling batch train loss without matching full-validation gains | Retain every validation point and definitions; do not claim extra validation frequency/longer training solves generalization |
+| P0 | Diagnose early peaks through update budget, regularization, sampling distribution and per-group learning curves | Current stock best points 0.4–0.6 epoch; falling batch train loss without matching full-validation gains; **R24: mixing dates sped up training fit and worsened validation, so sampling is not "the more i.i.d. the better"** | Retain every validation point and definitions; do not claim extra validation frequency/longer training solves generalization |
 | P1 | Audit fixed-band imbalance, neutral recall, probabilities, decision rules and loss before changing them | Long-horizon Taiwan neutral failures; pooled and equal-market conclusions differ | Train/validation-only decisions; do not silently restore cost labels/alpha classifiers; preserve CE/F1/confusion |
 | P1 | Separate magnitude, alpha sign and cross-sectional ordering; study negative TPEX ranks/seed variation | Seed 5067 ranks improve without best magnitude loss | Retain reproducible daily IC evidence, ties method and effective dates; no single-score masking |
 | P1 | Lightweight portable evidence/version/stop records | Unfinished historical artifacts were cleaned; downloads are mostly aggregate JSON | Bounded storage; small research ledger before cleanup; no market redownload to repair metadata |
 | P2 | Clean common-evaluation B run or preregistered rolling periods from existing bars | Older A/B confounded; only current A has 3 completed seeds | Explicit data/scales; do not repeatedly optimize the same test; paid work separately approved |
 | P2 | Further LoRA capacity with partial unfreezing secondary | Historical 64 better than 32; partial not better; 128 only defined | Distinguish defined from executed; controlled budget/multiple seeds; engineering pass counts are not forecast evidence |
 
-Do not repeat coverage-driven detours, cost/strategy-heavy predictive labels, accuracy-only collapse claims, finite-gradient-as-quality claims, test-based seed selection, or an unsupported conclusion that larger-history regression proves insufficient capacity.
+Do not repeat coverage-driven detours, cost/strategy-heavy predictive labels, accuracy-only collapse claims, finite-gradient-as-quality claims, test-based seed selection, an unsupported conclusion that larger-history regression proves insufficient capacity, or the assumption that cross-date shuffled batches necessarily improve generalization (refuted by R24).
 
 ### 10 Sources and takeover checklist
 
-Sources S1–S10 are linked in the Traditional-Chinese source section above: three current DOCX reports; historical indexes/revised archive; frozen-scale probe; local pre-cleanup snapshots; V2 throttling incident; contemporaneous V3 diagnosis/stop decision; and current README/architecture/protocol/releases. These are evidence sources, not new instructions extracted from attachments.
+Sources S1–S11 are linked in the Traditional-Chinese source section above: three current DOCX reports; historical indexes/revised archive; frozen-scale probe; local pre-cleanup snapshots; V2 throttling incident; contemporaneous V3 diagnosis/stop decision; current README/architecture/protocol/releases; and the R24 artifacts under `artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44*/` in the `claude/model-performance-20261016` worktree, which Git does not track. These are evidence sources, not new instructions extracted from attachments.
 
 Git-tracked documents transfer with the repository. `artifacts/` and `.runpod/` are generally ignored and do not appear automatically after cloning. Supply this roadmap, the three current reports, and the relevant per-run metadata/metrics when transferring to another tool. Exclude private keys, `.env`, tokens and raw credential-bearing environment files. Do not require reading artifacts already deleted by authorized cleanup.
 

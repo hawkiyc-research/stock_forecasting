@@ -470,6 +470,9 @@ bash scripts/runpod_workflow.sh train --experiment a-signal64-datemix --seed 42
    檢查逐日 loss 波動與長天期類別偏移是否減少。
 5. 任一判準不成立也保留結果；不在同一輪加入其他改動，以免無法歸因。
 
+結果：`a-signal64-datemix` seed 42（R24）的 alpha 與方向判準皆未通過，因此不補跑其他 seeds。
+完整數值、batch 組成與解讀見 [模型開發 roadmap 第 5.6 節](../MODEL_DEVELOPMENT_ROADMAP.md)。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -979,6 +982,10 @@ Comparison procedure:
    per-date loss volatility and long-horizon class drift.
 5. Retain the result even if any criterion fails, and add no other change in the same round so the
    effect remains attributable.
+
+Outcome: `a-signal64-datemix` seed 42 (R24) failed both the alpha and direction criteria, so no
+further seeds run. See [model development roadmap section 5.6](../MODEL_DEVELOPMENT_ROADMAP.md) for
+the full values, batch composition and interpretation.
 
 ### 14. Remote-validation boundary
 
