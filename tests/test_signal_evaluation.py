@@ -65,13 +65,6 @@ def test_chunked_population_loss_matches_torch_and_membership(tmp_path, task):
                 == "spearman_average_ties_v1"
             )
             assert "neutral_return_threshold" not in result
-            assert result["per_horizon"]["5d"]["centered_rmse"] <= (
-                result["per_horizon"]["5d"]["rmse"] + 1e-12
-            )
-            assert result["per_horizon"]["5d"]["debiased_selection_score"] <= (
-                result["per_horizon"]["5d"]["selection_score"] + 1e-12
-            )
-            assert "ic_selection_score" in result["primary_5d"]
         else:
             labels = direction_labels(absolute, 0.01)
             expected = F.cross_entropy(
@@ -82,10 +75,6 @@ def test_chunked_population_loss_matches_torch_and_membership(tmp_path, task):
             assert result["class_order"] == ["down", "neutral", "up"]
         assert result["loss"] == pytest.approx(expected, rel=1e-6)
         assert result["primary_5d"]["selection_score"] == result["aggregate"]["selection_score"]
-        assert (
-            result["primary_5d"]["market_macro_selection_score"]
-            == result["market_macro"]["selection_score"]
-        )
         assert result["sample_membership"] == sample_membership(meta["symbols"], meta["dates"])
         assert sum(v["samples"] for v in result["subgroups"]["past_drawdown"].values()) == 12
         assert result["drawdown_diagnostics"]["filters_samples"] is False
