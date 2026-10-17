@@ -34,6 +34,7 @@ stock-forecasting-synthetic = "stock_forecasting.cli.generate_synthetic_data:mai
 stock-forecasting-prepare = "stock_forecasting.cli.prepare_data_runtime:main"
 stock-forecasting-train = "stock_forecasting.cli.train:main"
 stock-forecasting-evaluate = "stock_forecasting.cli.evaluate:main"
+stock-forecasting-export-signal-predictions = "stock_forecasting.cli.export_signal_predictions:main"
 stock-forecasting-probe-scales = "stock_forecasting.cli.probe_scales:main"
 stock-forecasting-infer = "stock_forecasting.cli.infer:main"
 stock-forecasting-preflight = "stock_forecasting.cli.preflight:main"

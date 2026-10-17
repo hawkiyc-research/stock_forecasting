@@ -1,0 +1,125 @@
+{
+  "schema_version": "1.0",
+  "kind": "signal-diagnostic-implementation-verification",
+  "date": "2026-10-18",
+  "branch": "codex/model-performance-20261016",
+  "base_commit": "938018826fb98d78cfd331b3b3046d536ed6335d",
+  "export_transport_source_commit": "27fb9daaad485d1e22310c8d7d275b528b68c83a",
+  "implementation_state": "implemented_local_control_checks_passed_cloud_validation_pending",
+  "unit_checks": [
+    {
+      "command": "python3 tests/test_signal_diagnostics_control.py",
+      "tests": 22,
+      "state": "passed"
+    },
+    {
+      "command": "python3 tests/test_project_naming_control.py",
+      "tests": 13,
+      "state": "passed"
+    },
+    {
+      "command": "python3 tests/test_readme_cli_reference.py",
+      "tests": 10,
+      "state": "passed"
+    },
+    {
+      "command": "python3 tests/test_probe_tmux.py",
+      "tests": 16,
+      "state": "passed",
+      "remote_operations": "mocked"
+    }
+  ],
+  "local_test_total": 61,
+  "static_checks": {
+    "ruff": {
+      "version": "0.15.21",
+      "lint": "passed",
+      "format": "passed",
+      "files": 13
+    },
+    "python_ast": {
+      "state": "passed",
+      "files": 13
+    },
+    "bash_syntax": {
+      "state": "passed",
+      "files": 4
+    },
+    "protected_sources": {
+      "state": "identical",
+      "reference_commit": "938018826fb98d78cfd331b3b3046d536ed6335d",
+      "sha256": {
+        "src/stock_forecasting/training.py": "36e96c74414f96bc55e9bfd524b4653519d754bde623cf8ab46e0fdabb2c77a9",
+        "src/stock_forecasting/date_market_sampler.py": "8fc284b4e29d7f512b965dd01426164e07e01dfb051cb4eb5956c28085b0b966",
+        "src/stock_forecasting/data/dataset.py": "403136e5fa9015fbbebf063514d802e933771da2e85d044c5b3f207dfb5c9e28",
+        "src/stock_forecasting/direction_data.py": "8e7235efc4b2e4346aad68f3eca9284f2ee6e8643fef5a541f6fd2f46b84ca3e",
+        "src/stock_forecasting/config.py": "e457c9345773c33fc8f0528a73605bde850d8f7a08de9e1196eea48bbef053b2",
+        "src/stock_forecasting/signal_training.py": "52b896ed2a4c4cdb3d1a507a41ebc833d578f882523376eab1d4dea26e326b91",
+        "src/stock_forecasting/signal_evaluation.py": "530399c8ce44280b719701a54727369f6ec3405498752d77363656851db8fc8c",
+        "src/stock_forecasting/factory.py": "a3f7bd78a8c6c787988a519726a89ef9e108f25f51ab1906776661a058e92952",
+        "src/stock_forecasting/models/__init__.py": "4f476f6c95f7518e48697d715ae43e6d025028d873d466b9704e4aea7550462d",
+        "src/stock_forecasting/models/backbones.py": "e3b2b902254cceead2b4163fd67deaa55dd0b93cdc58ffb3b8644f83dcbf0931",
+        "src/stock_forecasting/models/chronos2.py": "09fb5a67314c8a86cc806699e72b459c2085397137d2af024bfbe81e93896e8b",
+        "src/stock_forecasting/models/direction.py": "cf0ba1a59a507c65dde8864453c5712adf0272c90d3e6c26b4aeb77013a03166",
+        "src/stock_forecasting/models/direction_ordinal.py": "bc340a28afc2ece354a0ac05f7f4b4e19e033d0d8d1d947fe06c9771943ff801",
+        "src/stock_forecasting/models/exceptions.py": "9f32b2a3d3a39bc7c646a4e1148bbd7f0813548162a3856377d0bb9503e278fa",
+        "src/stock_forecasting/models/forecast.py": "364416a7ce6812a2744dd6427023ae512ae953c1b1cdcc534b593890a13d26b7",
+        "src/stock_forecasting/models/lora.py": "4cb322acd67a06e3758842b6530a7af2c6e7324724a28ed8f8038ceb01df6ff0",
+        "src/stock_forecasting/models/outputs.py": "46ea5cf5d47c4ac4239df0835d8f8a41d00ca9a0a880ddf4eba0b57696f71c77",
+        "src/stock_forecasting/models/projector.py": "b429ff8899010cfde9b46888cd9280ae9b643ff7c0d1f46a0a497451c499e587",
+        "src/stock_forecasting/models/quant.py": "07995882e53edd3fb97359f7438964fe050f5f576f0607164f5b656b910fcf19",
+        "src/stock_forecasting/models/ranking.py": "240aba505cf039ae261eeb99b506102eadbbabac87dc3f496061c3cd6dae659b",
+        "src/stock_forecasting/models/scale_features.py": "b81af971150b07fd4283bf170ee5c024f69ad6488697365c81c67603f091ab5c",
+        "src/stock_forecasting/models/signal.py": "50e67dcc115c653c1ab69794b21d41eec192f0970ac6c96b2f7d36d9e0a66234",
+        "src/stock_forecasting/models/technical_channels.py": "6d85b2a91140b988d6bdcd310d9a1c75f7ac260a6bb4e8e980615773631fd4be"
+      }
+    },
+    "implementation_sha256": {
+      "scripts/analyze_signal_calibration.py": "cb3836072c51ca059eadad61ea0fdb68533edfd05bfee6a3eb2d5bc714547102",
+      "scripts/download_runpod_signal_predictions.py": "6cdf3de348c7ddfed76e32d7fb7a04717daf6f0161f0ae20a643a924b1e4cdb4",
+      "src/stock_forecasting/cli/export_signal_predictions.py": "9c81a0b303bcf7389e759c5d4d793c09ad9d10690c21cb53242385971deb02e4",
+      "src/stock_forecasting/run_contract.py": "1072b2da436df30dc2fbab9ee261e9c78dd516dbd4cde06e916bf1174b62c8a9",
+      "src/stock_forecasting/signal_diagnostic_cloud.py": "f656b080cbd42e772d3fbbe1f990af8e7f05d9f334e0bd17dcb1848059bcfc28",
+      "src/stock_forecasting/signal_diagnostic_io.py": "aeea9ab950e5166a4ebb627e7364e4788960a3821d6c7c64d2224c0b54f1b66a",
+      "src/stock_forecasting/signal_diagnostic_math.py": "1efb757d5437c2d480c2b6caea591893e0864ab34e2ef47d208941ad9a6441f7",
+      "tests/test_project_naming_control.py": "4fd8153c01bfbdabed4f26686f508f32916b29ccca802b2b4d7f101c40773667",
+      "tests/test_readme_cli_reference.py": "3f138884767d56cea21ed45007578cdb1a41f02728c4f43fedd80bea0120cf29",
+      "tests/test_signal_diagnostic_cloud.py": "2bf796500a5f83491985fc6fd91f9d99f57777f78996b6a54bb4231492b27e32",
+      "tests/test_signal_diagnostics_control.py": "06189c65ef1fc99df8c3aa5723ed7733f8a260c3ee76708160ae215336a62132",
+      "tests/test_signal_diagnostics_stress.py": "60c14538d285528f7ca947532536a97a1d8c8d672acc822deab5e643a061c69d",
+      "tests/test_signal_prediction_export.py": "c6515eb6f93f9822683167bc52fba259fbd2aec6a312d6b1b3ccf3503a2c115d",
+      "scripts/download_runpod_signal_predictions.sh": "8d9b1c5b49511f5a01d079a35be68242e212e298982e88b9f94049a42eee1b9a",
+      "scripts/runpod_export_signal_predictions.sh": "88eaff73fb54ccec4cfa319e2693bfafc15ef5dd0b36e1904eea774f756fbc96",
+      "scripts/runpod_tmux_launch.sh": "c069ac24dba020d73a9aebe1eef5fd8296256bb43f363de6b4adbae3cc99f11d",
+      "scripts/runpod_workflow.sh": "076af2a5162c35acfbd6262ce19f5bc13d404179c000ee60383f51a7cd10ac7c"
+    }
+  },
+  "synthetic_artifact_stress": {
+    "samples": 534327,
+    "array_bytes": 448835000,
+    "writer_threads": 2,
+    "mapping_window_bytes": 4194304,
+    "peak_rss_bytes": 38567936,
+    "elapsed_seconds": 1.2072133330075303,
+    "model_or_training_executed": false,
+    "python_ml_environment_used": false,
+    "limitation": "Synthetic artifact reader only; not a CUDA/DataLoader/model memory measurement."
+  },
+  "not_executed": [
+    "tests/test_signal_prediction_export.py (requires cloud ML dependencies)",
+    "tests/test_signal_diagnostic_cloud.py (requires cloud ML dependencies)",
+    "CUDA checkpoint load and inference",
+    "real-market raw/adjusted label reconstruction",
+    "new validation calibration or predictive performance evaluation",
+    "RunPod source sync, download, launch, training or inference",
+    "local ML environment discovery, creation or dependency installation",
+    "git push"
+  ],
+  "predictive_improvement_established": false,
+  "cloud_check_command": "${PROJECT_ROOT}/.venv/bin/python -m pytest tests/test_signal_prediction_export.py tests/test_signal_diagnostic_cloud.py",
+  "limits": [
+    "Synthetic reader memory is not CUDA/DataLoader/model memory.",
+    "The existing full-validation-selected checkpoint prevents claiming a new independent holdout.",
+    "Internal label consistency cannot independently verify vendor corporate actions."
+  ]
+}

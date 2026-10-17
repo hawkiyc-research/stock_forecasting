@@ -6,10 +6,12 @@ umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Help must not import a Pod environment, acquire a lease, or start a session.
-if [[ "${1:-}" == "probe-scales" ]]; then
+if [[ "${1:-}" == "probe-scales" || "${1:-}" == "export-signal-predictions" ]]; then
+    help_script=runpod_probe_scales.sh
+    [[ "$1" != "export-signal-predictions" ]] || help_script=runpod_export_signal_predictions.sh
     for argument in "$@"; do
         if [[ "${argument}" == "--help" || "${argument}" == "-h" ]]; then
-            exec bash "${SCRIPT_DIR}/runpod_probe_scales.sh" --help
+            exec bash "${SCRIPT_DIR}/${help_script}" --help
         fi
     done
 fi
@@ -45,7 +47,8 @@ FINALIZE_LIFECYCLE_ON_EXIT=0
 PROVIDER_WAIT_EXIT_ALLOWED=0
 RUN_DIRECTORY_ID=""
 PRESERVE_POD_ON_LAUNCH_ERROR=0
-if [[ "${1:-}" == "probe-scales" || "${1:-}" == "baseline" || "${1:-}" == "verify-full-workflow" ]]; then
+if [[ "${1:-}" == "probe-scales" || "${1:-}" == "export-signal-predictions" \
+    || "${1:-}" == "baseline" || "${1:-}" == "verify-full-workflow" ]]; then
     # These workflows rely exclusively on the local lifecycle guard.
     PRESERVE_POD_ON_LAUNCH_ERROR=1
 fi
@@ -86,9 +89,9 @@ for path_name in PROJECT_ROOT LOG_ROOT; do
         "${path_value}" "${NETWORK_VOLUME_ROOT}" "${path_name}" NETWORK_VOLUME_ROOT
 done
 
-if [[ $# -lt 1 || ( "$1" != "probe-scales" && $# -ne 1 \
+if [[ $# -lt 1 || ( "$1" != "probe-scales" && "$1" != "export-signal-predictions" && $# -ne 1 \
     && ! ( "$1" == "verify-full-workflow" && $# -eq 2 && "$2" == "--regression-only" ) ) ]]; then
-    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|stage1-train|stage1-validate|baseline|probe-scales [PROBE OPTIONS]" >&2
+    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
     exit 2
 fi
 if [[ "${LOG_ROOT}" != "${NETWORK_VOLUME_ROOT}/logs" ]]; then
@@ -204,9 +207,14 @@ case "$1" in
             exit 2
         fi
         ;;
-    probe-scales)
+    probe-scales|export-signal-predictions)
+        # Both diagnostics share the gpu-probe lifecycle watched by the local guard.
         SESSION_NAME=stock-forecasting-probe-scales
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_probe_scales.sh"
+        if [[ "$1" == "export-signal-predictions" ]]; then
+            SESSION_NAME=stock-forecasting-export-predictions
+            JOB_SCRIPT="${SCRIPT_DIR}/runpod_export_signal_predictions.sh"
+        fi
         JOB_ROLE=gpu-probe
         MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-21600}"
         JOB_TIMEOUT_GRACE_SECONDS=0
@@ -230,7 +238,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|stage1-train|stage1-validate|baseline|probe-scales [PROBE OPTIONS]" >&2
+        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
         exit 2
         ;;
 esac

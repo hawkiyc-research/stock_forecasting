@@ -68,6 +68,8 @@ class ReadmeCliReferenceTests(unittest.TestCase):
             ("src/stock_forecasting/cli/prepare_data.py", "parser"),
             ("src/stock_forecasting/cli/infer.py", "parser"),
             ("src/stock_forecasting/cli/probe_scales.py", "parser"),
+            ("src/stock_forecasting/cli/export_signal_predictions.py", "parser"),
+            ("scripts/analyze_signal_calibration.py", "p"),
             ("scripts/runpod_selection.py", "create"),
             ("scripts/recover_runpod_after_wake.py", "parser"),
             ("scripts/runpod_rest_v2_control.py", "gpu_list"),

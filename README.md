@@ -2314,6 +2314,45 @@ cd /runpod-volume/stock_forecasting
 .venv/bin/python -m pytest tests/test_representation_scale_probe.py
 ```
 
+<a id="signal-diagnostics-zh"></a>
+
+### 固定 train eval、預測匯出與時間校準診斷
+
+[完整診斷流程](docs/SIGNAL_DIAGNOSTICS.md#繁體中文)使用既有 checkpoint 做雲端唯讀推論，
+保留原 alpha／個股方向任務與動態資料讀取。它不執行 sync、不建立 Pod、不改訓練或推論預設。
+
+在已有的 CUDA Pod，使用 `bash scripts/runpod_tmux_launch.sh export-signal-predictions`。
+`--checkpoint RUN_ID` 必填、可重複 1–16 次，解析 validation 最佳點；也可指定仍保留的
+`RUN_ID/checkpoint-NNNNNN` 診斷點。`--splits` 預設 `validation`；`train` 只取有上限的
+固定均勻樣本，`test` 須明確加 `--confirm-test`。
+
+| 匯出參數 | 預設與限制 |
+| --- | --- |
+| `--train-samples N`、`--sample-seed N` | 固定 train 樣本 16,384、seed 59；16–50,000 筆，不採年度 recency 權重 |
+| `--audit-samples N`、`--audit-workers N` | 每 split 最多 24 個原始／復權 label 案例，0–32；I/O workers 預設 2、1–8，受資源限制 |
+| `--max-export-gib N` | 全 job 保存產物預設上限 4 GiB，0.1–64；validation 標籤／metadata 重用 shared baseline |
+
+診斷沿用 GPU lease、tmux、逾時及本機 guard 的 Pod 終止規則，不和訓練共用 GPU。
+本機以 `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]` 下載指定完成產物；
+`download-signal-predictions --baseline-arrays` 預設只取 validation 共享資料，
+`--include-test` 才加下載 test。下載入口為 `bash scripts/runpod_workflow.sh`，不執行模型。
+
+分類校準用 `python3 -I scripts/analyze_signal_calibration.py`，只依賴標準函式庫：
+
+| 校準參數 | 預設與限制 |
+| --- | --- |
+| `--baseline-root DIR`、`--model LABEL=DIR` | 完整 direction cache 與明確 export 目錄；GRU／GBDT 同程序；model 最多 16 個 |
+| `--calibration-end DATE`、`--score-start DATE` | 必填；在 validation 內時間隔離，每市場中間至少 14 個已觀察交易日期 |
+| `--fit-rows N`、`--seed N` | 有界均勻擬合樣本預設 2,048、seed 59；16–16,384，所有模型相同 ordinals |
+| `--workers N`、`--memory-budget-mb N` | Spawn processes 預設 2、1–8；記憶體上限預設 512 MiB、64–4096，並受 CPU／可用記憶體限制 |
+| `--max-iterations N`、`--bias-penalty X` | 預設 80、0.1；1–500 次、正值固定 L2，不從較晚 validation 選參 |
+| `--job-timeout N`、`--output DIR` | 每工作預設 3,600 秒、1–21,600；必填全新輸出目錄，不覆寫既有產物 |
+
+固定比較 raw、完整 train 先驗、全域 temperature 與 temperature＋零和 class bias。
+只在較早 validation 擬合，較晚區段評分；不開啟 test、不自動選贏家或改選 checkpoint。
+結果含 CE／Brier、各類可靠度與分市場／天期／月份診斷。既有 checkpoint 已用完整
+validation 選模，此流程仍是診斷，不能當成新的獨立確認集。
+
 <a id="cli-reference-zh"></a>
 
 ### CLI 參數速查
@@ -5875,6 +5914,48 @@ synthetic-data/mock-checkpoint contract tests:
 cd /runpod-volume/stock_forecasting
 .venv/bin/python -m pytest tests/test_representation_scale_probe.py
 ```
+
+<a id="signal-diagnostics-en"></a>
+
+### Fixed train evaluation, prediction export and temporal calibration
+
+The [complete diagnostic workflow](docs/SIGNAL_DIAGNOSTICS.md#english) runs read-only cloud
+inference from existing checkpoints, preserving raw-alpha/direction tasks and lazy data reading.
+It performs no sync, creates no Pod and changes no training or inference defaults.
+
+On an existing CUDA Pod use `bash scripts/runpod_tmux_launch.sh export-signal-predictions`.
+Required `--checkpoint RUN_ID` is repeatable 1–16 times and selects the validation best;
+`RUN_ID/checkpoint-NNNNNN` addresses a retained diagnostic checkpoint. `--splits` defaults
+to validation; train is a bounded uniform sample; test requires `--confirm-test`.
+
+| Export options | Defaults and bounds |
+| --- | --- |
+| `--train-samples N`, `--sample-seed N` | 16,384 fixed train cutoffs, seed59; 16–50,000; no annual-recency weighting |
+| `--audit-samples N`, `--audit-workers N` | At most24 raw/adjusted label cases per split, 0–32; I/O workers default2, 1–8, resource-bounded |
+| `--max-export-gib N` | Total saved artifact cap4 GiB, 0.1–64; reuse shared baseline labels/metadata for validation |
+
+The job shares existing GPU-lease, tmux, timeout and local-guard Pod-termination semantics;
+it does not share a GPU with active training. Locally download exact completed exports with
+`download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`; `download-signal-predictions
+--baseline-arrays` fetches shared validation inputs, and `--include-test` explicitly adds test.
+These commands use `bash scripts/runpod_workflow.sh` without executing models locally.
+
+The standard-library analyzer is `python3 -I scripts/analyze_signal_calibration.py`:
+
+| Calibration options | Defaults and bounds |
+| --- | --- |
+| `--baseline-root DIR`, `--model LABEL=DIR` | Completed direction cache and exact exports; GRU/GBDT receive the same procedure; up to16 candidate models |
+| `--calibration-end DATE`, `--score-start DATE` | Required validation-only boundaries; at least14 observed market dates between them |
+| `--fit-rows N`, `--seed N` | Uniform bounded fitting sample2,048, seed59; 16–16,384; identical ordinals across models |
+| `--workers N`, `--memory-budget-mb N` | Spawn processes default2, 1–8; memory cap512 MiB, 64–4096, also bounded by available CPU/memory |
+| `--max-iterations N`, `--bias-penalty X` | Defaults80/0.1; 1–500 iterations and fixed positive L2, never tuned on later validation |
+| `--job-timeout N`, `--output DIR` | Default3,600 seconds/job, 1–21,600; required new output directory, immutable artifacts |
+
+Compare raw logits, full-train priors, global temperature and temperature plus zero-sum
+class bias. Fit only early validation and score later validation; do not open test,
+automatically select a winner or reselect checkpoints. Results include CE/Brier,
+classwise reliability and market/horizon/month diagnostics. Existing checkpoints were
+selected on full validation; this remains a diagnostic, not an independent confirmation set.
 
 <a id="cli-reference-en"></a>
 

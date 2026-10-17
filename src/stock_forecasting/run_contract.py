@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from stock_forecasting.checkpoint_resume_migrations import CHECKPOINT_RETENTION_MIGRATIONS
-from stock_forecasting.config import DataConfig, ExperimentConfig, ModelConfig
+from stock_forecasting.config import DataConfig, ExperimentConfig, ModelConfig, TrainingConfig
 from stock_forecasting.data.manifest import load_dataset_manifest, sha256_file
 from stock_forecasting.models import MODEL_OUTPUT_SCHEMA_VERSION
 from stock_forecasting.run_paths import validate_run_id, validate_training_resume_path
@@ -296,6 +296,20 @@ def training_resume_contract_fingerprint(
     return contract, hashlib.sha256(encoded).hexdigest()
 
 
+def readonly_training_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Normalize saved training metadata solely for inference, never for resume.
+
+    Date mixing is an explicit historical training-order field. It is not an
+    inference feature and is deliberately not added to current training config.
+    All other unknown settings remain forbidden by TrainingConfig.
+    """
+    values = dict(settings)
+    mixing = values.pop("date_mixing_buffer_samples", 0)
+    if type(mixing) is not int or not 0 <= mixing <= 10000000:
+        raise ValueError("Invalid historical date-mixing metadata")
+    return TrainingConfig.model_validate(values).model_dump(mode="json")
+
+
 def readonly_checkpoint_contract_digest(
     config: ExperimentConfig,
     run_manifest: dict[str, Any],
@@ -329,6 +343,8 @@ def readonly_checkpoint_contract_digest(
     semantics = {key: value for key, value in stored.items() if key != "training_implementation"}
     semantics["data"] = DataConfig.model_validate(semantics.get("data")).model_dump(mode="json")
     semantics["model"] = ModelConfig.model_validate(semantics.get("model")).model_dump(mode="json")
+    semantics["training"] = readonly_training_settings(semantics.get("training"))
+    semantics["training"].pop("resume_checkpoint", None)
     expected = {key: value for key, value in current.items() if key != "training_implementation"}
     if semantics != expected:
         raise ValueError("Historical checkpoint model, data, or training settings differ")
