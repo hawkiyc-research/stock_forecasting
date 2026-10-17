@@ -106,22 +106,6 @@ def build_model_bundle(
             hidden_size=config.model.encoder_dim,
             max_context=config.data.input_length,
         )
-    elif config.model.time_series_backend == "chronos2":
-        from stock_forecasting.models.chronos2 import Chronos2Backbone
-
-        backbone = Chronos2Backbone.from_pretrained(
-            model_name_or_path=config.model.time_series_model_id,
-            model_revision=config.model.time_series_model_revision,
-            local_files_only=config.model.local_files_only,
-            max_context=config.data.input_length,
-        )
-        if config.model.lora.enabled:
-            lora_modules = backbone.enable_lora(
-                target_modules=config.model.lora.target_modules,
-                rank=config.model.lora.rank,
-                alpha=config.model.lora.alpha,
-                dropout=config.model.lora.dropout,
-            )
     else:
         revision = config.model.kronos_source_revision
         assert revision is not None

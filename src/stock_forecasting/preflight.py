@@ -120,7 +120,7 @@ def run_preflight(
                         fixed_split=config.data.fixed_split,
                         minimum_evaluation_dates=(
                             MIN_FIXED_EVALUATION_DATES
-                            if config.model.time_series_backend in ("kronos", "chronos2") else 0
+                            if config.model.time_series_backend == "kronos" else 0
                         ),
                     )
                 except ValueError as error:
@@ -161,18 +161,6 @@ def run_preflight(
             report.errors.append("Production Kronos quant fine-tuning requires predictor LoRA")
         if on_runpod and not torch.cuda.is_available():
             report.errors.append("RunPod Kronos training requires a visible CUDA GPU")
-    elif config.model.time_series_backend == "chronos2":
-        from stock_forecasting.models.chronos2 import verify_chronos2_dependency
-        from stock_forecasting.models.exceptions import OptionalDependencyError
-
-        try:
-            report.facts["chronos_forecasting_version"] = verify_chronos2_dependency()
-        except OptionalDependencyError as error:
-            report.errors.append(str(error))
-        report.facts["time_series_model_revision"] = str(config.model.time_series_model_revision)
-        report.facts["chronos2_group_scope"] = "one_observed_window_five_ohlcv_channels"
-        if on_runpod and not torch.cuda.is_available():
-            report.errors.append("RunPod Chronos-2 training requires a visible CUDA GPU")
     elif config.model.lora.enabled:
         report.errors.append("Mock backbone cannot enable Kronos LoRA")
 
@@ -183,10 +171,8 @@ def run_preflight(
         )
         if config.training.mixed_precision == "bf16" and not torch.cuda.is_bf16_supported():
             report.errors.append("Configured BF16 training is not supported by this GPU")
-    elif config.model.time_series_backend in ("kronos", "chronos2"):
-        report.warnings.append(
-            f"{config.model.time_series_backend} will run on CPU outside RunPod and may be slow"
-        )
+    elif config.model.time_series_backend == "kronos":
+        report.warnings.append("Kronos will run on CPU outside RunPod and may be slow")
 
     sample_contract = PRODUCTION_STAGE_SAMPLE_CONTRACTS[config.training.stage]
     if config.data.train_fraction != sample_contract["train_fraction"]:
@@ -195,7 +181,7 @@ def run_preflight(
             f"{sample_contract['train_fraction']}"
         )
     if (
-        config.model.time_series_backend in ("kronos", "chronos2")
+        config.model.time_series_backend == "kronos"
         and config.data.max_samples != sample_contract["max_samples"]
     ):
         report.errors.append(

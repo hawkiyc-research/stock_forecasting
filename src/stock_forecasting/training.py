@@ -51,7 +51,6 @@ from stock_forecasting.metrics import (
     multi_horizon_alpha_metrics,
 )
 from stock_forecasting.preflight import run_preflight
-from stock_forecasting.random_sampling import SamplingDiversityAudit
 from stock_forecasting.runpod.runtime_stop import RuntimeStopRequested, stop_at_saved_boundary
 from stock_forecasting.runtime_resources import (
     CGROUP_V1_UNLIMITED_THRESHOLD_BYTES,
@@ -1122,15 +1121,6 @@ def build_dataloaders(
     train_source, validation_dataset, test_dataset = (
         datasets if datasets is not None else build_lazy_datasets(config, worker_plan=worker_plan)
     )
-    if (
-        config.training.sampling_strategy == "sample_random"
-        and config.model.time_series_backend != "mock"
-        and worker_plan.effective_workers < 1
-    ):
-        raise RuntimeError(
-            "Sample-random production training requires a safe DataLoader child worker; "
-            "increase CPU/RAM/shared-memory resources or adjust worker limits"
-        )
     training_batch_size = batch_plan.training_batch_size
     evaluation_batch_size = batch_plan.evaluation_batch_size
     train_sampler = _training_sampler(config, train_source, worker_plan, ranking_sampling)
@@ -1179,19 +1169,6 @@ def build_dataloaders(
 
 def _training_sampler(config, train_source, worker_plan, ranking_sampling=True):
     """Use the production dynamic selection for both training and runtime probes."""
-    if config.training.sampling_strategy == "sample_random":
-        from stock_forecasting.random_training_sampler import RandomTrainingSampler
-
-        return RandomTrainingSampler(
-            train_source,
-            requested_workers=max(1, worker_plan.effective_workers),
-            yearly_decay=config.training.yearly_sampling_decay,
-            fraction=config.data.train_fraction,
-            max_samples=config.data.max_samples,
-            seed=config.training.seed,
-            scratch_root=config.runtime.log_root / "sampling-scratch",
-            max_scratch_bytes=int(config.training.sampling_scratch_max_gib * 1024**3),
-        )
     train_sampler = BlockwisePermutationSampler(
         len(train_source),
         fraction=config.data.train_fraction,
@@ -3858,8 +3835,6 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
             "ranking_loss_weight": config.model.ranking_loss_weight,
             "warmup_samples": config.training.warmup_samples,
             "yearly_sampling_decay": config.training.yearly_sampling_decay,
-            "sampling_strategy": config.training.sampling_strategy,
-            "sampling_contract": getattr(train_batch_sampler.sampler, "sampling_contract", None),
         }
     )
     runtime_execution_plan_path = atomic_write_json(
@@ -3873,10 +3848,6 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
     )
     global_step = coordinates.canonical_global_step
     runtime_global_step = coordinates.runtime_global_step
-    sampling_audit = SamplingDiversityAudit(config.training.sampling_audit_updates)
-    sampling_audit_path = tracking.directory / (
-        f"sampling-audit-{runtime_global_step:09d}-{tracking.session_id}.json"
-    )
     starting_epoch = coordinates.starting_epoch
     resume_batch_index = coordinates.resume_batch_index
     last_evaluation_step = -1
@@ -4021,7 +3992,6 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 iter_device_batches(train_loader, device, pipeline_timings),
                 start=epoch_start_batch,
             ):
-                sampling_audit.observe(batch["cutoff_at"], batch["markets"])
                 with _autocast_context(config, device):
                     output = forward_batch(bundle, batch, config, device)
                     if output.loss is None:
@@ -4081,21 +4051,6 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                     scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
                 runtime_global_step += 1
-                previous_audit_count = len(sampling_audit.records)
-                sampling_audit.optimizer_step(runtime_global_step)
-                if len(sampling_audit.records) > previous_audit_count:
-                    atomic_write_json(
-                        sampling_audit_path,
-                        {
-                            "run_id": tracking.id,
-                            "session_id": tracking.session_id,
-                            "sampling_strategy": config.training.sampling_strategy,
-                            "sampling_contract": getattr(
-                                train_batch_sampler.sampler, "sampling_contract", None
-                            ),
-                            **sampling_audit.as_dict(),
-                        },
-                    )
                 processed_train_samples += accumulated_microbatch_samples
                 accumulated_microbatch_samples = 0
                 if runtime_global_step in loss_logging_alignment:
@@ -4330,10 +4285,6 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 "selected_datasets": config.data.selected_datasets,
                 "selected_train_samples_per_epoch": selected_train_samples,
                 "yearly_sampling": getattr(train_batch_sampler.sampler, "sampling_summary", None),
-                "sampling_strategy": config.training.sampling_strategy,
-                "sampling_contract": getattr(train_batch_sampler.sampler, "sampling_contract", None),
-                "sampling_audit_path": str(sampling_audit_path),
-                "sampling_audit": sampling_audit.as_dict(),
                 "sample_universes": {
                     split: {
                         "identity": dataset.sample_universe_identity,

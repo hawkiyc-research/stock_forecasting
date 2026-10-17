@@ -24,9 +24,6 @@ dependencies = [
     "tqdm>=4.67,<5.0",
 ]
 
-[project.optional-dependencies]
-chronos2 = ["chronos-forecasting==2.3.2"]
-
 [project.scripts]
 stock-forecasting-download = "stock_forecasting.cli.download_market_data:main"
 stock-forecasting-verify-download = "stock_forecasting.cli.verify_download:main"

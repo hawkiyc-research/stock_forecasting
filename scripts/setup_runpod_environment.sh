@@ -18,18 +18,6 @@ RUNPOD_EXPECTED_TORCH_VERSION="${RUNPOD_EXPECTED_TORCH_VERSION:-2.9.1+cu128}"
 RUNPOD_EXPECTED_CUDA_PREFIX="${RUNPOD_EXPECTED_CUDA_PREFIX:-12.8}"
 RUNPOD_EXPECTED_UBUNTU_VERSION="${RUNPOD_EXPECTED_UBUNTU_VERSION:-24.04}"
 RUNPOD_ROLE="${RUNPOD_ROLE:-gpu-train}"
-POETRY_EXTRA_ARGUMENTS=()
-case "${RUNPOD_POETRY_EXTRAS:-}" in
-    "")
-        ;;
-    chronos2)
-        POETRY_EXTRA_ARGUMENTS=(--extras chronos2)
-        ;;
-    *)
-        echo "RUNPOD_POETRY_EXTRAS must be empty or chronos2" >&2
-        exit 2
-        ;;
-esac
 KRONOS_ROOT="${NETWORK_VOLUME_ROOT}/third_party/Kronos"
 BUNDLED_KRONOS_ROOT="${PROJECT_ROOT}/src/stock_forecasting/_vendor/kronos"
 PROJECT_VENV="${PROJECT_ROOT}/.venv"
@@ -228,7 +216,7 @@ trap restore_poetry_lock EXIT
 "${RUNPOD_PYTHON_BIN}" "${POETRY_LOCK_FILTER}" \
     --input "${POETRY_LOCK_BACKUP}" --output "${POETRY_LOCK_INSTALL}"
 cp -p "${POETRY_LOCK_INSTALL}" "${PROJECT_ROOT}/poetry.lock"
-"${POETRY_BIN}" install --no-interaction "${POETRY_EXTRA_ARGUMENTS[@]}"
+"${POETRY_BIN}" install --no-interaction
 restore_poetry_lock
 trap - EXIT
 "${PROJECT_VENV}/bin/python" -m pip check
