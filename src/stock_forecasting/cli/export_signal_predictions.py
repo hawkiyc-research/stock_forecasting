@@ -1,5 +1,7 @@
 """Export per-sample predictions of an existing signal checkpoint (read-only diagnostic).
 
+A selector is a child RUN_ID (its validation-selected best checkpoint) or
+RUN_ID/checkpoint-NNNNNN, which must be retained by that run's validation leaderboard.
 The exported row order is the complete sequential evaluation order, the same order as
 the shared baseline evaluation arrays; each split records its membership digest so the
 local analysis can verify that alignment. Metrics are recomputed with the unchanged
@@ -33,7 +35,12 @@ from stock_forecasting.data.manifest import atomic_write_json, sha256_file
 from stock_forecasting.factory import build_model_bundle
 from stock_forecasting.models.signal import SIGNAL_TASKS
 from stock_forecasting.preflight import run_preflight
-from stock_forecasting.run_paths import canonical_network_volume_root, validate_training_output_root
+from stock_forecasting.run_paths import (
+    CHECKPOINT_NAME_PATTERN,
+    canonical_network_volume_root,
+    validate_run_id,
+    validate_training_output_root,
+)
 from stock_forecasting.signal_evaluation import SignalEvaluationStore
 from stock_forecasting.signal_training import _past_drawdown
 from stock_forecasting.training import build_evaluation_loader, set_global_seed
@@ -52,12 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
         "--checkpoint",
-        metavar="RUN_ID",
+        metavar="RUN_ID[/checkpoint-NNNNNN]",
         action="append",
         required=True,
         help=(
-            "Signal child run ID whose validation-selected best checkpoint is exported; "
-            f"repeat for up to {MAX_CHECKPOINTS} runs exported sequentially in one job."
+            "Signal child run ID (its validation-selected best checkpoint) or "
+            "RUN_ID/checkpoint-NNNNNN retained by its validation leaderboard; repeat for "
+            f"up to {MAX_CHECKPOINTS} checkpoints exported sequentially in one job."
         ),
     )
     parser.add_argument(
@@ -73,6 +81,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required when exporting test, to make repeated test inference explicit.",
     )
     return parser
+
+
+def parse_selector(value: str) -> tuple[str, str | None]:
+    """Split RUN_ID or RUN_ID/checkpoint-NNNNNN without accepting paths."""
+    run_id, separator, name = value.partition("/")
+    validate_run_id(run_id)
+    if not separator:
+        return run_id, None
+    if CHECKPOINT_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("Checkpoint selector must be RUN_ID or RUN_ID/checkpoint-NNNNNN")
+    return run_id, name
+
+
+def resolve_selector(value: str, saved_model_root: Path) -> Path:
+    """Resolve the validation-selected best or a named checkpoint on the leaderboard."""
+    run_id, name = parse_selector(value)
+    if name is None:
+        return resolve_probe_checkpoint(run_id, saved_model_root=saved_model_root)
+    source = saved_model_root.resolve(strict=False) / run_id / name
+    if not (source / "adapter.safetensors").is_file():
+        raise FileNotFoundError(f"Checkpoint is not retained on the volume: {value}")
+    # The exact-checkpoint path refuses names missing from the validation leaderboard.
+    return resolve_probe_checkpoint(source, saved_model_root=saved_model_root)
+
+
+def leaderboard_entry(checkpoint: Path) -> dict[str, Any]:
+    """Record how validation ranked the exported checkpoint."""
+    payload = json.loads((checkpoint.parent / "checkpoint-leaderboard.json").read_text())
+    row = next(item for item in payload["checkpoints"] if item["path"] == checkpoint.name)
+    return {
+        "monitor": payload["monitor"],
+        "mode": payload["mode"],
+        "rank": row["rank"],
+        "value": row["value"],
+        "validation_best": payload["best_checkpoint"],
+    }
+
+
+def require_export_environment() -> None:
+    if not os.environ.get("RUNPOD_POD_ID") or not torch.cuda.is_available():
+        raise RuntimeError("Prediction export must run inside an existing CUDA RunPod Pod")
+    if os.environ.get("RUNPOD_GPU_WORKFLOW_LEASE_HELD") != "1":
+        raise RuntimeError(
+            "Use bash scripts/runpod_tmux_launch.sh export-signal-predictions to verify the "
+            "mount and GPU lease"
+        )
 
 
 def prediction_shape(task: str, samples: int, horizons: int) -> tuple[int, ...]:
@@ -192,17 +246,10 @@ def export_split(bundle, loader, config, device, output: Path) -> dict[str, Any]
     return summary
 
 
-def run_export(run_id: str, splits: list[str]) -> Path:
+def run_export(checkpoint: Path, selector: str, splits: list[str]) -> Path:
     """Run on an existing GPU Pod under the diagnostic lease, without lifecycle changes."""
-    if not os.environ.get("RUNPOD_POD_ID") or not torch.cuda.is_available():
-        raise RuntimeError("Prediction export must run inside an existing CUDA RunPod Pod")
-    if os.environ.get("RUNPOD_GPU_WORKFLOW_LEASE_HELD") != "1":
-        raise RuntimeError(
-            "Use bash scripts/runpod_tmux_launch.sh export-signal-predictions to verify the "
-            "mount and GPU lease"
-        )
+    require_export_environment()
     volume = canonical_network_volume_root()
-    checkpoint = resolve_probe_checkpoint(run_id, saved_model_root=volume / "savedModel")
     config = ExperimentConfig.from_yaml(checkpoint / "resolved-config.yaml")
     validate_training_output_root(config.training.output_root)
     if config.model.time_series_backend != "kronos" or config.model.prediction_task not in (
@@ -252,8 +299,11 @@ def run_export(run_id: str, splits: list[str]) -> Path:
             "kind": "signal-prediction-export",
             "created_at": datetime.now(UTC).isoformat(),
             "run_id": checkpoint.parent.name,
+            "selector": selector,
             "checkpoint": {
                 "path": str(checkpoint),
+                "selection": "validation_best" if "/" not in selector else "leaderboard_named",
+                "leaderboard": leaderboard_entry(checkpoint),
                 "global_step": state.get("global_step"),
                 "model_architecture_sha256": config.model_architecture_digest(),
                 "training_resume_contract_sha256": state.get("training_resume_contract_sha256"),
@@ -296,16 +346,27 @@ def run_export(run_id: str, splits: list[str]) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    run_ids = list(dict.fromkeys(args.checkpoint))
-    if len(run_ids) != len(args.checkpoint) or len(run_ids) > MAX_CHECKPOINTS:
-        raise SystemExit(f"Pass 1-{MAX_CHECKPOINTS} distinct --checkpoint run IDs")
+    selectors = list(dict.fromkeys(args.checkpoint))
+    if len(selectors) != len(args.checkpoint) or len(selectors) > MAX_CHECKPOINTS:
+        raise SystemExit(f"Pass 1-{MAX_CHECKPOINTS} distinct --checkpoint selectors")
+    try:
+        for selector in selectors:
+            parse_selector(selector)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     splits = list(dict.fromkeys(args.splits))
     if "test" in splits and not args.confirm_test:
         raise SystemExit("--splits test requires --confirm-test")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    require_export_environment()
+    saved_model_root = canonical_network_volume_root() / "savedModel"
+    # Resolve every selector before GPU work so a typo or pruned checkpoint fails fast.
+    checkpoints = [resolve_selector(selector, saved_model_root) for selector in selectors]
+    if len(set(checkpoints)) != len(checkpoints):
+        raise SystemExit("Two --checkpoint selectors resolve to the same checkpoint")
     outputs = []
-    for run_id in run_ids:
-        output = run_export(run_id, splits)
+    for selector, checkpoint in zip(selectors, checkpoints, strict=True):
+        output = run_export(checkpoint, selector, splits)
         outputs.append(str(output))
         print(json.dumps({"state": "complete", "output": str(output)}, ensure_ascii=False))
     print(json.dumps({"state": "complete", "exports": outputs}, ensure_ascii=False))

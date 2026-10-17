@@ -7,7 +7,8 @@ the decision basis; test is computed identically for the record.
 
 Usage:
   python3 -I scripts/analyze_signal_decomposition.py --baselines DIR --output JSON \
-      [--predictions DIR] [--model LABEL=RUN_ID ...] [--ensemble LABEL=A,B,C ...] \
+      [--predictions DIR] [--model LABEL=RUN_ID[/checkpoint-NNNNNN] ...] \
+      [--ensemble LABEL=A,B,C ...] \
       [--daily-benchmarks JSON]
 
 Workers: --workers N or DECOMPOSITION_WORKERS (default bounded by CPU, memory and jobs).
@@ -35,6 +36,8 @@ HORIZONS = 14
 SPLITS = ("validation", "test")
 TASKS = {"alpha": "alpha_point", "direction": "absolute_direction"}
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
+CHECKPOINT = re.compile(r"checkpoint-[0-9]{6,}")
 
 
 def float32(value):
@@ -443,26 +446,42 @@ def run_job(job):
     return function(baselines, split, models, ensembles)
 
 
-def latest_export(predictions, run_id):
-    """Pick the newest locally downloaded complete export of one child run."""
-    newest = None
-    for report in Path(predictions).glob(f"{run_id}/checkpoint-*/export-*/export.json"):
+def latest_export(predictions, selector):
+    """Pick the newest complete local export of RUN_ID or RUN_ID/checkpoint-NNNNNN.
+
+    A bare RUN_ID must identify a single exported checkpoint, so two checkpoints of one
+    run are never mixed up.
+    """
+    run_id, _, checkpoint = selector.partition("/")
+    if RUN_ID.fullmatch(run_id) is None or "--" in run_id or (
+        checkpoint and CHECKPOINT.fullmatch(checkpoint) is None
+    ):
+        raise ValueError(f"Invalid export selector {selector!r}")
+    newest, checkpoints = None, set()
+    pattern = f"{run_id}/{checkpoint or 'checkpoint-*'}/export-*/export.json"
+    for report in Path(predictions).glob(pattern):
         status = json.loads((report.parent / "status.json").read_text(encoding="utf-8"))
         if status.get("state") != "complete":
             continue
         payload = json.loads(report.read_text(encoding="utf-8"))
         if payload.get("run_id") != run_id or payload.get("kind") != "signal-prediction-export":
             raise ValueError(f"Export identity mismatch: {report}")
+        checkpoints.add(report.parent.parent.name)
         key = (payload["created_at"], report.parent.name)
         if newest is None or key > newest[0]:
             newest = (key, report.parent, payload)
     if newest is None:
-        raise FileNotFoundError(f"No complete local export for {run_id}")
+        raise FileNotFoundError(f"No complete local export for {selector}")
+    if len(checkpoints) > 1:
+        raise ValueError(
+            f"{run_id} has local exports of {', '.join(sorted(checkpoints))}; "
+            "use LABEL=RUN_ID/checkpoint-NNNNNN"
+        )
     return newest[1], newest[2]
 
 
 def resolve_models(baselines, predictions, pairs):
-    """Map LABEL=RUN_ID pairs to verified export directories."""
+    """Map LABEL=RUN_ID[/checkpoint-NNNNNN] pairs to verified export directories."""
     memberships = {
         task: {
             "validation": json.loads(
@@ -476,23 +495,28 @@ def resolve_models(baselines, predictions, pairs):
     }
     models = {}
     for pair in pairs:
-        label, separator, run_id = pair.partition("=")
+        label, separator, selector = pair.partition("=")
         if not separator or LABEL.fullmatch(label) is None or label in models:
             raise ValueError(f"Invalid or duplicate --model {pair!r}")
         if label in BASELINE_MODELS:
             raise ValueError(f"--model label collides with a baseline: {label}")
-        directory, payload = latest_export(predictions, run_id)
+        directory, payload = latest_export(predictions, selector)
         task = {value: key for key, value in TASKS.items()}.get(payload.get("prediction_task"))
         if task is None:
-            raise ValueError(f"Unsupported exported task for {run_id}")
+            raise ValueError(f"Unsupported exported task for {selector}")
         for split in SPLITS:
             summary = payload["splits"].get(split)
             if summary is None:
-                raise ValueError(f"{run_id} export lacks the {split} split")
+                raise ValueError(f"{selector} export lacks the {split} split")
             digest = (summary.get("sample_membership") or {}).get("ordered_symbol_dates_sha256")
             if digest != memberships[task][split]:
-                raise ValueError(f"{run_id} {split} order differs from the baseline arrays")
-        models[label] = {"run_id": run_id, "task": task, "directory": str(directory)}
+                raise ValueError(f"{selector} {split} order differs from the baseline arrays")
+        models[label] = {
+            "run_id": payload["run_id"],
+            "checkpoint": directory.parent.name,
+            "task": task,
+            "directory": str(directory),
+        }
     return models
 
 
@@ -610,7 +634,8 @@ def build_parser():
     parser.add_argument("--baselines", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--predictions", type=Path)
-    parser.add_argument("--model", action="append", default=[], metavar="LABEL=RUN_ID")
+    parser.add_argument("--model", action="append", default=[],
+                        metavar="LABEL=RUN_ID[/checkpoint-NNNNNN]")
     parser.add_argument("--ensemble", action="append", default=[], metavar="LABEL=A,B,C")
     parser.add_argument("--daily-benchmarks", type=Path)
     parser.add_argument("--workers", type=int)

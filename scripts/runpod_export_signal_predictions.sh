@@ -14,9 +14,11 @@ Usage (inside an existing CUDA RunPod Pod):
   bash scripts/runpod_tmux_launch.sh export-signal-predictions --checkpoint RUN_ID [OPTIONS]
 
 Options:
-  --checkpoint RUN_ID       Signal child run ID (alpha or direction); its validation-selected
-                            best checkpoint is exported. Required, repeatable 1-16 times;
-                            runs are exported sequentially in this one job (no latest default).
+  --checkpoint SELECTOR     RUN_ID: the validation-selected best checkpoint of a signal child
+                            run (alpha or direction). RUN_ID/checkpoint-NNNNNN: a named
+                            checkpoint that must be retained by that run's validation
+                            leaderboard. Required, repeatable 1-16 times; checkpoints are
+                            exported sequentially in this one job (no latest default).
   --splits SPLIT [SPLIT]    validation and/or test (default: validation test)
   --confirm-test            Required whenever test is exported
 
@@ -61,8 +63,10 @@ fi
 # Inspect the selectors without changing argument order; argparse validates the rest.
 checkpoint_count=0
 validate_checkpoint_selector() {
-    if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ || "$1" == *--* ]]; then
-        echo "--checkpoint must be a safe RUN_ID, not a path; use --help" >&2
+    if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}(/checkpoint-[0-9]{6,})?$ \
+        || "$1" == *--* ]]; then
+        echo "--checkpoint must be a safe RUN_ID or RUN_ID/checkpoint-NNNNNN, not a path;" \
+            "use --help" >&2
         exit 2
     fi
 }
@@ -74,7 +78,7 @@ read_checkpoint_selectors() {
                 validate_checkpoint_selector "${1#--checkpoint=}"
                 ;;
             --checkpoint)
-                [[ $# -ge 2 ]] || { echo "--checkpoint requires a RUN_ID" >&2; exit 2; }
+                [[ $# -ge 2 ]] || { echo "--checkpoint requires a selector" >&2; exit 2; }
                 checkpoint_count=$((checkpoint_count + 1))
                 validate_checkpoint_selector "$2"
                 shift

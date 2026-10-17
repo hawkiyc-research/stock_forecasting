@@ -473,6 +473,43 @@ bash scripts/runpod_workflow.sh train --experiment a-signal64-datemix --seed 42
 結果：`a-signal64-datemix` seed 42（R24）的 alpha 與方向判準皆未通過，因此不補跑其他 seeds。
 完整數值、batch 組成與解讀見 [模型開發 roadmap 第 5.6 節](../MODEL_DEVELOPMENT_ROADMAP.md)。
 
+#### 13.2 以橫斷面 Rank IC-IR 重選 alpha checkpoint（只推論，事先固定）
+
+獨立 alpha 以完整 validation normalized Smooth L1 選 checkpoint。訊噪比低時，各次評估的
+loss 只差 0.2%–2%，cross-sectional 排序品質的差距卻可能大得多。本節是推論期診斷：
+不重訓、不改 `checkpoint_monitor`、不改寫 best-checkpoint pointer，也不取代已發布的結果。
+
+事先固定的規則（2026-10-18 寫入，早於讀取任何非最佳 checkpoint 的 test 結果）：
+
+1. 分數 eqIR：取該次 validation 評估的
+   `validation/cross_sectional/by_market/<市場>/<h>d/rank_ic_ir`，先對 h=1–14 平均成市場
+   分數，再對 US、TWSE、TPEX 等權平均。任一市場或天期沒有有效值時，該次評估不參選。
+2. 候選只限該 run validation leaderboard 保留的 checkpoints；未保留的評估點沒有權重可匯出。
+3. 選 eqIR 最高者；若與 loss 選出的最佳 checkpoint 相同，就不另外匯出。
+4. 範圍是 `a-signal64` 三個 seed（R21–R23）的 alpha 子模型。分類器以 CE 選模，CE 本身是與
+   任務一致的 proper scoring rule，不重選；R24（datemix）已記錄為負結果，不納入。
+
+由 `metrics.jsonl` 計算的結果：
+
+| Run | loss 選中 | 其 eqIR | eqIR 選中 | 其 eqIR | 是否另外匯出 |
+| --- | --- | ---: | --- | ---: | --- |
+| R21 alpha | `checkpoint-003680` | 0.328 | `checkpoint-022079` | 0.533 | 是 |
+| R22 alpha | `checkpoint-011040` | 0.432 | `checkpoint-018399` | 0.490 | 是 |
+| R23 alpha | `checkpoint-018399` | 0.519 | `checkpoint-018399` | 0.519 | 否（相同） |
+
+執行：以 `export-signal-predictions --checkpoint RUN_ID/checkpoint-NNNNNN` 推論完整 validation
+與 test；指定的 checkpoint 必須在 leaderboard 上，否則拒絕。重算的 validation 指標必須與
+`metrics.jsonl` 同一步的記錄一致。分析時，loss 選模與 eqIR 選模各自計算三 seed 集成與誤差拆解。
+Test 只記錄，不得用來修改本規則、選 seed 或回頭換 checkpoint。
+
+判讀限制：
+
+- 從 5 個保留 checkpoint 中取最大值有選擇偏差，validation eqIR 會高估。
+- 市場等權分數主要來自台股：US 的 1–14 日平均 Rank IC 只有 0.017–0.047，而台股 validation IC
+  曾在 test 反轉（TPEX）。因此 eqIR 不一定代表可轉移的訊號。
+- 結果只作為日後是否正式改 `checkpoint_monitor` 的證據；正式變更需要程式修改、新 preset 與
+  三 seed 訓練。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -986,6 +1023,53 @@ Comparison procedure:
 Outcome: `a-signal64-datemix` seed 42 (R24) failed both the alpha and direction criteria, so no
 further seeds run. See [model development roadmap section 5.6](../MODEL_DEVELOPMENT_ROADMAP.md) for
 the full values, batch composition and interpretation.
+
+#### 13.2 Alpha checkpoint re-selection by cross-sectional Rank IC-IR (inference only, pre-registered)
+
+Independent alpha models select checkpoints by complete-validation normalized Smooth L1. At this
+signal-to-noise ratio, evaluation losses differ by only 0.2%–2%, while cross-sectional ranking
+quality can differ much more. This section is an inference-time diagnostic: no retraining, no
+change to `checkpoint_monitor`, no rewrite of the best-checkpoint pointer, and no replacement of
+published results.
+
+Pre-registered rule (written on 2026-10-18, before any test result of a non-best checkpoint was
+read):
+
+1. Score eqIR: from one validation evaluation, average
+   `validation/cross_sectional/by_market/<market>/<h>d/rank_ic_ir` over h = 1–14 into a market
+   score, then weight US, TWSE and TPEX equally. An evaluation with any missing market or horizon
+   value is not eligible.
+2. Candidates are only checkpoints retained by the run's validation leaderboard; evaluation points
+   that were not retained have no weights to export.
+3. Choose the highest eqIR; when it equals the loss-selected best checkpoint, export nothing extra.
+4. Scope: the alpha children of the three `a-signal64` seeds (R21–R23). Classifiers select on CE,
+   itself a proper scoring rule aligned with the task, and are not re-selected. R24 (datemix) is a
+   recorded negative result and is excluded.
+
+Results computed from `metrics.jsonl`:
+
+| Run | Loss-selected | Its eqIR | eqIR-selected | Its eqIR | Extra export |
+| --- | --- | ---: | --- | ---: | --- |
+| R21 alpha | `checkpoint-003680` | 0.328 | `checkpoint-022079` | 0.533 | Yes |
+| R22 alpha | `checkpoint-011040` | 0.432 | `checkpoint-018399` | 0.490 | Yes |
+| R23 alpha | `checkpoint-018399` | 0.519 | `checkpoint-018399` | 0.519 | No (same) |
+
+Execution: run complete validation and test inference with
+`export-signal-predictions --checkpoint RUN_ID/checkpoint-NNNNNN`; a named checkpoint must be on
+the leaderboard or it is refused. Recomputed validation metrics must match the same step in
+`metrics.jsonl`. The analysis computes three-seed ensembles and the error decomposition separately
+for loss-selected and eqIR-selected checkpoints. Test is recorded only and must not change this
+rule, choose seeds or swap checkpoints afterwards.
+
+Limits:
+
+- Taking the maximum over five retained checkpoints is selection-biased, so validation eqIR is
+  optimistic.
+- The equal-market score is driven by Taiwan: US 1–14 day mean Rank IC is only 0.017–0.047, and
+  Taiwan's validation IC has reversed on test before (TPEX). eqIR therefore need not represent
+  transferable signal.
+- The outcome is only evidence for a later decision on formally changing `checkpoint_monitor`; that
+  change needs code changes, a new preset and three-seed training.
 
 ### 14. Remote-validation boundary
 

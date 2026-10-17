@@ -34,7 +34,7 @@ Usage:
   bash scripts/runpod_workflow.sh recover [--apply] [--pod-id POD_ID]
   bash scripts/runpod_workflow.sh download [--resume] [--checkpointScope all|best] [RUN_ID]
   bash scripts/runpod_workflow.sh download-probes [PROBE_RUN_ID]
-  bash scripts/runpod_workflow.sh download-signal-predictions RUN_ID [RUN_ID ...]
+  bash scripts/runpod_workflow.sh download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF
 }

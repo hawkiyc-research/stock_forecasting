@@ -68,6 +68,15 @@ def safe_run_id(value):
     return value
 
 
+def safe_selector(value):
+    """Split RUN_ID or RUN_ID/checkpoint-NNNNNN, the selectors of the export job."""
+    run_id, separator, checkpoint = str(value).partition("/")
+    safe_run_id(run_id)
+    if separator and re.fullmatch(r"checkpoint-[0-9]{6,}", checkpoint) is None:
+        raise ValueError("Selector must be RUN_ID or RUN_ID/checkpoint-NNNNNN")
+    return run_id, checkpoint or None
+
+
 def worker_count(project_root):
     """Bound transfer threads by request, visible CPUs and reclaimable memory."""
     requested = int(os.environ.get("RUNPOD_SIGNAL_PREDICTION_DOWNLOAD_WORKERS", 2))
@@ -174,14 +183,25 @@ def candidate(reader, key):
     }
 
 
-def select_export(reader, run_id):
-    newest = None
-    for key in reader.status_keys(REMOTE_ROOT + safe_run_id(run_id) + "/"):
+def select_export(reader, selector):
+    """Pick the newest completed export of one checkpoint; a bare RUN_ID must be unambiguous."""
+    run_id, checkpoint = safe_selector(selector)
+    prefix = REMOTE_ROOT + run_id + "/" + (checkpoint + "/" if checkpoint else "")
+    newest, checkpoints = None, set()
+    for key in reader.status_keys(prefix):
         result = candidate(reader, key)
-        if result is not None and (newest is None or result["order"] > newest["order"]):
+        if result is None:
+            continue
+        checkpoints.add(result["relative"].parts[1])
+        if newest is None or result["order"] > newest["order"]:
             newest = result
     if newest is None:
-        raise FileNotFoundError("No completed signal-prediction export found for " + run_id)
+        raise FileNotFoundError("No completed signal-prediction export found for " + selector)
+    if len(checkpoints) > 1:
+        raise ValueError(
+            f"{run_id} has completed exports of {', '.join(sorted(checkpoints))}; "
+            "pass RUN_ID/checkpoint-NNNNNN"
+        )
     return newest
 
 
@@ -279,19 +299,20 @@ def main():
         print(f"Baseline decomposition inputs: downloaded={downloaded} already_verified={verified}")
         print("Result directory: " + str(destination))
         return
-    run_ids = [safe_run_id(value) for value in arguments]
-    if not 1 <= len(run_ids) <= MAX_RUNS or len(set(run_ids)) != len(run_ids):
-        raise ValueError(f"Pass 1-{MAX_RUNS} distinct signal child run IDs or --baseline-arrays")
+    for value in arguments:
+        safe_selector(value)
+    if not 1 <= len(arguments) <= MAX_RUNS or len(set(arguments)) != len(arguments):
+        raise ValueError(f"Pass 1-{MAX_RUNS} distinct export selectors or --baseline-arrays")
     executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prediction-download")
     try:
-        for run_id in run_ids:
-            result = select_export(reader, run_id)
+        for selector in arguments:
+            result = select_export(reader, selector)
             LOGGER.info(
                 "Selected completed export: %s (%s)", result["relative"], result["order"][0]
             )
             destination = download_export(reader, result, PROJECT_ROOT, executor, workers, timeout)
             splits = sorted(result["splits"])
-            print(f"Downloaded signal predictions: run_id={run_id} splits={splits}")
+            print(f"Downloaded signal predictions: selector={selector} splits={splits}")
             print("Result directory: " + str(destination))
     finally:
         executor.shutdown(wait=True, cancel_futures=True)

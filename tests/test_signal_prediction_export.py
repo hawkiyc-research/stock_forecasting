@@ -8,15 +8,23 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from torch import nn
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import SequentialSampler
 
 import stock_forecasting.training as training
+from stock_forecasting.checkpointing import (
+    CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+    TEMP_CHECKPOINT_POINTER,
+    save_ranked_checkpoint,
+)
 from stock_forecasting.cli import export_signal_predictions as export
 from stock_forecasting.config import ExperimentConfig
 from stock_forecasting.run_contract import (
     _canonical_payload_digest,
     readonly_checkpoint_contract_digest,
     training_resume_contract,
+    training_resume_contract_fingerprint,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +117,76 @@ def test_export_split_streams_every_row_and_recomputes_metrics(
     assert json.loads((tmp_path / "out" / "split.json").read_text()) == summary
     assert not (tmp_path / "out" / "predictions.partial.npy").exists()
     assert np.isfinite(summary["loss"])
+
+
+class _TinyModel(nn.Module):
+    def __init__(self, horizons):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.alpha_head = nn.Module()
+        self.alpha_head.register_buffer("robust_scales", torch.ones(horizons))
+
+
+def _ranked_run(root, run_id, steps):
+    """Save validation-ranked checkpoints; values above the top five stay resume-only."""
+    config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
+    run = root / run_id
+    run.mkdir()
+    contract, digest = training_resume_contract_fingerprint(config)
+    (run / "run-manifest.json").write_text(json.dumps({
+        "schema_version": CHECKPOINT_ARTIFACT_SCHEMA_VERSION,
+        "run_id": run_id,
+        "run_key": run_id,
+        "training_resume_contract": contract,
+        "training_resume_contract_sha256": digest,
+    }))
+    config.save_resolved(run / "resolved-config.yaml")
+    model = _TinyModel(len(config.data.alpha_horizons))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scheduler = LambdaLR(optimizer, lambda _step: 1.0)
+    for step, value in steps:
+        save_ranked_checkpoint(
+            model=model, optimizer=optimizer, scheduler=scheduler, config=config,
+            run_directory=run, global_step=step, epoch=0, batch_index=step,
+            selection_metric_name="primary_5d/selection_score",
+            selection_metric_value=value, selection_metric_mode="min", save_top_k=5,
+            metrics={"primary_5d/selection_score": value},
+        )
+    return run
+
+
+def test_selectors_resolve_only_the_best_or_leaderboard_checkpoints(tmp_path):
+    run_id = "run-fixture-alpha"
+    steps = [(10, 1.0), (20, 2.0), (30, 3.0), (40, 4.0), (50, 5.0), (60, 6.0)]
+    run = _ranked_run(tmp_path, run_id, steps)
+    # The newest checkpoint has weights on disk but is kept only for resume.
+    resume_only = json.loads((run / TEMP_CHECKPOINT_POINTER).read_text())["path"]
+    assert resume_only == "checkpoint-000060"
+    assert (run / resume_only / "adapter.safetensors").is_file()
+
+    assert export.resolve_selector(run_id, tmp_path) == run / "checkpoint-000010"
+    named = export.resolve_selector(f"{run_id}/checkpoint-000030", tmp_path)
+    assert named == run / "checkpoint-000030"
+    entry = export.leaderboard_entry(named)
+    assert (entry["rank"], entry["value"], entry["validation_best"]) == (
+        3, 3.0, "checkpoint-000010"
+    )
+    with pytest.raises(ValueError, match="not retained"):
+        export.resolve_selector(f"{run_id}/{resume_only}", tmp_path)
+    with pytest.raises(FileNotFoundError):
+        export.resolve_selector(f"{run_id}/checkpoint-000099", tmp_path)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "run-x/", "run-x/checkpoint-12", "run-x/checkpoint-000010/extra", "../x",
+     "/runpod-volume/savedModel/run-x", "run--x", "run-x/../checkpoint-000010"],
+)
+def test_selector_parsing_refuses_paths(value):
+    with pytest.raises(ValueError):
+        export.parse_selector(value)
+    with pytest.raises(SystemExit):
+        export.main(["--checkpoint", value, "--splits", "validation"])
 
 
 def test_export_refuses_partial_coverage_and_existing_output(tmp_path):

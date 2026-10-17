@@ -108,9 +108,10 @@ class Fixture:
                         write_npy(base / "jobs" / model / split / "predictions.npy", "<f4",
                                   (self.count, HORIZONS, 3), floats([0.0] * self.count * 42))
 
-    def export(self, run_id: str, task: str, values, digest="f" * 64) -> None:
+    def export(self, run_id: str, task: str, values, digest="f" * 64,
+               checkpoint="checkpoint-003680") -> None:
         export = "export-20261017T000000Z-0a1b2c3d"
-        directory = self.predictions / run_id / "checkpoint-003680" / export
+        directory = self.predictions / run_id / checkpoint / export
         tail = (HORIZONS,) if task == "alpha_point" else (HORIZONS, 3)
         splits = {}
         for split in ("validation", "test"):
@@ -176,6 +177,31 @@ class DecompositionAnalysisTests(unittest.TestCase):
             self.assertAlmostEqual(metrics[name]["aggregate"], metrics["gru-42"]["aggregate"])
         self.assertIn("A_within_plus_split_level", metrics)
 
+    def test_checkpoint_selectors_keep_two_checkpoints_of_one_run_apart(self) -> None:
+        self.fixture.export("run-a-alpha", "alpha_point", [0.5 * v for v in self.fixture.alpha])
+        self.fixture.export("run-a-alpha", "alpha_point", [0.25 * v for v in self.fixture.alpha],
+                            checkpoint="checkpoint-022079")
+        predictions = str(self.fixture.predictions)
+        with self.assertRaisesRegex(ValueError, "checkpoint-003680, checkpoint-022079"):
+            self.run_analysis("--predictions", predictions, "--model", "A=run-a-alpha")
+        for selector in ("run-a-alpha/checkpoint-12", "run-a-alpha/../x", "run--a"):
+            with self.subTest(selector=selector), self.assertRaises(ValueError):
+                ANALYSIS["latest_export"](self.fixture.predictions, selector)
+        results = self.run_analysis(
+            "--predictions", predictions,
+            "--model", "Best=run-a-alpha/checkpoint-003680",
+            "--model", "Late=run-a-alpha/checkpoint-022079",
+        )
+        metrics = results[("alpha_point", "validation")]["metrics"]
+        self.assertAlmostEqual(metrics["Best"]["aggregate"], metrics["gru-42"]["aggregate"])
+        self.assertAlmostEqual(metrics["Late"]["aggregate"], metrics["gbdt-42"]["aggregate"])
+        models = ANALYSIS["resolve_models"](
+            self.fixture.baselines, self.fixture.predictions,
+            ["Late=run-a-alpha/checkpoint-022079"],
+        )
+        self.assertEqual(models["Late"]["run_id"], "run-a-alpha")
+        self.assertEqual(models["Late"]["checkpoint"], "checkpoint-022079")
+
     def test_membership_mismatch_or_bad_ensemble_is_rejected(self) -> None:
         self.fixture.export("run-a-alpha", "alpha_point", [0.0] * self.fixture.count * HORIZONS,
                             digest="0" * 64)
@@ -212,9 +238,10 @@ class FakeReader:
 
 
 class PredictionDownloadTests(unittest.TestCase):
-    def documents(self, run_id: str, export: str, created: str, state="complete"):
-        prefix = f"diagnostics/signal-predictions/{run_id}/checkpoint-003680/{export}/"
-        checkpoint = f"/runpod-volume/savedModel/{run_id}/checkpoint-003680"
+    def documents(self, run_id: str, export: str, created: str, state="complete",
+                  name="checkpoint-003680"):
+        prefix = f"diagnostics/signal-predictions/{run_id}/{name}/{export}/"
+        checkpoint = f"/runpod-volume/savedModel/{run_id}/{name}"
         return {
             prefix + "status.json": {"state": state, "checkpoint": checkpoint},
             prefix + "export.json": {
@@ -237,6 +264,27 @@ class PredictionDownloadTests(unittest.TestCase):
         result = DOWNLOAD["select_export"](FakeReader(documents), "run-x-alpha")
         self.assertEqual(result["relative"].name, "export-20261018T000000Z-00000002")
         self.assertEqual(result["splits"], {"validation": "a" * 64, "test": "b" * 64})
+
+    def test_named_checkpoints_are_selected_and_bare_ids_must_be_unambiguous(self) -> None:
+        documents = {
+            **self.documents("run-x-alpha", "export-20261017T000000Z-00000001",
+                             "2026-10-17T00:00:00+00:00"),
+            **self.documents("run-x-alpha", "export-20261018T000000Z-00000002",
+                             "2026-10-18T00:00:00+00:00", name="checkpoint-022079"),
+        }
+        reader = FakeReader(documents)
+        with self.assertRaisesRegex(ValueError, "checkpoint-003680, checkpoint-022079"):
+            DOWNLOAD["select_export"](reader, "run-x-alpha")
+        for name, export in (("checkpoint-003680", "export-20261017T000000Z-00000001"),
+                             ("checkpoint-022079", "export-20261018T000000Z-00000002")):
+            result = DOWNLOAD["select_export"](reader, f"run-x-alpha/{name}")
+            self.assertEqual(result["relative"], Path("run-x-alpha", name, export))
+        with self.assertRaises(FileNotFoundError):
+            DOWNLOAD["select_export"](reader, "run-x-alpha/checkpoint-011040")
+        self.assertEqual(DOWNLOAD["safe_selector"]("run-x-alpha"), ("run-x-alpha", None))
+        for value in ("run-x-alpha/", "run-x-alpha/checkpoint-1", "run-x-alpha/a/b", "/x"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                DOWNLOAD["safe_selector"](value)
 
     def test_baseline_inputs_match_the_analysis_and_verify_digests(self) -> None:
         files = DOWNLOAD["baseline_files"]()
@@ -336,6 +384,9 @@ class ExportWorkflowTests(unittest.TestCase):
             ((), "1-16 times"),
             (("--checkpoint", "/runpod-volume/savedModel/x"), "safe RUN_ID"),
             (("--checkpoint", "run-a", "--checkpoint=../b"), "safe RUN_ID"),
+            (("--checkpoint", "run-a/checkpoint-12"), "safe RUN_ID"),
+            (("--checkpoint", "run-a/checkpoint-022079/x"), "safe RUN_ID"),
+            (("--checkpoint=run-a/../checkpoint-022079",), "safe RUN_ID"),
             (too_many, "1-16 times"),
         ):
             with self.subTest(arguments=arguments):
@@ -347,6 +398,22 @@ class ExportWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("inside an existing CUDA RunPod Pod", result.stderr)
         self.assertEqual(harness.runners(), [])
+
+    def test_job_script_forwards_named_leaderboard_checkpoints(self) -> None:
+        harness = self.harness()
+        (harness.scripts / "runpod_export_signal_predictions.sh").write_text(
+            (ROOT / "scripts/runpod_export_signal_predictions.sh").read_text()
+        )
+        result = harness.command(
+            "runpod_export_signal_predictions.sh",
+            "--checkpoint", "run-a-alpha",
+            "--checkpoint=run-a-alpha/checkpoint-022079",
+            "--splits", "validation",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runners = harness.runners()
+        self.assertEqual(len(runners), 1)
+        self.assertIn("run-a-alpha/checkpoint-022079", runners[0].read_text(encoding="utf-8"))
 
     def test_export_module_never_writes_lifecycle_or_training_state(self) -> None:
         source = (ROOT / "src/stock_forecasting/cli/export_signal_predictions.py").read_text()

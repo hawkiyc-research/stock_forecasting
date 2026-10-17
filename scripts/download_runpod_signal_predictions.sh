@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Download the latest completed signal-prediction export of each named child run.
+# Download the latest completed signal-prediction export of each named checkpoint.
 set -Eeuo pipefail
 umask 077
 
@@ -8,10 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
-    echo "Usage: bash scripts/runpod_workflow.sh download-signal-predictions RUN_ID [RUN_ID ...]"
+    echo "Usage: bash scripts/runpod_workflow.sh download-signal-predictions SELECTOR [SELECTOR ...]"
     echo "       bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays"
-    echo "Pass 1-16 signal child run IDs (the -alpha/-direction runs, not a parent ID)."
-    echo "Each run's latest completed export is verified by SHA-256 and saved under"
+    echo "Pass 1-16 selectors: a signal child run ID (the -alpha/-direction runs, not a parent"
+    echo "ID), or RUN_ID/checkpoint-NNNNNN when that run has exports of several checkpoints."
+    echo "Each selected latest completed export is verified by SHA-256 and saved under"
     echo "artifacts/diagnostics/signal-predictions/<run>/<checkpoint>/<export>/."
     echo "--baseline-arrays fetches the current baselines' evaluation arrays (about 1.3 GB),"
     echo "verified against their manifests, into artifacts/diagnostics/signal-decomposition/."
@@ -27,8 +28,9 @@ if [[ $# -lt 1 || $# -gt 16 ]]; then
     exit 2
 fi
 if [[ "$1" != "--baseline-arrays" || $# -ne 1 ]]; then
-    for run_id in "$@"; do
-        if [[ ! "${run_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ || "${run_id}" == *--* ]]; then
+    for selector in "$@"; do
+        if [[ ! "${selector}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}(/checkpoint-[0-9]{6,})?$ \
+            || "${selector}" == *--* ]]; then
             usage >&2
             exit 2
         fi
