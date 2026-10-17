@@ -3,7 +3,9 @@
 
 Inputs are the shared evaluation arrays and persisted GRU/GBDT predictions of the
 current signal baselines, plus optional main-model prediction exports. Validation is
-the decision basis; test is computed identically for the record.
+the decision basis; test is computed identically for the record. Every alpha source and
+alpha ensemble also gets per-market, per-horizon date-level Rank IC and IC-IR
+(spearman_average_ties_v1), checked against an export's own record when it has one.
 
 Usage:
   python3 -I scripts/analyze_signal_decomposition.py --baselines DIR --output JSON \
@@ -12,7 +14,8 @@ Usage:
       [--daily-benchmarks JSON]
 
 Workers: --workers N or DECOMPOSITION_WORKERS (default bounded by CPU, memory and jobs).
-One worker runs the four jobs in-process; more workers use a spawn process pool.
+One worker runs every job in-process; more workers use a spawn process pool. Jobs are the
+four decompositions plus one Rank IC job per alpha source and split.
 """
 
 import argparse
@@ -38,6 +41,15 @@ TASKS = {"alpha": "alpha_point", "direction": "absolute_direction"}
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}")
 CHECKPOINT = re.compile(r"checkpoint-[0-9]{6,}")
+# Same definition as stock_forecasting.metrics.cross_sectional_metrics.
+RANK_IC_METHOD = "spearman_average_ties_v1"
+MIN_RANK_ROWS = 3
+# Markets of the pre-registered equal-market score (experiment protocol 13.2).
+EQUAL_MARKETS = ("US", "TWSE", "TPEX")
+RECORDED_TOLERANCE = 1e-9
+# Bound the job list, and therefore every process-pool submission.
+MAX_MODELS = 32
+MAX_ENSEMBLES = 16
 
 
 def float32(value):
@@ -187,20 +199,31 @@ def group_context(baselines, split):
     }
 
 
-def load_sources(baselines, split, task, models, ensembles):
-    """Return ordered (label, values) prediction sources for one task and split."""
+def load_sources(baselines, split, task, models, ensembles, labels=None):
+    """Return ordered (label, values) prediction sources for one task and split.
+
+    With labels, only those sources (and the members of requested ensembles) are read.
+    """
+    needed = None
+    if labels is not None:
+        needed = set(labels)
+        for label in labels:
+            needed.update(ensembles.get(label, ()))
     baseline_id = ALPHA_ID if task == "alpha" else DIRECTION_ID
     tail = (HORIZONS,) if task == "alpha" else (HORIZONS, 3)
     sources = {}
     for model in BASELINE_MODELS:
-        path = Path(baselines) / baseline_id / "jobs" / model / split / "predictions.npy"
-        sources[model] = float_array(path, tail)[0]
+        if needed is None or model in needed:
+            path = Path(baselines) / baseline_id / "jobs" / model / split / "predictions.npy"
+            sources[model] = float_array(path, tail)[0]
     for label, item in models.items():
-        if item["task"] == task:
+        if item["task"] == task and (needed is None or label in needed):
             path = Path(item["directory"]) / split / "predictions.npy"
             sources[label] = float_array(path, tail)[0]
     for label, members in ensembles.items():
-        if not all(member in sources for member in members):
+        if (needed is not None and label not in needed) or not all(
+            member in sources for member in members
+        ):
             continue
         arrays = [sources[member] for member in members]
         combined = array.array("f", bytes(4 * len(arrays[0])))
@@ -218,6 +241,8 @@ def load_sources(baselines, split, task, models, ensembles):
                 for k in range(3):
                     combined[index + k] = math.log(max(mixed[k], 1e-12))
         sources[label] = combined
+    if labels is not None:
+        return {label: sources[label] for label in labels}
     return sources
 
 
@@ -440,9 +465,160 @@ def direction_job(baselines, split, models, ensembles):
     }
 
 
+def average_ranks(values):
+    """Zero-based ranks where ties share their mean position, as metrics._rank."""
+    order = sorted(range(len(values)), key=values.__getitem__)
+    ranks = [0.0] * len(values)
+    start = 0
+    while start < len(order):
+        stop = start + 1
+        while stop < len(order) and values[order[stop]] == values[order[start]]:
+            stop += 1
+        rank = (start + stop - 1) * 0.5
+        for position in range(start, stop):
+            ranks[order[position]] = rank
+        start = stop
+    return ranks
+
+
+def date_rank_ic(targets, signals):
+    """One date's Spearman Rank IC, or None where the project metric defines none."""
+    if len(targets) < MIN_RANK_ROWS:
+        return None
+    pairs = [(y, x) for y, x in zip(targets, signals) if math.isfinite(y) and math.isfinite(x)]
+    if len(pairs) < MIN_RANK_ROWS:
+        return None
+    ys = [y for y, _x in pairs]
+    xs = [x for _y, x in pairs]
+    # Constant signals or targets have no defined correlation for that date.
+    if max(xs) == min(xs) or max(ys) == min(ys):
+        return None
+    ry, rx = average_ranks(ys), average_ranks(xs)
+    mean = (len(ry) - 1) * 0.5
+    sxy = sxx = syy = 0.0
+    for a, b in zip(ry, rx):
+        da, db = a - mean, b - mean
+        sxy += da * db
+        sxx += da * da
+        syy += db * db
+    value = sxy / math.sqrt(sxx * syy)
+    return max(-1.0, min(1.0, value)) if math.isfinite(value) else None
+
+
+def rank_ic_statistics(values):
+    """Mirror the recorded cross-sectional fields, placeholders and status flags."""
+    count = len(values)
+    mean = sum(values) / count if count else 0.0
+    std = math.sqrt(sum((v - mean) ** 2 for v in values) / (count - 1)) if count > 1 else 0.0
+    return {
+        "rank_ic_mean": mean,
+        "rank_ic_ir": mean / std if std > 0 else 0.0,
+        "rank_ic_method": RANK_IC_METHOD,
+        "rank_ic_status": "ok" if count else "unavailable",
+        "rank_ic_evaluated_dates": float(count),
+        "rank_ic_ir_status": "ok" if std > 0 else "unavailable",
+    }
+
+
+def recorded_rank_ic_check(computed, recorded):
+    """Compare local values with the cloud export's own cross-sectional record."""
+    if not isinstance(recorded, dict) or not isinstance(recorded.get("by_market"), dict):
+        return None
+    differences, missing = [], 0
+    for market, horizons in recorded["by_market"].items():
+        for horizon, fields in horizons.items():
+            local = computed.get(market, {}).get(horizon)
+            for key in ("rank_ic_mean", "rank_ic_ir", "rank_ic_evaluated_dates"):
+                if local is None or key not in fields:
+                    missing += 1
+                else:
+                    differences.append(abs(local[key] - fields[key]))
+    worst = max(differences) if differences else None
+    return {
+        "compared": len(differences),
+        "missing": missing,
+        "max_abs_diff": worst,
+        "matches": bool(differences) and not missing and worst <= RECORDED_TOLERANCE,
+    }
+
+
+def rank_ic_job(baselines, split, label, models, ensembles):
+    """Per-market, per-horizon date-level Rank IC and IC-IR of one alpha source."""
+    context = group_context(baselines, split)
+    groups, names, count = context["groups"], context["names"], context["count"]
+    targets, n = float_array(
+        Path(baselines) / ALPHA_ID / "inputs" / split / "targets.npy", (HORIZONS,)
+    )
+    if n != count:
+        raise ValueError("Alpha targets and metadata differ in length")
+    signal = load_sources(baselines, split, "alpha", models, ensembles, labels=[label])[label]
+    rows = [[] for _ in names]
+    for index, group in enumerate(groups):
+        rows[group].append(index)
+    ics = {market: [[] for _ in range(HORIZONS)] for market in context["markets"]}
+    daily = {market: {} for market in context["markets"]}
+    for group, (date, market) in enumerate(names):
+        members = rows[group]
+        for h in range(HORIZONS):
+            ic = date_rank_ic(
+                [targets[r * HORIZONS + h] for r in members],
+                [signal[r * HORIZONS + h] for r in members],
+            )
+            if ic is not None:
+                ics[market][h].append(ic)
+                daily[market].setdefault(date, []).append(ic)
+    by_market = {
+        market: {f"{h + 1}d": rank_ic_statistics(values[h]) for h in range(HORIZONS)}
+        for market, values in ics.items()
+    }
+    summary = {}
+    for market, horizons in by_market.items():
+        complete = all(
+            item["rank_ic_status"] == "ok" and item["rank_ic_ir_status"] == "ok"
+            for item in horizons.values()
+        )
+        summary[market] = {
+            "complete": complete,
+            "mean_rank_ic": sum(item["rank_ic_mean"] for item in horizons.values()) / HORIZONS
+            if complete else None,
+            "mean_rank_ic_ir": sum(item["rank_ic_ir"] for item in horizons.values()) / HORIZONS
+            if complete else None,
+        }
+    equal = None
+    if all(summary.get(market, {}).get("complete") for market in EQUAL_MARKETS):
+        equal = {
+            "markets": list(EQUAL_MARKETS),
+            "rank_ic": sum(summary[m]["mean_rank_ic"] for m in EQUAL_MARKETS) / len(EQUAL_MARKETS),
+            "rank_ic_ir": sum(summary[m]["mean_rank_ic_ir"] for m in EQUAL_MARKETS)
+            / len(EQUAL_MARKETS),
+        }
+    recorded = None
+    if label in models:
+        export = json.loads((Path(models[label]["directory"]) / "export.json").read_text())
+        recorded = recorded_rank_ic_check(
+            by_market, export["splits"].get(split, {}).get("cross_sectional")
+        )
+    return {
+        "split": split,
+        "label": label,
+        "method": RANK_IC_METHOD,
+        "by_market": by_market,
+        "market_summary": summary,
+        "market_equal": equal,
+        # Mean over the horizons evaluated on each date, for date-paired comparisons.
+        "daily": {
+            market: {date: sum(values) / len(values) for date, values in sorted(dates.items())}
+            for market, dates in daily.items()
+        },
+        "recorded_check": recorded,
+    }
+
+
 def run_job(job):
-    task, baselines, split, models, ensembles = job
-    function = alpha_job if task == "alpha" else direction_job
+    kind, name, baselines, split, models, ensembles = job
+    if kind == "rank_ic":
+        return rank_ic_job(baselines, split, name, models, ensembles)
+    function = alpha_job if name == "alpha" else direction_job
     return function(baselines, split, models, ensembles)
 
 
@@ -610,6 +786,22 @@ def job_peak_bytes(baselines, models, ensembles, task, split):
     return per_source * (sources + 1) + count * 40 + 256 * 1024**2
 
 
+def rank_ic_peak_bytes(baselines, ensembles, label, split):
+    """Estimate one Rank IC job: targets, its source(s) and per-group row lists."""
+    count = metadata_count(Path(baselines) / ALPHA_ID / "inputs" / split / "metadata.npy")
+    arrays = 2 + len(ensembles.get(label, ()))
+    # Python row lists and group IDs add roughly 80 bytes per sample.
+    return count * HORIZONS * 4 * arrays + count * 80 + 256 * 1024**2
+
+
+def alpha_labels(models, ensembles):
+    """Every alpha source: baselines, exported alpha models and alpha ensembles."""
+    exported = [label for label, item in models.items() if item["task"] == "alpha"]
+    combined = [label for label, members in ensembles.items()
+                if models[members[0]]["task"] == "alpha"]
+    return [*BASELINE_MODELS, *exported, *combined]
+
+
 def metadata_count(path):
     header, _offset, mapped = open_npy(path)
     mapped.close()
@@ -646,25 +838,53 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     if args.model and args.predictions is None:
         raise SystemExit("--model requires --predictions")
+    if len(args.model) > MAX_MODELS or len(args.ensemble) > MAX_ENSEMBLES:
+        raise SystemExit(f"Pass at most {MAX_MODELS} --model and {MAX_ENSEMBLES} --ensemble")
     models = resolve_models(args.baselines, args.predictions, args.model) if args.model else {}
     ensembles = resolve_ensembles(models, args.ensemble)
+    baselines = str(args.baselines)
     jobs = [
-        (task, str(args.baselines), split, models, ensembles)
+        ("decomposition", task, baselines, split, models, ensembles)
         for split in SPLITS
         for task in ("alpha", "direction")
+    ] + [
+        ("rank_ic", label, baselines, split, models, ensembles)
+        for split in SPLITS
+        for label in alpha_labels(models, ensembles)
     ]
-    peak = max(job_peak_bytes(args.baselines, models, ensembles, j[0], j[2]) for j in jobs)
+    peak = max(
+        job_peak_bytes(baselines, models, ensembles, name, split)
+        if kind == "decomposition"
+        else rank_ic_peak_bytes(baselines, ensembles, name, split)
+        for kind, name, _b, split, _m, _e in jobs
+    )
     workers = worker_count(args.workers, len(jobs), peak)
     print(f"Signal decomposition: {len(jobs)} jobs, {workers} worker(s), peak~{peak >> 20} MiB/job",
           flush=True)
+    outputs = []
+
+    def collect(results):
+        for job, result in zip(jobs, results):
+            outputs.append(result)
+            print(f"Finished {job[0]} {job[1]} {job[3]} ({len(outputs)}/{len(jobs)})", flush=True)
+
     if workers == 1:
-        results = [run_job(job) for job in jobs]
+        collect(run_job(job) for job in jobs)
     else:
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
-            results = list(pool.map(run_job, jobs))
-    payload = {"schema_version": "1.0", "models": models, "ensembles": ensembles,
-               "results": results}
+            collect(pool.map(run_job, jobs))
+    results = [out for job, out in zip(jobs, outputs) if job[0] == "decomposition"]
+    rank_ic = {split: {} for split in SPLITS}
+    for job, out in zip(jobs, outputs):
+        if job[0] == "rank_ic":
+            rank_ic[out["split"]][out["label"]] = out
+            check = out["recorded_check"]
+            if check is not None and not check["matches"]:
+                print(f"WARNING: {out['label']} {out['split']} Rank IC differs from the "
+                      f"exported record: {check}", flush=True)
+    payload = {"schema_version": "1.1", "models": models, "ensembles": ensembles,
+               "results": results, "rank_ic": rank_ic}
     if args.daily_benchmarks is not None:
         runs = json.loads(args.daily_benchmarks.read_text())
         payload["main_model_test_daily"] = benchmark_daily(results, runs)

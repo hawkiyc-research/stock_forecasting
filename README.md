@@ -2438,9 +2438,16 @@ python3 -I scripts/analyze_signal_decomposition.py \
 須各自指定；`--ensemble LABEL=A,B` 平均同任務成員（alpha 平均點估計、分類平均機率）；
 `--daily-benchmarks` 讀取「標籤對 benchmark 路徑樣板」的 JSON，把已記錄的主模型 test 逐日
 loss 與日期層級結果做相關；`--workers` 或 `DECOMPOSITION_WORKERS` 設定程序數，預設依 CPU、
-可用記憶體與 4 個工作決定，1 表示在同一程序內執行。每個匯出 split 的樣本順序 digest 必須
-與 baseline 陣列一致，否則中止。方法、指標定義與限制見
-[誤差拆解報告](docs/error_decomposition_audit.md)。
+可用記憶體與工作數決定，1 表示在同一程序內執行。`--model` 最多 32 個、`--ensemble` 最多
+16 個。每個匯出 split 的樣本順序 digest 必須與 baseline 陣列一致，否則中止。
+
+除了拆解，輸出的 `rank_ic` 對每個 alpha 來源（GRU／GBDT、匯出的 alpha 模型與 alpha 集成）
+逐市場×天期計算逐日橫斷面 Rank IC 與 IC-IR，定義與雲端評估相同
+（`spearman_average_ties_v1`：同日同市場至少 3 筆、只用有限值、常數訊號或標籤的日期不計、
+ties 取平均名次）。另列各市場 1–14 日平均、US／TWSE／TPEX 等權分數（三個市場的 14 個天期
+皆有效時才計算），以及逐日的跨天期平均 IC，可做日期配對比較。分類任務不發布報酬排序，
+因此不計算。匯出若含雲端記錄的 Rank IC，會逐項核對，差距超過 1×10⁻⁹ 時在輸出與畫面標示。
+方法、指標定義與限制見[誤差拆解報告](docs/error_decomposition_audit.md)。
 
 <a id="cli-reference-zh"></a>
 
@@ -6158,8 +6165,19 @@ one run has several; `--ensemble LABEL=A,B` averages members of one
 task (alpha points or classification probabilities); `--daily-benchmarks` reads a JSON map from
 labels to benchmark path templates and correlates recorded main-model test daily losses with
 date-level outcomes; `--workers` or `DECOMPOSITION_WORKERS` sets the process count, defaulting to a
-bound from CPU, available memory and the 4 jobs, where 1 runs in-process. Every exported split's
-row-order digest must match the baseline arrays or the analysis stops. See the
+bound from CPU, available memory and the job count, where 1 runs in-process. At most 32 `--model`
+and 16 `--ensemble` options are accepted. Every exported split's row-order digest must match the
+baseline arrays or the analysis stops.
+
+Besides the decomposition, the output's `rank_ic` gives every alpha source (GRU/GBDT, exported
+alpha models and alpha ensembles) per-market, per-horizon date-level cross-sectional Rank IC and
+IC-IR under the cloud evaluation's definition (`spearman_average_ties_v1`: at least 3 rows per
+date and market, finite values only, dates with a constant signal or target skipped, ties at
+their average rank). It also lists each market's 1–14 day means, the US/TWSE/TPEX equal-market
+score (only when all 14 horizons of all three markets are valid) and a per-date mean across
+horizons for date-paired comparisons. Classification publishes no return ranking, so it gets no
+Rank IC. When an export carries the cloud's own Rank IC record, every value is checked, and a
+difference above 1×10⁻⁹ is flagged in the output and on screen. See the
 [error decomposition report](docs/error_decomposition_audit.md) for methods, metric definitions
 and limits.
 

@@ -8,7 +8,10 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
+import random
 import runpy
+import statistics
 import struct
 import tempfile
 import unittest
@@ -55,13 +58,13 @@ def metadata(rows) -> bytes:
 class Fixture:
     """Tiny shared evaluation arrays: 2 markets x 2 dates x 4 stocks per split."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, markets=("TWSE", "US")) -> None:
         self.root = root
         self.baselines = root / "baselines"
         self.predictions = root / "exports"
         self.rows = [
             (f"S{market}{stock}", f"2025-06-0{day}T00:00:00+00:00", market, "stock", "fixture")
-            for market in ("TWSE", "US")
+            for market in markets
             for day in (2, 3)
             for stock in range(4)
         ]
@@ -109,7 +112,7 @@ class Fixture:
                                   (self.count, HORIZONS, 3), floats([0.0] * self.count * 42))
 
     def export(self, run_id: str, task: str, values, digest="f" * 64,
-               checkpoint="checkpoint-003680") -> None:
+               checkpoint="checkpoint-003680", records=None) -> None:
         export = "export-20261017T000000Z-0a1b2c3d"
         directory = self.predictions / run_id / checkpoint / export
         tail = (HORIZONS,) if task == "alpha_point" else (HORIZONS, 3)
@@ -118,6 +121,8 @@ class Fixture:
             write_npy(directory / split / "predictions.npy", "<f4", (self.count, *tail),
                       floats(values))
             splits[split] = {"sample_membership": {"ordered_symbol_dates_sha256": digest}}
+            if records is not None:
+                splits[split]["cross_sectional"] = records
         (directory / "status.json").write_text(json.dumps({"state": "complete"}))
         (directory / "export.json").write_text(json.dumps({
             "kind": "signal-prediction-export", "run_id": run_id, "prediction_task": task,
@@ -220,6 +225,156 @@ class DecompositionAnalysisTests(unittest.TestCase):
         self.assertEqual(ANALYSIS["worker_count"](8, 4, 1), 4)
         with self.assertRaises(ValueError):
             ANALYSIS["worker_count"](0, 4, 1)
+
+
+def reference_rank_ic(fixture: Fixture, values) -> dict:
+    """Independent per-market Rank IC built on statistics.correlation(method="ranked")."""
+    f32 = ANALYSIS["float32"]
+    cells: dict = {}
+    groups: dict = {}
+    for index, (_symbol, date, market, _a, _p) in enumerate(fixture.rows):
+        groups.setdefault((market, date), []).append(index)
+    for (market, _date), rows in groups.items():
+        for h in range(HORIZONS):
+            ys = [f32(fixture.alpha[r * HORIZONS + h]) for r in rows]
+            xs = [f32(values[r * HORIZONS + h]) for r in rows]
+            pairs = [(y, x) for y, x in zip(ys, xs) if math.isfinite(y) and math.isfinite(x)]
+            ics = cells.setdefault(market, {}).setdefault(f"{h + 1}d", [])
+            if len(rows) >= 3 and len(pairs) >= 3 and len({x for _y, x in pairs}) > 1 \
+                    and len({y for y, _x in pairs}) > 1:
+                ics.append(statistics.correlation(
+                    [y for y, _x in pairs], [x for _y, x in pairs], method="ranked"
+                ))
+    out = {}
+    for market, horizons in cells.items():
+        for horizon, ics in horizons.items():
+            mean = statistics.fmean(ics) if ics else 0.0
+            std = statistics.stdev(ics) if len(ics) > 1 else 0.0
+            out.setdefault(market, {})[horizon] = {
+                "rank_ic_mean": mean,
+                "rank_ic_ir": mean / std if std > 0 else 0.0,
+                "rank_ic_evaluated_dates": float(len(ics)),
+            }
+    return out
+
+
+class RankICTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+
+    def analyze(self, fixture: Fixture, *arguments: str) -> tuple[dict, str]:
+        output, stdout = fixture.root / "result.json", io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            ANALYSIS["main"]([
+                "--baselines", str(fixture.baselines), "--output", str(output),
+                "--predictions", str(fixture.predictions), "--workers", "1", *arguments,
+            ])
+        return json.loads(output.read_text())["rank_ic"], stdout.getvalue()
+
+    def assert_matches(self, computed: dict, expected: dict) -> None:
+        for market, horizons in expected.items():
+            for horizon, fields in horizons.items():
+                for key, value in fields.items():
+                    with self.subTest(market=market, horizon=horizon, key=key):
+                        self.assertAlmostEqual(computed[market][horizon][key], value, places=12)
+
+    def noisy(self, fixture: Fixture, seed: int) -> list[float]:
+        # One-decimal values create ties; one date/horizon cell is constant.
+        rng = random.Random(seed)
+        values = [round(rng.gauss(0.0, 1.0), 1) for _ in range(fixture.count * HORIZONS)]
+        for index, row in enumerate(fixture.rows):
+            if row[2] == "TWSE" and row[1].startswith("2025-06-02"):
+                values[index * HORIZONS] = 0.5
+        return values
+
+    def test_every_alpha_source_matches_an_independent_spearman_reference(self) -> None:
+        fixture = Fixture(Path(self.temporary.name))
+        values = self.noisy(fixture, 11)
+        fixture.export("run-n-alpha", "alpha_point", values)
+        rank_ic, _ = self.analyze(fixture, "--model", "N=run-n-alpha")
+        self.assertEqual(set(rank_ic), {"validation", "test"})
+        self.assertEqual(set(rank_ic["test"]), {"gru-42", "gbdt-42", "N"})
+        computed = rank_ic["validation"]["N"]
+        self.assert_matches(computed["by_market"], reference_rank_ic(fixture, values))
+        self.assertEqual(computed["by_market"]["TWSE"]["1d"]["rank_ic_evaluated_dates"], 1.0)
+        self.assertEqual(computed["by_market"]["TWSE"]["1d"]["rank_ic_ir_status"], "unavailable")
+        self.assertFalse(computed["market_summary"]["TWSE"]["complete"])
+        self.assertIsNone(computed["market_equal"])  # No TPEX in this fixture.
+        self.assertIsNone(computed["recorded_check"])  # Export predates the record.
+        # A monotone baseline ranks every date perfectly.
+        gru = rank_ic["validation"]["gru-42"]["by_market"]["US"]["5d"]
+        self.assertEqual((gru["rank_ic_mean"], gru["rank_ic_evaluated_dates"]), (1.0, 2.0))
+        self.assertEqual(set(rank_ic["validation"]["N"]["daily"]["US"]), {
+            "2025-06-02", "2025-06-03"})
+
+    def test_ensembles_rank_the_float32_member_mean(self) -> None:
+        fixture = Fixture(Path(self.temporary.name))
+        first, second = self.noisy(fixture, 3), self.noisy(fixture, 5)
+        fixture.export("run-a-alpha", "alpha_point", first)
+        fixture.export("run-b-alpha", "alpha_point", second)
+        rank_ic, _ = self.analyze(fixture, "--model", "A=run-a-alpha", "--model",
+                                  "B=run-b-alpha", "--ensemble", "AB=A,B")
+        f32 = ANALYSIS["float32"]
+        mean = [f32((f32(a) + f32(b)) / 2) for a, b in zip(first, second)]
+        self.assert_matches(rank_ic["test"]["AB"]["by_market"], reference_rank_ic(fixture, mean))
+
+    def test_equal_market_score_follows_the_pre_registered_definition(self) -> None:
+        fixture = Fixture(Path(self.temporary.name), markets=("TPEX", "TWSE", "US"))
+        # Date 2 ranks perfectly; date 3 swaps the top two stocks (Spearman 0.8).
+        values = []
+        for index, (_s, date, _m, _a, _p) in enumerate(fixture.rows):
+            source = index
+            if date.startswith("2025-06-03") and index % 4 >= 2:
+                source = index + 1 if index % 4 == 2 else index - 1
+            values.extend(fixture.alpha[source * HORIZONS : (source + 1) * HORIZONS])
+        fixture.export("run-e-alpha", "alpha_point", values)
+        rank_ic, _ = self.analyze(fixture, "--model", "E=run-e-alpha")
+        equal = rank_ic["validation"]["E"]["market_equal"]
+        self.assertEqual(equal["markets"], ["US", "TWSE", "TPEX"])
+        self.assertAlmostEqual(equal["rank_ic"], 0.9, places=12)
+        self.assertAlmostEqual(equal["rank_ic_ir"], 0.9 / statistics.stdev([1.0, 0.8]), places=9)
+
+    def test_exported_record_is_checked_and_mismatches_are_reported(self) -> None:
+        fixture = Fixture(Path(self.temporary.name))
+        values = self.noisy(fixture, 13)
+        record = {"signal": "alpha_point", "by_market": reference_rank_ic(fixture, values)}
+        fixture.export("run-r-alpha", "alpha_point", values, records=record)
+        rank_ic, stdout = self.analyze(fixture, "--model", "R=run-r-alpha")
+        check = rank_ic["validation"]["R"]["recorded_check"]
+        self.assertTrue(check["matches"], check)
+        self.assertEqual((check["compared"], check["missing"]), (2 * HORIZONS * 3, 0))
+        self.assertNotIn("WARNING", stdout)
+        record["by_market"]["US"]["3d"]["rank_ic_mean"] += 1e-6
+        fixture.export("run-r-alpha", "alpha_point", values, records=record)
+        rank_ic, stdout = self.analyze(fixture, "--model", "R=run-r-alpha")
+        self.assertFalse(rank_ic["test"]["R"]["recorded_check"]["matches"])
+        self.assertIn("WARNING: R test Rank IC differs", stdout)
+
+    def test_single_date_rules_match_the_project_metric(self) -> None:
+        date_rank_ic = ANALYSIS["date_rank_ic"]
+        self.assertIsNone(date_rank_ic([1.0, 2.0], [1.0, 2.0]))
+        self.assertIsNone(date_rank_ic([1.0, 2.0, 3.0], [4.0, 4.0, 4.0]))
+        self.assertIsNone(date_rank_ic([5.0, 5.0, 5.0], [1.0, 2.0, 3.0]))
+        self.assertIsNone(date_rank_ic([1.0, 2.0, math.nan, 4.0], [3.0, 1.0, 2.0, math.inf]))
+        self.assertAlmostEqual(
+            date_rank_ic([1.0, 2.0, 3.0, math.nan], [1.0, 3.0, 2.0, 5.0]),
+            statistics.correlation([1.0, 2.0, 3.0], [1.0, 3.0, 2.0], method="ranked"),
+        )
+        rng = random.Random(7)
+        for _ in range(50):
+            size = rng.randint(3, 40)
+            ys = [rng.choice((-1.0, 0.0, 0.5, 2.0)) + rng.random() // 0.5 for _ in range(size)]
+            xs = [round(rng.gauss(0.0, 1.0), 1) for _ in range(size)]
+            if len(set(xs)) > 1 and len(set(ys)) > 1:
+                self.assertAlmostEqual(
+                    date_rank_ic(ys, xs), statistics.correlation(ys, xs, method="ranked"),
+                    places=12,
+                )
+        statistics_of = ANALYSIS["rank_ic_statistics"]
+        self.assertEqual(statistics_of([])["rank_ic_status"], "unavailable")
+        single = statistics_of([0.2])
+        self.assertEqual((single["rank_ic_ir"], single["rank_ic_ir_status"]), (0.0, "unavailable"))
 
 
 class FakeReader:
