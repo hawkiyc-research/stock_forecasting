@@ -375,9 +375,16 @@ class SingleTaskHead(nn.Module):
         ):
             return base_loss
 
-        total_loss = base_loss
         pred_norm = predictions / scales
         target_norm = safe_target / scales
+        demeaned_loss = self._cross_sectional_demeaned_smooth_l1(
+            pred_norm,
+            target_norm,
+            valid,
+            market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+        )
+        total_loss = 0.5 * base_loss + 0.5 * demeaned_loss
         if self.alpha_ic_loss_weight > 0.0:
             ic_loss = self._cross_sectional_ic_loss(
                 pred_norm,
@@ -388,9 +395,78 @@ class SingleTaskHead(nn.Module):
             )
             total_loss = total_loss + self.alpha_ic_loss_weight * ic_loss
         if self.alpha_bias_penalty_weight > 0.0:
-            bias_loss = self._batch_bias_penalty(pred_norm, target_norm, valid)
+            bias_loss = self._batch_bias_penalty(
+                pred_norm,
+                valid,
+                market_ids=market_ids,
+                ranking_group_ids=ranking_group_ids,
+            )
             total_loss = total_loss + self.alpha_bias_penalty_weight * bias_loss
         return total_loss
+
+    def _iter_cross_sectional_groups(
+        self,
+        batch_size: int,
+        *,
+        market_ids: Tensor | None = None,
+        ranking_group_ids: Tensor | None = None,
+        min_group_size: int = 4,
+    ) -> list[Tensor]:
+        masks: list[Tensor] = []
+        for group_tensor in (ranking_group_ids, market_ids):
+            if group_tensor is None or group_tensor.shape != (batch_size,):
+                continue
+            for group_id in torch.unique(group_tensor):
+                mask = group_tensor == group_id
+                if int(mask.sum()) >= min_group_size:
+                    masks.append(mask)
+            if masks:
+                return masks
+        return masks
+
+    def _cross_sectional_demeaned_smooth_l1(
+        self,
+        pred_norm: Tensor,
+        target_norm: Tensor,
+        valid: Tensor,
+        *,
+        market_ids: Tensor | None = None,
+        ranking_group_ids: Tensor | None = None,
+    ) -> Tensor:
+        """Remove date-market common target shocks so regression focuses on relative alpha."""
+        demeaned_residual = pred_norm - target_norm
+        masks = self._iter_cross_sectional_groups(
+            pred_norm.shape[0],
+            market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+            min_group_size=2,
+        )
+        if not masks and pred_norm.shape[0] >= 2:
+            masks = [torch.ones(pred_norm.shape[0], dtype=torch.bool, device=pred_norm.device)]
+        if masks:
+            demeaned_residual = demeaned_residual.clone()
+            for mask in masks:
+                group_valid = valid[mask]
+                count = group_valid.sum(dim=0, keepdim=True)
+                active = count >= 2
+                safe_count = count.clamp_min(1).to(dtype=pred_norm.dtype)
+                p_group = torch.where(
+                    group_valid, pred_norm[mask], torch.zeros_like(pred_norm[mask])
+                )
+                y_group = torch.where(
+                    group_valid, target_norm[mask], torch.zeros_like(target_norm[mask])
+                )
+                p_mean = p_group.sum(dim=0, keepdim=True) / safe_count
+                y_mean = y_group.sum(dim=0, keepdim=True) / safe_count
+                centered = (pred_norm[mask] - p_mean) - (target_norm[mask] - y_mean)
+                demeaned_residual[mask] = torch.where(active, centered, demeaned_residual[mask])
+        values = F.smooth_l1_loss(
+            demeaned_residual,
+            torch.zeros_like(demeaned_residual),
+            beta=self.point_loss_beta,
+            reduction="none",
+        )
+        return self._equal_horizon_mean(values, valid)
 
     @staticmethod
     def _group_ic_term(pred_norm: Tensor, target_norm: Tensor, valid: Tensor) -> Tensor | None:
@@ -448,18 +524,15 @@ class SingleTaskHead(nn.Module):
         ranking_group_ids: Tensor | None = None,
     ) -> Tensor:
         terms: list[Tensor] = []
-        for group_tensor in (ranking_group_ids, market_ids):
-            if group_tensor is None or group_tensor.shape != (pred_norm.shape[0],):
-                continue
-            for group_id in torch.unique(group_tensor):
-                mask = group_tensor == group_id
-                if int(mask.sum()) < 4:
-                    continue
-                term = self._group_ic_term(pred_norm[mask], target_norm[mask], valid[mask])
-                if term is not None:
-                    terms.append(term)
-            if terms:
-                break
+        for mask in self._iter_cross_sectional_groups(
+            pred_norm.shape[0],
+            market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+            min_group_size=4,
+        ):
+            term = self._group_ic_term(pred_norm[mask], target_norm[mask], valid[mask])
+            if term is not None:
+                terms.append(term)
         if not terms:
             fallback = self._group_ic_term(pred_norm, target_norm, valid)
             if fallback is not None:
@@ -468,30 +541,44 @@ class SingleTaskHead(nn.Module):
             return pred_norm.sum() * 0.0
         return torch.stack(terms).mean()
 
-    @staticmethod
     def _batch_bias_penalty(
+        self,
         pred_norm: Tensor,
-        target_norm: Tensor,
         valid: Tensor,
+        *,
+        market_ids: Tensor | None = None,
+        ranking_group_ids: Tensor | None = None,
     ) -> Tensor:
-        count = valid.sum(dim=0)
-        available = count > 0
-        if not bool(available.any()):
+        """Shrink same-date-market group prediction means toward zero without chasing date shocks."""
+        penalties: list[Tensor] = []
+        masks = self._iter_cross_sectional_groups(
+            pred_norm.shape[0],
+            market_ids=market_ids,
+            ranking_group_ids=ranking_group_ids,
+            min_group_size=2,
+        )
+        if not masks:
+            masks = [torch.ones(pred_norm.shape[0], dtype=torch.bool, device=pred_norm.device)]
+        for mask in masks:
+            group_valid = valid[mask]
+            count = group_valid.sum(dim=0)
+            available = count > 0
+            if not bool(available.any()):
+                continue
+            safe_count = count.clamp_min(1).to(dtype=pred_norm.dtype)
+            mean_pred = (
+                torch.where(group_valid, pred_norm[mask], torch.zeros_like(pred_norm[mask])).sum(
+                    dim=0
+                )
+                / safe_count
+            )
+            penalty = F.smooth_l1_loss(
+                mean_pred, torch.zeros_like(mean_pred), beta=0.25, reduction="none"
+            )
+            penalties.append((penalty * available).sum() / available.sum().clamp_min(1))
+        if not penalties:
             return pred_norm.sum() * 0.0
-        safe_count = count.clamp_min(1).to(dtype=pred_norm.dtype)
-        # Anchor the unconditional cross-sectional alpha prediction mean near zero
-        # so contiguous date-market blocks cannot drift the global intercept.
-        mean_pred = torch.where(valid, pred_norm, torch.zeros_like(pred_norm)).sum(dim=0) / safe_count
-        mean_err = (
-            torch.where(valid, pred_norm - target_norm, torch.zeros_like(pred_norm)).sum(dim=0)
-            / safe_count
-        )
-        penalty = 0.7 * F.smooth_l1_loss(
-            mean_pred, torch.zeros_like(mean_pred), beta=0.25, reduction="none"
-        ) + 0.3 * F.smooth_l1_loss(
-            mean_err, torch.zeros_like(mean_err), beta=0.5, reduction="none"
-        )
-        return (penalty * available).sum() / available.sum().clamp_min(1)
+        return torch.stack(penalties).mean()
 
     def direction_labels(self, target_absolute: Tensor) -> Tensor:
         return fixed_direction_labels(target_absolute, self.neutral_return_threshold)

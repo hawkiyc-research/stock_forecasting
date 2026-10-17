@@ -457,3 +457,45 @@ def test_timexer_backbone_causality_and_signal_model_integration():
     out.loss.backward()
     assert all(torch.isfinite(p.grad).all() for p in instance.parameters() if p.grad is not None)
 
+
+def test_v2_cross_sectional_loss_is_invariant_to_same_date_target_shocks():
+    torch.manual_seed(73)
+    head = SingleTaskHead(
+        16,
+        prediction_task="alpha_point",
+        horizons=HORIZONS,
+        robust_scales=[0.02 * math.sqrt(h) for h in HORIZONS],
+        feature_mode="combined",
+        explicit_output_scale=True,
+        market_aware=True,
+        signal_architecture="v2",
+        signal_attention_heads=2,
+        alpha_ic_loss_weight=0.15,
+        alpha_bias_penalty_weight=0.25,
+    )
+    head.train()
+    pred_norm = torch.randn(8, 14)
+    target_norm = torch.randn(8, 14)
+    valid = torch.ones_like(target_norm, dtype=torch.bool)
+    groups = torch.tensor([10, 10, 10, 10, 20, 20, 20, 20])
+    shocked_target = target_norm.clone()
+    shocked_target[:4] += 1.75
+    shocked_target[4:] -= 0.90
+
+    demeaned_base = head._cross_sectional_demeaned_smooth_l1(
+        pred_norm, target_norm, valid, ranking_group_ids=groups
+    )
+    demeaned_shocked = head._cross_sectional_demeaned_smooth_l1(
+        pred_norm, shocked_target, valid, ranking_group_ids=groups
+    )
+    ic_base = head._cross_sectional_ic_loss(
+        pred_norm, target_norm, valid, ranking_group_ids=groups
+    )
+    ic_shocked = head._cross_sectional_ic_loss(
+        pred_norm, shocked_target, valid, ranking_group_ids=groups
+    )
+    bias_base = head._batch_bias_penalty(pred_norm, valid, ranking_group_ids=groups)
+    torch.testing.assert_close(demeaned_base, demeaned_shocked, rtol=1e-6, atol=1e-6)
+    torch.testing.assert_close(ic_base, ic_shocked, rtol=1e-6, atol=1e-6)
+    assert bias_base.item() > 0.0
+
