@@ -42,6 +42,8 @@ LOGGER = logging.getLogger(__name__)
 EXPORT_SCHEMA_VERSION = "1.0"
 SPLITS = ("validation", "test")
 CHECKPOINT_FILES = ("adapter.safetensors", "resolved-config.yaml", "trainer-state.json")
+# One diagnostic Pod ends with its job, so several checkpoints share one sequential job.
+MAX_CHECKPOINTS = 16
 # Scratch for the unchanged metric store plus a margin for logs and manifests.
 DISK_MARGIN_BYTES = 1024**3
 
@@ -51,8 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint",
         metavar="RUN_ID",
+        action="append",
         required=True,
-        help="Signal child run ID whose validation-selected best checkpoint is exported.",
+        help=(
+            "Signal child run ID whose validation-selected best checkpoint is exported; "
+            f"repeat for up to {MAX_CHECKPOINTS} runs exported sequentially in one job."
+        ),
     )
     parser.add_argument(
         "--splits",
@@ -282,16 +288,27 @@ def run_export(run_id: str, splits: list[str]) -> Path:
     finally:
         logging.getLogger().removeHandler(log_handler)
         log_handler.close()
+        # Release this checkpoint's model before the next one in the same job.
+        bundle = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    run_ids = list(dict.fromkeys(args.checkpoint))
+    if len(run_ids) != len(args.checkpoint) or len(run_ids) > MAX_CHECKPOINTS:
+        raise SystemExit(f"Pass 1-{MAX_CHECKPOINTS} distinct --checkpoint run IDs")
     splits = list(dict.fromkeys(args.splits))
     if "test" in splits and not args.confirm_test:
         raise SystemExit("--splits test requires --confirm-test")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    output = run_export(args.checkpoint, splits)
-    print(json.dumps({"state": "complete", "output": str(output)}, ensure_ascii=False))
+    outputs = []
+    for run_id in run_ids:
+        output = run_export(run_id, splits)
+        outputs.append(str(output))
+        print(json.dumps({"state": "complete", "output": str(output)}, ensure_ascii=False))
+    print(json.dumps({"state": "complete", "exports": outputs}, ensure_ascii=False))
     return 0
 
 

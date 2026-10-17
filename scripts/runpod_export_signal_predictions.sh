@@ -15,7 +15,8 @@ Usage (inside an existing CUDA RunPod Pod):
 
 Options:
   --checkpoint RUN_ID       Signal child run ID (alpha or direction); its validation-selected
-                            best checkpoint is exported. Required; there is no latest default.
+                            best checkpoint is exported. Required, repeatable 1-16 times;
+                            runs are exported sequentially in this one job (no latest default).
   --splits SPLIT [SPLIT]    validation and/or test (default: validation test)
   --confirm-test            Required whenever test is exported
 
@@ -57,34 +58,34 @@ if [[ -z "${RUNPOD_POD_ID:-}" ]]; then
     exit 2
 fi
 
-# Inspect the selector without changing argument order; argparse validates the rest.
-checkpoint_selector=""
+# Inspect the selectors without changing argument order; argparse validates the rest.
 checkpoint_count=0
-read_checkpoint_selector() {
+validate_checkpoint_selector() {
+    if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ || "$1" == *--* ]]; then
+        echo "--checkpoint must be a safe RUN_ID, not a path; use --help" >&2
+        exit 2
+    fi
+}
+read_checkpoint_selectors() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --checkpoint|--checkpoint=*)
+            --checkpoint=*)
                 checkpoint_count=$((checkpoint_count + 1))
-                if [[ "$1" == --checkpoint=* ]]; then
-                    checkpoint_selector="${1#--checkpoint=}"
-                else
-                    [[ $# -ge 2 ]] || { echo "--checkpoint requires a RUN_ID" >&2; exit 2; }
-                    checkpoint_selector="$2"
-                    shift
-                fi
+                validate_checkpoint_selector "${1#--checkpoint=}"
+                ;;
+            --checkpoint)
+                [[ $# -ge 2 ]] || { echo "--checkpoint requires a RUN_ID" >&2; exit 2; }
+                checkpoint_count=$((checkpoint_count + 1))
+                validate_checkpoint_selector "$2"
+                shift
                 ;;
         esac
         shift
     done
 }
-read_checkpoint_selector "$@"
-if [[ ${checkpoint_count} -ne 1 ]]; then
-    echo "Pass --checkpoint RUN_ID exactly once" >&2
-    exit 2
-fi
-if [[ ! "${checkpoint_selector}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ \
-    || "${checkpoint_selector}" == *--* ]]; then
-    echo "--checkpoint must be a safe RUN_ID, not a path; use --help" >&2
+read_checkpoint_selectors "$@"
+if [[ ${checkpoint_count} -lt 1 || ${checkpoint_count} -gt 16 ]]; then
+    echo "Pass --checkpoint RUN_ID 1-16 times" >&2
     exit 2
 fi
 

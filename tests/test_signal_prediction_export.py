@@ -121,3 +121,5 @@ def test_export_refuses_partial_coverage_and_existing_output(tmp_path):
         export.prediction_shape("quantiles", 4, HORIZONS)
     with pytest.raises(SystemExit):
         export.main(["--checkpoint", "run-x-alpha", "--splits", "test"])
+    with pytest.raises(SystemExit):
+        export.main(["--checkpoint", "run-x-alpha", "--checkpoint", "run-x-alpha"])

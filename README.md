@@ -2360,18 +2360,19 @@ cd /runpod-volume/stock_forecasting
 training／validation lifecycle 標記。
 
 Pod 建立與 guard 規則與 `probe-scales` 相同：在沒有 Pod 使用 volume 時同步程式，
-再以[進階單模型操作](#single-model-zh)建立專用診斷 Pod，不啟動訓練。SSH 進入 Pod 後，
-每個子模型執行一次：
+再以[進階單模型操作](#single-model-zh)建立專用診斷 Pod，不啟動訓練。診斷結束後本機 guard
+即終止 Pod，因此同一個工作以重複的 `--checkpoint` 依序匯出所有子模型。SSH 進入 Pod 後執行：
 
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh export-signal-predictions \
-  --checkpoint "<MODEL_RUN_ID>" \
+  --checkpoint "<ALPHA_RUN_ID>" \
+  --checkpoint "<DIRECTION_RUN_ID>" \
   --splits validation test \
   --confirm-test
 ```
 
-`--checkpoint` 填子模型 run ID（`-alpha` 或 `-direction`），必填且沒有「最新」預設；
+`--checkpoint` 填子模型 run ID（`-alpha` 或 `-direction`），必填、可重複 1–16 次且沒有「最新」預設；
 `--splits` 可選 validation、test 或兩者，預設兩者；匯出 test 時必須加 `--confirm-test`。
 設定一律取自該 checkpoint 的 `resolved-config.yaml`。歷史 checkpoint 以唯讀語意檢查載入：
 之後新增、預設維持歷史行為的訓練欄位不會阻擋載入，但模型、資料或訓練設定不同仍會拒絕。
@@ -2503,7 +2504,7 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 
 | 參數 | 預設值／限制 | 說明 |
 | --- | --- | --- |
-| `--checkpoint MODEL_RUN_ID` | 必填，恰好一次 | signal 子模型（`-alpha`／`-direction`）的 run ID；使用其 validation-selected best checkpoint，沒有「最新」預設 |
+| `--checkpoint MODEL_RUN_ID` | 必填，可重複 1–16 次 | signal 子模型（`-alpha`／`-direction`）的 run ID；使用其 validation-selected best checkpoint，在同一工作依序匯出，沒有「最新」預設 |
 | `--splits SPLIT [SPLIT]` | `validation test` | 要完整重新推論並保存的評估切分 |
 | `--confirm-test` | 無值 flag | 匯出 test 時必填，避免無意中重複使用 test |
 | `-h`、`--help` | 無值 flag | 顯示參數，不啟動匯出 |
@@ -6059,19 +6060,21 @@ record or training/validation lifecycle marker.
 
 Pod creation and guard rules equal `probe-scales`: synchronize code while no Pod uses the
 volume, then create a dedicated diagnostic Pod through the
-[advanced individual-model operations](#single-model-en) without starting training. After SSH
-login, run once per child model:
+[advanced individual-model operations](#single-model-en) without starting training. The local
+guard terminates the Pod once the diagnostic ends, so one job exports every child sequentially
+through repeated `--checkpoint` options. After SSH login, run:
 
 ```bash
 cd /runpod-volume/stock_forecasting
 bash scripts/runpod_tmux_launch.sh export-signal-predictions \
-  --checkpoint "<MODEL_RUN_ID>" \
+  --checkpoint "<ALPHA_RUN_ID>" \
+  --checkpoint "<DIRECTION_RUN_ID>" \
   --splits validation test \
   --confirm-test
 ```
 
-`--checkpoint` takes the child run ID (`-alpha` or `-direction`); it is required and has no
-latest default. `--splits` selects validation, test or both (default both), and exporting test
+`--checkpoint` takes the child run ID (`-alpha` or `-direction`); it is required, repeatable 1–16
+times and has no latest default. `--splits` selects validation, test or both (default both), and exporting test
 requires `--confirm-test`. The configuration always comes from the checkpoint's
 `resolved-config.yaml`. Historical checkpoints load under read-only semantic checks: later
 additive training fields whose defaults keep historical behavior do not block loading, while
@@ -6214,7 +6217,7 @@ Only two diagnostics forward options: `probe-scales` uses the table below and
 
 | Option | Default or limit | Behavior |
 | --- | --- | --- |
-| `--checkpoint MODEL_RUN_ID` | Required, exactly once | Signal child run ID (`-alpha`/`-direction`); uses its validation-selected best checkpoint, with no latest default |
+| `--checkpoint MODEL_RUN_ID` | Required, repeatable 1–16 times | Signal child run ID (`-alpha`/`-direction`); uses its validation-selected best checkpoint, exported sequentially in one job, with no latest default |
 | `--splits SPLIT [SPLIT]` | `validation test` | Evaluation splits to re-infer completely and save |
 | `--confirm-test` | Flag with no value | Required whenever test is exported, to avoid accidental repeated test use |
 | `-h`, `--help` | Flag with no value | Show options without starting an export |

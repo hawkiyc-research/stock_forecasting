@@ -331,10 +331,12 @@ class ExportWorkflowTests(unittest.TestCase):
             (ROOT / "scripts/runpod_export_signal_predictions.sh").read_text()
         )
         harness.environment["RUNPOD_TEST_MODE"] = "1"
+        too_many = tuple(item for i in range(17) for item in ("--checkpoint", f"run-{i}"))
         for arguments, message in (
-            ((), "exactly once"),
+            ((), "1-16 times"),
             (("--checkpoint", "/runpod-volume/savedModel/x"), "safe RUN_ID"),
-            (("--checkpoint", "a", "--checkpoint", "b"), "exactly once"),
+            (("--checkpoint", "run-a", "--checkpoint=../b"), "safe RUN_ID"),
+            (too_many, "1-16 times"),
         ):
             with self.subTest(arguments=arguments):
                 result = harness.command("runpod_export_signal_predictions.sh", *arguments)
