@@ -1,0 +1,108 @@
+{
+  "schema_version": "1.0",
+  "kind": "chronos2-original-sampling-static-contract",
+  "scope": "source/configuration checks only; no ML imports, training or quality evaluation",
+  "verified_on_local_date": "2026-10-17",
+  "branch": "codex/model-performance-20261016",
+  "baseline_commit": "c7b555068c13668e08c28cd13a3fc8862a64df9e",
+  "rollback_commit": "d2a7d74ed4bb187c0aa76dc26e30707f0a2c73b7",
+  "sampling": {
+    "selector": "DateMarketSampler",
+    "yearly_sampling_decay": 0.8,
+    "selection_block_size": 128,
+    "training_config_class_matches_baseline": true,
+    "dynamic_window_and_label_loading": true,
+    "source_implementation_unchanged": true
+  },
+  "unchanged_source_sha256": {
+    "src/stock_forecasting/baseline_build.py": "7a8327d69c715a91a4abc45fbcaeb9821f2673f907f94532399ebc5da770b4bd",
+    "src/stock_forecasting/baseline_direction.py": "e7e403f5e6188f996d752ddb5da8da3ae08642ff34cc2b65e05972b1b816c0b3",
+    "src/stock_forecasting/baseline_direction_data.py": "a7fa0381eb2dbbbee4519ce4669115a0ad077e2fef5f2ae3429c2907e51d5c34",
+    "src/stock_forecasting/baseline_direction_tree.py": "c22515aa634499d939bd5dc7d6b99bf0a74a81b2df4dca0e619a282718e9836d",
+    "src/stock_forecasting/baseline_input.py": "a5831aa05a459851771073362de98cc15a228a915f5a596f8a98245b26d2dcca",
+    "src/stock_forecasting/baseline_runtime.py": "22b1b09fc3ba31d4d60dffaac1aad2d048fd15823d74c37f2458f8c687b3d5be",
+    "src/stock_forecasting/baseline_storage.py": "4b200013859e7a39978d4b3e517155444f23f9a76112608b7d526e5d7c88e089",
+    "src/stock_forecasting/baselines.py": "47e9fba565e50ed19d21de8f10e01b0cf8acd1f9d5ce24378dd40ca0c6112916",
+    "src/stock_forecasting/data/adjustments.py": "4bd9039c18915e05fe8f386f898c8d7360e555e79bc36d3ad7c95f6ba7cc3d52",
+    "src/stock_forecasting/data/dataset.py": "403136e5fa9015fbbebf063514d802e933771da2e85d044c5b3f207dfb5c9e28",
+    "src/stock_forecasting/data/horizons.py": "cd8b6bb42c4a3008179143a825bd60b17288f65bcd7ccb290487c5dd2893025a",
+    "src/stock_forecasting/data/sample_universe.py": "2b7be3d432d504aaaf2428ecec63a59c1ac4f7ca9b2326596a7e64a7f2ac60fd",
+    "src/stock_forecasting/data_policy.py": "238801bee0103d66993c11877d4dd876454b0e22058887eefd0777ead7681edd",
+    "src/stock_forecasting/date_market_sampler.py": "8fc284b4e29d7f512b965dd01426164e07e01dfb051cb4eb5956c28085b0b966",
+    "src/stock_forecasting/direction_costs.py": "c5f1b4be1685ef12d521c43b917b86b3e5017ea38ab39c0cdf163ec1ebe1513a",
+    "src/stock_forecasting/evaluation_store.py": "d3121b75584166e98cc8eb06d1813e917500ad18cbec4a62681dad3bb2b8d221",
+    "src/stock_forecasting/metrics.py": "f901c1d5efaa950592c053f29d84a24e852fa14ea8e8687e3cc9bc6bc99ea7b9",
+    "src/stock_forecasting/models/forecast.py": "364416a7ce6812a2744dd6427023ae512ae953c1b1cdcc534b593890a13d26b7",
+    "src/stock_forecasting/models/quant.py": "07995882e53edd3fb97359f7438964fe050f5f576f0607164f5b656b910fcf19",
+    "src/stock_forecasting/models/scale_features.py": "b81af971150b07fd4283bf170ee5c024f69ad6488697365c81c67603f091ab5c",
+    "src/stock_forecasting/models/signal.py": "50e67dcc115c653c1ab69794b21d41eec192f0970ac6c96b2f7d36d9e0a66234",
+    "src/stock_forecasting/optimization_policy.py": "25120b8539a50cf34abcda01c17d11228406121c7180c23eb6c260305f0de208",
+    "src/stock_forecasting/scale_calibration.py": "4df6255faab3e9199c37141e4d01fbdcc36595782ea523225314a11504733fdc",
+    "src/stock_forecasting/signal_evaluation.py": "530399c8ce44280b719701a54727369f6ec3405498752d77363656851db8fc8c",
+    "src/stock_forecasting/signal_training.py": "52b896ed2a4c4cdb3d1a507a41ebc833d578f882523376eab1d4dea26e326b91",
+    "src/stock_forecasting/training.py": "36e96c74414f96bc55e9bfd524b4653519d754bde623cf8ab46e0fdabb2c77a9"
+  },
+  "chronos2_source_sha256": "09fb5a67314c8a86cc806699e72b459c2085397137d2af024bfbe81e93896e8b",
+  "presets": [
+    {
+      "preset": "configs/experiments/a_chronos2_alpha_point64.yaml",
+      "original_preset": "configs/experiments/a_alpha_point64.yaml",
+      "preset_sha256": "f642142e9a7fb83de531dac8fe7301eb39a0ddf7c8c6e6c833dab9e2a2848556",
+      "unchanged_section_sha256": {
+        "data": "9c2b14a87a2f050553545e9b07b920823839f7539eb402f2312f505979ad26ce",
+        "training": "e7cbb00e0c7a1399a6d15b786ee15a08ac6420500bac16afd542cfa7824d390e",
+        "validation": "1d223f6cdc78031561beb2e81210899802ca9532fcd37764620b92f0d145d693"
+      },
+      "dataset_request_sha256": "e385dc1af113b700873b99a4a9ade2d56fb8c8e2ea094fcb6365369acc89a5be",
+      "unchanged_baseline_contract_sha256": "e9281f8f317d8d2853fe84d1a05eacb8d83bf0be9bc87d22e8de9ed588fef10d"
+    },
+    {
+      "preset": "configs/experiments/a_chronos2_absolute_direction64.yaml",
+      "original_preset": "configs/experiments/a_absolute_direction64.yaml",
+      "preset_sha256": "87cafb256d29fa0f47cfc51c10b7f4a9435245b1a60338e61e75ff2005c376fc",
+      "unchanged_section_sha256": {
+        "data": "9c2b14a87a2f050553545e9b07b920823839f7539eb402f2312f505979ad26ce",
+        "training": "e7cbb00e0c7a1399a6d15b786ee15a08ac6420500bac16afd542cfa7824d390e",
+        "validation": "1d223f6cdc78031561beb2e81210899802ca9532fcd37764620b92f0d145d693"
+      },
+      "dataset_request_sha256": "e385dc1af113b700873b99a4a9ade2d56fb8c8e2ea094fcb6365369acc89a5be",
+      "unchanged_baseline_contract_sha256": "2b0b28b17fd27fe277c9fed73c8aeca9e76414aeaf9d1f4f67b8a0159810b854"
+    },
+    {
+      "preset": "configs/experiments/b_chronos2_alpha_point64.yaml",
+      "original_preset": "configs/experiments/b_alpha_point64.yaml",
+      "preset_sha256": "fe4dda16c22dbbec2def59ae7f7a75b8223420299cb9b0d4235947c7c30fa283",
+      "unchanged_section_sha256": {
+        "data": "9c2b14a87a2f050553545e9b07b920823839f7539eb402f2312f505979ad26ce",
+        "training": "e7cbb00e0c7a1399a6d15b786ee15a08ac6420500bac16afd542cfa7824d390e",
+        "validation": "1d223f6cdc78031561beb2e81210899802ca9532fcd37764620b92f0d145d693"
+      },
+      "dataset_request_sha256": "aa49bbbdb9061c74a37eb659c8f8908c03014fc49b4a57f341b61061999eda0a",
+      "unchanged_baseline_contract_sha256": "be722de90982a64dbf86256ce5b4bad04b647082692e3f323270757601bb93f4"
+    },
+    {
+      "preset": "configs/experiments/b_chronos2_absolute_direction64.yaml",
+      "original_preset": "configs/experiments/b_absolute_direction64.yaml",
+      "preset_sha256": "a855320261154f55269e6d9dc9ed8fb6c317eba0117c5988a938017ae56ca7af",
+      "unchanged_section_sha256": {
+        "data": "9c2b14a87a2f050553545e9b07b920823839f7539eb402f2312f505979ad26ce",
+        "training": "e7cbb00e0c7a1399a6d15b786ee15a08ac6420500bac16afd542cfa7824d390e",
+        "validation": "1d223f6cdc78031561beb2e81210899802ca9532fcd37764620b92f0d145d693"
+      },
+      "dataset_request_sha256": "aa49bbbdb9061c74a37eb659c8f8908c03014fc49b4a57f341b61061999eda0a",
+      "unchanged_baseline_contract_sha256": "e519f7501752f9b8821de94b4a140438f95727d9ab90a77a36bcc8bbb900400a"
+    }
+  ],
+  "local_test_counts": {
+    "chronos2_legacy_sampling_control": 6,
+    "training_pipeline_control": 13,
+    "signal_runtime_control": 6,
+    "readme_contract": 17,
+    "dependency_ownership_fixture_static": 4,
+    "total": 46
+  },
+  "pending": [
+    "Cloud ML/CUDA and full pretrained weight smoke tests",
+    "Two repository tests requiring cloud-generated poetry.lock"
+  ]
+}

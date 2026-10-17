@@ -28,6 +28,7 @@ TRAINING_IMPLEMENTATION_PATHS = (
     "factory.py",
     "metrics.py",
     "models/backbones.py",
+    "models/chronos2.py",
     "models/forecast.py",
     "models/lora.py",
     "models/outputs.py",

@@ -8,6 +8,7 @@
 
 - [專案定位與授權](#overview-zh)、[模型架構與輸出](#model-zh)
 - [目前兩個獨立任務](#signal-tasks-zh)
+- [可選研究設定：Chronos-2 與原有採樣](docs/CHRONOS2_LEGACY_SAMPLING.md)
 - [資料來源、連續性與流動性](#data-zh)、[固定時間切分](#splits-zh)
 - [離線管線](#pipeline-zh)、[訓練、loss 與全量評估](#training-zh)
 - [RunPod 操作手冊](#operations-zh)：[帳號與儲存](#setup-zh) → [設定與同步](#configure-zh)
@@ -3219,6 +3220,7 @@ active selection，與不改 active selection 的成對操作不同。`readiness
 
 - [Scope and license](#overview-en), [architecture and outputs](#model-en)
 - [Current independent tasks](#signal-tasks-en)
+- [Optional research presets: Chronos-2 with original sampling](docs/CHRONOS2_LEGACY_SAMPLING.md#english)
 - [Data sources, continuity and liquidity](#data-en), [fixed time splits](#splits-en)
 - [Offline pipeline](#pipeline-en), [training, losses and full evaluation](#training-en)
 - [RunPod operations](#operations-en): [account/storage](#setup-en) → [configure/sync](#configure-en)

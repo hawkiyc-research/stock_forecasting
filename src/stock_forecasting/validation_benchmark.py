@@ -737,7 +737,10 @@ class ValidationBenchmark:
         self.loader_options = _loader_process_options(self.worker_plan, persistent=False)
         if self.worker_plan.effective_workers > 0:
             self.loader_options["multiprocessing_context"] = "spawn"
-        if config.model.time_series_backend == "kronos" and self.worker_plan.effective_workers == 0:
+        if (
+            config.model.time_series_backend in ("kronos", "chronos2")
+            and self.worker_plan.effective_workers == 0
+        ):
             raise RuntimeError(
                 "No safe baseline DataLoader worker fits the CPU/memory budget; "
                 "increase Pod resources or the configured worker limit"

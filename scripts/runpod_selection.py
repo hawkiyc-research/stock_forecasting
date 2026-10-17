@@ -64,6 +64,8 @@ EXPERIMENT_CONFIGS = {
         "direction64-v3",
         "alpha-point64",
         "absolute-direction64",
+        "chronos2-alpha-point64",
+        "chronos2-absolute-direction64",
     )
 }
 STAGE_RUNTIME = {
