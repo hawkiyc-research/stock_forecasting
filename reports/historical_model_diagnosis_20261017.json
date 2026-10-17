@@ -7495,5 +7495,936 @@
       "path": "artifacts/runpod/run-20261015T064600Z-13b8b4376ea5413b-direction/summary.json",
       "sha256": "ef0d67b3b233ac88b55b242726c478e3c93b372a5784b5ef2aa8a222efee3e1e"
     }
-  ]
+  ],
+  "follow_up_20261017": {
+    "scope": "Verified local saved artifacts and mathematical counterexamples only; no new model execution, export, environment operation, synchronization or training.",
+    "r24": [
+      {
+        "run_id": "run-20261016T165022Z-32d734a0cb644e44-alpha",
+        "task": "alpha_point",
+        "state": "ready",
+        "evaluation_split": "test",
+        "membership": {
+          "cutoff_end": "2026-05-11T00:00:00+00:00",
+          "cutoff_start": "2025-12-01T00:00:00+00:00",
+          "ordered_symbol_dates_sha256": "93e2e6a0b74edbdce616b82628aed180dad4d004a9bcd24292a78896c240bc0d",
+          "samples": 534327,
+          "unique_dates": 112
+        },
+        "selected_checkpoint": "checkpoint-007360",
+        "selected_validation_loss": 0.46362825438361716,
+        "test_aggregate": {
+          "bias": 0.0005883524061490931,
+          "correlation": 0.09516986553816631,
+          "direction_agreement": 0.5267433880109265,
+          "mae": 0.061160968178174395,
+          "normalized_mae": 0.8911231568186804,
+          "normalized_smooth_l1": 0.535295455426327,
+          "rmse": 0.09958033518743595,
+          "selection_score": 0.535295455426327
+        },
+        "stop_reason": "early_stopping",
+        "best_checkpoint_record": {
+          "mode": "min",
+          "monitor": "primary_5d/selection_score",
+          "path": "checkpoint-007360",
+          "run_id": "run-20261016T165022Z-32d734a0cb644e44-alpha",
+          "run_key": "run-20261016T165022Z-32d734a0cb644e44-alpha",
+          "schema_version": "4.0",
+          "selection_source": "validation",
+          "training_resume_contract_sha256": "5c76138c6f7a56d5bc23c3cfaa476bd8b34d9ae0864c5cce6e7749d693ebe15f",
+          "transaction_id": "7f2a880071a1411cacc1d228719d377e",
+          "value": 0.46362825438361716
+        },
+        "runtime_batch_plan": {
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 256
+        },
+        "test_14d_rank_ic": {
+          "US": 0.07183867863997274,
+          "TWSE": -0.03845581167980964,
+          "TPEX": -0.0736882060144492
+        }
+      },
+      {
+        "run_id": "run-20261016T165022Z-32d734a0cb644e44-direction",
+        "task": "absolute_direction",
+        "state": "ready",
+        "evaluation_split": "test",
+        "membership": {
+          "cutoff_end": "2026-05-11T00:00:00+00:00",
+          "cutoff_start": "2025-12-01T00:00:00+00:00",
+          "ordered_symbol_dates_sha256": "93e2e6a0b74edbdce616b82628aed180dad4d004a9bcd24292a78896c240bc0d",
+          "samples": 534327,
+          "unique_dates": 112
+        },
+        "selected_checkpoint": "checkpoint-003680",
+        "selected_validation_loss": 1.0272775331268444,
+        "test_aggregate": {
+          "accuracy": 0.4283988483242872,
+          "balanced_accuracy": 0.3651188100870571,
+          "brier_score": 0.6980239483400152,
+          "cross_entropy": 1.1182392642698573,
+          "expected_calibration_error": 0.18067209054030164,
+          "macro_f1": 0.3002393917787794,
+          "majority_class_accuracy": 0.42897032822864756,
+          "opposite_error_rate": 0.39677816339860367,
+          "selection_score": 1.1182392642698573
+        },
+        "stop_reason": "early_stopping",
+        "best_checkpoint_record": {
+          "mode": "min",
+          "monitor": "primary_5d/selection_score",
+          "path": "checkpoint-003680",
+          "run_id": "run-20261016T165022Z-32d734a0cb644e44-direction",
+          "run_key": "run-20261016T165022Z-32d734a0cb644e44-direction",
+          "schema_version": "4.0",
+          "selection_source": "validation",
+          "training_resume_contract_sha256": "2cd8d783ba4fa07e8914554487771a857031472b10d4c1f5c2e9ad20b35e7158",
+          "transaction_id": "350f6f3c9c304e2dbe8e32fe32b7acf0",
+          "value": 1.0272775331268444
+        },
+        "runtime_batch_plan": {
+          "gradient_accumulation_steps": 8,
+          "effective_batch_size": 256
+        },
+        "us_14d_predicted_class_share": [
+          0.9529346483857103,
+          0.009546789045070942,
+          0.03751856256921877
+        ]
+      }
+    ],
+    "fixed_full_train_prior": {
+      "source": "full cleaned train population, not the annual-recency-weighted sampler population",
+      "estimation_uses_test_labels": false,
+      "class_order": [
+        "down",
+        "neutral",
+        "up"
+      ],
+      "test_samples": 534327,
+      "test_cross_entropy": 1.0171197373714438,
+      "test_brier_score": 0.6204644412066332,
+      "calculation": "For each market/horizon, pi=train_count/sum(train_counts); CE=sum(test_count_k * -log(pi_k))/N; Brier=sum(test_count_k * (sum(pi_j^2)+1-2*pi_k))/N; average the fourteen horizons equally.",
+      "market_horizon_inputs": {
+        "US": {
+          "1d": {
+            "train_counts": [
+              1153374,
+              1665919,
+              1072620
+            ],
+            "probabilities": [
+              0.2963514343717344,
+              0.42804631038771934,
+              0.2756022552405462
+            ],
+            "test_support": [
+              125319,
+              186401,
+              128009
+            ]
+          },
+          "2d": {
+            "train_counts": [
+              1409758,
+              1146838,
+              1335317
+            ],
+            "probabilities": [
+              0.36222752152990056,
+              0.29467205459114837,
+              0.34310042387895107
+            ],
+            "test_support": [
+              153138,
+              127491,
+              159100
+            ]
+          },
+          "3d": {
+            "train_counts": [
+              1526658,
+              920700,
+              1444555
+            ],
+            "probabilities": [
+              0.39226416417838733,
+              0.23656746695005773,
+              0.37116836887155497
+            ],
+            "test_support": [
+              164013,
+              103330,
+              172386
+            ]
+          },
+          "4d": {
+            "train_counts": [
+              1586250,
+              796260,
+              1509403
+            ],
+            "probabilities": [
+              0.4075759144667417,
+              0.20459347369789613,
+              0.3878306118353622
+            ],
+            "test_support": [
+              170977,
+              89609,
+              179143
+            ]
+          },
+          "5d": {
+            "train_counts": [
+              1629402,
+              706906,
+              1555605
+            ],
+            "probabilities": [
+              0.41866352099854237,
+              0.1816345843290947,
+              0.39970189467236295
+            ],
+            "test_support": [
+              176073,
+              79780,
+              183876
+            ]
+          },
+          "6d": {
+            "train_counts": [
+              1664749,
+              641136,
+              1586028
+            ],
+            "probabilities": [
+              0.4277456870181836,
+              0.16473543987237124,
+              0.4075188731094451
+            ],
+            "test_support": [
+              179427,
+              72332,
+              187970
+            ]
+          },
+          "7d": {
+            "train_counts": [
+              1692641,
+              588358,
+              1610914
+            ],
+            "probabilities": [
+              0.4349123425934752,
+              0.15117449953274906,
+              0.4139131578737757
+            ],
+            "test_support": [
+              181772,
+              66192,
+              191765
+            ]
+          },
+          "8d": {
+            "train_counts": [
+              1712649,
+              548718,
+              1630546
+            ],
+            "probabilities": [
+              0.4400532591555875,
+              0.14098927699565741,
+              0.4189574638487551
+            ],
+            "test_support": [
+              183694,
+              61564,
+              194471
+            ]
+          },
+          "9d": {
+            "train_counts": [
+              1732805,
+              513691,
+              1645417
+            ],
+            "probabilities": [
+              0.4452322032892308,
+              0.13198933275229946,
+              0.4227784639584698
+            ],
+            "test_support": [
+              185483,
+              57621,
+              196625
+            ]
+          },
+          "10d": {
+            "train_counts": [
+              1751241,
+              486296,
+              1654376
+            ],
+            "probabilities": [
+              0.4499692053753514,
+              0.12495037787329778,
+              0.42508041675135083
+            ],
+            "test_support": [
+              186927,
+              54401,
+              198401
+            ]
+          },
+          "11d": {
+            "train_counts": [
+              1767960,
+              462854,
+              1661099
+            ],
+            "probabilities": [
+              0.45426503624310205,
+              0.11892711887444554,
+              0.4268078448824524
+            ],
+            "test_support": [
+              187667,
+              51560,
+              200502
+            ]
+          },
+          "12d": {
+            "train_counts": [
+              1782519,
+              441925,
+              1667469
+            ],
+            "probabilities": [
+              0.4580058701209405,
+              0.11354955776246797,
+              0.4284445721165915
+            ],
+            "test_support": [
+              188006,
+              49184,
+              202539
+            ]
+          },
+          "13d": {
+            "train_counts": [
+              1797022,
+              422934,
+              1671957
+            ],
+            "probabilities": [
+              0.46173231518792945,
+              0.10866995228310602,
+              0.42959773252896455
+            ],
+            "test_support": [
+              187788,
+              47040,
+              204901
+            ]
+          },
+          "14d": {
+            "train_counts": [
+              1810018,
+              406036,
+              1675859
+            ],
+            "probabilities": [
+              0.46507154707723425,
+              0.10432812860924692,
+              0.4306003243135188
+            ],
+            "test_support": [
+              187814,
+              45145,
+              206770
+            ]
+          }
+        },
+        "TWSE": {
+          "1d": {
+            "train_counts": [
+              162009,
+              273042,
+              112547
+            ],
+            "probabilities": [
+              0.2958538928191849,
+              0.4986175990416327,
+              0.2055285081391824
+            ],
+            "test_support": [
+              21769,
+              26760,
+              14784
+            ]
+          },
+          "2d": {
+            "train_counts": [
+              192232,
+              202775,
+              152591
+            ],
+            "probabilities": [
+              0.3510458401966406,
+              0.3702990149708363,
+              0.2786551448325231
+            ],
+            "test_support": [
+              24421,
+              19421,
+              19471
+            ]
+          },
+          "3d": {
+            "train_counts": [
+              206628,
+              166962,
+              174008
+            ],
+            "probabilities": [
+              0.3773351984484969,
+              0.30489884915576754,
+              0.3177659523957356
+            ],
+            "test_support": [
+              25880,
+              15690,
+              21743
+            ]
+          },
+          "4d": {
+            "train_counts": [
+              216496,
+              144792,
+              186310
+            ],
+            "probabilities": [
+              0.3953557171501722,
+              0.26441294526276576,
+              0.34023133758706203
+            ],
+            "test_support": [
+              26472,
+              13804,
+              23037
+            ]
+          },
+          "5d": {
+            "train_counts": [
+              222141,
+              129789,
+              195668
+            ],
+            "probabilities": [
+              0.4056643742307313,
+              0.23701510962421338,
+              0.35732051614505533
+            ],
+            "test_support": [
+              27036,
+              12217,
+              24060
+            ]
+          },
+          "6d": {
+            "train_counts": [
+              226331,
+              118917,
+              202350
+            ],
+            "probabilities": [
+              0.41331597266607983,
+              0.21716112914948557,
+              0.36952289818443457
+            ],
+            "test_support": [
+              27535,
+              11021,
+              24757
+            ]
+          },
+          "7d": {
+            "train_counts": [
+              229639,
+              110260,
+              207699
+            ],
+            "probabilities": [
+              0.41935690050000185,
+              0.20135208674976898,
+              0.3792910127502292
+            ],
+            "test_support": [
+              28004,
+              10080,
+              25229
+            ]
+          },
+          "8d": {
+            "train_counts": [
+              232523,
+              103270,
+              211805
+            ],
+            "probabilities": [
+              0.42462353770466654,
+              0.18858724830989157,
+              0.38678921398544186
+            ],
+            "test_support": [
+              27954,
+              9567,
+              25792
+            ]
+          },
+          "9d": {
+            "train_counts": [
+              234800,
+              96846,
+              215952
+            ],
+            "probabilities": [
+              0.42878169752263523,
+              0.17685601481378677,
+              0.394362287663578
+            ],
+            "test_support": [
+              27830,
+              9087,
+              26396
+            ]
+          },
+          "10d": {
+            "train_counts": [
+              237299,
+              91076,
+              219223
+            ],
+            "probabilities": [
+              0.43334526422667724,
+              0.16631908809016835,
+              0.40033564768315444
+            ],
+            "test_support": [
+              27819,
+              8606,
+              26888
+            ]
+          },
+          "11d": {
+            "train_counts": [
+              239322,
+              85816,
+              222460
+            ],
+            "probabilities": [
+              0.43703958012994937,
+              0.15671350151023195,
+              0.4062469183598187
+            ],
+            "test_support": [
+              27660,
+              8340,
+              27313
+            ]
+          },
+          "12d": {
+            "train_counts": [
+              241278,
+              81235,
+              225085
+            ],
+            "probabilities": [
+              0.4406115435045416,
+              0.14834787563139384,
+              0.41104058086406453
+            ],
+            "test_support": [
+              27548,
+              7913,
+              27852
+            ]
+          },
+          "13d": {
+            "train_counts": [
+              243243,
+              77389,
+              226966
+            ],
+            "probabilities": [
+              0.44419994229343424,
+              0.14132447525374453,
+              0.41447558245282123
+            ],
+            "test_support": [
+              27380,
+              7659,
+              28274
+            ]
+          },
+          "14d": {
+            "train_counts": [
+              245209,
+              74197,
+              228192
+            ],
+            "probabilities": [
+              0.4477901672394713,
+              0.13549538164858163,
+              0.4167144511119471
+            ],
+            "test_support": [
+              27187,
+              7339,
+              28787
+            ]
+          }
+        },
+        "TPEX": {
+          "1d": {
+            "train_counts": [
+              97803,
+              109519,
+              63284
+            ],
+            "probabilities": [
+              0.36142214141593315,
+              0.40471755984715785,
+              0.233860298736909
+            ],
+            "test_support": [
+              11993,
+              10942,
+              8350
+            ]
+          },
+          "2d": {
+            "train_counts": [
+              110038,
+              79430,
+              81138
+            ],
+            "probabilities": [
+              0.40663547740996137,
+              0.29352638152886484,
+              0.2998381410611738
+            ],
+            "test_support": [
+              12932,
+              7749,
+              10604
+            ]
+          },
+          "3d": {
+            "train_counts": [
+              115731,
+              64648,
+              90227
+            ],
+            "probabilities": [
+              0.42767344404780383,
+              0.2389008373798068,
+              0.3334257185723894
+            ],
+            "test_support": [
+              13305,
+              6376,
+              11604
+            ]
+          },
+          "4d": {
+            "train_counts": [
+              119507,
+              56072,
+              95027
+            ],
+            "probabilities": [
+              0.4416273105548288,
+              0.20720900497402128,
+              0.35116368447114993
+            ],
+            "test_support": [
+              13492,
+              5528,
+              12265
+            ]
+          },
+          "5d": {
+            "train_counts": [
+              121804,
+              50096,
+              98706
+            ],
+            "probabilities": [
+              0.45011566631929817,
+              0.18512523743006437,
+              0.36475909625063746
+            ],
+            "test_support": [
+              13591,
+              4795,
+              12899
+            ]
+          },
+          "6d": {
+            "train_counts": [
+              123840,
+              45601,
+              101165
+            ],
+            "probabilities": [
+              0.45763952018802245,
+              0.16851437144778755,
+              0.37384610836419
+            ],
+            "test_support": [
+              13698,
+              4397,
+              13190
+            ]
+          },
+          "7d": {
+            "train_counts": [
+              125221,
+              42095,
+              103290
+            ],
+            "probabilities": [
+              0.46274288079347836,
+              0.15555826552256788,
+              0.3816988536839538
+            ],
+            "test_support": [
+              13773,
+              4066,
+              13446
+            ]
+          },
+          "8d": {
+            "train_counts": [
+              126459,
+              39300,
+              104847
+            ],
+            "probabilities": [
+              0.46731779783153365,
+              0.1452295957961021,
+              0.3874526063723642
+            ],
+            "test_support": [
+              13749,
+              3813,
+              13723
+            ]
+          },
+          "9d": {
+            "train_counts": [
+              127427,
+              36965,
+              106214
+            ],
+            "probabilities": [
+              0.4708949542877837,
+              0.13660081446826752,
+              0.3925042312439488
+            ],
+            "test_support": [
+              13634,
+              3626,
+              14025
+            ]
+          },
+          "10d": {
+            "train_counts": [
+              128509,
+              34703,
+              107394
+            ],
+            "probabilities": [
+              0.47489338743412934,
+              0.1282417980384766,
+              0.3968648145273941
+            ],
+            "test_support": [
+              13569,
+              3420,
+              14296
+            ]
+          },
+          "11d": {
+            "train_counts": [
+              129667,
+              32549,
+              108390
+            ],
+            "probabilities": [
+              0.4791726717072053,
+              0.12028188584140781,
+              0.4005454424513869
+            ],
+            "test_support": [
+              13478,
+              3276,
+              14531
+            ]
+          },
+          "12d": {
+            "train_counts": [
+              130605,
+              30674,
+              109327
+            ],
+            "probabilities": [
+              0.4826389658765881,
+              0.11335299291220446,
+              0.4040080412112074
+            ],
+            "test_support": [
+              13483,
+              3063,
+              14739
+            ]
+          },
+          "13d": {
+            "train_counts": [
+              131389,
+              29122,
+              110095
+            ],
+            "probabilities": [
+              0.48553616697338564,
+              0.10761771727160521,
+              0.4068461157550091
+            ],
+            "test_support": [
+              13448,
+              2816,
+              15021
+            ]
+          },
+          "14d": {
+            "train_counts": [
+              132010,
+              28057,
+              110539
+            ],
+            "probabilities": [
+              0.4878310163115378,
+              0.10368210608781771,
+              0.4084868776006445
+            ],
+            "test_support": [
+              13341,
+              2808,
+              15136
+            ]
+          }
+        }
+      }
+    },
+    "test_14d_learned_baseline_rank_ic": {
+      "gru": {
+        "US": 0.06592744613284808,
+        "TWSE": -0.02334824705496121,
+        "TPEX": -0.01902106429251825
+      },
+      "gbdt": {
+        "US": 0.028116716427494366,
+        "TWSE": 0.006726942068675226,
+        "TPEX": 0.047585633860607365
+      }
+    },
+    "mathematical_checks": {
+      "huber_beta": 1,
+      "targets": [
+        0,
+        0,
+        100
+      ],
+      "huber_at_group_mean": 43.944444444444436,
+      "huber_at_constant_0_5": 33.083333333333336,
+      "perfect_prediction_huber_loss": 0,
+      "probabilities_before_prior_ratio": [
+        [
+          0.8,
+          0.1,
+          0.1
+        ],
+        [
+          0.2,
+          0.4,
+          0.4
+        ]
+      ],
+      "requested_prior": [
+        0.3333333333333333,
+        0.3333333333333333,
+        0.3333333333333333
+      ],
+      "mean_after_per_sample_ratio_and_normalization": [
+        0.3888888888888889,
+        0.3055555555555556,
+        0.3055555555555556
+      ],
+      "inferences": "Bounded Huber gradients do not imply a positive loss floor. MSE group means are not Huber-optimal constants. Per-sample normalization after p*pi/mean(p) need not yield mean(p_new)=pi. Zero neutral argmax predictions do not alone prove probability miscalibration."
+    },
+    "sources": [
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44-alpha/validation-benchmark.json",
+        "sha256": "d73677bf41d16e978f36e006fe120b96aae37c6ad91041d2e7c9effee8d2a43d"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44-alpha/summary.json",
+        "sha256": "73464a4769c64605bcf4947fa1480f58bb73720a3c10c846e670e04f27328d07"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44-alpha/best-checkpoint.json",
+        "sha256": "abb7772a9d72049b40f65e083daafd2e58741492462eefcb8b0eef1bab9440bb"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44-direction/validation-benchmark.json",
+        "sha256": "a1c871921fd7adb4c5b053a3c15266d621a9dab3356bb16b4218ce29147e4393"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44-direction/summary.json",
+        "sha256": "4233a1f6276f88a707b938cd0d6a629bb589af0041a9b4bdfd8b8dfe45eb1843"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44-direction/best-checkpoint.json",
+        "sha256": "7b1f1d95cd60214b21297a8886c472ad8bb71c38f42150ca439911b2133e6919"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/audit/baselines/baseline-b21f46ea4963562f03c648e9b0394f8a069767bca2a15a9f82e7c8ed69e04cc8/inputs/train/class-label-audit.json",
+        "sha256": "6552c61714fa6cbd3738ff8ddcb61c7f359971cb58ecd0a962bbd352afadb26a"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting/artifacts/runpod/run-20261015T064558Z-f04e155d4299416f-alpha/validation-benchmark.json",
+        "sha256": "6d615f20087773e6c9c0be55ad108f9a4e81cbaf3a8015b125272d6970792ee3"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting/artifacts/runpod/run-20261015T064558Z-f04e155d4299416f-direction/validation-benchmark.json",
+        "sha256": "bcd1468e4d1d393e7b096d356814f2481707b42d5b46432176cfdcaa5ca9d80f"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/docs/error_decomposition_audit.md",
+        "sha256": "cd6222ac87630b58c481a7cfc491aa2131afbaf7a6320f1b1666232c225d455b"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/model-performance-20261016/src/stock_forecasting/signal_evaluation.py",
+        "sha256": "530399c8ce44280b719701a54727369f6ec3405498752d77363656851db8fc8c"
+      },
+      {
+        "path": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/model-performance-20261016/src/stock_forecasting/models/chronos2.py",
+        "sha256": "09fb5a67314c8a86cc806699e72b459c2085397137d2af024bfbe81e93896e8b"
+      }
+    ]
+  }
 }

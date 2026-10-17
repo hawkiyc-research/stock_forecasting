@@ -4,15 +4,15 @@
 
 ## 繁體中文
 
-這次重新讀取本機 24 份 `validation-benchmark.json`，並分析已有逐步紀錄的驗證曲線。主要診斷使用目前六個獨立 signal64 模型、各自選定 checkpoint 的 `trainer-state.json`，以及 `summary.json`。沒有執行模型、重建 Python 環境、啟動訓練、同步 RunPod 或操作其他工具的訓練。本報告不包含尚未完成的 Antigravity 結果；日期混洗結果僅引用使用者提供的回報，沒有當作本次重新核驗的正式產物。
+這次重新讀取本機 24 份 `validation-benchmark.json`，並分析已有逐步紀錄的驗證曲線。主要診斷使用 R21–R23 六個獨立 signal64 模型、各自選定 checkpoint 的 `trainer-state.json`，以及 `summary.json`；本次補充另核驗 Claude worktree 的 R24 兩份正式 test 與完整 train 類別計數。沒有執行模型、重建 Python 環境、啟動訓練、同步 RunPod 或操作其他工具的訓練。本報告不包含尚未完成的 Antigravity 結果；日期混洗的早期回報與後來正式 test 分開記錄；第 10 節補充已重新核驗的最終結果。
 
 本次判斷：**目前證據較支持「跨期間／跨市場的泛化不穩定、點估計與排序的選模目標不一致，以及分類機率失準」；還沒有證據足以將根因定為前處理程式錯誤、模型容量不足或訓練時間不足。** 這些是需要分開驗證的問題，不能用一個「過擬合」標籤取代診斷。
 
 **1. 比較範圍與證據限制**
 
-最新六個模型及其 GRU、GBDT 基準使用完全相同的 test membership：534,327 個股票×日期視窗、112 個 cutoff dates，實際 cutoff 為 2025-12-01 至 2026-05-11，SHA-256 為 `93e2e6a0b74edbdce616b82628aed180dad4d004a9bcd24292a78896c240bc0d`。這些視窗高度重疊，共用 benchmark，不能當成 534,327 個獨立市場情境。GRU／GBDT 等 learned baselines 只有 seed 42，三個主模型 seed 都沿用同一份 baseline，沒有三 seed 的 baseline 不確定性估計。
+R21–R23 六個模型及其 GRU、GBDT 基準使用完全相同的 test membership：534,327 個股票×日期視窗、112 個 cutoff dates，實際 cutoff 為 2025-12-01 至 2026-05-11，SHA-256 為 `93e2e6a0b74edbdce616b82628aed180dad4d004a9bcd24292a78896c240bc0d`。這些視窗高度重疊，共用 benchmark，不能當成 534,327 個獨立市場情境。GRU／GBDT 等 learned baselines 只有 seed 42，三個主模型 seed 都沿用同一份 baseline，沒有三 seed 的 baseline 不確定性估計。
 
-24 份 JSON 包含早期 validation-only 版本、不同 membership 的 sampled/full test、以及清理後共用 test。2026-10-14 的舊 `a-direction64` seed 42 是錯誤 preset 的重複結果，不算新增獨立實驗。舊 quantile normalized pinball、目前 alpha Smooth L1、分類 CE 是不同目標，不能把 loss 數字直接連成「改善／退步」曲線。V1／V2 的方向選模公式也不同；其 alpha 曲線最低點未必是正式選定 checkpoint。V3 沒有本次可重算的完整 final test。
+主 checkout 的 24 份 JSON 包含早期 validation-only 版本、不同 membership 的 sampled/full test、以及清理後共用 test。2026-10-14 的舊 `a-direction64` seed 42 是錯誤 preset 的重複結果，不算新增獨立實驗。舊 quantile normalized pinball、目前 alpha Smooth L1、分類 CE 是不同目標，不能把 loss 數字直接連成「改善／退步」曲線。V1／V2 的方向選模公式也不同；其 alpha 曲線最低點未必是正式選定 checkpoint。V3 沒有本次可重算的完整 final test。
 
 **2. 點估計 loss 最低的 checkpoint，並非排序較好的 checkpoint**
 
@@ -125,6 +125,40 @@ Alpha 最佳 validation 點在 0.2／0.6／1.0 epoch，分類在 0.4／0.4／0.6
 
 以上是分析建議，本次沒有啟動實作或付費運算。使用者已指定的 Chronos-2 舊採樣版本維持原狀。本報告沒有建議恢復日期混洗，也沒有將「同日 batch 的隱性正則化」當作已證實機制：相同 benchmark 並不自動讓共同梯度消失；需要額外受控對照才能驗證該解釋。
 
+**10. 研究交接後的補充核驗：R24、固定 train 先驗與解讀邊界**
+
+本節在初版 `b637335` 之後補入。只讀取 Claude worktree 的保存產物與現有程式；沒有修改該 worktree、匯出新預測或操作 Pod。原有 24 份 benchmark／42 個來源雜湊的證據快照保留，新來源另列於 JSON 的 `follow_up_20261017`。
+
+R24 的兩個任務均有 `state=ready`、`evaluation_split=test` 的正式結果，summary 記錄正常 early stopping，test membership 與 R21–R23 完全相同：
+
+| R24 任務 | 正式 checkpoint | 最佳 validation loss | Test loss | 其他 test 診斷 |
+| --- | --- | ---: | ---: | --- |
+| Alpha | `checkpoint-007360` | 0.463628 | 0.535295 | 14d Rank IC：US +0.071839、TWSE −0.038456、TPEX −0.073688 |
+| Absolute direction | `checkpoint-003680` | 1.027278 | 1.118239 | Brier 0.698024；ECE 0.180672；macro-F1 0.300239；US14d 預測 down 95.29% |
+
+這補齊了原先仍在訓練的方向模型紀錄。R24 alpha 的 validation 未通過原門檻，方向的最終機率品質與偏向也沒有支持恢復混洗。Test 僅作保存結果的事後診斷，不用它重選方案或 checkpoint；「同日 batch 隱性正則化」仍未被證實為機制。
+
+**固定完整 train 機率先驗，比原始主模型 CE 更好。** 從完整清理後 train 的市場×天期類別計數估計 `pi[k]=train_count[k]/sum(train_counts)`，對每個市場／天期的所有股票輸出相同機率，再用現有 test 的 class support 計算 CE 與三類平方誤差和的 Brier。十四個天期等權；test 標籤只用於評分，沒有參與機率估計。重算得到 CE **1.0171197373714438**、Brier **0.6204644412066332**。
+
+該 CE 低於 R21–R23 原始分類器的 1.039206／1.032702／1.027663，仍高於 GRU 0.999579 與 GBDT 0.999028。這個常數機率參考不處理個股訊號；它揭露機率品質的基本缺口，不能據此否定主模型已觀察到的 BA／F1 優勢。來源 audit 的 SHA-256 是 `6552c61714fa6cbd3738ff8ddcb61c7f359971cb58ecd0a962bbd352afadb26a`。它代表完整 train 母體的先驗，不等於年度 recency sampler 的加權先驗；若要用先驗差解釋訓練偏差，還需核對實際採樣權重。
+
+**排序必須與 learned baseline 比，而非只要求正 Rank IC。** 同一 test 上，alpha GRU 的 US14d Rank IC 為 +0.065927，落在三個 Kronos seed 的 +0.045486／+0.072947／+0.083138 之間；GBDT 的 TPEX14d 為 +0.047586，三個主模型均為負值。Alpha seed42 的 aggregate loss 相對 GRU 僅改善約 0.0601%，另兩 seed 分別落後約 2.1387%／1.3190%。這些是保存結果的描述；112 個相依日期與一份 baseline seed，仍不足以宣告新候選的獨立確認性勝出。
+
+**以下拆解主張需要收斂，避免將描述當成根因或可改善上限。** 這些數學反例已用標準函式庫重算；沒有改動其他分支的拆解報告：
+
+- Huber 線性區的梯度有界，不代表 loss 天生只能改善 1%–1.5%。完美預測的 loss 仍為零。尾部貢獻高可支持查驗資料與條件訊號，推不出可學性上限。
+- 群組平均值是平方誤差下的最佳常數，未必是 Huber 最佳常數。以 targets `[0,0,100]`、beta=1 為例，預測群組平均 33.333 的平均 Huber loss 為 43.944444；預測常數 0.5 只要 33.083333。MSE 的 between／within 精確可加分解及其 2.6%–3.8% 比例，不能直接當作 Huber 的分量或上限；相關逐筆比例本輪沒有重新計算。
+- 對每筆預測套 `p_new ∝ p*pi/mean(p)` 並個別正規化後，群組平均一般不等於 `pi`。原預測 `[.8,.1,.1]`／`[.2,.4,.4]`，目標先驗各 1/3，調整後平均為 `[.388889,.305556,.305556]`。這可以是受控比較的 heuristic，不能稱精確替換日期先驗，也不能自動當成可加的擇時／鑑別分解或純 label-shift 校正。
+- Neutral 的 argmax 預測比例很低，不足以單獨證明 neutral 機率未校準。現有 ECE 使用 15 個 bins 的最高類信心；它不是逐類校準指標。後續應一起看 neutral one-vs-rest 辨識力、逐類可靠度、CE／Brier 與混淆矩陣，不能只追 neutral recall。
+- `alpha=stock log return−benchmark log return` 不保證股票池的截面平均為零，因股票池與指數權重可能不同。截面去均值或把群組 mean 向零收縮，是額外模型假設；不能當成保留原始 alpha 任務的無損等價變換。
+
+**Chronos-2 實驗的結論範圍也要固定。** 現行 `models/chronos2.py` 將單一樣本的五個 OHLCV 通道編成同組，取歷史 context patch hidden states，排除原生 forecast／placeholder 位置，再接既有 resampler／head。Asset 與 benchmark 各自編碼，再由既有 conditioner 結合。這是預訓練 encoder transfer 的受控比較，沒有測試完整 native forecasting／covariate readout；結果若負面，只能否證這個接法。不同 cutoff 樣本維持獨立群組，可避免跨樣本混入時間上不可見的 context；本次沒有為跨股票 ICL 改動分組。
+
+現有 prediction-export 與 decomposition CLI 位於 Claude 的分支，本 Codex 分支沒有自動移植該功能。未來如需其輸出，應重用既有能力，保持串流、資料量上限與多 worker；本次沒有執行匯出或建立新資料集。
+
+建議仍優先做時間隔離的 validation 校準診斷、固定 train eval 與少量原始標籤稽核，再分軸比較 backbone／head／sampling。GRU／GBDT 應接受相同校準程序。R21 seed42 採 32×8，seed347／5067 採 64×4，雖有效 batch 都是 256，這三次執行並非只差 seed；後續共同多 seed 比較需固定執行條件。所有線上更新需等使用的 horizon 標籤到期，保留 label-end guard；既有 test 不用於估計校準參數、回填先驗或挑選新 head。
+
+
 **證據與重算方式**
 
 小型證據：[historical_model_diagnosis_20261017.json](historical_model_diagnosis_20261017.json)。它保留 24 個歷史 run 的摘要、六個目前模型的選定 checkpoint、驗證曲線、分市場／月份統計、相同 membership 核對和來源 SHA-256。計算只讀本機 JSON，以兩個有上限的 I/O threads 分批解析，不載入完整行情、視窗資料或模型。
@@ -137,13 +171,13 @@ Alpha 最佳 validation 點在 0.2／0.6／1.0 epoch，分類在 0.4／0.4／0.6
 
 Analysis date: 2026-10-17. Code reference: `d2da8b965bddb1417afe3afc777770b80294ce44`. This report and its compact evidence JSON belong to the isolated Codex branch `codex/model-performance-20261016`. No model, sampler, preprocessing, split, dependency or training configuration was changed.
 
-The analysis reread 24 locally saved benchmark JSON files, available validation histories, and the six current independent signal64 models' selected-checkpoint metadata and training summaries. It did not execute a model, inspect or create a Python environment, train, synchronize RunPod or operate another tool's training. Pending Antigravity results are outside scope. Date-mixing findings are user-supplied evidence rather than newly verified final artifacts.
+The analysis reread 24 locally saved benchmark JSON files, available validation histories, and the six R21–R23 signal64 models' selected-checkpoint metadata and training summaries. This follow-up additionally verifies the two formal R24 tests in the Claude worktree and full-train class counts. It did not execute a model, inspect or create a Python environment, train, synchronize RunPod or operate another tool's training. Pending Antigravity results are outside scope. Early user-supplied date-mixing findings remain distinct from the newly verified final R24 artifacts in section 10.
 
 **The evidence supports unstable temporal/market generalization, a distinction between point-loss selection and ranking quality, and miscalibrated classification probabilities. It does not yet establish a preprocessing bug, insufficient capacity or insufficient training time as the root cause.** These hypotheses require separate checks.
 
 **1. Comparison contract**
 
-All six current models and their saved GRU/GBDT baselines share 534,327 test windows and 112 cutoff dates, from 2025-12-01 through 2026-05-11, with membership SHA-256 `93e2e6a0b74edbdce616b82628aed180dad4d004a9bcd24292a78896c240bc0d`. Overlapping windows and shared benchmarks are dependent observations. Learned baselines contain only seed 42 and are reused for all three candidate seeds; baseline variation across seeds is unknown.
+All six R21–R23 models and their saved GRU/GBDT baselines share 534,327 test windows and 112 cutoff dates, from 2025-12-01 through 2026-05-11, with membership SHA-256 `93e2e6a0b74edbdce616b82628aed180dad4d004a9bcd24292a78896c240bc0d`. Overlapping windows and shared benchmarks are dependent observations. Learned baselines contain only seed 42 and are reused for all three candidate seeds; baseline variation across seeds is unknown.
 
 Older artifacts include validation-only evaluations and sampled/full tests with different memberships. The 2026-10-14 old a-direction64 seed-42 result repeats a wrong preset and is not an independent replication. Quantile pinball, point Smooth L1 and classification CE are different objectives. V1/V2 used different direction-selection formulas; their minimum alpha-validation metric need not identify the selected checkpoint. There is no fully recomputable final V3 test in this analysis.
 
@@ -214,6 +248,35 @@ First align completed Antigravity results by membership, selected checkpoint, ta
 Next, audit a small matched group of difficult and ordinary raw windows and add fixed train evaluation before broad data cleanup. Finally, compare one factor at a time: preserve the user's legacy sampler and dynamic reading for Chronos-2 versus Kronos, holding heads, labels, populations, scales and selection fixed. Treat head/calibration changes as separate experiments. Capacity-matched input-path controls can test whether the backbone supplies incremental signal.
 
 These are recommendations; no new implementation or paid computation was launched. The existing Chronos-2 legacy-sampling implementation remains unchanged. Date mixing is not reintroduced. The same-day-batch implicit-regularization explanation remains a hypothesis; identical benchmarks do not automatically cancel common gradients.
+
+**10. Follow-up verification: R24, a fixed full-train prior and interpretation boundaries**
+
+This section supplements the initial `b637335` report. It reads saved artifacts in the Claude worktree and existing source code without modifying that worktree, exporting predictions or operating a Pod. The initial 24-benchmark/42-source evidence snapshot is preserved; new sources are recorded separately under `follow_up_20261017` in the JSON.
+
+Both R24 child benchmarks are `ready`, use formal `test` evaluation, have the same membership as R21–R23, and record normal early stopping. Alpha selects checkpoint 007360, with best validation loss 0.463628 and test loss 0.535295; test 14-day IC is US +0.071839, TWSE −0.038456, TPEX −0.073688. Direction selects checkpoint 003680, with validation CE 1.027278 and test CE 1.118239, Brier 0.698024, ECE 0.180672 and macro-F1 0.300239. It predicts down for 95.29% of US 14-day samples.
+
+These artifacts complete the previously provisional direction record. They do not support restoring mixing; alpha already failed its validation criterion. Test remains a descriptive record and does not reselect an experiment or checkpoint. The implicit-regularization mechanism of same-day batches remains unproven.
+
+**A deployable fixed full-train probability prior beats raw candidate CE.** Estimate class probabilities separately for each market/horizon using only full cleaned train class counts, then score constant probabilities using saved test class support. Averaging horizons equally yields CE **1.0171197373714438** and multiclass Brier **0.6204644412066332**. Test labels participate only in scoring, not probability estimation. The class audit SHA-256 is `6552c61714fa6cbd3738ff8ddcb61c7f359971cb58ecd0a962bbd352afadb26a`.
+
+This prior beats raw R21–R23 CE 1.039206/1.032702/1.027663 but trails GRU 0.999579 and GBDT 0.999028. It establishes a probability-quality reference without using stock-specific signals; it does not erase the candidates' observed BA/F1 gains. Full-population train priors differ from annual-recency-weighted sampler priors, which must be checked before attributing training bias to prior mismatch.
+
+Positive IC alone does not establish incremental ranking skill: GRU US14d IC is +0.065927, between the three Kronos seeds' +0.045486/+0.072947/+0.083138. GBDT TPEX14d IC is +0.047586, versus negative candidate values. Alpha seed42 improves aggregate GRU loss by only about 0.0601%; seeds347/5067 trail by about 2.1387%/1.3190%. A repeatedly examined test with 112 dependent dates and one baseline seed is descriptive evidence rather than an independent confirmation set.
+
+**Mathematical interpretation needs limits.** The following counterexamples were checked using standard-library arithmetic; another branch's decomposition report was not edited:
+
+- Bounded Huber gradients do not imply an inherent 1%–1.5% improvement ceiling. Perfect predictions still achieve zero loss. High tail contribution motivates data/signal checks, not an unlearnability conclusion.
+- Group means minimize squared error, not necessarily Huber loss. For targets `[0,0,100]` and beta=1, predicting the group mean gives mean Huber 43.944444, versus 33.083333 at constant 0.5. Exact MSE between/within decompositions and reported 2.6%–3.8% fractions are not additive Huber components or improvement ceilings. Those per-sample fractions were not recomputed here.
+- Per-sample renormalization of `p_new ∝ p*pi/mean(p)` does not generally make the new group mean equal `pi`. For predictions `[.8,.1,.1]` and `[.2,.4,.4]` with uniform target prior, the new mean is `[.388889,.305556,.305556]`. It is a testable heuristic, not exact date-prior replacement, an automatically additive timing/discrimination decomposition, or an unconditional label-shift correction.
+- Few neutral argmax predictions alone do not establish miscalibrated neutral probabilities. Existing ECE uses 15 bins of maximum-class confidence, not classwise calibration. Check neutral one-vs-rest discrimination, classwise reliability, CE/Brier and confusion together rather than optimizing recall alone.
+- Benchmark-excess alpha need not have zero stock-universe cross-sectional mean because universe and benchmark weights differ. Demeaning or shrinking a group mean toward zero adds an assumption rather than preserving raw alpha by a lossless equivalent transformation.
+
+**Chronos-2 conclusions must match the implemented experiment.** The current adapter groups five OHLCV channels within each sample, retains historical context-patch states, excludes native forecast/placeholder positions, and feeds the existing resampler/head. Asset and benchmark are encoded separately before the existing conditioner. This controlled pretrained-encoder transfer does not evaluate the complete native forecasting/covariate readout. A negative result would reject this connection rather than Chronos-2 generally. Different-cutoff samples remain in separate groups; this follow-up does not enable cross-stock ICL.
+
+The existing prediction-export/decomposition CLI lives on the Claude branch and was not copied into this branch or executed. Future use should reuse that capability with bounded streaming and multiple workers rather than materializing a large dataset.
+
+Priorities remain time-separated validation calibration, fixed train evaluation and small raw-label audits, followed by separate backbone/head/sampling comparisons. Apply the same calibration protocol to GRU/GBDT. Candidate seed42 uses micro-batch32×accumulation8, while seeds347/5067 use64×4; effective batch256 does not make them seed-only replications. Future comparisons should fix execution conditions. Any online update must wait for the relevant horizon label to mature, preserve label-end guards, and avoid test-fitted calibration, priors or head selection.
+
 
 **Evidence and reproduction**
 
