@@ -257,27 +257,50 @@ class ProbeGuardTests(unittest.TestCase):
         self.assertEqual(harness.read("local-delete-calls"), "pod delete probe-fixture\n")
 
     def test_complete_runner_to_local_guard_to_project_cli_chain(self) -> None:
-        for environment, state, code in (
-            ({}, "succeeded", 0),
-            ({"HARNESS_JOB_EXIT": "7"}, "failed", 7),
-            ({"HARNESS_TIMEOUT": "1"}, "timed_out", 124),
+        for workflow, session in (
+            ("probe-scales", "stock-forecasting-probe-scales"),
+            ("export-signal-predictions", "stock-forecasting-export-predictions"),
         ):
-            with self.subTest(state=state):
-                harness = self.harness()
-                harness.environment.update(environment)
-                launch = harness.command("runpod_tmux_launch.sh", "probe-scales")
-                self.assertEqual(launch.returncode, 0, launch.stderr)
-                runner = harness.run_worker()
-                self.assertEqual(runner.returncode, code, runner.stdout + runner.stderr)
-                self.assertFalse((harness.root / "shutdown-called").exists())
-                result = self.run_guard(harness)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(harness.read("local-delete-calls"), "pod delete probe-fixture\n")
-                log = harness.read("local-guard.log")
-                self.assertIn("termination triggered by lifecycle-" + state, log)
-                self.assertIn("lifecycle/diagnostics/representation-scales/probe-fixture.json", log)
-                self.assertFalse((harness.root / "s3-write-calls").exists())
-                self.assertEqual(list((harness.volume / "lifecycle/stage1").glob("*.json")), [])
+            for environment, state, code in (
+                ({}, "succeeded", 0),
+                ({"HARNESS_JOB_EXIT": "7"}, "failed", 7),
+                ({"HARNESS_TIMEOUT": "1"}, "timed_out", 124),
+            ):
+                with self.subTest(workflow=workflow, state=state):
+                    harness = self.harness()
+                    harness.environment.update(environment)
+                    # The export job uses the same fixture worker as the probe job.
+                    shutil.copy2(
+                        harness.scripts / "runpod_probe_scales.sh",
+                        harness.scripts / "runpod_export_signal_predictions.sh",
+                    )
+                    launch = harness.command(
+                        "runpod_tmux_launch.sh", workflow, "--checkpoint", "run-x-alpha"
+                    )
+                    self.assertEqual(launch.returncode, 0, launch.stderr)
+                    runner = harness.run_worker()
+                    self.assertEqual(runner.returncode, code, runner.stdout + runner.stderr)
+                    self.assertFalse((harness.root / "shutdown-called").exists())
+                    marker = json.loads(harness.diagnostic_marker().read_text())
+                    job_dir = harness.volume / "logs/tmux" / session
+                    self.assertEqual(marker["state"], state)
+                    self.assertEqual(marker["status_path"], str(harness.runners()[0].parent
+                                                                 / "status.json"))
+                    self.assertTrue(marker["status_path"].startswith(str(job_dir) + "/"))
+                    result = self.run_guard(harness)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(
+                        harness.read("local-delete-calls"), "pod delete probe-fixture\n"
+                    )
+                    log = harness.read("local-guard.log")
+                    self.assertIn("termination triggered by lifecycle-" + state, log)
+                    self.assertIn(
+                        "lifecycle/diagnostics/representation-scales/probe-fixture.json", log
+                    )
+                    self.assertFalse((harness.root / "s3-write-calls").exists())
+                    self.assertEqual(
+                        list((harness.volume / "lifecycle/stage1").glob("*.json")), []
+                    )
 
     def test_running_diagnostic_waits_for_hard_limit_without_training_timeout_writes(self) -> None:
         harness = self.harness()
@@ -395,6 +418,55 @@ class ProbeGuardTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "matching persisted tmux status"):
                 CONTRACT["publish"](arguments)
             self.assertFalse(harness.diagnostic_marker().exists())
+
+    def test_export_session_signal_is_published_and_accepted_by_the_guard(self) -> None:
+        harness = self.harness()
+        session = CONTRACT["EXPORT_SESSION_NAME"]
+        paths = CONTRACT["identity"](
+            str(harness.volume), "probe-fixture", "run-pod-owner", "launch-fixture",
+            session=session,
+        )
+        paths["status_path"].parent.mkdir(parents=True)
+        paths["status_path"].write_text(json.dumps({
+            "state": "succeeded", "exit_code": 0, "log_path": str(paths["log_path"]),
+        }))
+
+        def arguments(**overrides):
+            values = dict(
+                network_volume_root=str(harness.volume), pod_id="probe-fixture",
+                owner_run_id="run-pod-owner", launch_id="launch-fixture",
+                state="succeeded", exit_code=0, session=session,
+            )
+            return Namespace(**{**values, **overrides})
+
+        with (
+            patch.dict("os.environ", {"RUNPOD_GPU_WORKFLOW_LEASE_HELD": "1"}),
+            patch("os.fstat"),
+        ):
+            # Without the session, an older runner looks in the probe directory and fails.
+            with self.assertRaises(FileNotFoundError):
+                CONTRACT["publish"](arguments(session=None))
+            for invalid in (CONTRACT["LEGACY_PROBE_SESSION_NAME"], "other-session"):
+                with self.subTest(session=invalid), self.assertRaises(ValueError):
+                    CONTRACT["publish"](arguments(session=invalid))
+            self.assertFalse(harness.diagnostic_marker().exists())
+            CONTRACT["publish"](arguments())
+        marker = json.loads(harness.diagnostic_marker().read_text())
+        self.assertEqual(marker["status_path"], str(paths["status_path"]))
+        self.assertEqual(
+            CONTRACT["validate"](marker, str(harness.volume), "probe-fixture", "run-pod-owner"),
+            "succeeded",
+        )
+        rejected = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/runpod_probe_lifecycle.py"), "write-state",
+             "--network-volume-root", str(harness.volume), "--pod-id", "probe-fixture",
+             "--owner-run-id", "run-pod-owner", "--launch-id", "launch-fixture",
+             "--session", CONTRACT["LEGACY_PROBE_SESSION_NAME"],
+             "--state", "succeeded", "--exit-code", "0"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("invalid choice", rejected.stderr)
 
 
 if __name__ == "__main__":

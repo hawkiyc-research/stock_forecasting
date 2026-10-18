@@ -512,6 +512,8 @@ class ExportWorkflowTests(unittest.TestCase):
         runner = runners[0].read_text(encoding="utf-8")
         self.assertIn("runpod_export_signal_predictions.sh", runner)
         self.assertIn("publish_probe_state", runner)
+        # The terminal signal must match status.json in this session's directory.
+        self.assertIn("--session stock-forecasting-export-predictions", runner)
         self.assertIn("RUNPOD_SCALE_PROBE_TMUX_WORKER=1", runner)
         self.assertNotIn("runpod_probe_scales.sh", runner)
 

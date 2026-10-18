@@ -241,7 +241,12 @@ class ProjectNamingTests(unittest.TestCase):
             "/runpod-volume", "fixture-pod", "run-fixture", "launch-fixture"
         )
         self.assertIn(SLUG + "-probe-scales", str(canonical["log_path"]))
-        for session in (PROBE["PROBE_SESSION_NAME"], PROBE["LEGACY_PROBE_SESSION_NAME"]):
+        self.assertEqual(PROBE["EXPORT_SESSION_NAME"], SLUG + "-export-predictions")
+        for session in (
+            PROBE["PROBE_SESSION_NAME"],
+            PROBE["EXPORT_SESSION_NAME"],
+            PROBE["LEGACY_PROBE_SESSION_NAME"],
+        ):
             paths = PROBE["identity"]("/runpod-volume", "fixture-pod", "run-fixture",
                                        "launch-fixture", session=session)
             payload = {"schema_version": 1, "kind": "representation-scale-probe",

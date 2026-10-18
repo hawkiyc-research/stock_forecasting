@@ -15,7 +15,11 @@ from pathlib import Path
 
 MAX_MARKER_BYTES = 65536
 PROBE_SESSION_NAME = "stock-forecasting-probe-scales"
+EXPORT_SESSION_NAME = "stock-forecasting-export-predictions"
 LEGACY_PROBE_SESSION_NAME = "fin-ts-probe-scales"
+# Current runners publish under their own tmux session; the guard also reads legacy paths.
+WRITABLE_SESSION_NAMES = (PROBE_SESSION_NAME, EXPORT_SESSION_NAME)
+DIAGNOSTIC_SESSION_NAMES = (*WRITABLE_SESSION_NAMES, LEGACY_PROBE_SESSION_NAME)
 
 
 def identity(volume_root, pod_id, owner_run_id, launch_id, *, session=PROBE_SESSION_NAME):
@@ -34,7 +38,7 @@ def identity(volume_root, pod_id, owner_run_id, launch_id, *, session=PROBE_SESS
     ):
         if not isinstance(value, str) or re.fullmatch(pattern, value) is None or "--" in value:
             raise ValueError("Invalid " + label)
-    if session not in {PROBE_SESSION_NAME, LEGACY_PROBE_SESSION_NAME}:
+    if session not in DIAGNOSTIC_SESSION_NAMES:
         raise ValueError("Invalid diagnostic session name")
     root = Path(volume_root)
     job_dir = root / "logs/tmux" / session / launch_id
@@ -58,7 +62,7 @@ def validate(payload, volume_root, pod_id, owner_run_id):
     # Existing guards must still read old signals without moving or rewriting them.
     candidates = [
         identity(volume_root, pod_id, owner_run_id, payload.get("launch_id"), session=session)
-        for session in (PROBE_SESSION_NAME, LEGACY_PROBE_SESSION_NAME)
+        for session in DIAGNOSTIC_SESSION_NAMES
     ]
     paths = next((candidate for candidate in candidates if (
         payload.get("log_path") == str(candidate["log_path"])
@@ -93,8 +97,13 @@ def validate(payload, volume_root, pod_id, owner_run_id):
 
 
 def publish(arguments):
+    # Runners generated before --session existed always used the probe session.
+    session = getattr(arguments, "session", None) or PROBE_SESSION_NAME
+    if session not in WRITABLE_SESSION_NAMES:
+        raise ValueError("Invalid diagnostic session name")
     paths = identity(
-        arguments.network_volume_root, arguments.pod_id, arguments.owner_run_id, arguments.launch_id
+        arguments.network_volume_root, arguments.pod_id, arguments.owner_run_id,
+        arguments.launch_id, session=session,
     )
     if os.environ.get("RUNPOD_GPU_WORKFLOW_LEASE_HELD") != "1":
         raise ValueError("Diagnostic publication requires the GPU lease")
@@ -142,6 +151,10 @@ def main():
     parser.add_argument("--launch-id")
     parser.add_argument("--state")
     parser.add_argument("--exit-code", type=int)
+    parser.add_argument(
+        "--session", choices=WRITABLE_SESSION_NAMES, default=PROBE_SESSION_NAME,
+        help="tmux session whose status.json the terminal signal must match",
+    )
     arguments = parser.parse_args()
     if arguments.command == "write-state":
         publish(arguments)

@@ -338,9 +338,10 @@ mkdir -p "${JOB_DIR}"
         printf 'publish_probe_state() {\n'
         printf '  local attempt=1\n'
         printf '  while [[ ${attempt} -le 3 ]]; do\n'
-        printf '    if %q %q write-state --network-volume-root %q --pod-id %q --owner-run-id %q --launch-id %q --state "$1" --exit-code "$2"; then return 0; fi\n' \
+        # The terminal signal must name this session, whose directory holds status.json.
+        printf '    if %q %q write-state --network-volume-root %q --pod-id %q --owner-run-id %q --launch-id %q --session %q --state "$1" --exit-code "$2"; then return 0; fi\n' \
             "${RUNPOD_IMAGE_PYTHON}" "${PROBE_LIFECYCLE_HELPER}" "${NETWORK_VOLUME_ROOT}" \
-            "${RUNPOD_POD_ID:-}" "${PROBE_OWNER_RUN_ID}" "${LAUNCH_ID}"
+            "${RUNPOD_POD_ID:-}" "${PROBE_OWNER_RUN_ID}" "${LAUNCH_ID}" "${SESSION_NAME}"
         printf '    attempt=$((attempt + 1))\n'
         printf '  done\n'
         printf '  return 74\n'
