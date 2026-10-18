@@ -131,9 +131,27 @@ def assemble(
     return panel, blocks
 
 
+def informative_columns(x: np.ndarray) -> np.ndarray:
+    """Columns with at least two distinct finite values (sklearn cannot bin empty ones)."""
+    keep = np.zeros(x.shape[1], dtype=bool)
+    for column in range(x.shape[1]):
+        values = x[:, column]
+        values = values[np.isfinite(values)]
+        keep[column] = values.size > 0 and values.min() < values.max()
+    return keep
+
+
 def _staged_fit(estimator, x_core, y_core, x_holdout, y_holdout, score, step):
-    """Fit on the core rows and pick the boosting stage with the best holdout score."""
-    estimator.fit(x_core, y_core)
+    """Fit on the core rows and pick the boosting stage with the best holdout score.
+
+    Columns without variation in the core rows (for example features of a failed
+    auxiliary source) are left out; ``research_columns_`` records the kept mask.
+    """
+    estimator.research_columns_ = informative_columns(x_core)
+    if not estimator.research_columns_.any():
+        raise ValueError("No feature varies in the training rows")
+    estimator.fit(x_core[:, estimator.research_columns_], y_core)
+    x_holdout = x_holdout[:, estimator.research_columns_]
     staged = (
         estimator.staged_predict_proba(x_holdout)
         if hasattr(estimator, "predict_proba")
@@ -150,6 +168,7 @@ def _staged_fit(estimator, x_core, y_core, x_holdout, y_holdout, score, step):
 
 
 def _at_stage(estimator, x: np.ndarray, stage: int) -> np.ndarray:
+    x = x[:, estimator.research_columns_]
     staged = (
         estimator.staged_predict_proba(x)
         if hasattr(estimator, "predict_proba")
@@ -159,6 +178,11 @@ def _at_stage(estimator, x: np.ndarray, stage: int) -> np.ndarray:
         if index == stage:
             return prediction
     raise ValueError("Requested boosting stage exceeds the fitted model")
+
+
+def _left_out(columns: list[str], estimator) -> list[str]:
+    return [name for name, kept in zip(columns, estimator.research_columns_, strict=True)
+            if not kept]
 
 
 def _log_loss(labels: np.ndarray, probabilities: np.ndarray) -> float:
@@ -387,6 +411,8 @@ def run(
     fits = []
     for group, columns in groups.items():
         x_all = panel[columns].to_numpy(np.float32)
+        # Ratios with a zero denominator (and float32 overflow) are missing, not infinite.
+        x_all[~np.isfinite(x_all)] = np.nan
         variants = [("hybrid", config["horizons"])]
         if group in config["fixed_band_sets"]:
             variants += [("fixed", horizons_all), ("hybrid", config["comparison_horizons"])]
@@ -399,7 +425,8 @@ def run(
                 )
                 priors = evaluation.prior_probabilities(labels[usable], markets[usable])
                 fits.append({"set": group, "band": band, "horizon": horizon, "stage": stage,
-                             "holdout_log_loss": holdout_loss})
+                             "holdout_log_loss": holdout_loss,
+                             "left_out_features": _left_out(columns, estimator)})
                 for split_name in ("validation", "test"):
                     rows = (split == split_name) & (labels != evaluation.INVALID)
                     probabilities = _three_class(
@@ -434,7 +461,8 @@ def run(
                 model_settings,
             )
             fits.append({"set": group, "band": "alpha", "horizon": horizon, "stage": stage,
-                         "holdout_mse": holdout_loss})
+                         "holdout_mse": holdout_loss,
+                         "left_out_features": _left_out(columns, estimator)})
             for split_name in ("validation", "test"):
                 rows = (split == split_name) & np.isfinite(alpha)
                 prediction = _at_stage(estimator, x_all[rows], stage) * scale

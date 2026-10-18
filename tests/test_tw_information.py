@@ -125,6 +125,23 @@ def test_bootstrap_rank_ic_and_date_means():
     assert means[0] == pytest.approx([0.3, 0.2, 0.5]) and means[2] == pytest.approx([0.1, 0.1, 0.8])
 
 
+def test_fits_leave_out_columns_without_train_variation():
+    rng = np.random.default_rng(5)
+    rows = 3_000
+    informative = rng.normal(size=rows)
+    x = np.column_stack([informative, np.full(rows, np.nan), np.full(rows, 2.0)]).astype(np.float32)
+    assert information.informative_columns(x).tolist() == [True, False, False]
+    labels = np.where(informative > 0.5, 2, np.where(informative < -0.5, 0, 1)).astype(np.int8)
+    dates = np.repeat(np.arange(100), rows // 100)
+    model = {"learning_rate": 0.1, "max_iter": 10, "max_leaf_nodes": 7, "min_samples_leaf": 20,
+             "l2_regularization": 0.0, "stage_step": 5, "holdout_fraction": 0.2,
+             "holdout_embargo_sessions": 2, "seed": 0}
+    estimator, stage, _loss = information.fit_classifier(x, labels, dates, model)
+    assert information._left_out(["a", "b", "c"], estimator) == ["b", "c"]
+    probabilities = information._at_stage(estimator, x[:10], stage)
+    assert probabilities.shape == (10, 3)
+
+
 def _sums(values):
     return pd.DataFrame({"sum": values, "count": np.full(len(values), 10.0)},
                         index=pd.RangeIndex(len(values)))
@@ -201,6 +218,9 @@ def test_end_to_end_report_from_a_synthetic_panel(tmp_path):
     validation = report["results"]["validation"]["F0"]["1"]["hybrid_classification"]["TW"]
     assert validation["samples"] > 0 and np.isfinite(validation["direction"])
     assert "F0" in report["results"]["test"] and "us_pre_open" in report["criteria"]
+    # Flow aggregates are empty without flow sources and are left out, not fatal.
+    market = next(fit for fit in report["fits"] if fit["set"] == "market")
+    assert "agg_foreign_ratio_1d" in market["left_out_features"]
     assert (tmp_path / "out" / "summary.md").read_text().startswith("# 台股資訊測試摘要")
     with pytest.raises(FileExistsError):
         information.run(config_path, auxiliary, tmp_path / "out", workers=1,

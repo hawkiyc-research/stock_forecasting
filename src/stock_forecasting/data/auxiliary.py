@@ -41,6 +41,8 @@ TPEX_SOURCES = ("tpex_institutional", "tpex_margin")
 TAIFEX_SOURCES = ("taifex_futures", "taifex_put_call")
 SOURCES = (*TWSE_SOURCES, *TPEX_SOURCES, *TAIFEX_SOURCES, "eodhd_series")
 DEFAULT_EODHD_SERIES = ("SOX.INDX", "USDTWD.FOREX", "SOXX.US")
+# Every other column of an auxiliary table is numeric and is stored as float64.
+TEXT_COLUMNS = frozenset({"timestamp", "symbol", "market", "commodity", "investor"})
 EODHD_ENDPOINT = "https://eodhd.com/api/eod/{symbol}"
 # Asia/Taipei clock time after which session t's value is published; a day offset
 # of 1 means the value only exists on the next calendar morning (US closes).
@@ -114,6 +116,12 @@ class _TableWriter:
         import pyarrow as pa
         import pyarrow.parquet as pq
 
+        # Fix the schema: a value column that is all None on the first session must not
+        # become a null-typed column that later sessions cannot be cast to.
+        frame = frame.copy()
+        for column in frame.columns:
+            if column not in TEXT_COLUMNS:
+                frame[column] = pd.to_numeric(frame[column], errors="coerce").astype("float64")
         table = pa.Table.from_pandas(frame, preserve_index=False)
         if self.writer is None:
             self.temporary.parent.mkdir(parents=True, exist_ok=True)

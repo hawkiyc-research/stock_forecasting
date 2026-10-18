@@ -228,3 +228,19 @@ def test_options_reject_unknown_sources_and_half_relay_credentials(tmp_path):
     assert auxiliary._month_ranges("2021-01-15", "2021-03-01") == [
         ("2021-01-15", "2021-01-31"), ("2021-02-01", "2021-02-28"),
     ]
+
+
+def test_table_writer_keeps_a_stable_numeric_schema(tmp_path):
+    writer = auxiliary._TableWriter(tmp_path / "flows.parquet")
+    # The first session has a value column without any value; later sessions have integers.
+    writer.write(pd.DataFrame({"timestamp": ["2021-01-04"], "symbol": ["2330.TW"],
+                               "offset_lots": [None]}))
+    writer.write(pd.DataFrame({"timestamp": ["2021-01-05"], "symbol": ["2330.TW"],
+                               "offset_lots": [12]}))
+    record = writer.close()
+    table = pd.read_parquet(tmp_path / "flows.parquet")
+    assert record["rows"] == 2
+    assert str(table["offset_lots"].dtype) == "float64"
+    assert table["offset_lots"].isna().tolist() == [True, False]
+    assert table["offset_lots"].iloc[1] == 12.0
+    assert table["symbol"].tolist() == ["2330.TW", "2330.TW"]
