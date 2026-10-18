@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "name": "tw-information-test",
+  "description": "Phase 1: can free Taiwan flow, futures and US overnight data predict up versus down beyond a coin flip?",
+  "experiment_config": "configs/experiments/a_absolute_direction64.yaml",
+  "markets": ["TWSE", "TPEX"],
+  "horizons": [1, 2, 3, 5],
+  "comparison_horizons": [10, 14],
+  "fixed_band": 0.01,
+  "cost_floor": {"stock": 0.00585, "etf": 0.00385},
+  "band_volatility_days": 20,
+  "neutral_share_target": 0.3333333333333333,
+  "signal_times": {"evening": "22:00", "pre_open": "08:30"},
+  "us_symbols": ["SPY.US", "QQQ.US", "XLK.US", "TSM.US"],
+  "feature_sets": {
+    "F0": ["technical"],
+    "F0_long": ["technical", "long_lookback"],
+    "short_only": ["technical_short"],
+    "flows": ["technical", "flows"],
+    "market": ["technical", "market"],
+    "us_evening": ["technical", "us_evening"],
+    "us_pre_open": ["technical", "us_pre_open"],
+    "all_evening": ["technical", "flows", "market", "us_evening"],
+    "all_pre_open": ["technical", "flows", "market", "us_pre_open"]
+  },
+  "fixed_band_sets": ["F0", "all_pre_open"],
+  "model": {
+    "learning_rate": 0.05,
+    "max_leaf_nodes": 31,
+    "min_samples_leaf": 500,
+    "l2_regularization": 1.0,
+    "max_iter": 400,
+    "stage_step": 10,
+    "holdout_fraction": 0.2,
+    "holdout_embargo_sessions": 15,
+    "seed": 42
+  },
+  "bootstrap": {"replicates": 1000, "block": 5, "seed": 7},
+  "criteria": {
+    "decision_horizons": [1, 2, 3],
+    "min_passing_horizons": 2,
+    "min_relative_improvement": 0.01
+  },
+  "backtest": {"top_fraction": 0.1}
+}
