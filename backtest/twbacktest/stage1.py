@@ -9,12 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
-import os
-import uuid
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import UTC, datetime
-from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -23,44 +18,24 @@ import pandas as pd
 
 from twbacktest import data, engine
 from twbacktest.costs import primary_scenario, scenarios
+from twbacktest.runner import (
+    MAX_WORKERS,
+    clean,
+    default_output_root,
+    default_workers,
+    number,
+    percent,
+    prepare_inputs,
+    run_tasks,
+)
 
 BACKTEST_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = BACKTEST_ROOT / "config" / "stage1.json"
 DEFAULT_ARTIFACTS = BACKTEST_ROOT.parent / "artifacts"
-# Each task holds the Taiwan rows of two return arrays and one signal (~0.1 GB);
-# the budget leaves room for memory-mapped pages and pandas overhead.
-WORKER_MEMORY_BYTES = 512 * 1024**2
-MAX_WORKERS = 16
-THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                    "VECLIB_MAXIMUM_THREADS")
 KEY_COLUMNS = ["split", "market", "signal", "kind", "h", "k", "version", "discount",
                "slippage_multiplier", "turnover_mode"]
 
 _STATE: dict[str, Any] = {}
-
-
-def default_workers(tasks: int) -> int:
-    configured = os.environ.get("BACKTEST_WORKERS")
-    if configured:
-        workers = int(configured)
-        if not 1 <= workers <= MAX_WORKERS:
-            raise ValueError(f"BACKTEST_WORKERS must be 1-{MAX_WORKERS}")
-        return workers
-    try:
-        memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        by_memory = max(1, memory // 4 // WORKER_MEMORY_BYTES)
-    except (ValueError, OSError, AttributeError):
-        by_memory = 2
-    return max(1, min(MAX_WORKERS, (os.cpu_count() or 2) - 1, by_memory, tasks))
-
-
-def _inputs(config: dict[str, Any], artifacts: Path) -> dict[str, Any]:
-    paths = config["inputs"]
-    return {
-        "alpha_baseline": artifacts / paths["alpha_baseline"],
-        "direction_baseline": artifacts / paths["direction_baseline"],
-        "predictions_root": artifacts / paths["predictions_root"],
-    }
 
 
 def _initialize(config: dict[str, Any], inputs: dict[str, Any], indexes: dict, totals: dict):
@@ -109,58 +84,14 @@ def run_task(task: tuple[str, str, str]) -> list[dict[str, Any]]:
 
 
 def run_grid(config: dict[str, Any], artifacts: Path, workers: int | None) -> tuple:
-    inputs = _inputs(config, artifacts)
-    inputs["digests"] = {}
-    indexes, totals = {}, {}
-    for split in config["splits"]:
-        digest = data.baseline_digest(inputs["alpha_baseline"], split)
-        if digest != data.baseline_digest(inputs["direction_baseline"], split):
-            raise ValueError(f"Alpha and direction baselines differ in {split} row order")
-        inputs["digests"][split] = digest
-        indexes[split] = data.build_split_index(inputs["alpha_baseline"], split)
-        totals[split] = int(np.load(inputs["alpha_baseline"] / "inputs" / split / "targets.npy",
-                                    mmap_mode="r").shape[0])
+    inputs, indexes, totals = prepare_inputs(config, artifacts)
     tasks = [(split, signal, market) for split in config["splits"]
              for signal in config["signals"] for market in config["markets"]]
     workers = workers or default_workers(len(tasks))
-    for name in THREAD_VARIABLES:
-        os.environ.setdefault(name, "1")
-    rows: list[dict[str, Any]] = []
-    if workers == 1:
-        _initialize(config, inputs, indexes, totals)
-        for task in tasks:
-            rows.extend(run_task(task))
-    else:
-        with ProcessPoolExecutor(
-            max_workers=workers, mp_context=get_context("spawn"), initializer=_initialize,
-            initargs=(config, inputs, indexes, totals),
-        ) as pool:
-            pending: set = set()
-            for task in tasks:
-                pending.add(pool.submit(run_task, task))
-                # Backpressure: at most two tasks per worker in flight.
-                if len(pending) >= 2 * workers:
-                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        rows.extend(future.result())
-            for future in pending:
-                rows.extend(future.result())
+    rows = run_tasks(tasks, run_task, initializer=_initialize,
+                     initargs=(config, inputs, indexes, totals), workers=workers)
     grid = pd.DataFrame(rows).sort_values(KEY_COLUMNS, kind="stable").reset_index(drop=True)
     return grid, indexes, workers
-
-
-def _clean(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _clean(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_clean(item) for item in value]
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (float, np.floating)):
-        return None if not math.isfinite(float(value)) else float(value)
-    if isinstance(value, np.bool_):
-        return bool(value)
-    return value
 
 
 def _scenario_mask(grid: pd.DataFrame, scenario) -> pd.Series:
@@ -249,18 +180,6 @@ def best_per_signal(grid: pd.DataFrame, config: dict[str, Any]) -> list[dict[str
     return output
 
 
-def _percent(value: Any) -> str:
-    if value is None or (isinstance(value, float) and not math.isfinite(value)):
-        return "—"
-    return f"{100 * float(value):+.1f}%"
-
-
-def _number(value: Any) -> str:
-    if value is None or (isinstance(value, float) and not math.isfinite(value)):
-        return "—"
-    return f"{float(value):+.2f}"
-
-
 def summary_markdown(report: dict[str, Any]) -> str:
     primary = report["config"]["costs"]["primary"]
     lines = ["# 台股回測第一階段摘要 / Taiwan Backtest Stage 1 Summary", "", "## 中文", "",
@@ -279,12 +198,12 @@ def summary_markdown(report: dict[str, Any]) -> str:
         val, test = item["validation"], item["test"] or {}
         cells = (
             f"| {market} | {chosen['signal']} | {chosen['h']} | {chosen['k']} | "
-            f"{_percent(val['net_excess_annual'])} [{_percent(val['net_excess_annual_low'])}, "
-            f"{_percent(val['net_excess_annual_high'])}] | "
-            f"{_percent(test.get('net_excess_annual'))} "
-            f"[{_percent(test.get('net_excess_annual_low'))}, "
-            f"{_percent(test.get('net_excess_annual_high'))}] | "
-            f"{_number(test.get('net_excess_ir'))} | {_percent(test.get('max_drawdown'))} | "
+            f"{percent(val['net_excess_annual'])} [{percent(val['net_excess_annual_low'])}, "
+            f"{percent(val['net_excess_annual_high'])}] | "
+            f"{percent(test.get('net_excess_annual'))} "
+            f"[{percent(test.get('net_excess_annual_low'))}, "
+            f"{percent(test.get('net_excess_annual_high'))}] | "
+            f"{number(test.get('net_excess_ir'))} | {percent(test.get('max_drawdown'))} | "
         )
         lines.append(cells + ("是 |" if item["passed"] else "否 |"))
         rows_en.append(cells + ("yes |" if item["passed"] else "no |"))
@@ -298,11 +217,6 @@ def summary_markdown(report: dict[str, Any]) -> str:
               "[95% CI] | Test IR | Test max drawdown | Passed |",
               "| --- | --- | ---: | ---: | --- | --- | ---: | ---: | --- |", *rows_en]
     return "\n".join(lines) + "\n"
-
-
-def default_output_root(artifacts: Path) -> Path:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    return artifacts / "diagnostics" / "backtest" / f"stage1-{stamp}-{uuid.uuid4().hex[:8]}"
 
 
 def run(config_path: Path, artifacts: Path, output_root: Path, workers: int | None) -> dict:
@@ -332,7 +246,7 @@ def run(config_path: Path, artifacts: Path, output_root: Path, workers: int | No
         "sensitivity": sensitivities(grid, selection),
         "best_per_signal": best_per_signal(grid, config),
     }
-    report = _clean(report)
+    report = clean(report)
     output_root.mkdir(parents=True, exist_ok=False)
     grid.to_csv(output_root / "grid.csv", index=False)
     (output_root / "report.json").write_text(json.dumps(report, indent=1, ensure_ascii=False))
@@ -349,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.workers is not None and not 1 <= args.workers <= MAX_WORKERS:
         parser.error(f"--workers must be 1-{MAX_WORKERS}")
-    output_root = args.output_root or default_output_root(args.artifacts_root)
+    output_root = args.output_root or default_output_root(args.artifacts_root, "stage1")
     report = run(args.config, args.artifacts_root, output_root, args.workers)
     print(json.dumps({"output_root": str(output_root),
                       "gate_passed_markets": report["gate_passed_markets"]}, indent=2))
