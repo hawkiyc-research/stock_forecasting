@@ -5,6 +5,8 @@
 狀態：**設計草稿，待審閱；尚未實作，也未授權任何 GPU 訓練。** 本文件只定義方法、實驗與事先固定的
 validation 判準。是否啟動取決於 P0（逐樣本匯出與誤差拆解）的結果，見第 4.1 節。
 
+**2026-10-18 更新：** P0 已完成，S0 成立：移除擇時讓 R21–R23 validation CE 平均改善 0.0146，門檻是 0.005。參照組數值見[誤差拆解報告 §7.6](error_decomposition_audit.md)。第 7 節的待確認事項仍待審閱。
+
 ### 1. 要解決的問題
 
 固定 ±1% 三分類的獨立分類器（`a-absolute-direction64`，R21–R23）在 validation 上只勉強追平
@@ -211,6 +213,8 @@ GPU 成本：每個 seed 為一次單模型分類訓練，先跑 1 個 seed，�
 Status: **design draft for review; not implemented and no GPU training authorized.** This document
 only defines the method, the experiment and pre-registered validation criteria. Whether it starts
 depends on P0 (per-sample export and error decomposition); see section 4.1.
+
+**2026-10-18 update:** P0 is complete and S0 passes: removing timing lowers R21–R23 validation CE by 0.0146 on average, against a 0.005 gate. Reference values are in [error decomposition report §7.6](error_decomposition_audit.md). The section 7 confirmation items still await review.
 
 ### 1. Problem
 
