@@ -619,6 +619,59 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 母體已通過資料清理規則，可能排除了之後停牌或下市的股票。這個偏誤對所有策略和等權基準相同，但讓絕對報酬偏樂觀。
 - 沒有模擬漲停開盤買不到、成交量不足、每筆最低手續費等限制，結果偏樂觀，需要在第三階段補上。
 
+#### 13.5 第一階段 1b：持有緩衝與逐部位記帳（本機，事先固定）
+
+§13.4 的主要設定在三個市場都未通過門檻：validation 選出的 10 日持有設定，test 淨超額年化為 −37% 至 −44%。事後分析有兩項發現：
+
+- 1 日排序在 validation 和 test 都有毛優勢。前 K 名比同日等權每天多約 25–30 bps（上市）、15–20 bps（上櫃），但主要成本情境每次來回約 52 bps，優勢被成本吃掉。
+- 相鄰兩日的前 K 名約有 85% 重疊。§13.4 的樂觀換手雖然不重複收費，卻漏算續抱股票的隔夜跳空，且仍用當沖稅率，不能作為降低換手的證據。
+
+本節用逐部位記帳檢驗：以持有緩衝降低換手，能否把排序的毛優勢轉成扣除成本後的淨超額報酬。程式與 §13.4 共用 `backtest/`；事先登記的設定記錄在 `backtest/config/stage1b.json`。
+
+**資料污染聲明**：本節的構想來自 §13.4 對 test 的事後分析（1 日毛優勢、十分位報酬與低成本情境），test 因此已不是未見資料。本節的 test 結果只作探索性判讀；唯一的確認性檢驗是第三階段，使用 2026-06-01 之後的資料，模型與規則事先凍結。
+
+事先固定的設定（2026-10-19 寫入，早於任何 1b 策略計算；寫入前只做過第 2 點的記帳恆等式檢查）：
+
+1. **資料**：與 §13.4 相同的母體、分割、13 個訊號與列順序核對。
+2. **記帳恆等式**：
+   - 同一檔股票在相鄰訊號日 d、d+1 的資料列，對 h = 1…13 都滿足 `abs[d, h+1] − abs[d+1, h] = log(open(d+2) / open(d+1))`，因此可以算出開盤到開盤的持有報酬。
+   - 寫入前的檢查：validation 96,166 組、test 93,402 組相鄰資料列全部成立（最大差異 ≤ 9×10⁻⁸）。這代表相鄰分割日期是連續交易日，且所有資料列使用同一套還原價格。
+   - 執行時重新檢查股票與指數（絕對報酬減 alpha）的恆等式；誤差 ≤ 10⁻⁵ 的比例低於 99.9% 就停止。
+3. **交易規則**（每個市場、訊號、參數組合各自模擬）：
+   - 第 d 日收盤後，以預測天數 s 的分數將該市場所有股票排序（1 = 最好）。
+   - 持有中且排名 ≤ b × K 的股票續抱；排名 > b × K 的股票賣出。
+   - 空出的位置依排名由高到低補入尚未持有的股票，補滿 K 檔。b = 1 即每天換成前 K 名，作為無緩衝對照。
+   - 所有買賣在第 d+1 日開盤集合競價成交；不設持有上限。
+   - 漲跌停：開盤相對前一日收盤上漲 9.5% 以上的買單視為買不到，該位置保留現金到下一次成交；下跌 9.5% 以上的賣單視為賣不掉，續抱並在下一個訊號日重新判斷。缺前一日資料時視為可成交；期末清倉不套用跌停限制。
+   - 資金分成 K 個等額位置。位置賣出後的淨額全數買入新股票，不做再平衡。
+   - 持有中的股票在下一個訊號日沒有資料列時，改以第 d+2 日收盤出場（`abs[d, 2]`），該位置在下一次成交保持現金。
+   - validation 與 test 各自獨立模擬：第一個訊號日收盤後建倉，最後一個訊號日的下一個開盤全部出清。
+4. **成本**：
+   - 買進：手續費 0.1425% × 折扣，加滑價。
+   - 賣出：手續費 0.1425% × 折扣，加證交稅（股票 0.3%、ETF 0.1%）與滑價。所有部位至少持有一個隔夜，不適用當沖稅。
+   - 滑價：每邊上市 10 bps、上櫃 20 bps。
+   - 主要情境：折扣 0.6、滑價 1 倍。敏感度：折扣 {1.0, 0.6, 0.28} × 滑價 {0, 1, 2} 倍。
+5. **網格**：s ∈ {1, 3, 5}；K ∈ {10, 20, 50}；b ∈ {1, 2, 4}；市場 ∈ {TWSE、TPEX、TW（兩市場合併排序）}；13 個訊號全部列入候選（方向訊號以 P(漲) − P(跌) 排序）。每個市場 351 組候選。
+6. **指標**（每日、不重疊的開盤到開盤序列）：
+   - 主要指標：組合每日淨報酬相對「同日、同市場全部股票等權、每日再平衡、不計成本」的**淨超額報酬**。
+   - 其他：年化（× 252）淨超額、IR、CAGR、Sharpe、最大回撤、每日勝率、每日單邊換手率（新買入位置數 ÷ K）、持有天數（平均、中位數、p90）、年化成本拖累、損益兩平的每邊成本（年化毛超額 ÷ 年化雙邊換手）、漲跌停擋單次數、缺資料出場次數。
+   - IR = 每日淨超額平均 ÷ 標準差 × √252。
+   - 避險版：每日減去持股位置對應指數（加權指數或櫃買指數）的開盤到開盤報酬，期貨成本以 0 近似，只作描述。
+   - 95% 區間：每日淨超額序列的 circular moving-block bootstrap，區塊長度 10 個交易日，重抽 1,000 次，seed 11。
+7. **選擇程序**：只用 validation。
+   - 每個市場在 351 組候選中，以只做多、主要成本情境的淨超額 IR 最高者為**主要設定**；同分時依訊號、s、K、b 排序。
+   - test 只跑一次。完整網格只作描述；標題結果固定為主要設定，不得改選。
+8. **門檻**：主要設定在 validation 的淨超額 95% 區間下界大於 0，**且** test 淨超額平均為正。
+   - 通過只代表值得進入第三階段前瞻測試。
+   - 三個市場都未通過時，停止「降低換手」路線，回到模型本身。
+
+判讀限制：
+
+- 從每個市場 351 組候選取最大值，會高估 validation 結果；test 已被事後分析看過，無法完全檢查這個偏差。
+- 仍未模擬成交量與流動性、每筆最低手續費、整股交易單位、股利所得稅與補充保費；母體的存活者偏誤同 §13.4。
+- 漲跌停以還原價的開盤跳空近似，除權息日可能誤判。
+- 位置不再平衡，權重會隨價格漂移。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1302,6 +1355,59 @@ Limits:
 - Validation and test each cover about five months, so intervals are wide.
 - The population already passed the data-cleaning rules, which may exclude stocks later suspended or delisted. The bias is shared by every strategy and the equal-weight benchmark, but it makes absolute returns optimistic.
 - Limit-up opens that cannot be bought, insufficient volume and minimum commissions are not simulated, so results are optimistic until stage 3 adds them.
+
+#### 13.5 Stage 1b: hold buffer with per-position accounting (local, pre-registered)
+
+The §13.4 primary configurations failed the gate in all three markets: the 10-session configurations chosen on validation lost 37% to 44% a year in net excess on test. The post-hoc analysis found two things:
+
+- One-day rankings carry a gross edge on both validation and test. The top K beat the same-date equal weight by about 25–30 bps a day on TWSE and 15–20 bps on TPEX, but a round trip in the primary cost scenario costs about 52 bps, which consumes the edge.
+- About 85% of the top K overlap between adjacent days. The §13.4 optimistic turnover charges no repeat costs, but it omits the overnight gap of held names and still applies the day-trade tax, so it is not evidence that lower turnover helps.
+
+This section uses per-position accounting to test whether a hold buffer that lowers turnover turns the ranking's gross edge into net excess return after costs. The code shares `backtest/` with §13.4; the pre-registered settings are recorded in `backtest/config/stage1b.json`.
+
+**Contamination statement**: this section was conceived from the §13.4 post-hoc analysis of test (the one-day gross edge, decile returns and low-cost scenarios), so test is no longer unseen data. Test results here are exploratory only; the only confirmatory test is stage 3, on data from 2026-06-01 onward, with models and rules frozen in advance.
+
+Fixed settings (written 2026-10-19, before any stage 1b strategy computation; only the accounting-identity check in item 2 ran before writing):
+
+1. **Data**: the same population, splits, 13 signals and row-order checks as §13.4.
+2. **Accounting identity**:
+   - For one stock's rows on adjacent signal dates d and d+1, `abs[d, h+1] − abs[d+1, h] = log(open(d+2) / open(d+1))` holds for every h = 1…13, which gives open-to-open holding returns.
+   - Check before writing: all 96,166 adjacent pairs in validation and 93,402 in test satisfy it (maximum difference ≤ 9×10⁻⁸). Adjacent split dates are therefore consecutive sessions, and every row uses the same adjusted price series.
+   - The run re-checks the identity for stocks and for the index (absolute minus alpha) and stops if fewer than 99.9% of pairs are within 10⁻⁵.
+3. **Trading rule** (simulated separately for each market, signal and parameter set):
+   - After the close of day d, rank all stocks of the market by the horizon-s prediction (1 = best).
+   - Held stocks ranked ≤ b × K are kept; held stocks ranked > b × K are sold.
+   - Empty slots are filled with the best-ranked stocks not yet held, up to K stocks. b = 1 replaces the portfolio with the top K every day and is the no-buffer control.
+   - All trades execute in the opening call auction of day d+1; there is no maximum holding period.
+   - Price limits: a buy whose open is 9.5% or more above the previous close cannot be filled, and its slot stays in cash until the next execution; a sell whose open is 9.5% or more below the previous close cannot be filled, so the stock is held and re-evaluated on the next signal date. A missing previous-day row counts as fillable; the final liquidation ignores the limit-down rule.
+   - Capital is split into K equal slots. A sold slot's net proceeds buy the new stock in full; there is no rebalancing.
+   - A held stock with no row on the next signal date exits at the close of day d+2 (`abs[d, 2]`), and its slot stays in cash at the next execution.
+   - Validation and test are simulated separately: positions are opened after the close of the first signal date and fully liquidated at the open after the last signal date.
+4. **Costs**:
+   - Buy: commission 0.1425% × discount, plus slippage.
+   - Sell: commission 0.1425% × discount, plus transaction tax (0.3% for stocks, 0.1% for ETFs) and slippage. Every position is held at least overnight, so the day-trade tax never applies.
+   - Slippage: 10 bps per side on TWSE and 20 bps on TPEX.
+   - Primary scenario: discount 0.6, slippage ×1. Sensitivity: discount {1.0, 0.6, 0.28} × slippage {0, 1, 2}×.
+5. **Grid**: s ∈ {1, 3, 5}; K ∈ {10, 20, 50}; b ∈ {1, 2, 4}; market ∈ {TWSE, TPEX, TW (both ranked together)}; all 13 signals are candidates (direction signals rank by P(up) − P(down)). Each market has 351 candidates.
+6. **Metrics** (daily, non-overlapping open-to-open series):
+   - Primary metric: the portfolio's daily net return in **net excess** of the same-date, same-market, daily-rebalanced, cost-free equal weight of all stocks.
+   - Others: annualized (× 252) net excess, IR, CAGR, Sharpe, maximum drawdown, daily hit rate, daily one-way turnover (newly bought slots ÷ K), holding period (mean, median, p90), annual cost drag, break-even cost per side (annual gross excess ÷ annual two-way turnover), price-limit blocks and missing-row exits.
+   - IR = mean daily net excess ÷ its standard deviation × √252.
+   - Hedged version: subtract each held slot's index (TAIEX or the TPEx index) open-to-open return every day, with futures costs approximated as 0; descriptive only.
+   - 95% intervals: a circular moving-block bootstrap of the daily net-excess series, block length 10 sessions, 1,000 replicates, seed 11.
+7. **Selection**: validation only.
+   - In each market, the candidate among the 351 with the highest net-excess IR under long-only and the primary costs is the **primary configuration**; ties are broken by signal, s, K and b.
+   - Test runs once. The full grid is descriptive; the headline is the primary configuration and is not re-selected.
+8. **Gate**: the primary configuration's validation net-excess 95% interval has a lower bound above 0 **and** its test mean net excess is positive.
+   - Passing only means the configuration earns a stage 3 forward test.
+   - If no market passes, the lower-turnover route stops and work returns to the models themselves.
+
+Limits:
+
+- Taking the best of 351 candidates per market overstates validation, and test has already been seen in post-hoc analysis, so it cannot fully check that bias.
+- Volume and liquidity, minimum commissions, board lots, and dividend income tax and the supplementary health premium are still not simulated; the population's survivorship bias is as in §13.4.
+- Price limits are approximated from adjusted opening gaps and may be misjudged on ex-dividend dates.
+- Slots are not rebalanced, so weights drift with prices.
 
 ### 14. Remote-validation boundary
 
