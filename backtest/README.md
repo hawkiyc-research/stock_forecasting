@@ -37,6 +37,30 @@ uv run pytest
 uv run ruff check .
 ```
 
+### 第一階段回測
+
+第一階段依照 `docs/experiment_protocol.md` §13.4 的事先登記規則，以
+`config/stage1.json` 的固定設定回測台股（TWSE、TPEX 與兩者合併）排序訊號：收盤後產生
+訊號、次一交易日開盤買進、持有 h 個交易日後收盤賣出，每日選前 K 檔等權持有，並扣除手續費、
+證交稅、當沖稅與滑價。主要設定只用 validation 選出，test 只用於最後檢驗。
+
+```bash
+uv run python -m twbacktest.stage1
+```
+
+| 選項 | 說明 | 預設值 |
+| --- | --- | --- |
+| `--config` | 回測設定檔 | `config/stage1.json` |
+| `--artifacts-root` | 主專案 `artifacts/` 目錄 | `../artifacts` |
+| `--output-root` | 本次輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/stage1-<UTC 時間>-<隨機碼>` |
+| `--workers` | 平行 process 數，1 至 16 | 依 CPU 核心數與實體記憶體計算 |
+
+也可以用環境變數 `BACKTEST_WORKERS` 指定 worker 數。輸出目錄包含：
+
+- `report.json`：選出的主要設定、門檻判定、成本敏感度與每個訊號的描述性結果。
+- `grid.csv`：所有訊號、市場、持有天數、K、版本與成本情境的指標。
+- `summary.md`：中英雙語摘要表。
+
 ## English
 
 ### Purpose
@@ -73,3 +97,31 @@ Run lint:
 ```bash
 uv run ruff check .
 ```
+
+### Stage 1 backtest
+
+Stage 1 follows the pre-registered rules in `docs/experiment_protocol.md` §13.4 and uses the
+fixed settings in `config/stage1.json` to backtest Taiwan ranking signals (TWSE, TPEX and both
+combined). Signals are formed after the close; positions are bought at the next session's open
+and sold at the close h sessions later. Each day the top K stocks are held with equal weights,
+net of commission, transaction tax, day-trade tax and slippage. Primary configurations are
+chosen on validation only; test is used once for the final check.
+
+```bash
+uv run python -m twbacktest.stage1
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--config` | Backtest configuration file | `config/stage1.json` |
+| `--artifacts-root` | Main project `artifacts/` directory | `../artifacts` |
+| `--output-root` | Output directory for this run; it must not exist yet | `artifacts/diagnostics/backtest/stage1-<UTC time>-<random>` |
+| `--workers` | Parallel processes, 1 to 16 | Derived from CPU cores and physical memory |
+
+The `BACKTEST_WORKERS` environment variable also sets the worker count. The output directory
+contains:
+
+- `report.json`: the selected primary configurations, gate results, cost sensitivities and
+  descriptive results for every signal.
+- `grid.csv`: metrics for every signal, market, holding period, K, version and cost scenario.
+- `summary.md`: a bilingual summary table.
