@@ -31,8 +31,24 @@
   Kronos 與 GBDT 皆然。台股 alpha 的 test Rank IC 只在 1–3 日延續（1 日 0.063，14 日 −0.043）。
 - **擱置**：推論期正規化與 P1 日期固定效果先擱置，因為兩者都移除了方向判斷。
 - **第 1 階段**：只用 CPU 的資訊測試，以 GBDT 檢驗免費的台股籌碼、期貨與美股隔夜資料，
-  能否讓「漲還是跌」優於先驗。程式已完成、尚未執行。判準見[實驗協定 §13.3](docs/experiment_protocol.md)，
-  操作見 README「台股資訊測試」。[S13]
+  能否讓「漲還是跌」優於先驗。2026-10-18 已執行，未通過（見下方 2026-10-19 增補）。
+  判準見[實驗協定 §13.3](docs/experiment_protocol.md)，操作見 README「台股資訊測試」。[S13]
+
+**2026-10-19 增補（第 1 階段結果與回測）：**
+
+- **第 1 階段資訊測試未通過**（`information_found=false`）：8 個新增特徵組都沒有在兩個以上的
+  決策天期通過。最佳為 `all_pre_open` 1 日，「漲還是跌」CE 比先驗改善 1.34%，但相對 `F0`
+  的 95% 區間跨 0；`us_pre_open` 1 日改善 0.94%。TAIFEX 期貨與 Put/Call 資料下載失敗，
+  因為免費下載只提供近 3 年。[S14]
+- **回測第一階段與 1b 都未通過**（[回測結果報告](docs/backtest_stage1_results.md)）：
+  - 固定持有天數（[§13.4](docs/experiment_protocol.md)）：validation 選出的 10 日設定，
+    test 年化淨超額 −37% 至 −44%。
+  - 持有緩衝、逐部位記帳（[§13.5](docs/experiment_protocol.md)）：test −13% 至 −40%（探索性）。
+  - 前 K 名的優勢只在交易時段：次一交易日開盤到收盤領先等權約 20–31 bps（上市），收盤到
+    下一個開盤又落後約 5–30 bps。持有過夜會抵銷優勢；只在交易時段持有則是當沖，來回成本
+    0.52% 高於優勢。
+  - 長天期的整體 Rank IC 為正時，test 的前 K 名仍可能反轉；validation 選出的設定在 test 反轉。
+  - 依事先登記，停止「降低換手」路線，回到模型本身。[S15]
 
 現行架構是兩套獨立模型，不是方向 V1／V2／V3 的新名稱，也不是共享 backbone 的雙頭多任務模型。歷史中曾有 **validation 已顯示品質不佳、使用者要求直接停止訓練** 的實驗；第 6 節特別保留，不把它們包裝成完成的 holdout 實驗，也不與硬體、OOM 或啟動失敗混為一談。
 
@@ -349,7 +365,10 @@ Baseline 包含 always_buy、zero_return、momentum_5d、reversal_5d、ma_crosso
 | --- | --- | --- | --- |
 | 完成 | **日期層級與同日橫斷面的誤差分解（不需 GPU）**：見[誤差拆解報告](docs/error_decomposition_audit.md) | Alpha 日期層級只占標準化 MSE 2.6%–3.8%（上市例外）；loss 由尾端樣本主導；分類日期層級資訊 5.4%–5.9% CE，但 baseline 擇時皆為負，可學部分是同日鑑別力（+0.023–0.029 CE） | 已用 baseline 記錄值核對到 5×10⁻⁷；主模型逐樣本預測未保存，主模型只做逐日輔助分析 |
 | 完成 | **保存逐樣本預測並對 R21–R24 checkpoint 重跑 validation／test（GPU 推論）**：含依[實驗協定 §13.2](docs/experiment_protocol.md) 重選的 R21／R22 alpha checkpoint；結果見[誤差拆解報告第 7 節](docs/error_decomposition_audit.md) | 匯出與訓練紀錄完全一致（R21–R23 差距 0）。分類：Kronos 同日鑑別力最佳，落後來自擇時；移除擇時後 validation 1.0034–1.0065（GBDT 1.0047）、test 0.986（GBDT 0.990）。Alpha：Kronos 同日相關 0.10–0.12，US Rank IC 延續到 test，台股對所有模型都崩落。三 seed 集成在 loss 類指標最好 | 10 個 checkpoint，RTX 5090 約 3.5 小時；匯出 Pod 因 lifecycle bug 多閒置約 4.4 小時，已於 `e8d29a8` 修正 |
-| P0 | **第 1 階段：台股免費資料的方向資訊測試（只用 CPU）**：見[實驗協定 §13.3](docs/experiment_protocol.md) | 「漲還是跌」在每個天期都不優於先驗（Kronos 與 GBDT 皆然）；台股 alpha 的 test Rank IC 只在 1–3 日延續 | 已實作、待執行。事先固定的判準：某新增特徵組在 1／2／3 日中至少兩個天期，「漲還是跌」CE 比先驗改善至少 1%，且相對先驗與 `F0` 的 95% 區間下界皆大於 0。通過後才設計台股模型；GPU 訓練另外核准 |
+| 完成 | **第 1 階段：台股免費資料的方向資訊測試（只用 CPU）**：見[實驗協定 §13.3](docs/experiment_protocol.md) | 未通過：8 個特徵組都沒有在兩個以上的決策天期通過；最佳 `all_pre_open` 1 日比先驗改善 1.34%，相對 `F0` 的區間跨 0。TAIFEX 下載失敗（免費資料只有近 3 年） | 事先固定判準見 §13.3；結果檔見 S14 |
+| 完成 | **回測第一階段：固定持有天數（本機）**：見[實驗協定 §13.4](docs/experiment_protocol.md) 與[回測結果報告](docs/backtest_stage1_results.md) | 三個市場未通過，test 年化淨超額 −37% 至 −44%；1 日毛優勢被成本吃掉；長天期 test 尾端反轉；大型權值股主導期間，指數避險版全部為負 | 事先登記 `5ddeff6`、程式 `a292a3b`；輸出見 S15 |
+| 完成 | **回測 1b：持有緩衝與逐部位記帳（本機）**：見[實驗協定 §13.5](docs/experiment_protocol.md) 與[回測結果報告](docs/backtest_stage1_results.md) | 三個市場未通過，test −13% 至 −40%（探索性）；前 K 名優勢只在交易時段、隔夜反轉；降低換手省下約四分之三的成本，但沒有毛優勢可保留 | 事先登記 `c4ee514`、程式 `4a5bdbb`；依協定停止降低換手路線 |
+| P0（待討論） | **讓標籤與評估對齊持有方式**：多日持有需要撐得過隔夜的訊號；評估改看與持有方式一致的報酬口徑（例如開盤到開盤）與前 K 名扣成本的表現 | 1 日 alpha 標籤是次一交易日開盤到收盤，前 K 名在隔夜反轉；長天期整體 Rank IC 為正，但前 K 名尾端反轉 | 方案先討論並寫入協定；只用 train／validation 定案；確認性檢驗用 2026-06-01 之後的資料；GPU 訓練另外核准 |
 | 擱置 | **分類器推論期的同日先驗正規化（不需 GPU 訓練）**：做成正式的推論與評估選項。2026-10-18 擱置：移除擇時也移除了交易規則需要的方向判斷 | 移除擇時是無標籤、可部署的後處理；validation 追平 GBDT，market-macro 三個 seed 都優於 GBDT；test 優於 GBDT | 先在協定寫好 validation 驗收判準；對所有模型一致套用；同一日期與市場的股票須一起推論；需實作授權 |
 | 擱置 | **訓練時的日期固定效果**（分類優先）：設計草稿與事先固定的判準見 [P1 設計](docs/p1_date_market_logit_adjustment_design.md)。2026-10-18 擱置，理由同上 | **S0 成立**：移除擇時讓 R21–R23 validation CE 平均改善 0.0146（門檻 0.005）；參照組數值已量測（誤差拆解報告 §7.6） | 單因子新 preset；輸出格式不變；三 seed、事先固定 validation 判準；必須勝過免費的推論期正規化（判準 C1） |
 | P2 | 同日去均值的 alpha 目標（降級） | Alpha 日期層級成分小，預期改善有限；上市市場例外 | 只作次要研究，不視為 alpha 主要解法 |
@@ -361,7 +380,7 @@ Baseline 包含 always_buy、zero_return、momentum_5d、reversal_5d、ma_crosso
 | P2 | 如要重測長歷史，用清理後共用評估的B模型，或先以既有bar-store預先固定rolling windows | 舊A/B受不同membership／尺度影響；現行只有A的三seed完成證據 | 所有跨度變更須列清train/validation/test與尺度；不以既有test反覆選方案；付費工作另授權 |
 | P2 | 容量仍可研究LoRA，partial作次要對照；暫不把rank128／Kronos-large當保證解法 | LoRA64在舊組較好；partial失敗，Adaptive128僅定義 | 清楚區分已定義／已跑；控制訓練預算與多seed；不再只報工程驗收數量 |
 
-**不得再次直接複製的失敗路徑：** 為提高coverage而偏離方向問題；把成本／交易規則揉入預測標籤；只看accuracy掩蓋類別塌縮；以PCGrad有梯度或CUDA smoke通過當品質提升；只換seed選好看的test；把B較大但少數指標較差的現象直接斷言為容量不足；假設跨日期混洗的 batch 必然改善泛化（R24 已反證）。
+**不得再次直接複製的失敗路徑：** 為提高coverage而偏離方向問題；把成本／交易規則揉入預測標籤；只看accuracy掩蓋類別塌縮；以PCGrad有梯度或CUDA smoke通過當品質提升；只換seed選好看的test；把B較大但少數指標較差的現象直接斷言為容量不足；假設跨日期混洗的 batch 必然改善泛化（R24 已反證）；以 1 日開盤到收盤的 Rank IC 推論多日持有的可交易性（回測 1b 已反證）。
 
 ### 10 證據路徑與接手檢查表
 
@@ -380,6 +399,8 @@ Baseline 包含 always_buy、zero_return、momentum_5d、reversal_5d、ma_crosso
 - **S11** R24 產物：分支 `claude/model-performance-20261016` worktree 的 `artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44/`（`pair.json`、`download-result.json`），以及 `-alpha`／`-direction` 子目錄的 manifest、resolved config、`metrics.jsonl`、`summary.json`、leaderboard 與最終 `validation-benchmark.json`。`artifacts/` 不受 Git 追蹤，移交時需另行攜帶。
 - **S12** [誤差拆解報告](docs/error_decomposition_audit.md)，以及本分支 worktree 的 `artifacts/audit/`（`decomposition_audit.py`、`decomposition-results.json`、下載的 baseline 評估陣列）；同樣不受 Git 追蹤。
 - **S13** P0 逐樣本匯出與拆解（[誤差拆解報告第 7 節](docs/error_decomposition_audit.md)）：本分支 worktree 的 `artifacts/diagnostics/signal-predictions/`（10 個 checkpoint 的 validation／test 逐樣本預測、`export.json` 與 `split.json`），以及 `artifacts/diagnostics/signal-decomposition/`（`results-p0.json`、`rank-ic-p0.json` 與執行 log）；不受 Git 追蹤。
+- **S14** 第 1 階段資訊測試輸出：本分支 worktree 的 `artifacts/diagnostics/tw-information-test/launch-20261018T132744Z-378616789/`（`report.json`、`summary.md`、`auxiliary-manifest.json`）；不受 Git 追蹤。
+- **S15** [回測結果報告](docs/backtest_stage1_results.md)，以及本分支 worktree 的 `artifacts/diagnostics/backtest/stage1-20261018T221138Z-a2a9d283/` 與 `stage1b-20261018T224557Z-f9cd85b4/`（`report.json`、`grid.csv`、`summary.md`、1b 的 `daily.csv`）；不受 Git 追蹤。
 
 Git 已追蹤文件會隨 repository 移交；`artifacts/` 與 `.runpod/` 通常被忽略，不會因 clone 自動取得。移交其他工具時，至少附本文件、三份最新DOCX與必要run的metadata／metrics；不要把私鑰、`.env`、API token或整個W&B原始環境一起打包。已被清理的run不再要求從已不存在的路徑讀取。
 
@@ -457,9 +478,29 @@ The main reason training "does not work" is that the objective and evaluation le
 - **Shelved**: the inference-time normalization and the P1 date fixed effects, because both remove
   the direction judgment.
 - **Phase 1**: a CPU-only information test in which GBDT checks whether free Taiwan flow, futures
-  and US overnight data beat the prior on "up or down". The code is complete and has not run yet.
-  Criteria are in [experiment protocol §13.3](docs/experiment_protocol.md); operation is in the
-  README's "Taiwan information test".[S13]
+  and US overnight data beat the prior on "up or down". It ran on 2026-10-18 and did not pass (see
+  the 2026-10-19 addendum below). Criteria are in [experiment protocol §13.3](docs/experiment_protocol.md);
+  operation is in the README's "Taiwan information test".[S13]
+
+**2026-10-19 addendum (Phase 1 result and backtests):**
+
+- **The Phase 1 information test did not pass** (`information_found=false`): none of the 8 added
+  feature sets passed on two or more decision horizons. The best, `all_pre_open` at 1 session,
+  improved "up or down" CE on the prior by 1.34%, but its 95% interval against `F0` crosses 0;
+  `us_pre_open` at 1 session improved by 0.94%. TAIFEX futures and put/call downloads failed
+  because the free download covers only the last three years.[S14]
+- **Backtest stage 1 and stage 1b both failed** ([backtest results report](docs/backtest_stage1_results.md)):
+  - Fixed holding periods ([§13.4](docs/experiment_protocol.md)): the 10-session configurations
+    chosen on validation lost 37% to 44% a year in net excess on test.
+  - Hold buffer with per-position accounting ([§13.5](docs/experiment_protocol.md)): test −13% to
+    −40% (exploratory).
+  - The top-K edge exists only during sessions: from the next session's open to its close the top
+    names lead equal weight by about 20–31 bps on TWSE, then trail by about 5–30 bps from that
+    close to the following open. Holding overnight cancels the edge; holding only during the
+    session is a day trade whose 0.52% round trip exceeds the edge.
+  - Even when overall long-horizon Rank IC is positive, the test top K can invert; configurations
+    chosen on validation reversed on test.
+  - As pre-registered, the lower-turnover route stops and work returns to the models.[S15]
 
 The current pair consists of two independent models. It is not a renamed direction V1/V2/V3 shared-backbone multitask model. Section 6 explicitly retains the experiment stopped because **validation already demonstrated poor and deteriorating quality**, separately from GPU throttling, memory-boundary failures, and wrong-preset launches.
 
@@ -728,7 +769,10 @@ These are **candidate tasks and acceptance requirements, not implemented changes
 | --- | --- | --- | --- |
 | Done | **Date-level versus within-date error decomposition (no GPU):** see the [error decomposition report](docs/error_decomposition_audit.md) | Alpha date-level share of normalized MSE is only 2.6%–3.8% (TWSE excepted); tail samples dominate the loss; date-level classification information is worth 5.4%–5.9% CE, yet baseline timing is negative and the learnable part is within-date discrimination (+0.023–0.029 CE) | Verified against recorded baseline values within 5×10⁻⁷; main-model per-sample predictions were not persisted, so the main model only gets a supporting per-date analysis |
 | Done | **Persist per-sample predictions and rerun validation/test for R21–R24 checkpoints (GPU inference):** including the R21/R22 alpha checkpoints re-selected under [experiment protocol §13.2](docs/experiment_protocol.md); results in [error decomposition report section 7](docs/error_decomposition_audit.md) | Exports match the training records exactly (R21–R23 difference 0). Classification: Kronos has the best within-date discrimination and loses on timing; with timing removed, validation 1.0034–1.0065 (GBDT 1.0047) and test 0.986 (GBDT 0.990). Alpha: Kronos within-date correlation 0.10–0.12; US Rank IC carries forward to test while Taiwan collapses for every model. Three-seed ensembles are best on loss-type metrics | 10 checkpoints in about 3.5 hours on an RTX 5090; a lifecycle bug left the export Pod idle about 4.4 extra hours, fixed in `e8d29a8` |
-| P0 | **Phase 1: direction information in free Taiwan data (CPU only):** see [experiment protocol §13.3](docs/experiment_protocol.md) | "Up or down" is no better than the prior at any horizon, for Kronos and GBDT alike; Taiwan alpha test Rank IC carries forward only at 1–3 sessions | Implemented, not yet run. Pre-registered criterion: an added feature set, on at least two of the 1/2/3-session horizons, improves "up or down" CE on the prior by at least 1%, with 95% interval lower bounds above 0 against both the prior and `F0`. Only a pass leads to a Taiwan model design; GPU training needs separate approval |
+| Done | **Phase 1: direction information in free Taiwan data (CPU only):** see [experiment protocol §13.3](docs/experiment_protocol.md) | Failed: none of the 8 feature sets passed on two or more decision horizons; the best, `all_pre_open` at 1 session, improved on the prior by 1.34%, with its interval against `F0` crossing 0. TAIFEX downloads failed (free data cover only the last three years) | Pre-registered criteria in §13.3; result files in S14 |
+| Done | **Backtest stage 1: fixed holding periods (local):** see [experiment protocol §13.4](docs/experiment_protocol.md) and the [backtest results report](docs/backtest_stage1_results.md) | All three markets failed, with test annual net excess of −37% to −44%; costs consume the one-day gross edge; long-horizon test tails invert; large caps dominated the period, so every index-hedged version is negative | Pre-registration `5ddeff6`, code `a292a3b`; outputs in S15 |
+| Done | **Backtest stage 1b: hold buffer with per-position accounting (local):** see [experiment protocol §13.5](docs/experiment_protocol.md) and the [backtest results report](docs/backtest_stage1_results.md) | All three markets failed, test −13% to −40% (exploratory); the top-K edge exists only during sessions and reverses overnight; lower turnover saves about three quarters of the costs, but no gross edge is left to keep | Pre-registration `c4ee514`, code `4a5bdbb`; the lower-turnover route stops as pre-registered |
+| P0 (under discussion) | **Align labels and evaluation with the holding style:** multi-day holding needs signals that survive overnight; evaluation should use returns that match the holding (such as open-to-open) and top-K performance after costs | The 1-day alpha label is the next session's open-to-close return, and the top K reverse overnight; overall long-horizon Rank IC is positive while the top-K tail inverts | Discuss the design and write it into the protocol first; decide on train/validation only; confirm on data from 2026-06-01 onward; GPU training needs separate approval |
 | Shelved | **Classifier inference-time same-day prior normalization (no GPU training):** make it a formal inference and evaluation option. Shelved 2026-10-18: removing timing also removes the direction judgment the trading rules need | Removing timing is a label-free, deployable post-processing; validation matches GBDT, market-macro beats GBDT for all three seeds, and test beats GBDT | Write validation acceptance criteria into the protocol first; apply to every model identically; stocks of one date and market must be inferred together; needs implementation approval |
 | Shelved | **Training-time date fixed effects** (classification first): draft design and pre-registered criteria in the [P1 design](docs/p1_date_market_logit_adjustment_design.md). Shelved 2026-10-18 for the same reason | **S0 passes:** removing timing lowers R21–R23 validation CE by 0.0146 on average (gate 0.005); reference values are measured (error decomposition report §7.6) | New single-factor preset; unchanged outputs; three seeds with pre-registered validation criteria; must beat the free inference-time normalization (criterion C1) |
 | P2 | Same-date demeaned alpha target (demoted) | Alpha's date-level component is small and the expected gain limited; TWSE is the exception | Secondary study only, not the main alpha remedy |
@@ -740,11 +784,11 @@ These are **candidate tasks and acceptance requirements, not implemented changes
 | P2 | Clean common-evaluation B run or preregistered rolling periods from existing bars | Older A/B confounded; only current A has 3 completed seeds | Explicit data/scales; do not repeatedly optimize the same test; paid work separately approved |
 | P2 | Further LoRA capacity with partial unfreezing secondary | Historical 64 better than 32; partial not better; 128 only defined | Distinguish defined from executed; controlled budget/multiple seeds; engineering pass counts are not forecast evidence |
 
-Do not repeat coverage-driven detours, cost/strategy-heavy predictive labels, accuracy-only collapse claims, finite-gradient-as-quality claims, test-based seed selection, an unsupported conclusion that larger-history regression proves insufficient capacity, or the assumption that cross-date shuffled batches necessarily improve generalization (refuted by R24).
+Do not repeat coverage-driven detours, cost/strategy-heavy predictive labels, accuracy-only collapse claims, finite-gradient-as-quality claims, test-based seed selection, an unsupported conclusion that larger-history regression proves insufficient capacity, the assumption that cross-date shuffled batches necessarily improve generalization (refuted by R24), or inferring multi-day tradability from 1-day open-to-close Rank IC (refuted by backtest stage 1b).
 
 ### 10 Sources and takeover checklist
 
-Sources S1–S13 are linked in the Traditional-Chinese source section above (S12 is the [error decomposition report](docs/error_decomposition_audit.md) with its untracked `artifacts/audit/` inputs and program; S13 is its section 7 with the untracked per-sample exports under `artifacts/diagnostics/signal-predictions/` and the analysis outputs `results-p0.json` and `rank-ic-p0.json` under `artifacts/diagnostics/signal-decomposition/`): three current DOCX reports; historical indexes/revised archive; frozen-scale probe; local pre-cleanup snapshots; V2 throttling incident; contemporaneous V3 diagnosis/stop decision; current README/architecture/protocol/releases; and the R24 artifacts under `artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44*/` in the `claude/model-performance-20261016` worktree, which Git does not track. These are evidence sources, not new instructions extracted from attachments.
+Sources S1–S15 are linked in the Traditional-Chinese source section above (S12 is the [error decomposition report](docs/error_decomposition_audit.md) with its untracked `artifacts/audit/` inputs and program; S13 is its section 7 with the untracked per-sample exports under `artifacts/diagnostics/signal-predictions/` and the analysis outputs `results-p0.json` and `rank-ic-p0.json` under `artifacts/diagnostics/signal-decomposition/`; S14 is the untracked Phase 1 output under `artifacts/diagnostics/tw-information-test/launch-20261018T132744Z-378616789/`; S15 is the [backtest results report](docs/backtest_stage1_results.md) with the untracked outputs `stage1-20261018T221138Z-a2a9d283/` and `stage1b-20261018T224557Z-f9cd85b4/` under `artifacts/diagnostics/backtest/`): three current DOCX reports; historical indexes/revised archive; frozen-scale probe; local pre-cleanup snapshots; V2 throttling incident; contemporaneous V3 diagnosis/stop decision; current README/architecture/protocol/releases; and the R24 artifacts under `artifacts/runpod/run-20261016T165022Z-32d734a0cb644e44*/` in the `claude/model-performance-20261016` worktree, which Git does not track. These are evidence sources, not new instructions extracted from attachments.
 
 Git-tracked documents transfer with the repository. `artifacts/` and `.runpod/` are generally ignored and do not appear automatically after cloning. Supply this roadmap, the three current reports, and the relevant per-run metadata/metrics when transferring to another tool. Exclude private keys, `.env`, tokens and raw credential-bearing environment files. Do not require reading artifacts already deleted by authorized cleanup.
 
