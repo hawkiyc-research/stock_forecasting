@@ -10,6 +10,8 @@ import sys
 from typing import NoReturn
 
 STATUS_MARKER = b"\n__FIN_TS_HTTP_STATUS__:"
+# Must equal RELAY_VERSION in cloudrun/tpex-relay/src/relay.mjs; a stale relay fails warmup.
+RELAY_VERSION = "2"
 TRANSIENT_STATUSES = {0, 404, 408, 425, 429, 500, 502, 503, 504}
 FATAL_RELAY_ERRORS = {
     "method_not_allowed",
@@ -108,7 +110,7 @@ def main() -> int:
             status == 200
             and isinstance(payload, dict)
             and payload.get("ready") is True
-            and payload.get("version") == "1"
+            and payload.get("version") == RELAY_VERSION
             and payload.get("region") == arguments.expected_region
         )
         if ready:
