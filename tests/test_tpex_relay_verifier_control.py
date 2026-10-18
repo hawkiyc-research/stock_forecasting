@@ -47,5 +47,32 @@ class RelayVerifierTests(unittest.TestCase):
         self.assertEqual(verify({"error": "x"}, status=503, mode="official").returncode, 75)
 
 
+class DotenvWriterTests(unittest.TestCase):
+    WRITERS = (
+        "configure_runpod_credentials.sh", "configure_tpex_cloud_run_relay.sh",
+        "deploy_runpod_network_volume.sh", "deploy_tpex_cloud_run_relay.sh",
+    )
+
+    def test_writers_update_the_dotenv_that_readers_resolve(self) -> None:
+        for name in self.WRITERS:
+            line = next(
+                line for line in (ROOT / "scripts" / name).read_text().splitlines()
+                if line.startswith("ENV_FILE=")
+            )
+            for override in ("/elsewhere/shared.env", ""):
+                with self.subTest(script=name, override=override):
+                    result = subprocess.run(
+                        ["bash", "-c",
+                         f'source "$1"; PROJECT_ROOT=/project; {line}; '
+                         'printf "%s\\n%s" "$ENV_FILE" "$(runpod_project_env_file /project)"',
+                         "writer", str(ROOT / "scripts/lib/runpod_project_env.sh")],
+                        env={"PATH": "/usr/bin:/bin", "RUNPOD_ENV_FILE": override},
+                        capture_output=True, text=True, check=False, timeout=10,
+                    )
+                    written, read = result.stdout.splitlines()
+                    self.assertEqual(written, read)
+                    self.assertEqual(written, override or "/project/.env")
+
+
 if __name__ == "__main__":
     unittest.main()

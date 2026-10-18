@@ -7,7 +7,8 @@ umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ENV_FILE="${PROJECT_ROOT}/.env"
+# Write the same dotenv that every reader resolves (RUNPOD_ENV_FILE, else the project .env).
+ENV_FILE="${RUNPOD_ENV_FILE:-${PROJECT_ROOT}/.env}"
 ENV_TEMPLATE="${PROJECT_ROOT}/.env.example"
 ENV_HELPER="${SCRIPT_DIR}/update_runpod_env.py"
 RELAY_SOURCE="${PROJECT_ROOT}/cloudrun/tpex-relay"
