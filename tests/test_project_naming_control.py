@@ -80,7 +80,7 @@ class ProjectNamingTests(unittest.TestCase):
             {"include": NAME, "from": "src"},
         ])
         entries = project["project"]["scripts"]
-        self.assertEqual(len(entries), 14)
+        self.assertEqual(len(entries), 16)
         for name, target in entries.items():
             self.assertTrue(name.startswith(SLUG + "-"), name)
             self.assertTrue(target.startswith(NAME + "."), target)

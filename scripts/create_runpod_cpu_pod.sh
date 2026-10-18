@@ -65,7 +65,7 @@ RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/stage1/cpu-preparation.json
 RUNPOD_CPU_POD_LABEL="CPU preparation"
 if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
     RUNPOD_CPU_ROLE=cpu-research
-    RUNPOD_CPU_TMUX_WORKFLOW=research-tw-information
+    RUNPOD_CPU_TMUX_WORKFLOW=cpu-research
     RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/research/tw-information.json
     RUNPOD_CPU_POD_LABEL="CPU research"
 elif [[ "${RUNPOD_STAGE}" == "stage2" ]]; then

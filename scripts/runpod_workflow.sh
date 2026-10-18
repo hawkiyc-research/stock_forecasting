@@ -369,7 +369,7 @@ EOF
         research_taiwan_qps=0.5
         research_eodhd_qps=2
         research_max_backoff=1m
-        research_cpu_number=16
+        research_cpu_number=8
         research_cpu_flavor=cpu3g
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }

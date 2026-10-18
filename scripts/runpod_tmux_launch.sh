@@ -91,7 +91,7 @@ done
 
 if [[ $# -lt 1 || ( "$1" != "probe-scales" && "$1" != "export-signal-predictions" && $# -ne 1 \
     && ! ( "$1" == "verify-full-workflow" && $# -eq 2 && "$2" == "--regression-only" ) ) ]]; then
-    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|research-tw-information|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
     exit 2
 fi
 if [[ "${LOG_ROOT}" != "${NETWORK_VOLUME_ROOT}/logs" ]]; then
@@ -119,7 +119,7 @@ case "$1" in
         FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/stage1/mixed-finalization.json"
         FAILURE_LIFECYCLE_KIND=stage1-mixed-finalization
         ;;
-    research-tw-information)
+    cpu-research)
         # CPU-only research: no GPU lease, model, checkpoint or training marker.
         SESSION_NAME=stock-forecasting-cpu-research
         JOB_SCRIPT="${SCRIPT_DIR}/runpod_cpu_research.sh"
@@ -248,7 +248,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|research-tw-information|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
         exit 2
         ;;
 esac

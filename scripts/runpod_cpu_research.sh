@@ -150,14 +150,14 @@ printf '[%s] research tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '[%s] auxiliary data: %s to %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${STAGE1_DATA_START}" "${STAGE1_DATA_END}"
 # Each provider host is requested sequentially at its own QPS; cached responses are reused.
-"${POETRY_BIN}" run python -m stock_forecasting.cli.prepare_auxiliary_data \
+"${POETRY_BIN}" run stock-forecasting-prepare-auxiliary \
     --output-root "${AUXILIARY_ROOT}" \
     --taiwan-qps "${RUNPOD_CPU_TAIWAN_QPS:-0.5}" \
     --eodhd-qps "${RUNPOD_CPU_EODHD_QPS:-2}" \
     --max-backoff-seconds "${RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS:-60}"
 
 printf '[%s] information test\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-"${POETRY_BIN}" run python -m stock_forecasting.cli.tw_information_test \
+"${POETRY_BIN}" run stock-forecasting-tw-information-test \
     --config "${RESEARCH_CONFIG}" \
     --auxiliary-root "${AUXILIARY_ROOT}" \
     --output-root "${OUTPUT_ROOT}"

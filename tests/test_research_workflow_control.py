@@ -198,7 +198,7 @@ class ResearchTmuxTests(unittest.TestCase):
             with self.subTest(exit_code=exit_code):
                 harness = self.harness()
                 harness.environment["HARNESS_JOB_EXIT"] = exit_code
-                launched = harness.command("runpod_tmux_launch.sh", "research-tw-information")
+                launched = harness.command("runpod_tmux_launch.sh", "cpu-research")
                 self.assertEqual(launched.returncode, 0, launched.stderr)
                 self.assertIn("stock-forecasting-cpu-research", launched.stdout)
                 runner = harness.run_worker()
