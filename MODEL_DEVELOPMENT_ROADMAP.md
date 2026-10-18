@@ -22,6 +22,18 @@
 
 目前「訓練不起來」的主因是目標與評估讓擇時錯誤蓋掉了選股能力，不是模型容量不足。詳見[誤差拆解報告第 7 節](docs/error_decomposition_audit.md)。[S13]
 
+**2026-10-18 方向調整（第 1 階段）：**
+
+- **產品目標**：模型輸出供交易規則參考。規則在收盤後計算訊號、隔日開盤進場，持有數天到兩週；
+  需要的是絕對 alpha 與絕對漲／平／跌，不是只做排序。現有標籤已是隔日開盤進場
+  （`execution_total_return`），進場點不需修改。
+- **補充拆解**：分類器相對先驗的改善全部來自「會不會超出 ±1%」；「漲還是跌」在每個天期都不優於先驗，
+  Kronos 與 GBDT 皆然。台股 alpha 的 test Rank IC 只在 1–3 日延續（1 日 0.063，14 日 −0.043）。
+- **擱置**：推論期正規化與 P1 日期固定效果先擱置，因為兩者都移除了方向判斷。
+- **第 1 階段**：只用 CPU 的資訊測試，以 GBDT 檢驗免費的台股籌碼、期貨與美股隔夜資料，
+  能否讓「漲還是跌」優於先驗。程式已完成、尚未執行。判準見[實驗協定 §13.3](docs/experiment_protocol.md)，
+  操作見 README「台股資訊測試」。[S13]
+
 現行架構是兩套獨立模型，不是方向 V1／V2／V3 的新名稱，也不是共享 backbone 的雙頭多任務模型。歷史中曾有 **validation 已顯示品質不佳、使用者要求直接停止訓練** 的實驗；第 6 節特別保留，不把它們包裝成完成的 holdout 實驗，也不與硬體、OOM 或啟動失敗混為一談。
 
 本文件的三個用途：
@@ -337,8 +349,9 @@ Baseline 包含 always_buy、zero_return、momentum_5d、reversal_5d、ma_crosso
 | --- | --- | --- | --- |
 | 完成 | **日期層級與同日橫斷面的誤差分解（不需 GPU）**：見[誤差拆解報告](docs/error_decomposition_audit.md) | Alpha 日期層級只占標準化 MSE 2.6%–3.8%（上市例外）；loss 由尾端樣本主導；分類日期層級資訊 5.4%–5.9% CE，但 baseline 擇時皆為負，可學部分是同日鑑別力（+0.023–0.029 CE） | 已用 baseline 記錄值核對到 5×10⁻⁷；主模型逐樣本預測未保存，主模型只做逐日輔助分析 |
 | 完成 | **保存逐樣本預測並對 R21–R24 checkpoint 重跑 validation／test（GPU 推論）**：含依[實驗協定 §13.2](docs/experiment_protocol.md) 重選的 R21／R22 alpha checkpoint；結果見[誤差拆解報告第 7 節](docs/error_decomposition_audit.md) | 匯出與訓練紀錄完全一致（R21–R23 差距 0）。分類：Kronos 同日鑑別力最佳，落後來自擇時；移除擇時後 validation 1.0034–1.0065（GBDT 1.0047）、test 0.986（GBDT 0.990）。Alpha：Kronos 同日相關 0.10–0.12，US Rank IC 延續到 test，台股對所有模型都崩落。三 seed 集成在 loss 類指標最好 | 10 個 checkpoint，RTX 5090 約 3.5 小時；匯出 Pod 因 lifecycle bug 多閒置約 4.4 小時，已於 `e8d29a8` 修正 |
-| P0 | **分類器推論期的同日先驗正規化（不需 GPU 訓練）**：做成正式的推論與評估選項 | 移除擇時是無標籤、可部署的後處理；validation 追平 GBDT，market-macro 三個 seed 都優於 GBDT；test 優於 GBDT | 先在協定寫好 validation 驗收判準；對所有模型一致套用；同一日期與市場的股票須一起推論；需實作授權 |
-| P1 | **訓練時的日期固定效果**（分類優先）：設計草稿與事先固定的判準見 [P1 設計](docs/p1_date_market_logit_adjustment_design.md)，待審閱 | **S0 成立**：移除擇時讓 R21–R23 validation CE 平均改善 0.0146（門檻 0.005）；參照組數值已量測（誤差拆解報告 §7.6） | 單因子新 preset；輸出格式不變；三 seed、事先固定 validation 判準；必須勝過免費的推論期正規化（判準 C1） |
+| P0 | **第 1 階段：台股免費資料的方向資訊測試（只用 CPU）**：見[實驗協定 §13.3](docs/experiment_protocol.md) | 「漲還是跌」在每個天期都不優於先驗（Kronos 與 GBDT 皆然）；台股 alpha 的 test Rank IC 只在 1–3 日延續 | 已實作、待執行。事先固定的判準：某新增特徵組在 1／2／3 日中至少兩個天期，「漲還是跌」CE 比先驗改善至少 1%，且相對先驗與 `F0` 的 95% 區間下界皆大於 0。通過後才設計台股模型；GPU 訓練另外核准 |
+| 擱置 | **分類器推論期的同日先驗正規化（不需 GPU 訓練）**：做成正式的推論與評估選項。2026-10-18 擱置：移除擇時也移除了交易規則需要的方向判斷 | 移除擇時是無標籤、可部署的後處理；validation 追平 GBDT，market-macro 三個 seed 都優於 GBDT；test 優於 GBDT | 先在協定寫好 validation 驗收判準；對所有模型一致套用；同一日期與市場的股票須一起推論；需實作授權 |
+| 擱置 | **訓練時的日期固定效果**（分類優先）：設計草稿與事先固定的判準見 [P1 設計](docs/p1_date_market_logit_adjustment_design.md)。2026-10-18 擱置，理由同上 | **S0 成立**：移除擇時讓 R21–R23 validation CE 平均改善 0.0146（門檻 0.005）；參照組數值已量測（誤差拆解報告 §7.6） | 單因子新 preset；輸出格式不變；三 seed、事先固定 validation 判準；必須勝過免費的推論期正規化（判準 C1） |
 | P2 | 同日去均值的 alpha 目標（降級） | Alpha 日期層級成分小，預期改善有限；上市市場例外 | 只作次要研究，不視為 alpha 主要解法 |
 | P0 | 先確認模型實際從哪些路徑取得增益：Kronos latent、尺度分支、benchmark、market/horizon embeddings 的容量匹配消融；必要時以同訓練預算比較凍結 readout／LoRA | Signal alpha 僅 seed42 微幅領先 GRU；多次複雜化失敗 | 同一有效集合與 train-only scales；固定 batch執行條件；不能為做消融刪除原 feature；不預設 Kronos 無效 |
 | P0 | 針對 early peak／validation反彈研究正則化、更新量、取樣分布與 learning curves；查每市場、年份、類別的梯度／誤差 | 現行分類仍在0.4–0.6epoch最佳；train batch loss下降而full val無相同改善；**R24：混洗日期使 train 擬合加快、validation 變差，取樣不是越 iid 越好** | 保存所有 validation 點與明確 loss 定義；同分布的 train診斷不得冒充已存在；不能只增加驗證頻率或延長訓練宣稱解決 |
@@ -430,6 +443,23 @@ This handoff roadmap combines the development decisions in this conversation, Gi
 - **P1 start gate S0 passes.**
 
 The main reason training "does not work" is that the objective and evaluation let timing errors hide stock-selection skill, not insufficient model capacity. See [error decomposition report section 7](docs/error_decomposition_audit.md).[S13]
+
+**2026-10-18 change of direction (Phase 1):**
+
+- **Product goal**: model outputs feed trading rules that compute signals after the close, enter
+  at the next open and hold for days to two weeks. They need absolute alpha and absolute
+  up/flat/down, not ranking alone. The existing labels already enter at the next open
+  (`execution_total_return`), so the entry point stays.
+- **Further decomposition**: all of the classifiers' gain over the prior comes from "does it move
+  beyond ±1%"; "up or down" is no better than the prior at any horizon, for Kronos and GBDT alike.
+  Taiwan alpha test Rank IC carries forward only at 1–3 sessions (0.063 at 1 day, −0.043 at
+  14 days).
+- **Shelved**: the inference-time normalization and the P1 date fixed effects, because both remove
+  the direction judgment.
+- **Phase 1**: a CPU-only information test in which GBDT checks whether free Taiwan flow, futures
+  and US overnight data beat the prior on "up or down". The code is complete and has not run yet.
+  Criteria are in [experiment protocol §13.3](docs/experiment_protocol.md); operation is in the
+  README's "Taiwan information test".[S13]
 
 The current pair consists of two independent models. It is not a renamed direction V1/V2/V3 shared-backbone multitask model. Section 6 explicitly retains the experiment stopped because **validation already demonstrated poor and deteriorating quality**, separately from GPU throttling, memory-boundary failures, and wrong-preset launches.
 
@@ -698,8 +728,9 @@ These are **candidate tasks and acceptance requirements, not implemented changes
 | --- | --- | --- | --- |
 | Done | **Date-level versus within-date error decomposition (no GPU):** see the [error decomposition report](docs/error_decomposition_audit.md) | Alpha date-level share of normalized MSE is only 2.6%–3.8% (TWSE excepted); tail samples dominate the loss; date-level classification information is worth 5.4%–5.9% CE, yet baseline timing is negative and the learnable part is within-date discrimination (+0.023–0.029 CE) | Verified against recorded baseline values within 5×10⁻⁷; main-model per-sample predictions were not persisted, so the main model only gets a supporting per-date analysis |
 | Done | **Persist per-sample predictions and rerun validation/test for R21–R24 checkpoints (GPU inference):** including the R21/R22 alpha checkpoints re-selected under [experiment protocol §13.2](docs/experiment_protocol.md); results in [error decomposition report section 7](docs/error_decomposition_audit.md) | Exports match the training records exactly (R21–R23 difference 0). Classification: Kronos has the best within-date discrimination and loses on timing; with timing removed, validation 1.0034–1.0065 (GBDT 1.0047) and test 0.986 (GBDT 0.990). Alpha: Kronos within-date correlation 0.10–0.12; US Rank IC carries forward to test while Taiwan collapses for every model. Three-seed ensembles are best on loss-type metrics | 10 checkpoints in about 3.5 hours on an RTX 5090; a lifecycle bug left the export Pod idle about 4.4 extra hours, fixed in `e8d29a8` |
-| P0 | **Classifier inference-time same-day prior normalization (no GPU training):** make it a formal inference and evaluation option | Removing timing is a label-free, deployable post-processing; validation matches GBDT, market-macro beats GBDT for all three seeds, and test beats GBDT | Write validation acceptance criteria into the protocol first; apply to every model identically; stocks of one date and market must be inferred together; needs implementation approval |
-| P1 | **Training-time date fixed effects** (classification first): draft design and pre-registered criteria in the [P1 design](docs/p1_date_market_logit_adjustment_design.md), pending review | **S0 passes:** removing timing lowers R21–R23 validation CE by 0.0146 on average (gate 0.005); reference values are measured (error decomposition report §7.6) | New single-factor preset; unchanged outputs; three seeds with pre-registered validation criteria; must beat the free inference-time normalization (criterion C1) |
+| P0 | **Phase 1: direction information in free Taiwan data (CPU only):** see [experiment protocol §13.3](docs/experiment_protocol.md) | "Up or down" is no better than the prior at any horizon, for Kronos and GBDT alike; Taiwan alpha test Rank IC carries forward only at 1–3 sessions | Implemented, not yet run. Pre-registered criterion: an added feature set, on at least two of the 1/2/3-session horizons, improves "up or down" CE on the prior by at least 1%, with 95% interval lower bounds above 0 against both the prior and `F0`. Only a pass leads to a Taiwan model design; GPU training needs separate approval |
+| Shelved | **Classifier inference-time same-day prior normalization (no GPU training):** make it a formal inference and evaluation option. Shelved 2026-10-18: removing timing also removes the direction judgment the trading rules need | Removing timing is a label-free, deployable post-processing; validation matches GBDT, market-macro beats GBDT for all three seeds, and test beats GBDT | Write validation acceptance criteria into the protocol first; apply to every model identically; stocks of one date and market must be inferred together; needs implementation approval |
+| Shelved | **Training-time date fixed effects** (classification first): draft design and pre-registered criteria in the [P1 design](docs/p1_date_market_logit_adjustment_design.md). Shelved 2026-10-18 for the same reason | **S0 passes:** removing timing lowers R21–R23 validation CE by 0.0146 on average (gate 0.005); reference values are measured (error decomposition report §7.6) | New single-factor preset; unchanged outputs; three seeds with pre-registered validation criteria; must beat the free inference-time normalization (criterion C1) |
 | P2 | Same-date demeaned alpha target (demoted) | Alpha's date-level component is small and the expected gain limited; TWSE is the exception | Secondary study only, not the main alpha remedy |
 | P0 | Capacity-matched contribution checks for Kronos latents, scales, benchmark, market/horizon features; frozen-readout versus LoRA when appropriate | Only alpha seed 42 narrowly leads GRU; repeated complexity additions failed | Same population/scales/runtime budget; preserve existing features; do not presume Kronos useless |
 | P0 | Diagnose early peaks through update budget, regularization, sampling distribution and per-group learning curves | Current stock best points 0.4–0.6 epoch; falling batch train loss without matching full-validation gains; **R24: mixing dates sped up training fit and worsened validation, so sampling is not "the more i.i.d. the better"** | Retain every validation point and definitions; do not claim extra validation frequency/longer training solves generalization |

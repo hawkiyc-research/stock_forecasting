@@ -7,6 +7,8 @@ validation 判準。是否啟動取決於 P0（逐樣本匯出與誤差拆解）
 
 **2026-10-18 更新：** P0 已完成，S0 成立：移除擇時讓 R21–R23 validation CE 平均改善 0.0146，門檻是 0.005。參照組數值見[誤差拆解報告 §7.6](error_decomposition_audit.md)。第 7 節的待確認事項仍待審閱。
 
+**2026-10-18 擱置：** 交易規則需要絕對的漲跌方向，而本設計移除日期層級的方向資訊，因此先不實作。目前改為第 1 階段的台股資訊測試，見[實驗協定 §13.3](experiment_protocol.md)。
+
 ### 1. 要解決的問題
 
 固定 ±1% 三分類的獨立分類器（`a-absolute-direction64`，R21–R23）在 validation 上只勉強追平
@@ -215,6 +217,8 @@ only defines the method, the experiment and pre-registered validation criteria. 
 depends on P0 (per-sample export and error decomposition); see section 4.1.
 
 **2026-10-18 update:** P0 is complete and S0 passes: removing timing lowers R21–R23 validation CE by 0.0146 on average, against a 0.005 gate. Reference values are in [error decomposition report §7.6](error_decomposition_audit.md). The section 7 confirmation items still await review.
+
+**Shelved 2026-10-18:** the trading rules need absolute direction, and this design removes date-level direction information, so it is not being implemented. Work moved to the Phase 1 Taiwan information test; see [experiment protocol §13.3](experiment_protocol.md).
 
 ### 1. Problem
 

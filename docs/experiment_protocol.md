@@ -515,6 +515,64 @@ Test 只記錄，不得用來修改本規則、選 seed 或回頭換 checkpoint�
 - 結果只作為日後是否正式改 `checkpoint_monitor` 的證據；正式變更需要程式修改、新 preset 與
   三 seed 訓練。
 
+#### 13.3 第 1 階段：台股免費資料的方向資訊測試（只用 CPU，事先固定）
+
+P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1%」與「超出時是漲還是跌」。
+分類器相對 train 先驗的改善全部來自前者；後者在每個天期都不優於先驗，Kronos 與 GBDT 皆然。
+例如 validation 台股 1 日，前者改善 5.8%，後者為 −0.3%（Kronos 三 seed 平均）。
+
+本節檢驗：加入免費的台股籌碼、期貨與美股隔夜資料後，GBDT 的「漲還是跌」能否優於先驗。
+這是決定是否以新特徵投入 GPU 訓練的前置測試。它不重訓 Kronos，也不改現有資料集、標籤或 baseline。
+操作方式見 README 的「台股資訊測試」。
+
+事先固定的設定（2026-10-18 寫入，早於任何輔助資料下載與模型擬合），全部記錄於
+`configs/research/tw_information_test.json`：
+
+1. **樣本**：`a-absolute-direction64` 資料組中 TWSE、TPEX 的清理後樣本，沿用既有切分
+   （train 至 2025-06-01、validation 至 2025-12-01、test 至 2026-06-01）。
+2. **標籤**：
+   - 進出場與 `execution_total_return` 相同：第 t+1 日開盤進場，第 t+h 日收盤出場。
+   - 主要天期為 1／2／3／5 日；10／14 日只作對照。
+   - 主要門檻為 max(成本下限, k_h × σ20 × √h)。成本下限：股票 0.585%、ETF 0.385%。
+     k_h 只用 train 校準，使中性比例為 1/3。
+   - 固定 ±1% 只用於 `F0` 與 `all_pre_open` 的對照。
+3. **特徵組**：`F0`、`F0_long`、`short_only`、`flows`、`market`、`us_evening`、`us_pre_open`、
+   `all_evening`、`all_pre_open`。內容與資料公布時點見 README。
+4. **模型**：
+   - sklearn HistGradientBoosting：learning rate 0.05、max leaf nodes 31、min samples leaf 500、
+     L2 1.0、最多 400 輪、seed 42。
+   - 只在 train 擬合。boosting 輪數以每 10 輪檢查一次的方式，在 train 最後 20% 上選擇；
+     該段與前段間隔 15 個交易日。
+   - 不以 validation 擬合或選參。
+5. **主要指標**：validation 台股整體的「漲還是跌」CE，只計算非中性標籤的樣本。
+   比較基準是 train 各市場的類別比例（Jeffreys 平滑）。
+6. **判準**：某個新增特徵組（`F0` 以外）在 1／2／3 日中至少兩個天期，同時滿足以下三項：
+   1. 「漲還是跌」CE 相對先驗改善至少 1%，即 (先驗 − 模型)／先驗 ≥ 0.01。
+   2. 相對先驗的差距，95% 區間下界大於 0。
+   3. 相對 `F0` 的差距，95% 區間下界大於 0。
+
+   區間的計算方式：以日期為單位做 circular block bootstrap，區塊 5 日、重抽 1,000 次、seed 7；
+   統計量是逐日加總後的比值。報告的 `criteria.information_found` 為 true 即判定通過。
+7. **結果的處置**：
+   - 通過：通過的特徵組進入台股模型設計（新標籤、新天期）。設計需另行審閱，GPU 訓練需另外核准。
+   - 未通過：判定這些免費資料在 1–3 日不含足以優於先驗的方向資訊。不投入 GPU 訓練，先檢討再決定下一步。
+8. **次要問題**（只描述，不影響判準）：
+   - 回看長度：`F0_long`、`short_only` 相對 `F0` 的「漲還是跌」差距與區間
+     （`window_question_direction_gap_vs_F0`）。
+   - 訊號時點：`all_evening` 對 `all_pre_open`。
+   - 門檻：固定 ±1% 對主要門檻。
+   - Alpha：各特徵組的 normalized Smooth L1 與分市場 Rank IC。
+   - Test 指標與簡易回測：每日買進 signal 前 10% 且 signal 大於 0 的標的，扣除成本下限。
+     多日持有期互相重疊，t 值會偏樂觀。
+
+判讀限制：
+
+- 有 8 個新增特徵組、3 個天期，存在多重比較。判準要求同一組在兩個天期通過，以降低偶然通過的機率。
+- GBDT 未通過，不排除其他模型能利用這些資料；但代表在目前樣本量下，訊號弱到難以穩定估計。
+- 某個輔助來源為 `failed` 時，依賴它的特徵組不參與判準，並列於 `skipped_feature_sets`；
+  以其餘特徵組判定。
+- Validation 只有約半年（2025-06 至 2025-12），區間會較寬，結論只適用於這段期間。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1081,6 +1139,77 @@ Limits:
   transferable signal.
 - The outcome is only evidence for a later decision on formally changing `checkpoint_monitor`; that
   change needs code changes, a new preset and three-seed training.
+
+#### 13.3 Phase 1: direction information in free Taiwan data (CPU only, pre-registered)
+
+The P0 per-sample decomposition splits three-class CE into "does the return move beyond ±1%" and
+"up or down given a move". All of the classifiers' gain over the train prior comes from the first
+part; the second is no better than the prior at any horizon, for Kronos and GBDT alike. For
+example, Taiwan 1-day validation improves by 5.8% on the first part and by −0.3% on the second
+(Kronos three-seed mean).
+
+This section tests whether free Taiwan flow, futures and US overnight data let GBDT beat the
+prior on "up or down". It is a prerequisite for spending GPU training on new features. It does
+not retrain Kronos or change the existing dataset, labels or baselines. Operation is described in
+the README's "Taiwan information test".
+
+Fixed settings (written 2026-10-18, before any auxiliary download or model fit), all recorded in
+`configs/research/tw_information_test.json`:
+
+1. **Samples**: the cleaned TWSE and TPEX samples of the `a-absolute-direction64` data group with
+   the existing splits (train to 2025-06-01, validation to 2025-12-01, test to 2026-06-01).
+2. **Labels**:
+   - Entry and exit as in `execution_total_return`: the open of session t+1 to the close of
+     session t+h.
+   - Main horizons 1/2/3/5; 10/14 for comparison only.
+   - Main band max(cost floor, k_h × σ20 × √h), with floors of 0.585% for stocks and 0.385% for
+     ETFs. k_h is calibrated on train only to a neutral share of 1/3.
+   - The fixed ±1% band is a comparison for `F0` and `all_pre_open` only.
+3. **Feature sets**: `F0`, `F0_long`, `short_only`, `flows`, `market`, `us_evening`, `us_pre_open`,
+   `all_evening`, `all_pre_open`. Contents and publication times are in the README.
+4. **Models**:
+   - sklearn HistGradientBoosting: learning rate 0.05, max leaf nodes 31, min samples leaf 500,
+     L2 1.0, at most 400 iterations, seed 42.
+   - Fitted on train only. The boosting stage is checked every 10 stages and chosen on the last
+     20% of train, separated from the earlier part by 15 sessions.
+   - Validation is never used for fitting or tuning.
+5. **Primary metric**: pooled Taiwan validation CE of "up or down", over non-neutral labels only.
+   The reference is the train class shares per market (Jeffreys-smoothed).
+6. **Criterion**: an added feature set (any set other than `F0`) passes when, on at least two of
+   the 1/2/3-session horizons, all three of the following hold:
+   1. Its "up or down" CE improves on the prior by at least 1%, i.e.
+      (prior − model)/prior ≥ 0.01.
+   2. The 95% interval of its gap to the prior has a lower bound above 0.
+   3. The 95% interval of its gap to `F0` has a lower bound above 0.
+
+   Intervals come from a circular block bootstrap over dates with 5-session blocks, 1,000
+   replicates and seed 7; the statistic is a ratio of per-date sums. The test passes when the
+   report's `criteria.information_found` is true.
+7. **Consequences**:
+   - Pass: the passing sets enter the Taiwan model design (new labels and horizons). The design
+     is reviewed separately, and GPU training needs separate approval.
+   - Fail: these free data carry no direction information that beats the prior at 1–3 sessions.
+     No GPU training is spent; the next step is decided after a review.
+8. **Secondary questions** (descriptive; they do not affect the criterion):
+   - Lookback: the "up or down" gaps of `F0_long` and `short_only` to `F0`, with intervals
+     (`window_question_direction_gap_vs_F0`).
+   - Signal time: `all_evening` versus `all_pre_open`.
+   - Band: fixed ±1% versus the main band.
+   - Alpha: normalized Smooth L1 and per-market Rank IC of every set.
+   - Test metrics and a simple backtest: each day, buy the top 10% by signal whose signal is
+     positive, net of the cost floor. Overlapping multi-day holdings make the t statistic
+     optimistic.
+
+Limits:
+
+- There are 8 added sets and 3 horizons, so there are multiple comparisons. Requiring the same
+  set to pass on two horizons reduces chance passes.
+- A GBDT failure does not rule out other models using the data, but it means the signal is too
+  weak to estimate stably at this sample size.
+- When an auxiliary source is `failed`, the sets that depend on it do not take part, are listed in
+  `skipped_feature_sets`, and the decision uses the remaining sets.
+- Validation covers only about six months (2025-06 to 2025-12). Intervals are wide, and the
+  conclusion applies to that period.
 
 ### 14. Remote-validation boundary
 

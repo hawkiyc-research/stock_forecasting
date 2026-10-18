@@ -13,7 +13,8 @@
 - [RunPod 操作手冊](#operations-zh)：[帳號與儲存](#setup-zh) → [設定與同步](#configure-zh)
   → [CPU prepare](#cpu-zh) → [baseline](#baseline-zh) → [任務／實驗與多 Pod 訓練](#train-zh)
   → [下載結果](#download-zh)
-- [產物與推論](#artifacts-zh)、[歷史尺度表徵診斷](#probes-zh)、[CLI 參數速查](#cli-reference-zh)
+- [產物與推論](#artifacts-zh)、[歷史尺度表徵診斷](#probes-zh)、[台股資訊測試](#tw-information-zh)、
+  [CLI 參數速查](#cli-reference-zh)
 - [驗收與結果解讀](#acceptance-zh)、[資料與模型參考](#references-zh)
 - [歷史實驗附錄：容量、adaptive 與 V1／V2／V3](#historical-experiments-zh)
 
@@ -2450,6 +2451,152 @@ ties 取平均名次）。另列各市場 1–14 日平均、US／TWSE／TPEX �
 因此不計算。匯出若含雲端記錄的 Rank IC，會逐項核對，差距超過 1×10⁻⁹ 時在輸出與畫面標示。
 方法、指標定義與限制見[誤差拆解報告](docs/error_decomposition_audit.md)。
 
+<a id="tw-information-zh"></a>
+
+### 台股資訊測試
+
+這是只用 CPU 的研究工作，不訓練也不修改 Kronos 模型。它以 GBDT 檢驗：在技術指標之外，
+免費的台股籌碼、期貨與美股隔夜資料，能否改善台股「漲或跌」的方向判斷。工作只讀取
+`a-absolute-direction64` 資料組的台股清理後樣本，沿用既有 train／validation／test 切分；
+不修改資料集、bar store、baseline、checkpoint，也不寫入 training／validation lifecycle 標記。
+參數與判準事先固定於 [`configs/research/tw_information_test.json`](configs/research/tw_information_test.json)，
+判準說明見[實驗協定 §13.3](docs/experiment_protocol.md)。
+
+#### 輔助資料
+
+| 資料 | 來源 | 內容 | 公布時間（台北） |
+| --- | --- | --- | --- |
+| 上市三大法人 | 證交所 `T86` | 外資、外資自營商、投信、自營商與合計的淨買超股數 | 當日 16:30 |
+| 上市融資融券 | 證交所 `MI_MARGN` | 融資、融券的買賣、餘額、限額與資券互抵（張） | 當日 21:30 |
+| 上櫃三大法人 | 櫃買中心 `insti/dailyTrade`（經 relay） | 同上市 | 當日 16:30 |
+| 上櫃融資融券 | 櫃買中心 `margin/balance`（經 relay） | 同上市 | 當日 21:30 |
+| 臺股期貨三大法人 | 期交所 `futContractsDateDown` | 外資、投信、自營商的交易與未平倉淨口數 | 當日 15:30 |
+| 臺指選擇權 Put/Call 比 | 期交所 `pcRatioDown` | 成交量與未平倉的 Put/Call 比 | 當日 15:30 |
+| 美股與匯率 | EODHD：`SOX.INDX`、`USDTWD.FOREX`、`SOXX.US` | 調整後收盤價 | 次日 06:00 |
+
+`SPY.US`、`QQQ.US`、`XLK.US`、`TSM.US` 直接讀取既有 bar store，不重複下載。EODHD 方案
+不含某個序列時，manifest 記為 `unavailable`，其他資料照常處理。每個來源都在
+`auxiliary-manifest.json` 記錄 `complete`、`partial`、`failed` 或 `empty` 與錯誤原因。
+`failed` 的來源不參與測試，依賴它的特徵組列在報告的 `skipped_feature_sets`。
+
+證交所與櫃買中心各用一個 thread 平行抓取；同一主機依序請求，並遵守 `--taiwan-qps`。
+回應快取於 `DATA_ROOT/auxiliary/raw-cache/`，重跑只請求缺少的資料。
+
+#### 標籤、特徵與模型
+
+- **標籤**：與 `execution_total_return` 相同，以第 t+1 日調整後開盤價進場、第 t+h 日
+  調整後收盤價出場。主要天期為 1／2／3／5 日；10／14 日只作對照。
+- **三分類門檻**：
+  - 主要門檻為 max(成本下限, k_h × 過去 20 日日報酬標準差 × √h)。
+  - 成本下限是未打折的來回成本：股票 0.585%（手續費 0.1425% × 2，加證交稅 0.3%），
+    ETF 0.385%（證交稅 0.1%）。
+  - k_h 只用 train 以二分搜尋校準，使 train 的中性比例為 1/3。
+  - 對照門檻固定為 ±1%，與現行分類任務相同。報酬等於門檻時歸為中性。
+- **特徵組**（只用 cutoff 當日及以前的資料）：
+  - `F0`：個股與其 benchmark 的技術指標（報酬、波動、ATR、量能、均線距離、RSI）。
+  - `F0_long`：`F0` 再加 60／120／250 日回看。
+  - `short_only`：只用 20 日內的指標。
+  - `flows`：個股法人買賣超佔成交量的比例，以及融資融券的變化與使用率。
+  - `market`：全市場法人與融資融券、漲跌家數、站上 20 日均線的比例，以及期交所資料。
+  - `us_evening`、`us_pre_open`：美股隔夜報酬。
+  - `all_evening`、`all_pre_open`：以上全部。
+- **訊號時點**：
+  - `evening`（台北 22:00，當日收盤後）：只能使用前一個美股交易日的收盤。
+  - `pre_open`（隔日 08:30，開盤前）：可使用當晚的美股收盤。
+  - 台股輔助資料都在 22:00 前公布。
+- **模型**：sklearn `HistGradientBoostingClassifier`／`HistGradientBoostingRegressor`，
+  超參數固定。只在 train 擬合；boosting 輪數用 train 最後 20% 選擇，與前段間隔 15 個交易日，
+  不使用 validation。
+- **評估**（台股整體，以及上市、上櫃分開）：
+  - 三分類 CE 拆成「會不會超出門檻」與「漲還是跌」兩部分。
+  - 日期層級預測的 CE 與 balanced accuracy。
+  - alpha 的 normalized Smooth L1 與逐日 Rank IC。
+  - 差距的 95% 區間：以 5 日區塊的 circular block bootstrap 重抽 1,000 次。
+  - 判準只用 validation；test 指標與扣成本的簡易回測只作描述。
+
+#### 執行步驟
+
+1. **重新部署 TPEx relay**：新增上櫃三大法人與融資融券路徑後，只需部署一次。
+
+   ```bash
+   bash scripts/runpod_workflow.sh tpex-relay deploy
+   ```
+
+2. **同步程式並確認上傳**：volume 上沒有任何 Pod 時才同步。
+
+   ```bash
+   bash scripts/runpod_workflow.sh sync --apply
+   ```
+
+   ```bash
+   bash scripts/runpod_workflow.sh readiness --code-only
+   ```
+
+3. **建立 CPU Pod（本機）**：使用 `a-absolute-direction64` 的資料組，不改變 active selection。
+   此 Pod 獨占 volume，執行期間不能建立其他 Pod。
+
+   ```bash
+   bash scripts/runpod_workflow.sh research tw-information
+   ```
+
+4. **在 Pod 內啟動**：SSH 登入後執行。
+
+   ```bash
+   cd /runpod-volume/stock_forecasting
+   bash scripts/runpod_tmux_launch.sh cpu-research
+   ```
+
+   工作依序為：核對已同步的程式、安裝 CPU 環境、執行研究相關測試、抓取輔助資料、執行資訊測試，
+   最後發布 `ready`。完成或失敗後，Pod 會自行終止；本機 guard 讀取
+   `lifecycle/research/tw-information.json` 作為後備。看到 `Detached tmux session started` 後
+   即可中斷 SSH。查看進度：
+
+   ```bash
+   tmux -L stock-forecasting-cpu-research attach -t stock-forecasting-cpu-research
+   ```
+
+5. **下載報告（本機）**：
+
+   ```bash
+   bash scripts/runpod_workflow.sh download-research
+   ```
+
+   預設下載最新一次已結束的工作，也可指定 `launch-...` ID。工作仍在執行時回傳 3；
+   報告不完整時回傳 4，但仍會保存 log。
+
+`research tw-information` 的選項見 [CLI 參數速查](#cli-reference-zh)。`--maxRuntime` 是上限，
+工作結束後 Pod 即終止。重跑時，已快取的回應不會再次請求。
+
+建立研究樣本時，每檔股票是一個 spawn process 工作，同時送出的工作不超過 worker 數的兩倍。
+worker 數預設取以下兩者的較小值，最多 32：
+
+- 可見 CPU 數減 1。
+- 可用記憶體的一半，以每個 worker 1 GiB 計。
+
+可用 `TW_INFORMATION_WORKERS` 調整。每個 worker 限制為單執行緒；GBDT 在 process pool
+結束後才以 OpenMP 使用全部核心。
+
+#### 產物
+
+```text
+/runpod-volume/datasets/<dataset-request-sha256>/auxiliary/
+  auxiliary-manifest.json      # Per-source status, rows, publication time and table SHA-256
+  twse_t86.parquet ... eodhd_series.parquet
+  raw-cache/                   # Cached provider responses
+
+/runpod-volume/diagnostics/tw-information-test/<launch-id>/
+  report.json                  # Bands, fits, metrics, criteria, window comparison and backtest
+  summary.md                   # Traditional Chinese section, then English section
+  auxiliary-manifest.json      # The manifest used by this run
+
+/runpod-volume/logs/tmux/stock-forecasting-cpu-research/<launch-id>/
+  combined.log                 # Job output
+  status.json                  # Terminal job state
+  runner.sh                    # Quoted job, timeout and self-termination
+```
+
+下載後存於不受 Git 追蹤的 `artifacts/diagnostics/tw-information-test/<launch-id>/`。
+
 <a id="cli-reference-zh"></a>
 
 ### CLI 參數速查
@@ -2473,6 +2620,7 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `selection show` | 無額外參數；顯示 active selection |
 | `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
 | `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
+| `research tw-information` | 建立台股資訊測試的 CPU Pod，資料組固定為 `a-absolute-direction64`，不改 active selection。`--maxRuntime D` 預設 `12h`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，選項同 `cpu prepare`；`--taiwan-qps Q` 預設 `0.5`、`--eodhd-qps Q` 預設 `2`，均須大於零；`--maxBackoff D` 預設 `1m`。需要已部署的 TPEx relay；Pod 獨占 volume，見[台股資訊測試](#tw-information-zh) |
 | `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 同時核對當前資料篩選規則與 baseline 完成結果、不要求主模型 HF cache。`--baseline --experiment a-signal64`（或 `b-signal64`、`a-signal64-datemix`、`b-signal64-datemix`）查詢兩個任務，省略實驗沿用 active selection；`--experiment` 只供 baseline 模式使用。完成為 exit 0、尚未完成／待整理為 1、驗證錯誤為 2 |
 | `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。`train` 接受可重複的 `--experiment NAME`、`--seed N`（0–4294967295；省略沿用 training seed）及 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；實驗 × seeds 最多 30 個組合。`a-signal64`／`b-signal64` 及其 `-datemix` 對照每組別、每 seed 建立一台 Pod，依序執行兩個獨立模型，runtime 共用。`baseline` 接受單一 `--experiment NAME`，成對入口先在本機查兩個 task cache、只建置未完成部分，不改 active selection；不接受 seed／launchWorkers。省略實驗仍使用 active selection，**不自動變成成對實驗**；進階單模型入口見附錄。兩者無 run ID 位置參數 |
 | `resume [RUN_ID]` | 父 ID 接續未完成模型或補齊其 test，略過已完成模型；整對已完成則拒絕、不開 Pod。單模型保留原接續功能。省略 ID 須唯一可接續候選，多個候選拒絕猜測。自動讀取原 selection；`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是 best |
@@ -2487,12 +2635,13 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `download [RUN_ID]` | 父 ID 一次下載兩模型；省略 ID 選最新完整完成的結果，成對子模型不當成額外實驗自動選用。`--checkpointScope all` 預設下載各自 retained checkpoints，`best` 取各自最佳；`--resume` 補齊／更新兩份本機結果，**不是接續訓練**；`-h`／`--help` 顯示說明。明確子 ID 保留單模型下載 |
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
 | `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`／`--baseline-arrays` | 必填其一 | 1–16 個子模型 run ID 或 `RUN_ID/checkpoint-NNNNNN`：各自下載最新完成的預測匯出並核對 SHA-256；同一 run 匯出過多個 checkpoint 時必須指定 checkpoint；`--baseline-arrays`：下載誤差拆解所需的現行 baseline 評估陣列並依 manifest 驗證；`-h`／`--help` 顯示說明 |
+| `download-research [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/tw-information.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。存於 `artifacts/diagnostics/tw-information-test/<launch-id>/`；仍在執行回傳 3，報告不完整回傳 4；`-h`／`--help` 顯示說明 |
 
 時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
 可用的同義旗標：`--max-runtime` = `--maxRuntime`、`--gpu-id` = `--gpuId`、
 `--checkpoint-scope` = `--checkpointScope`；CPU prepare 另接受 `--maxApiCalls`、
 `--eodhdQps`、`--taiwanQps`，以及 `--prepare-reserve`、`--max-backoff`、
-`--cpu-number`、`--cpu-flavor`。文件範例使用同一組主要拼法。
+`--cpu-number`、`--cpu-flavor`；`research tw-information` 接受同名的 QPS、backoff 與 CPU 別名。文件範例使用同一組主要拼法。
 GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不是費用硬上限**；baseline／CPU
 的期限行為見各自操作章節。GPU 查詢的 `--data-center` 不是 train／baseline 的選項。
 
@@ -2502,7 +2651,7 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 #### Pod 內工作與診斷
 
 `bash scripts/runpod_tmux_launch.sh WORKFLOW` 的一般 `WORKFLOW` 為 `cpu-prepare`、
-`cpu-finalize`、`stage1-train`、`stage1-validate`、`baseline`；這些名稱後面不接受額外參數，
+`cpu-finalize`、`cpu-research`、`stage1-train`、`stage1-validate`、`baseline`；這些名稱後面不接受額外參數，
 設定由建立 Pod 時的 selection／環境傳入。只有兩個診斷會轉交參數：`probe-scales` 使用下表，
 `export-signal-predictions` 使用再下一張表。
 
@@ -2588,6 +2737,31 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 `--symbol SYMBOL` 在多商品輸入時必填；`--as-of TIMESTAMP` 是選填的 inclusive UTC
 截止時間，未提供則使用可用資料的最新共同日期；`--output PATH` 選填保存 JSON，省略只輸出至 stdout。
 `probe-scales` 的 Python CLI 使用上述相同診斷參數；操作時使用 tmux 入口。
+
+台股資訊測試的兩個 CLI 由 `cpu-research` 工作依序呼叫，也接受 `-h`／`--help`：
+
+`poetry run stock-forecasting-prepare-auxiliary`：
+
+| 參數 | 預設值／用途 |
+| --- | --- |
+| `--start DATE`、`--end DATE` | `STAGE1_DATA_START`、`STAGE1_DATA_END`；前者 inclusive、後者 exclusive |
+| `--output-root PATH` | `DATA_ROOT/auxiliary`；寫入各來源 Parquet 與 `auxiliary-manifest.json` |
+| `--raw-cache-root PATH` | `<output-root>/raw-cache` |
+| `--sources NAME ...` | 全部：`twse_t86`、`twse_margin`、`tpex_institutional`、`tpex_margin`、`taifex_futures`、`taifex_put_call`、`eodhd_series` |
+| `--eodhd-series SYMBOL ...` | `SOX.INDX USDTWD.FOREX SOXX.US`；方案未包含的序列記為 unavailable |
+| `--taiwan-qps Q`、`--taifex-qps Q`、`--eodhd-qps Q` | `RUNPOD_CPU_TAIWAN_QPS`（否則 `0.5`）、`0.5`、`2.0` |
+| `--max-backoff-seconds S` | `RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS`，否則 `60` |
+
+TPEx relay 與 EODHD 憑證只從環境變數 `TPEX_PROXY_URL`、`TPEX_PROXY_TOKEN`、`EODHD_API_TOKEN` 讀取。
+
+`poetry run stock-forecasting-tw-information-test`：
+
+| 參數 | 預設值／用途 |
+| --- | --- |
+| `--config PATH` | `configs/research/tw_information_test.json` |
+| `--auxiliary-root PATH` | `DATA_ROOT/auxiliary`；必須含 `auxiliary-manifest.json` |
+| `--output-root PATH` | `NETWORK_VOLUME_ROOT/diagnostics/tw-information-test/run-<UTC>-<id>`；必須是新目錄 |
+| `--workers N` | `TW_INFORMATION_WORKERS`，否則依 CPU 與可用記憶體決定，範圍 1–32 |
 
 外部工具的範例旗標：`tmux -L SOCKET attach -t SESSION` 中 `-L` 選專用 socket、
 `-t` 選 session；不要換成其他工作的 socket。`gcloud auth login` 使用互動登入；
@@ -3372,7 +3546,8 @@ active selection，與不改 active selection 的成對操作不同。`readiness
 - [RunPod operations](#operations-en): [account/storage](#setup-en) → [configure/sync](#configure-en)
   → [CPU preparation](#cpu-en) → [baselines](#baseline-en) → [tasks/experiments and multi-Pod training](#train-en)
   → [downloads](#download-en)
-- [Artifacts and inference](#artifacts-en), [scale diagnostics](#probes-en), [CLI reference](#cli-reference-en)
+- [Artifacts and inference](#artifacts-en), [scale diagnostics](#probes-en),
+  [Taiwan information test](#tw-information-en), [CLI reference](#cli-reference-en)
 - [Acceptance and interpretation](#acceptance-en), [model/data references](#references-en)
 - [Appendix: obsolete experiments, including V1/V2/V3](#historical-experiments-en)
 
@@ -6184,6 +6359,169 @@ difference above 1×10⁻⁹ is flagged in the output and on screen. See the
 [error decomposition report](docs/error_decomposition_audit.md) for methods, metric definitions
 and limits.
 
+<a id="tw-information-en"></a>
+
+### Taiwan information test
+
+This is a CPU-only research job; it neither trains nor modifies the Kronos models. With GBDT,
+it tests whether free Taiwan flow, futures and US overnight data improve Taiwan up-versus-down
+predictions beyond technical indicators. It reads only the cleaned Taiwan samples of the
+`a-absolute-direction64` data group and keeps the existing train/validation/test splits. It
+changes no dataset, bar store, baseline or checkpoint, and writes no training or validation
+lifecycle marker. Settings and criteria are fixed in advance in
+[`configs/research/tw_information_test.json`](configs/research/tw_information_test.json); the
+criteria are explained in [experiment protocol §13.3](docs/experiment_protocol.md).
+
+#### Auxiliary data
+
+| Data | Source | Content | Published (Taipei) |
+| --- | --- | --- | --- |
+| TWSE institutional flows | TWSE `T86` | Net shares bought by foreign investors, foreign dealers, investment trusts, dealers and in total | Same day 16:30 |
+| TWSE margin trading | TWSE `MI_MARGN` | Margin and short buys, sells, balances, limits and offsets (lots) | Same day 21:30 |
+| TPEx institutional flows | TPEx `insti/dailyTrade` (through the relay) | As for TWSE | Same day 16:30 |
+| TPEx margin trading | TPEx `margin/balance` (through the relay) | As for TWSE | Same day 21:30 |
+| TAIEX futures by investor type | TAIFEX `futContractsDateDown` | Net traded and open-interest contracts of foreign investors, trusts and dealers | Same day 15:30 |
+| TAIEX options put/call ratio | TAIFEX `pcRatioDown` | Put/call ratio of volume and open interest | Same day 15:30 |
+| US and currency series | EODHD: `SOX.INDX`, `USDTWD.FOREX`, `SOXX.US` | Adjusted close | Next day 06:00 |
+
+`SPY.US`, `QQQ.US`, `XLK.US` and `TSM.US` come from the existing bar store and are not
+downloaded again. When the EODHD plan does not include a series, the manifest records it as
+`unavailable` and the other data proceed. Every source records `complete`, `partial`, `failed`
+or `empty` with its error in `auxiliary-manifest.json`. A `failed` source is left out, and the
+feature sets that depend on it are listed in the report's `skipped_feature_sets`.
+
+TWSE and TPEx are fetched in parallel, one thread each; requests to one host are sequential and
+respect `--taiwan-qps`. Responses are cached in `DATA_ROOT/auxiliary/raw-cache/`, so a rerun
+requests only what is missing.
+
+#### Labels, features and models
+
+- **Labels**: as in `execution_total_return`, entry at the adjusted open of session t+1 and exit
+  at the adjusted close of session t+h. The main horizons are 1/2/3/5 sessions; 10/14 are for
+  comparison only.
+- **Three-class bands**:
+  - The main band is max(cost floor, k_h × 20-session daily return standard deviation × √h).
+  - The cost floor is the undiscounted round trip: 0.585% for stocks (0.1425% commission × 2
+    plus 0.3% transaction tax) and 0.385% for ETFs (0.1% tax).
+  - k_h is bisected on train only so that the train neutral share is 1/3.
+  - The comparison band is the fixed ±1% of the current classification task. A return equal
+    to the band is neutral.
+- **Feature sets** (data up to and including the cutoff session only):
+  - `F0`: technical indicators of the asset and its benchmark (returns, volatility, ATR, volume,
+    distance to moving averages, RSI).
+  - `F0_long`: `F0` plus 60/120/250-session lookbacks.
+  - `short_only`: indicators within 20 sessions only.
+  - `flows`: institutional net buying as a share of volume, and margin and short changes and
+    utilization.
+  - `market`: market-wide flows and margin, advancing share, share above the 20-session
+    average, and TAIFEX data.
+  - `us_evening`, `us_pre_open`: US overnight returns.
+  - `all_evening`, `all_pre_open`: everything above.
+- **Signal times**:
+  - `evening` (22:00 Taipei, after the close) can use only the previous US session's close.
+  - `pre_open` (08:30 the next day, before the open) can use that night's US close.
+  - All Taiwan auxiliary data are published before 22:00.
+- **Models**: sklearn `HistGradientBoostingClassifier`/`HistGradientBoostingRegressor` with
+  fixed hyperparameters, fitted on train only. The boosting stage is chosen on the last 20% of
+  train, separated from the earlier part by 15 sessions; validation is never used for fitting.
+- **Evaluation** (Taiwan pooled, then TWSE and TPEX separately):
+  - Three-class CE split into "does it move beyond the band" and "up or down".
+  - CE of the date-level prediction, and balanced accuracy.
+  - Normalized Smooth L1 and per-date Rank IC for alpha.
+  - 95% intervals of differences from a circular block bootstrap with 5-session blocks and
+    1,000 replicates.
+  - The criteria use validation only; test metrics and a simple net-of-cost backtest are
+    descriptive.
+
+#### Steps
+
+1. **Redeploy the TPEx relay**: needed once after the TPEx institutional and margin routes
+   were added.
+
+   ```bash
+   bash scripts/runpod_workflow.sh tpex-relay deploy
+   ```
+
+2. **Synchronize and check the upload**: only while no Pod uses the volume.
+
+   ```bash
+   bash scripts/runpod_workflow.sh sync --apply
+   ```
+
+   ```bash
+   bash scripts/runpod_workflow.sh readiness --code-only
+   ```
+
+3. **Create the CPU Pod (local)**: it uses the `a-absolute-direction64` data group and leaves
+   the active selection unchanged. The Pod owns the volume, so no other Pod can be created
+   while it runs.
+
+   ```bash
+   bash scripts/runpod_workflow.sh research tw-information
+   ```
+
+4. **Start inside the Pod**: after SSH login, run:
+
+   ```bash
+   cd /runpod-volume/stock_forecasting
+   bash scripts/runpod_tmux_launch.sh cpu-research
+   ```
+
+   The job checks the synchronized code, installs the CPU environment, runs the research tests,
+   fetches auxiliary data, runs the information test and publishes `ready`. After success or
+   failure the Pod terminates itself; the local guard reads
+   `lifecycle/research/tw-information.json` as a fallback. SSH may disconnect after
+   `Detached tmux session started`. To follow progress:
+
+   ```bash
+   tmux -L stock-forecasting-cpu-research attach -t stock-forecasting-cpu-research
+   ```
+
+5. **Download the report (local)**:
+
+   ```bash
+   bash scripts/runpod_workflow.sh download-research
+   ```
+
+   By default this downloads the latest finished run; a `launch-...` ID selects another. It
+   exits with 3 while the job is still running, and with 4 when the report is incomplete, after
+   saving the logs.
+
+Options of `research tw-information` are listed in the [CLI reference](#cli-reference-en).
+`--maxRuntime` is an upper bound; the Pod terminates when the job ends. Reruns do not request
+cached responses again.
+
+The research samples are built with one spawn-process task per stock and at most twice the
+worker count in flight. The worker count defaults to the smaller of the following, capped at 32:
+
+- The visible CPUs minus one.
+- Half of the available memory at 1 GiB per worker.
+
+`TW_INFORMATION_WORKERS` overrides it. Each worker is limited to one thread; GBDT uses all cores
+through OpenMP only after the process pool has closed.
+
+#### Artifacts
+
+```text
+/runpod-volume/datasets/<dataset-request-sha256>/auxiliary/
+  auxiliary-manifest.json      # Per-source status, rows, publication time and table SHA-256
+  twse_t86.parquet ... eodhd_series.parquet
+  raw-cache/                   # Cached provider responses
+
+/runpod-volume/diagnostics/tw-information-test/<launch-id>/
+  report.json                  # Bands, fits, metrics, criteria, window comparison and backtest
+  summary.md                   # Traditional Chinese section, then English section
+  auxiliary-manifest.json      # The manifest used by this run
+
+/runpod-volume/logs/tmux/stock-forecasting-cpu-research/<launch-id>/
+  combined.log                 # Job output
+  status.json                  # Terminal job state
+  runner.sh                    # Quoted job, timeout and self-termination
+```
+
+Downloads are saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`, which Git
+does not track.
+
 <a id="cli-reference-en"></a>
 
 ### CLI parameter reference
@@ -6208,6 +6546,7 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `selection show` | No extra options; display the active selection |
 | `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
 | `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
+| `research tw-information` | Create the CPU Pod of the Taiwan information test for the fixed `a-absolute-direction64` data group without changing active selection. `--maxRuntime D` defaults to `12h`; `--cpuNumber N` to `8`, choices 2/4/8/16/32; `--cpuFlavor F` to `cpu3g`, with the `cpu prepare` choices; `--taiwan-qps Q` to `0.5` and `--eodhd-qps Q` to `2`, both positive; `--maxBackoff D` to `1m`. Requires the deployed TPEx relay; the Pod owns the volume; see the [Taiwan information test](#tw-information-en) |
 | `readiness` | Choose one: `--code-only` checks uploaded code; `--gpu` checks main-model dependencies; `--baseline` checks current data-cleaning rules and baseline completion without the main-model HF cache. Add `--experiment a-signal64`, `b-signal64`, `a-signal64-datemix` or `b-signal64-datemix` to `--baseline` to check both tasks; omission retains active selection. `--experiment` is only accepted in baseline mode. Exit 0: complete; 1: incomplete/pending finalization; 2: verification error |
 | `train`, `baseline` | `--maxRuntime D`: `12h`; `--gpuId ID`: `NVIDIA GeForce RTX 5090`. `train` accepts repeated `--experiment NAME`, repeated `--seed N` (0–4294967295; training seed when omitted), and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`), at most 30 experiment × seed combinations. Each `a-signal64`/`b-signal64` group/seed, and each `-datemix` control, creates one Pod running two independent models sequentially under one runtime. `baseline` accepts one `--experiment NAME`: a paired entry checks both task caches locally and builds only unfinished work without changing active selection; no seed/launchWorkers. Omitting experiment keeps active selection, **not an implicit pair**. Advanced individual entries remain in the appendix. Neither accepts a positional run ID |
 | `resume [RUN_ID]` | A parent resumes unfinished models or missing test evaluation, skipping completed models; a complete pair rejects before renting. Individual-model resume remains supported. Omission requires exactly one eligible candidate. Restore original selection; `--maxRuntime D`: `12h`, GPU as above; use latest usable checkpoint, not best |
@@ -6222,12 +6561,14 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `download [RUN_ID]` | A parent downloads both models; omission selects latest complete results without separately auto-selecting linked children. `--checkpointScope all` (default) obtains each retained checkpoint set; `best` selects each best. `--resume` fills/refreshes both local results, **not training continuation**; `-h`/`--help` shows help. Explicit child IDs retain individual downloads |
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
 | `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`/`--baseline-arrays` | One form required | 1–16 child run IDs or `RUN_ID/checkpoint-NNNNNN`: download each latest completed prediction export with SHA-256 checks; name the checkpoint when a run has exports of several; `--baseline-arrays`: download the current baselines' evaluation arrays needed for decomposition, verified against their manifests; `-h`/`--help` shows help |
+| `download-research [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/tw-information.json`; a `launch-...` ID selects another. Saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`; exits 3 while running and 4 when the report is incomplete; `-h`/`--help` shows help |
 
 Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,
 `12h`, `2d`), not `1.5h`. Supported aliases are `--max-runtime` = `--maxRuntime`,
 `--gpu-id` = `--gpuId`, and `--checkpoint-scope` = `--checkpointScope`. CPU prepare
 also accepts `--maxApiCalls`, `--eodhdQps`, `--taiwanQps`, `--prepare-reserve`,
-`--max-backoff`, `--cpu-number` and `--cpu-flavor`. Examples use consistent primary spellings.
+`--max-backoff`, `--cpu-number` and `--cpu-flavor`; `research tw-information` accepts the same
+QPS, backoff and CPU aliases. Examples use consistent primary spellings.
 GPU train/validate runtime is a **request to stop after safely saving, not a hard cost cap**;
 baseline/CPU deadline behavior is described in their operation sections. GPU catalog
 `--data-center` is not a train/baseline option.
@@ -6239,7 +6580,8 @@ under [Query GPU resources](#gpu-catalog-en).
 #### In-Pod workflows and diagnostics
 
 Normal `WORKFLOW` values for `bash scripts/runpod_tmux_launch.sh WORKFLOW` are
-`cpu-prepare`, `cpu-finalize`, `stage1-train`, `stage1-validate` and `baseline`. They take
+`cpu-prepare`, `cpu-finalize`, `cpu-research`, `stage1-train`, `stage1-validate` and
+`baseline`. They take
 no extra arguments: selection/environment values are passed when the Pod is created.
 Only two diagnostics forward options: `probe-scales` uses the table below and
 `export-signal-predictions` uses the next one.
@@ -6329,6 +6671,33 @@ both instrument and benchmark. `--symbol SYMBOL` is required for multiple target
 optional `--as-of TIMESTAMP` is an inclusive UTC cutoff, otherwise use the latest available
 common date. Optional `--output PATH` saves JSON; without it, output goes only to stdout.
 The `probe-scales` Python CLI uses the diagnostic options above; operate it through tmux.
+
+The two Taiwan information test CLIs are run in order by the `cpu-research` job and also
+accept `-h`/`--help`:
+
+`poetry run stock-forecasting-prepare-auxiliary`:
+
+| Option | Default or purpose |
+| --- | --- |
+| `--start DATE`, `--end DATE` | `STAGE1_DATA_START`, `STAGE1_DATA_END`; inclusive start and exclusive end |
+| `--output-root PATH` | `DATA_ROOT/auxiliary`; per-source Parquet tables and `auxiliary-manifest.json` |
+| `--raw-cache-root PATH` | `<output-root>/raw-cache` |
+| `--sources NAME ...` | All of `twse_t86`, `twse_margin`, `tpex_institutional`, `tpex_margin`, `taifex_futures`, `taifex_put_call`, `eodhd_series` |
+| `--eodhd-series SYMBOL ...` | `SOX.INDX USDTWD.FOREX SOXX.US`; series outside the plan are recorded as unavailable |
+| `--taiwan-qps Q`, `--taifex-qps Q`, `--eodhd-qps Q` | `RUNPOD_CPU_TAIWAN_QPS` (otherwise `0.5`), `0.5`, `2.0` |
+| `--max-backoff-seconds S` | `RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS`, otherwise `60` |
+
+TPEx relay and EODHD credentials are read only from the environment variables
+`TPEX_PROXY_URL`, `TPEX_PROXY_TOKEN` and `EODHD_API_TOKEN`.
+
+`poetry run stock-forecasting-tw-information-test`:
+
+| Option | Default or purpose |
+| --- | --- |
+| `--config PATH` | `configs/research/tw_information_test.json` |
+| `--auxiliary-root PATH` | `DATA_ROOT/auxiliary`; must contain `auxiliary-manifest.json` |
+| `--output-root PATH` | `NETWORK_VOLUME_ROOT/diagnostics/tw-information-test/run-<UTC>-<id>`; must be a new directory |
+| `--workers N` | `TW_INFORMATION_WORKERS`, otherwise derived from CPUs and available memory, range 1–32 |
 
 External-tool example options: in `tmux -L SOCKET attach -t SESSION`, `-L` selects the
 dedicated socket and `-t` selects the session; do not substitute another workflow's socket.
