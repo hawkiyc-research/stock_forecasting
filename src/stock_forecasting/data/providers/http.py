@@ -37,6 +37,8 @@ _TPEX_RELAY_PATHS = frozenset(
         "/www/zh-tw/bulletin/exDailyQ",
         "/www/zh-tw/indexInfo/ROE",
         "/www/zh-tw/indexInfo/inx",
+        "/www/zh-tw/insti/dailyTrade",
+        "/www/zh-tw/margin/balance",
     }
 )
 

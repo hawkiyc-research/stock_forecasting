@@ -105,6 +105,12 @@ verify_relay_request "ROE" "official" \
 sleep "${VERIFY_TPEX_INTERVAL_SECONDS}"
 verify_relay_request "inx" "official" \
     "${RELAY_ROOT}/www/zh-tw/indexInfo/inx?date=2026%2F04%2F01&response=json"
+sleep "${VERIFY_TPEX_INTERVAL_SECONDS}"
+verify_relay_request "dailyTrade" "official" \
+    "${RELAY_ROOT}/www/zh-tw/insti/dailyTrade?type=Daily&sect=EW&date=2026%2F04%2F01&response=json"
+sleep "${VERIFY_TPEX_INTERVAL_SECONDS}"
+verify_relay_request "marginBalance" "official" \
+    "${RELAY_ROOT}/www/zh-tw/margin/balance?date=2026%2F04%2F01&response=json"
 
 unset TPEX_PROXY_SHARED_SECRET
-printf 'Cloud Run TPEx relay verification passed: warmup and all four official routes returned valid JSON.\n'
+printf 'Cloud Run TPEx relay verification passed: warmup and all six official routes returned valid JSON.\n'

@@ -1275,9 +1275,12 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
         "/www/zh-tw/bulletin/exDailyQ",
         "/www/zh-tw/indexInfo/ROE",
         "/www/zh-tw/indexInfo/inx",
+        "/www/zh-tw/insti/dailyTrade",
+        "/www/zh-tw/margin/balance",
     ):
         assert path in relay
         assert path in verifier
+        assert path in http_client
     assert 'request.method !== "GET"' in relay
     assert 'AUTHENTICATION_HEADER = "X-TPEX-Relay-Token"' in relay
     assert 'requestUrl.pathname === "/_internal/warmup"' in relay
@@ -1291,7 +1294,8 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
     assert 'error: "tpex_upstream_redirect_limit_exceeded"' in relay
     assert 'error: "tpex_upstream_redirect_loop"' in relay
     assert "visitedStates.has(redirectedState)" in relay
-    assert 'const RELAY_VERSION = "1"' in relay
+    assert 'const RELAY_VERSION = "2"' in relay
+    assert 'fixedValues: Object.freeze({ sect: "EW", type: "Daily" })' in relay
     assert 'typeof headers.getSetCookie === "function"' in relay
     assert 'headers.set("Cookie"' in relay
     assert "MAX_UPSTREAM_REDIRECT_COOKIES = 8" in relay

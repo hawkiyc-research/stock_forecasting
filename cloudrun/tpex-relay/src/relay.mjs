@@ -1,5 +1,5 @@
 const UPSTREAM_ORIGIN = "https://www.tpex.org.tw";
-const RELAY_VERSION = "1";
+const RELAY_VERSION = "2";
 const AUTHENTICATION_HEADER = "X-TPEX-Relay-Token";
 const MAX_UPSTREAM_REDIRECTS = 3;
 const MAX_UPSTREAM_REDIRECT_COOKIES = 8;
@@ -21,6 +21,17 @@ const ROUTES = Object.freeze({
     dateParameters: Object.freeze(["date"]),
   }),
   "/www/zh-tw/indexInfo/inx": Object.freeze({
+    required: Object.freeze(["date", "response"]),
+    dateParameters: Object.freeze(["date"]),
+  }),
+  // Daily institutional investor trades for all OTC securities except warrants.
+  "/www/zh-tw/insti/dailyTrade": Object.freeze({
+    required: Object.freeze(["date", "response", "sect", "type"]),
+    dateParameters: Object.freeze(["date"]),
+    fixedValues: Object.freeze({ sect: "EW", type: "Daily" }),
+  }),
+  // Daily margin purchase and short sale balances of OTC securities.
+  "/www/zh-tw/margin/balance": Object.freeze({
     required: Object.freeze(["date", "response"]),
     dateParameters: Object.freeze(["date"]),
   }),
@@ -141,6 +152,13 @@ function validatedUpstreamUrl(requestUrl) {
   if (
     route.dateParameters.some(
       (name) => !validCalendarDate(requestUrl.searchParams.get(name) ?? ""),
+    )
+  ) {
+    return null;
+  }
+  if (
+    Object.entries(route.fixedValues ?? {}).some(
+      ([name, value]) => requestUrl.searchParams.get(name) !== value,
     )
   ) {
     return null;

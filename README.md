@@ -865,7 +865,8 @@ REST API v2 預檢通過後，部署器才會建立 GCP 資源。共享 token �
 產生前，Node.js Buildpack 會透過 `gcp-build` 強制執行 relay 單元測試；測試或 build
 失敗就不會部署 revision。新 revision 上線後，部署器先驗證 authenticated warmup，
 再實際驗證 `dailyQuotes`、`exDailyQ`、
-`ROE` 與 `inx` 四個精確路徑；官方 route probe 之間固定間隔 2 秒。全部取得含官方
+`ROE`、`inx`、`insti/dailyTrade`（三大法人）與 `margin/balance`（融資融券）六個精確路徑；
+官方 route probe 之間固定間隔 2 秒。全部取得含官方
 資料表的 JSON 後，才建立新的 RunPod
 Secret 並原子更新本機 `TPEX_PROXY_URL` 與 secret reference。若 live verification 或
 RunPod Secret 建立失敗，Cloud Run revision 可能已存在，但該輪仍屬未完成，本機仍
@@ -878,8 +879,8 @@ RunPod Secret 建立失敗，Cloud Run revision 可能已存在，但該輪仍�
   concurrency `1`。沒有 request 時可 scale to zero；單一 instance／單一 request
   防止 Cloud Run autoscaling 放大既有 `--taiwan-qps`。relay 不再另設一個與 CLI
   衝突的 QPS limiter。
-- 只允許 `GET`、共享 token、固定 TPEx origin、四個專案使用中的 path，以及各
-  path 的固定 query schema；TPEx 若回傳 redirect，最多跟隨三次且每一跳都必須維持
+- 只允許 `GET`、共享 token、固定 TPEx origin、六個專案使用中的 path，以及各
+  path 的固定 query schema（三大法人路徑另固定 `type=Daily`、`sect=EW`）；TPEx 若回傳 redirect，最多跟隨三次且每一跳都必須維持
   相同 HTTPS origin。每次 upstream request 的總 timeout 為 30 秒、response body
   上限為 16 MiB；relay 不進行 provider retry。重新導向回應若設定工作階段 Cookie，
   只會在驗證同源後承接到下一跳，且 Cookie 數量與 header bytes 都有硬上限；Cookie
@@ -4366,9 +4367,10 @@ is mounted from a numbered Secret Manager version into one Cloud Run revision;
 it never uses a drifting `latest` reference. Before a revision is produced, the
 Node.js buildpack must pass the relay unit tests through `gcp-build`; a failed
 test or build cannot deploy a revision. After the revision is live, the deployer
-verifies authenticated warmup and then all four exact routes:
-`dailyQuotes`, `exDailyQ`, `ROE`, and `inx`, with two seconds between official
-route probes. Only official table-shaped JSON from every route allows it to
+verifies authenticated warmup and then all six exact routes:
+`dailyQuotes`, `exDailyQ`, `ROE`, `inx`, `insti/dailyTrade` (institutional
+investors) and `margin/balance` (margin balances), with two seconds between
+official route probes. Only official table-shaped JSON from every route allows it to
 create a new RunPod Secret and atomically activate
 `TPEX_PROXY_URL` plus the secret reference in local `.env`. A live-verification
 or RunPod Secret failure can leave the new Cloud Run revision deployed, but the
@@ -4382,8 +4384,9 @@ Fix the reported cause and rerun `tpex-relay deploy`.
   container concurrency is `1`. It scales to zero while idle and cannot
   multiply the existing `--taiwan-qps` through autoscaling. The relay does not
   add a second fixed QPS limiter that could conflict with the CPU CLI setting.
-- It accepts only `GET`, the shared token, the fixed TPEx origin, the four paths
-  used by this project, and each path's exact query schema. One upstream request
+- It accepts only `GET`, the shared token, the fixed TPEx origin, the six paths
+  used by this project, and each path's exact query schema (the institutional
+  route also fixes `type=Daily` and `sect=EW`). One upstream request
   has a 30-second total timeout and a 16 MiB response limit. Redirects are
   limited to three same-origin hops; bounded session cookies can be carried to
   the next same-origin hop but are never returned to the caller. Cross-origin,

@@ -32,11 +32,11 @@ test("authenticated warmup starts the service without contacting TPEx", async ()
   assert.equal(fetched, false);
   assert.deepEqual(await response.json(), {
     ready: true,
-    version: "1",
+    version: "2",
     region: "asia-east1",
     revision: "fixture-revision-00001",
   });
-  assert.equal(response.headers.get("X-TPEX-Relay-Version"), "1");
+  assert.equal(response.headers.get("X-TPEX-Relay-Version"), "2");
   assert.equal(response.headers.get("X-TPEX-Relay-Region"), "asia-east1");
 });
 
@@ -63,6 +63,63 @@ test("forwards only the fixed TPEx origin and returns original JSON bytes", asyn
   assert.equal(capturedOptions.headers.get("Cookie"), null);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.equal(response.headers.get("X-TPEX-Upstream-Redirects"), "0");
+});
+
+test("forwards the institutional-trade and margin routes with fixed query values", async () => {
+  const routes = [
+    [
+      "https://relay.example/www/zh-tw/insti/dailyTrade" +
+        "?type=Daily&sect=EW&date=2021%2F01%2F04&response=json",
+      "/www/zh-tw/insti/dailyTrade",
+      { date: "2021/01/04", response: "json", sect: "EW", type: "Daily" },
+    ],
+    [
+      "https://relay.example/www/zh-tw/margin/balance?date=2021%2F01%2F04&response=json",
+      "/www/zh-tw/margin/balance",
+      { date: "2021/01/04", response: "json" },
+    ],
+  ];
+  for (const [url, pathname, parameters] of routes) {
+    let capturedUrl;
+    const response = await handleRequest(request(url), ENVIRONMENT, async (upstream) => {
+      capturedUrl = upstream;
+      return new Response('{"tables":[]}', {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    assert.equal(response.status, 200);
+    assert.equal(capturedUrl.origin, "https://www.tpex.org.tw");
+    assert.equal(capturedUrl.pathname, pathname);
+    assert.deepEqual(Object.fromEntries(capturedUrl.searchParams), parameters);
+  }
+
+  for (const query of [
+    "type=Weekly&sect=EW&date=2021%2F01%2F04&response=json",
+    "type=Daily&sect=AL&date=2021%2F01%2F04&response=json",
+    "type=Daily&sect=EW&date=2021%2F02%2F30&response=json",
+    "type=Daily&date=2021%2F01%2F04&response=json",
+  ]) {
+    let fetched = false;
+    const response = await handleRequest(
+      request(`https://relay.example/www/zh-tw/insti/dailyTrade?${query}`),
+      ENVIRONMENT,
+      async () => {
+        fetched = true;
+        return new Response("{}");
+      },
+    );
+    assert.equal(response.status, 400);
+    assert.equal(fetched, false);
+  }
+  const extraMarginParameter = await handleRequest(
+    request(
+      "https://relay.example/www/zh-tw/margin/balance" +
+        "?date=2021%2F01%2F04&response=json&id=2330",
+    ),
+    ENVIRONMENT,
+  );
+  assert.equal(extraMarginParameter.status, 400);
 });
 
 test("follows a bounded same-origin redirect with its session cookie", async () => {
