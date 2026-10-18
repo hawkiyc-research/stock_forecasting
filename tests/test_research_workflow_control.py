@@ -216,6 +216,12 @@ class ResearchTmuxTests(unittest.TestCase):
                     self.assertIn(str(harness.volume / KEY), calls)
                     self.assertIn(f"--kind {KIND} --state failed", calls)
 
+    def test_research_job_quarantines_stale_sources_before_checking_code(self) -> None:
+        job = (ROOT / "scripts/runpod_cpu_research.sh").read_text(encoding="utf-8")
+        quarantine = job.index("runpod_readiness.py\" quarantine-stale-code")
+        self.assertLess(job.index("write_research_state preparing\n"), quarantine)
+        self.assertLess(quarantine, job.index("runpod_readiness.py\" check-code"))
+
     def test_research_job_refuses_another_role_or_dataset(self) -> None:
         script = ROOT / "scripts/runpod_cpu_research.sh"
         base = {

@@ -123,6 +123,12 @@ trap 'exit 130' INT
 trap finish_cpu_research EXIT
 
 write_research_state preparing
+# As in the other CPU workflows: move sources outside this release (for example
+# files another worktree synced) to lifecycle/quarantine/ before checking the code.
+"${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_readiness.py" quarantine-stale-code \
+    --marker "${CODE_MARKER}" \
+    --project-root "${PROJECT_ROOT}" \
+    --network-volume-root "${NETWORK_VOLUME_ROOT}"
 "${RUNPOD_PYTHON_BIN}" "${SCRIPT_DIR}/runpod_readiness.py" check-code \
     --marker "${CODE_MARKER}" \
     --project-root "${PROJECT_ROOT}"
