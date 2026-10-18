@@ -75,6 +75,7 @@ runpod_guard_lifecycle_kind() {
         lifecycle/stage1/training.json) echo stage1-training ;;
         lifecycle/stage1/validation.json) echo stage1-validation ;;
         lifecycle/stage1/baseline.json) echo stage1-baseline ;;
+        lifecycle/research/tw-information.json) echo research-tw-information ;;
         "lifecycle/runs/${run_id}/training.json"|"lifecycle/runs/${run_id}/validation.json")
             [[ "${run_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$ && "${run_id}" != *--* ]] || return 2
             echo "stage1-$(basename "${key}" .json)"

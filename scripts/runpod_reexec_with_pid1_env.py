@@ -161,6 +161,10 @@ def main() -> int:
     role = imported["RUNPOD_ROLE"]
     if role == "cpu-prep":
         imported.pop("WANDB_API_KEY", None)
+    elif role == "cpu-research":
+        # Research fetches only TWSE/TPEx/TAIFEX/EODHD data; no model or W&B access.
+        imported.pop("WANDB_API_KEY", None)
+        imported.pop("HF_TOKEN", None)
     elif role in {"gpu-train", "gpu-validation", "gpu-baseline"}:
         imported.pop("EODHD_API_TOKEN", None)
         imported.pop("HF_TOKEN", None)

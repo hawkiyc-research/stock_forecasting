@@ -22,7 +22,19 @@ runpod_load_active_selection "${LOCAL_PROJECT_ROOT}"
 RUNPOD_NETWORK_VOLUME_ID="${RUNPOD_NETWORK_VOLUME_ID:-}"
 RUNPOD_VOLUME_MOUNT_PATH="${RUNPOD_VOLUME_MOUNT_PATH:-/runpod-volume}"
 PROJECT_ROOT="${PROJECT_ROOT:-${RUNPOD_VOLUME_MOUNT_PATH}/stock_forecasting}"
+# research runs the Phase 1 information test; it never prepares or finalizes a dataset.
+RUNPOD_CPU_WORKFLOW="${RUNPOD_CPU_WORKFLOW:-prepare}"
+case "${RUNPOD_CPU_WORKFLOW}" in
+    prepare|research) ;;
+    *)
+        echo "RUNPOD_CPU_WORKFLOW must be prepare or research" >&2
+        exit 2
+        ;;
+esac
 RUNPOD_POD_NAME="${RUNPOD_CPU_POD_NAME:-stock-forecasting-cpu-prepare}"
+if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
+    RUNPOD_POD_NAME="${RUNPOD_CPU_RESEARCH_POD_NAME:-stock-forecasting-cpu-research}"
+fi
 runpod_validate_project_resource_name "${RUNPOD_POD_NAME}" RUNPOD_CPU_POD_NAME
 RUNPOD_IMAGE="${RUNPOD_IMAGE:-runpod/pytorch:1.0.7-cu1281-torch291-ubuntu2404}"
 RUNPOD_EXPECTED_TORCH_VERSION="${RUNPOD_EXPECTED_TORCH_VERSION:-2.9.1+cu128}"
@@ -47,11 +59,27 @@ RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS="${RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS:-60}"
 RUNPOD_CPU_HARD_LIMIT_SECONDS="${RUNPOD_CPU_HARD_LIMIT_SECONDS:-25200}"
 RUNPOD_GUARD_LOG_DIR="${RUNPOD_GUARD_LOG_DIR:-${HOME:-/tmp}/.local/state/runpod-guards}"
 RUNPOD_GUARD_LAUNCHER="${SCRIPT_DIR}/launch_runpod_guard.sh"
+RUNPOD_CPU_ROLE=cpu-prep
 RUNPOD_CPU_TMUX_WORKFLOW=cpu-prepare
 RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/stage1/cpu-preparation.json
-if [[ "${RUNPOD_STAGE}" == "stage2" ]]; then
+RUNPOD_CPU_POD_LABEL="CPU preparation"
+if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
+    RUNPOD_CPU_ROLE=cpu-research
+    RUNPOD_CPU_TMUX_WORKFLOW=research-tw-information
+    RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/research/tw-information.json
+    RUNPOD_CPU_POD_LABEL="CPU research"
+elif [[ "${RUNPOD_STAGE}" == "stage2" ]]; then
     RUNPOD_CPU_TMUX_WORKFLOW=cpu-finalize
     RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/stage1/mixed-finalization.json
+fi
+# Taiwan acquisition (stage 1 preparation or research) reaches TPEx through the relay.
+REQUIRE_TPEX_RELAY=0
+if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" \
+    || ( "${RUNPOD_STAGE}" == "stage1" \
+        && ( "${FIN_TS_DATASET_PROFILE}" == "tw_only" \
+            || "${FIN_TS_DATASET_PROFILE}" == "us_tw_eodhd" \
+            || "${FIN_TS_DATASET_PROFILE}" == "us_tw_massive" ) ) ]]; then
+    REQUIRE_TPEX_RELAY=1
 fi
 
 if [[ -n "${RUNPOD_POD_ID:-}" && "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
@@ -174,10 +202,7 @@ if [[ "${FIN_TS_DATASET_PROFILE}" == "us_tw_massive" ]]; then
     echo "The Massive provider interface is reserved but not implemented" >&2
     exit 2
 fi
-if [[ "${RUNPOD_STAGE}" == "stage1" \
-    && ( "${FIN_TS_DATASET_PROFILE}" == "tw_only" \
-    || "${FIN_TS_DATASET_PROFILE}" == "us_tw_eodhd" \
-    || "${FIN_TS_DATASET_PROFILE}" == "us_tw_massive" ) ]]; then
+if [[ ${REQUIRE_TPEX_RELAY} -eq 1 ]]; then
     if [[ ! "${RUNPOD_TPEX_PROXY_SECRET_NAME}" =~ ^[A-Za-z0-9_-]+$ ]]; then
         echo "RunPod TPEx relay secret name is missing or invalid; deploy the Cloud Run relay first" >&2
         exit 2
@@ -203,7 +228,8 @@ if [[ -n "${STAGE1_SYMBOL_LIMIT}" && ! "${STAGE1_SYMBOL_LIMIT}" =~ ^[1-9][0-9]*$
     echo "STAGE1_SYMBOL_LIMIT must be empty or a positive integer" >&2
     exit 2
 fi
-if [[ ! "${RUNPOD_CPU_MAX_API_CALLS}" =~ ^[1-9][0-9]*$ \
+if [[ ( "${RUNPOD_CPU_WORKFLOW}" == "prepare" \
+        && ! "${RUNPOD_CPU_MAX_API_CALLS}" =~ ^[1-9][0-9]*$ ) \
     || ! "${RUNPOD_CPU_EODHD_QPS}" =~ ^(0|[1-9][0-9]*)([.][0-9]+)?$ \
     || "${RUNPOD_CPU_EODHD_QPS}" =~ ^0([.]0+)?$ \
     || ! "${RUNPOD_CPU_TAIWAN_QPS}" =~ ^(0|[1-9][0-9]*)([.][0-9]+)?$ \
@@ -246,28 +272,28 @@ if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
 fi
 
 HF_TOKEN_REFERENCE="{{ RUNPOD_SECRET_${RUNPOD_HF_SECRET_NAME} }}"
+if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
+    HF_TOKEN_REFERENCE=""
+fi
 EODHD_TOKEN_REFERENCE=""
-if [[ "${FIN_TS_DATASET_PROFILE}" == *eodhd* ]]; then
+if [[ "${FIN_TS_DATASET_PROFILE}" == *eodhd* || "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
     EODHD_TOKEN_REFERENCE="{{ RUNPOD_SECRET_${RUNPOD_EODHD_SECRET_NAME} }}"
 fi
 TPEX_PROXY_TOKEN_REFERENCE=""
 TPEX_PROXY_POD_URL=""
-if [[ "${RUNPOD_STAGE}" == "stage1" \
-    && ( "${FIN_TS_DATASET_PROFILE}" == "tw_only" \
-    || "${FIN_TS_DATASET_PROFILE}" == "us_tw_eodhd" \
-    || "${FIN_TS_DATASET_PROFILE}" == "us_tw_massive" ) ]]; then
+if [[ ${REQUIRE_TPEX_RELAY} -eq 1 ]]; then
     TPEX_PROXY_TOKEN_REFERENCE="{{ RUNPOD_SECRET_${RUNPOD_TPEX_PROXY_SECRET_NAME} }}"
     TPEX_PROXY_POD_URL="${TPEX_PROXY_URL}"
 fi
 POD_ENV_JSON="$(printf \
-    '{"NETWORK_VOLUME_ROOT":"%s","RUNPOD_VOLUME_ROOT":"%s","RUNPOD_EXPECTED_VOLUME_ID":"%s","RUNPOD_REQUESTED_CPU_COUNT":"%s","PROJECT_ROOT":"%s","DATA_ROOT":"%s","RUNPOD_CONFIG":"%s","RUNPOD_STAGE":"%s","RUNPOD_STAGE_CONFIG_SHA256":"%s","RUNPOD_SELECTION_ID":"%s","RUNPOD_SELECTION_SHA256":"%s","RUNPOD_DATASET_REQUEST_SHA256":"%s","RUNPOD_DATASET_REVISION":"%s","RUNPOD_REMOTE_SELECTION_PATH":"%s","RUNPOD_ROLE":"cpu-prep","RUNPOD_CPU_MAX_RUNTIME_SECONDS":"%s","RUNPOD_CPU_PREPARE_RESERVE_SECONDS":"%s","RUNPOD_CPU_MAX_API_CALLS":"%s","RUNPOD_CPU_EODHD_QPS":"%s","RUNPOD_CPU_TAIWAN_QPS":"%s","RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS":"%s","RUNPOD_SHUTDOWN_ACTION":"terminate","RUNPOD_IMAGE":"%s","RUNPOD_EXPECTED_TORCH_VERSION":"%s","RUNPOD_EXPECTED_CUDA_PREFIX":"%s","RUNPOD_EXPECTED_UBUNTU_VERSION":"%s","HF_TOKEN":"%s","EODHD_API_TOKEN":"%s","TPEX_PROXY_URL":"%s","TPEX_PROXY_TOKEN":"%s","FIN_TS_DATASET_PROFILE":"%s","FIN_TS_H_START":"%s","FIN_TS_FEATURE_MODE":"%s","STAGE1_US_SYMBOLS":"%s","STAGE1_US_ETF_SYMBOLS":"%s","STAGE1_SYMBOL_LIMIT":"%s","STAGE1_DATA_START":"%s","STAGE1_DATA_END":"%s"}' \
+    '{"NETWORK_VOLUME_ROOT":"%s","RUNPOD_VOLUME_ROOT":"%s","RUNPOD_EXPECTED_VOLUME_ID":"%s","RUNPOD_REQUESTED_CPU_COUNT":"%s","PROJECT_ROOT":"%s","DATA_ROOT":"%s","RUNPOD_CONFIG":"%s","RUNPOD_STAGE":"%s","RUNPOD_STAGE_CONFIG_SHA256":"%s","RUNPOD_SELECTION_ID":"%s","RUNPOD_SELECTION_SHA256":"%s","RUNPOD_DATASET_REQUEST_SHA256":"%s","RUNPOD_DATASET_REVISION":"%s","RUNPOD_REMOTE_SELECTION_PATH":"%s","RUNPOD_ROLE":"%s","RUNPOD_CPU_MAX_RUNTIME_SECONDS":"%s","RUNPOD_CPU_PREPARE_RESERVE_SECONDS":"%s","RUNPOD_CPU_MAX_API_CALLS":"%s","RUNPOD_CPU_EODHD_QPS":"%s","RUNPOD_CPU_TAIWAN_QPS":"%s","RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS":"%s","RUNPOD_SHUTDOWN_ACTION":"terminate","RUNPOD_IMAGE":"%s","RUNPOD_EXPECTED_TORCH_VERSION":"%s","RUNPOD_EXPECTED_CUDA_PREFIX":"%s","RUNPOD_EXPECTED_UBUNTU_VERSION":"%s","HF_TOKEN":"%s","EODHD_API_TOKEN":"%s","TPEX_PROXY_URL":"%s","TPEX_PROXY_TOKEN":"%s","FIN_TS_DATASET_PROFILE":"%s","FIN_TS_H_START":"%s","FIN_TS_FEATURE_MODE":"%s","STAGE1_US_SYMBOLS":"%s","STAGE1_US_ETF_SYMBOLS":"%s","STAGE1_SYMBOL_LIMIT":"%s","STAGE1_DATA_START":"%s","STAGE1_DATA_END":"%s"}' \
     "${RUNPOD_VOLUME_MOUNT_PATH}" "${RUNPOD_VOLUME_MOUNT_PATH}" \
     "${RUNPOD_NETWORK_VOLUME_ID}" "${RUNPOD_CPU_VCPU_COUNT}" \
     "${PROJECT_ROOT}" "${DATA_ROOT}" "${RUNPOD_CONFIG}" "${RUNPOD_STAGE}" \
     "${RUNPOD_STAGE_CONFIG_SHA256}" "${RUNPOD_SELECTION_ID}" \
     "${RUNPOD_SELECTION_SHA256}" "${RUNPOD_DATASET_REQUEST_SHA256}" \
     "${RUNPOD_DATASET_REVISION}" "${REMOTE_SELECTION_MOUNT_PATH}" \
-    "${RUNPOD_CPU_MAX_RUNTIME_SECONDS}" \
+    "${RUNPOD_CPU_ROLE}" "${RUNPOD_CPU_MAX_RUNTIME_SECONDS}" \
     "${RUNPOD_CPU_PREPARE_RESERVE_SECONDS}" "${RUNPOD_CPU_MAX_API_CALLS}" \
     "${RUNPOD_CPU_EODHD_QPS}" "${RUNPOD_CPU_TAIWAN_QPS}" \
     "${RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS}" \
@@ -346,7 +372,7 @@ GUARD_PID="$(RUNPOD_GUARD_VOLUME_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}" \
     "${RUNPOD_CPU_GUARD_LIFECYCLE_KEY}" \
     "${GUARD_LOG}")"
 
-printf 'Created CPU preparation Pod: %s\n' "${POD_ID}"
+printf 'Created %s Pod: %s\n' "${RUNPOD_CPU_POD_LABEL}" "${POD_ID}"
 printf 'External guard PID: %s\n' "${GUARD_PID}"
 printf 'External guard log: %s\n' "${GUARD_LOG}"
 printf 'External guard readiness: %s\n' "${GUARD_LOG%.log}.ready.json"

@@ -1109,6 +1109,15 @@ def command_experiment(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def command_store_experiment(arguments: argparse.Namespace) -> int:
+    """Store an experiment selection for one launch without changing the active pointer."""
+    project_root = _validate_project_root(arguments.project_root)
+    _, previous = _resolve_selection_path(project_root, None, validate_local_config=False)
+    payload = _with_experiment(previous, arguments.experiment, project_root)
+    print(_store_selection(project_root, payload))
+    return 0
+
+
 def command_show(arguments: argparse.Namespace) -> int:
     project_root = _validate_project_root(arguments.project_root)
     _, payload = _resolve_selection_path(project_root, arguments.selection)
@@ -1266,6 +1275,13 @@ def build_parser() -> argparse.ArgumentParser:
     experiment.add_argument("--project-root", required=True)
     experiment.add_argument("--experiment", required=True, choices=tuple(EXPERIMENT_CONFIGS))
     experiment.set_defaults(handler=command_experiment)
+
+    store_experiment = subparsers.add_parser("store-experiment")
+    store_experiment.add_argument("--project-root", required=True)
+    store_experiment.add_argument(
+        "--experiment", required=True, choices=tuple(EXPERIMENT_CONFIGS)
+    )
+    store_experiment.set_defaults(handler=command_store_experiment)
 
     show = subparsers.add_parser("show")
     show.add_argument("--project-root", required=True)

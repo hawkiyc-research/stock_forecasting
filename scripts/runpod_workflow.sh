@@ -21,6 +21,7 @@ Usage:
   bash scripts/runpod_workflow.sh selection show
   bash scripts/runpod_workflow.sh sync [--dry-run|--apply]
   bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
+  bash scripts/runpod_workflow.sh research tw-information [--maxRuntime DURATION] [--taiwan-qps QPS] [--eodhd-qps QPS] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline [--experiment a-signal64|b-signal64|a-signal64-datemix|b-signal64-datemix]]
   bash scripts/runpod_workflow.sh train [--experiment a-signal64|b-signal64|NAME ...] [--seed N ...] [--launchWorkers N] [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh baseline [--experiment a-signal64|b-signal64|NAME] [--maxRuntime DURATION] [--gpuId GPU_ID]
@@ -35,6 +36,7 @@ Usage:
   bash scripts/runpod_workflow.sh download [--resume] [--checkpointScope all|best] [RUN_ID]
   bash scripts/runpod_workflow.sh download-probes [PROBE_RUN_ID]
   bash scripts/runpod_workflow.sh download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]
+  bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF
 }
@@ -358,6 +360,57 @@ EOF
         export RUNPOD_CPU_FLAVOR_ID="${cpu_flavor}"
         exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
         ;;
+    research)
+        [[ "${1:-}" == "tw-information" ]] || { usage; exit 2; }
+        shift
+        # Must match experiment_config in configs/research/tw_information_test.json.
+        research_experiment=a-absolute-direction64
+        research_max_runtime=12h
+        research_taiwan_qps=0.5
+        research_eodhd_qps=2
+        research_max_backoff=1m
+        research_cpu_number=16
+        research_cpu_flavor=cpu3g
+        while [[ $# -gt 0 ]]; do
+            [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+            case "$1" in
+                --maxRuntime|--max-runtime) research_max_runtime="$2" ;;
+                --taiwanQps|--taiwan-qps) research_taiwan_qps="$2" ;;
+                --eodhdQps|--eodhd-qps) research_eodhd_qps="$2" ;;
+                --maxBackoff|--max-backoff) research_max_backoff="$2" ;;
+                --cpuNumber|--cpu-number) research_cpu_number="$2" ;;
+                --cpuFlavor|--cpu-flavor) research_cpu_flavor="$2" ;;
+                *)
+                    echo "Unknown research option: $1" >&2
+                    usage
+                    exit 2
+                    ;;
+            esac
+            shift 2
+        done
+        runpod_validate_cpu_number "${research_cpu_number}"
+        runpod_validate_cpu_flavor "${research_cpu_flavor}"
+        runpod_validate_positive_number "${research_taiwan_qps}" --taiwan-qps
+        runpod_validate_positive_number "${research_eodhd_qps}" --eodhd-qps
+        research_max_seconds="$(runpod_duration_seconds "${research_max_runtime}" --maxRuntime)"
+        research_max_backoff_seconds="$(runpod_duration_seconds \
+            "${research_max_backoff}" --maxBackoff)"
+        # Store the experiment selection for this launch only; the active pointer is unchanged.
+        RUNPOD_LAUNCH_SELECTION_FILE="$(python3 "${SCRIPT_DIR}/runpod_selection.py" \
+            store-experiment --project-root "${SCRIPT_DIR}/.." \
+            --experiment "${research_experiment}")"
+        export RUNPOD_LAUNCH_SELECTION_FILE
+        export RUNPOD_CPU_WORKFLOW=research
+        export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${research_max_seconds}"
+        export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((research_max_seconds + 3600))"
+        export RUNPOD_CPU_TAIWAN_QPS="${research_taiwan_qps}"
+        export RUNPOD_CPU_EODHD_QPS="${research_eodhd_qps}"
+        export RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS="${research_max_backoff_seconds}"
+        export RUNPOD_CPU_VCPU_COUNT="${research_cpu_number}"
+        export RUNPOD_CPU_FLAVOR_ID="${research_cpu_flavor}"
+        unset RUNPOD_CPU_MAX_API_CALLS RUNPOD_CPU_PREPARE_RESERVE_SECONDS
+        exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
+        ;;
     readiness)
         if [[ $# -eq 3 && "$1" == "--baseline" && "$2" == "--experiment" ]]; then
             case "$3" in
@@ -497,6 +550,9 @@ EOF
         ;;
     download-signal-predictions)
         exec bash "${SCRIPT_DIR}/download_runpod_signal_predictions.sh" "$@"
+        ;;
+    download-research)
+        exec bash "${SCRIPT_DIR}/download_runpod_research.sh" "$@"
         ;;
     cpu-logs)
         [[ $# -eq 0 ]] || { usage; exit 2; }

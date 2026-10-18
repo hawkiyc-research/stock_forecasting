@@ -46,6 +46,8 @@ GUARD_LIFECYCLE_KINDS = frozenset(
         "stage1-training",
         "stage1-validation",
         "stage1-baseline",
+        # CPU research Pods never touch training, validation or dataset markers.
+        "research-tw-information",
     }
 )
 GUARD_LIFECYCLE_STATES = frozenset(
@@ -2120,6 +2122,9 @@ def command_write_state(arguments):
         "stage1-training": volume_root / "lifecycle" / "stage1" / "training.json",
         "stage1-validation": volume_root / "lifecycle" / "stage1" / "validation.json",
         "stage1-baseline": volume_root / "lifecycle" / "stage1" / "baseline.json",
+        "research-tw-information": (
+            volume_root / "lifecycle" / "research" / "tw-information.json"
+        ),
     }
     expected_output = canonical_outputs.get(arguments.kind)
     if expected_output is None:

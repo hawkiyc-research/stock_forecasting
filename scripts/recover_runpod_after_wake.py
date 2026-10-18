@@ -24,6 +24,7 @@ READINESS = ROOT / "scripts" / "runpod_readiness.py"
 POD_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 PROJECT_ROLES = {
     "cpu-prep": ("stage1-cpu-preparation", "lifecycle/stage1/cpu-preparation.json"),
+    "cpu-research": ("research-tw-information", "lifecycle/research/tw-information.json"),
 }
 GPU_ROLES = {
     "gpu-train": ("stage1-training", "lifecycle/stage1/training.json"),
@@ -267,7 +268,8 @@ def expected_lifecycle(pod: dict[str, Any]) -> tuple[str, str] | None:
     role = env.get("RUNPOD_ROLE") if isinstance(env, dict) else None
     if role in PROJECT_ROLES:
         kind, key = PROJECT_ROLES[role]
-        if env.get("RUNPOD_STAGE") == "stage2":
+        # Research Pods carry an experiment (stage2) selection but own their own marker.
+        if role == "cpu-prep" and env.get("RUNPOD_STAGE") == "stage2":
             return "stage1-mixed-finalization", "lifecycle/stage1/mixed-finalization.json"
         return kind, key
     if role in GPU_ROLES:

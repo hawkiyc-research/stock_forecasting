@@ -81,7 +81,7 @@ if [[ -n "${RUNPOD_GUARD_RUN_ID}" \
     exit 2
 fi
 case "${LIFECYCLE_KIND}" in
-    stage1-cpu-preparation|stage1-mixed-finalization|stage1-training|stage1-validation|stage1-baseline) ;;
+    stage1-cpu-preparation|stage1-mixed-finalization|stage1-training|stage1-validation|stage1-baseline|research-tw-information) ;;
     *)
         echo "Unsupported lifecycle marker key" >&2
         exit 2
