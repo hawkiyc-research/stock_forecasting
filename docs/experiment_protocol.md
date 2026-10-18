@@ -573,6 +573,52 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
   以其餘特徵組判定。
 - Validation 只有約半年（2025-06 至 2025-12），區間會較寬，結論只適用於這段期間。
 
+#### 13.4 第一階段回測：台股排序訊號扣除成本後的檢驗（本機，事先固定）
+
+§13.3 顯示，免費資料無法讓絕對漲跌優於先驗；但多個模型的台股截面排序（Rank IC）在 test 仍有效。本節檢驗這些排序訊號扣除台股實際成本後，能否穩定勝過被動持有。這是研究用回測，不重訓模型，也不使用 RunPod。程式和設定放在 `backtest/`，使用獨立的 uv 環境；預先登記的設定記錄在 `backtest/config/stage1.json`。
+
+事先固定的設定（2026-10-19 寫入，早於任何回測計算）：
+
+1. **資料**：
+   - 使用 P0 評估母體中的上市、上櫃列；列順序已用樣本雜湊與各匯出檔核對一致。
+   - 訊號日：validation 為 2025-06-02 至 2025-11-10（112 日），test 為 2025-12-01 至 2026-05-11（103 日）。
+   - 報酬：第 t+1 日開盤到第 t+h 日收盤的還原價 log 報酬（`absolute_targets`）。
+   - 大盤報酬：絕對報酬減 alpha，在同市場、同一天皆相同（加權指數或櫃買指數）。
+2. **訊號（13 個）**：每個訊號都使用和持有天數相同天期的預測。
+   - Kronos alpha（8 個）：R21（checkpoint 003680）、R21-IR（022079）、R22（011040）、R22-IR（018399）、R23（018399）、R24 datemix（007360），以及三 seed 集成兩個——LOSS（R21、R22、R23）和 IR（R21-IR、R22-IR、R23），集成取點預測的平均。
+   - Baseline alpha（2 個）：GRU、GBDT。
+   - 方向模型對照（3 個）：R21–R23 方向模型的平均機率、GRU 方向、GBDT 方向，訊號為 P(漲) − P(跌)。
+3. **交易規則**：
+   - 第 t 日收盤後排序，第 t+1 日開盤等權買進前 K 檔，持有 h 個交易日，在第 t+h 日收盤賣出。
+   - 下一批在同一天收盤後選股，下一個交易日開盤買進。
+   - h 個起始日各成一條序列，等同把資金分成 h 份輪流進場。
+   - 網格：h ∈ {1, 2, 3, 5, 10}；K ∈ {10, 20, 50}；市場 ∈ {TWSE、TPEX、TW（兩市場合併排序）}。
+   - 版本：只做多為主要版本；避險版的持股報酬改為減去對應大盤報酬，期貨成本以 0 近似。
+4. **成本**：
+   - 買進：手續費 0.1425% × 折扣。
+   - 賣出：手續費 0.1425% × 折扣，加證交稅（股票 0.3%、ETF 0.1%）。
+   - h = 1 是現股當沖，股票證交稅為 0.15%。
+   - 滑價：每邊上市 10 bps、上櫃 20 bps。
+   - 主要情境：折扣 0.6、滑價 1 倍、保守換手（每批全額換股）。
+   - 敏感度：折扣 {1.0, 0.6, 0.28} × 滑價 {0, 1, 2} 倍 × 換手 {保守, 樂觀}。樂觀換手是指續抱的股票不重複付費。
+   - 不模擬：每筆最低手續費、漲跌停、流動性與整股限制。
+5. **指標**：
+   - 主要指標：每批淨報酬相對「同日母體等權、同一持有窗口、不計成本」的**淨超額報酬**。
+   - 其他：相對指數的超額報酬、年化（× 252/h）、IR、Sharpe、最大回撤、每批勝率、換手率、成本拖累、毛超額報酬，以及損益兩平的每邊成本。
+   - IR = 每批超額報酬平均 ÷ 標準差 × √(252/h)，先在每條起始序列內計算，再取平均。
+   - 95% 區間：依訊號日排序的每日批次超額序列，做 circular moving-block bootstrap，區塊長度 max(5, 2h)，重抽 1,000 次，seed 11。
+6. **選擇程序**：只用 validation。
+   - 在每個市場（TWSE、TPEX、TW）的「alpha 訊號 × h × K」組合中，以只做多、主要成本情境計算，選出淨超額 IR 最高的一組，作為**主要設定**。
+   - test 只跑一次。完整網格只作描述；標題結果固定為主要設定，不得改選。
+7. **進入下一階段的條件**：主要設定在 validation 的淨超額報酬 95% 區間下界大於 0，**且**在 test 的淨超額報酬為正。第三階段只對通過的主要設定，用 2026-06-01 之後的新資料驗證。
+
+判讀限制：
+
+- 從每個市場 150 組設定中取最大值，會高估 validation 的結果；test 用來檢查這個偏差。
+- validation 和 test 各約 5 個月，區間會較寬。
+- 母體已通過資料清理規則，可能排除了之後停牌或下市的股票。這個偏誤對所有策略和等權基準相同，但讓絕對報酬偏樂觀。
+- 沒有模擬漲停開盤買不到、成交量不足、每筆最低手續費等限制，結果偏樂觀，需要在第三階段補上。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1210,6 +1256,52 @@ Limits:
   `skipped_feature_sets`, and the decision uses the remaining sets.
 - Validation covers only about six months (2025-06 to 2025-12). Intervals are wide, and the
   conclusion applies to that period.
+
+#### 13.4 Stage 1 backtest: Taiwan ranking signals net of costs (local, pre-registered)
+
+§13.3 shows that free data do not lift absolute direction above the prior, yet several models keep a valid Taiwan cross-sectional ranking (Rank IC) on test. This section tests whether those ranking signals beat passive holding after real Taiwan costs. It is a research backtest: no retraining and no RunPod. Code and configuration are in `backtest/`, with its own uv environment; the pre-registered settings are recorded in `backtest/config/stage1.json`.
+
+Fixed settings (written 2026-10-19, before any backtest computation):
+
+1. **Data**:
+   - TWSE and TPEX rows of the P0 evaluation population, whose row order is verified against every export by its sample digest.
+   - Signal dates: validation 2025-06-02 to 2025-11-10 (112 dates), test 2025-12-01 to 2026-05-11 (103 dates).
+   - Returns: adjusted log returns from the open of session t+1 to the close of session t+h (`absolute_targets`).
+   - Index returns: absolute minus alpha, identical within a market and date (TAIEX or the TPEx index).
+2. **Signals (13)**: each signal uses the prediction for the same horizon as the holding period.
+   - Kronos alpha (8): R21 (checkpoint 003680), R21-IR (022079), R22 (011040), R22-IR (018399), R23 (018399), R24 datemix (007360), and two three-seed ensembles, LOSS (R21, R22, R23) and IR (R21-IR, R22-IR, R23), averaging point predictions.
+   - Baseline alpha (2): GRU, GBDT.
+   - Direction controls (3): the mean probabilities of the R21–R23 direction models, GRU direction and GBDT direction, with signal P(up) − P(down).
+3. **Trading rule**:
+   - After the close of session t, rank the stocks; buy the top K equally weighted at the next open, hold h sessions and sell at the close of session t+h.
+   - The next batch is selected after that close and bought at the following open.
+   - Each of the h start dates forms one series, equivalent to splitting capital into h sleeves.
+   - Grid: h ∈ {1, 2, 3, 5, 10}; K ∈ {10, 20, 50}; market ∈ {TWSE, TPEX, TW (both ranked together)}.
+   - Versions: long-only is primary; the hedged version subtracts the matching index return, with futures costs approximated as 0.
+4. **Costs**:
+   - Buy: commission 0.1425% × discount.
+   - Sell: commission 0.1425% × discount plus transaction tax (0.3% for stocks, 0.1% for ETFs).
+   - h = 1 is a same-day round trip, taxed at 0.15% for stocks.
+   - Slippage: 10 bps per side on TWSE and 20 bps on TPEX.
+   - Primary scenario: discount 0.6, slippage ×1, conservative turnover (full replacement each batch).
+   - Sensitivity: discount {1.0, 0.6, 0.28} × slippage {0, 1, 2}× × turnover {conservative, optimistic}. Optimistic turnover means names held into the next batch pay no extra cost.
+   - Not simulated: minimum commission per order, price limits, liquidity and board-lot constraints.
+5. **Metrics**:
+   - Primary metric: batch net return in **net excess** of the same-date, same-window, cost-free equal-weight population.
+   - Others: excess over the index, annualized values (× 252/h), IR, Sharpe, maximum drawdown, batch hit rate, turnover, cost drag, gross excess, and break-even cost per side.
+   - IR = mean batch excess ÷ its standard deviation × √(252/h), computed within each start series and then averaged.
+   - 95% intervals: a circular moving-block bootstrap of the daily batch-excess series in signal-date order, block length max(5, 2h), 1,000 replicates, seed 11.
+6. **Selection**: validation only.
+   - In each market (TWSE, TPEX, TW), among alpha signal × h × K under long-only and the primary costs, the combination with the highest net-excess IR is the **primary configuration**.
+   - Test runs once. The full grid is descriptive; the headline is the primary configuration and is not re-selected.
+7. **Gate to the next stage**: the primary configuration's validation net-excess 95% interval has a lower bound above 0 **and** its test net excess is positive. Stage 3 verifies only passing primary configurations on new data from 2026-06-01 onward.
+
+Limits:
+
+- Taking the best of 150 configurations per market overstates validation; test checks this bias.
+- Validation and test each cover about five months, so intervals are wide.
+- The population already passed the data-cleaning rules, which may exclude stocks later suspended or delisted. The bias is shared by every strategy and the equal-weight benchmark, but it makes absolute returns optimistic.
+- Limit-up opens that cannot be bought, insufficient volume and minimum commissions are not simulated, so results are optimistic until stage 3 adds them.
 
 ### 14. Remote-validation boundary
 
