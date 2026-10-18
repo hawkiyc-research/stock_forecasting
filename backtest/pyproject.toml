@@ -1,0 +1,30 @@
+[project]
+name = "stock-forecasting-backtest"
+version = "0.1.0"
+description = "Local backtests of exported stock_forecasting signals, separate from the RunPod Poetry environment."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=2.1,<3.0",
+    "pandas>=2.2,<3.0",
+    "pyarrow>=19",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<10.0",
+    "ruff==0.15.21",
+]
+
+[tool.uv]
+# An application environment only; nothing here is installed as a package.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
