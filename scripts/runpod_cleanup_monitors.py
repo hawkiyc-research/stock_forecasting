@@ -129,7 +129,9 @@ def matching_command(kind, process, ready, log):
                 and argv[2] == ready["pod_id"] and argv[3] == str(ready.get("delay_seconds"))
                 and argv[4] == str(log))
     if kind == "gpu-monitor":
-        return (len(argv) == 11 and re.fullmatch(r"python(?:[0-9.]+)?", Path(argv[0]).name)
+        # macOS framework builds (Homebrew, python.org) run as .../Python.app/.../Python.
+        return (len(argv) == 11
+                and re.fullmatch(r"python(?:[0-9.]+)?", Path(argv[0]).name, re.IGNORECASE)
                 and argv[1:] == [str(ROOT / "scripts/runpod_gpu_monitor.py"), "watch",
                     "--pod-id", ready["pod_id"], "--run-id", ready["run_id"],
                     "--guard-pid", str(ready["pid"]), "--guard-log", str(log)])

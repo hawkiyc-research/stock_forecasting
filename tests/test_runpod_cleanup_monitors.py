@@ -111,6 +111,16 @@ class CleanupTests(unittest.TestCase):
                 self.processes[1235]["argv"][index] = original
         self.assertEqual(self.sent, [])
 
+    def test_macos_framework_python_monitor_is_verified_but_other_programs_block(self):
+        framework = ("/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/"
+                     "Versions/3.14/Resources/Python.app/Contents/MacOS/Python")
+        self.processes[1235]["argv"][0] = framework
+        report = self.run_cleanup()
+        self.assertEqual([item["state"] for item in report["targets"]], ["verified"] * 3)
+        self.processes[1235]["argv"][0] = "/usr/bin/perl"
+        self.assertEqual(self.run_cleanup(True)["state"], "blocked")
+        self.assertEqual(self.sent, [])
+
     def test_reused_guard_pid_by_same_script_after_armed_time_is_not_killed(self):
         self.processes[1234]["started_at"] = self.armed + 3600
         self.assertEqual(self.run_cleanup(True)["state"], "blocked")
