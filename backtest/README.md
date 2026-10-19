@@ -118,6 +118,40 @@ uv run python -m twbacktest.parity --local "<LOCAL_PREDICTION_DIR>"
 
 輸出目錄包含 `report.json`（各判準、預測差距與本機執行紀錄）與中英雙語 `summary.md`。
 
+依 §13.7 修訂，推論改以 RunPod GPU 匯出流程執行，這個比對只保留作診斷。
+
+### checkpoint 選點
+
+依照 `docs/experiment_protocol.md` §13.7 及其修訂，以 `config/checkpoint_selection.json` 的候選
+checkpoint 與規則選點：每個 run 選 validation 上市 10 日前十分位開盤到開盤超額最高者（同分
+選步數較晚者）。預測來自 RunPod 匯出（`artifacts/diagnostics/signal-predictions/`）。計分前會
+核對每份匯出的列順序，以及 validation 選模分數與訓練紀錄 `metrics.jsonl` 是否一致；test 只計算
+選出的 checkpoint。
+
+先列出每個候選的匯出與核對狀態：
+
+```bash
+uv run python -m twbacktest.selection --check --training-records "<RUNPOD_ARTIFACTS_DIR>"
+```
+
+全部通過後執行選點：
+
+```bash
+uv run python -m twbacktest.selection --training-records "<RUNPOD_ARTIFACTS_DIR>"
+```
+
+| 選項 | 說明 | 預設值 |
+| --- | --- | --- |
+| `--training-records` | 含 `<RUN_ID>/metrics.jsonl` 的目錄，例如主專案的 `artifacts/runpod` | 必填 |
+| `--check` | 只列出各候選的匯出與核對狀態 | 關閉 |
+| `--config` | 選點設定檔 | `config/checkpoint_selection.json` |
+| `--artifacts-root` | 主專案 `artifacts/` 目錄 | `../artifacts` |
+| `--output-root` | 本次輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/selection-<UTC 時間>-<隨機碼>` |
+| `--workers` | 平行 process 數，1 至 16 | 依 CPU 核心數與實體記憶體計算 |
+
+輸出目錄包含 `report.json`（匯出核對、各候選的分數與選出結果）、`ranking.csv`、`portfolio.csv`
+與中英雙語 `summary.md`。
+
 ## English
 
 ### Purpose
@@ -250,3 +284,39 @@ uv run python -m twbacktest.parity --local "<LOCAL_PREDICTION_DIR>"
 
 The output directory contains `report.json` (each criterion, prediction differences and the local
 run record) and a bilingual `summary.md`.
+
+Under the §13.7 amendment, inference uses the RunPod GPU export workflow, and this check remains
+for diagnosis only.
+
+### Checkpoint selection
+
+Following `docs/experiment_protocol.md` §13.7 and its amendment, this selects among the candidate
+checkpoints of `config/checkpoint_selection.json`: each run keeps the checkpoint with the highest
+validation TWSE 10-session top-decile open-to-open excess (ties go to the later step). Predictions
+come from RunPod exports (`artifacts/diagnostics/signal-predictions/`). Before scoring, each
+export's row order is checked, and its validation selection score is compared with the training
+record in `metrics.jsonl`; test is computed for the selected checkpoints only.
+
+First list each candidate's export and check status:
+
+```bash
+uv run python -m twbacktest.selection --check --training-records "<RUNPOD_ARTIFACTS_DIR>"
+```
+
+When every candidate passes, run the selection:
+
+```bash
+uv run python -m twbacktest.selection --training-records "<RUNPOD_ARTIFACTS_DIR>"
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--training-records` | Directory holding `<RUN_ID>/metrics.jsonl`, such as the main project's `artifacts/runpod` | Required |
+| `--check` | Only list each candidate's export and check status | Off |
+| `--config` | Selection configuration file | `config/checkpoint_selection.json` |
+| `--artifacts-root` | Main project `artifacts/` directory | `../artifacts` |
+| `--output-root` | Output directory for this selection; it must not exist yet | `artifacts/diagnostics/backtest/selection-<UTC time>-<random>` |
+| `--workers` | Parallel processes, 1 to 16 | Derived from CPU cores and physical memory |
+
+The output directory contains `report.json` (export checks, every candidate's score and the
+selection), `ranking.csv`, `portfolio.csv` and a bilingual `summary.md`.

@@ -6,6 +6,8 @@
 
 ### 用途
 
+> 依 `docs/experiment_protocol.md` §13.7 修訂，本機 fp32 與 RunPod bf16 的預測有數值雜訊差異；選點與前瞻檢驗的推論改用 RunPod GPU 匯出流程。此目錄只保留作診斷，不用於任何判定。
+
 在本機（Apple silicon 的 MPS 或 CPU）以已訓練的 Kronos 訊號 checkpoint 推論，產生回測需要的
 逐樣本預測。訓練一律在 RunPod；這裡只做唯讀推論，不修改模型、checkpoint、RunPod 產物或
 lifecycle 紀錄。規則與驗收標準見 `docs/experiment_protocol.md` §13.7。
@@ -89,6 +91,8 @@ MPS 若不支援某個運算，改用 `--device cpu`；實際使用的裝置都�
 ## English
 
 ### Purpose
+
+> Under the §13.7 amendment in `docs/experiment_protocol.md`, local fp32 and RunPod bf16 predictions differ by numerical noise; inference for checkpoint selection and the forward test uses the RunPod GPU export workflow. This directory is kept for diagnosis only and decides nothing.
 
 This directory runs trained Kronos signal checkpoints locally (MPS on Apple silicon, or CPU) to
 produce the per-sample predictions that backtests need. Training always happens on RunPod; this is
