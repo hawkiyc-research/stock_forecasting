@@ -81,6 +81,25 @@ uv run python -m twbacktest.stage1b
 - `daily.csv`：各市場主要設定在主要成本情境下的每日報酬序列。
 - `summary.md`：中英雙語摘要表。
 
+### 與持有方式對齊的評估
+
+依照 `docs/experiment_protocol.md` §13.6 的事先登記規則，以 `config/holding_eval.json` 的固定
+設定，用「次一交易日開盤買進、h 日後開盤賣出」的開盤到開盤報酬重評排序訊號：每日 Rank IC、
+前後十分位相對等權的超額、前十分位在交易時段與隔夜的拆解，以及固定參數的持有組合
+（沿用第一階段 1b 的引擎）。只作描述，不設門檻。
+
+```bash
+uv run python -m twbacktest.holding_eval
+```
+
+選項與第一階段相同（`--config` 預設為 `config/holding_eval.json`，輸出目錄預設為
+`artifacts/diagnostics/backtest/holding-eval-<UTC 時間>-<隨機碼>`）。輸出目錄包含：
+
+- `report.json`：記帳恆等式檢查與可留意清單。
+- `ranking.csv`：每個分割、訊號、市場與天期的 Rank IC、十分位與交易時段／隔夜拆解。
+- `portfolio.csv`：固定參數持有組合的指標。
+- `summary.md`：中英雙語摘要表。
+
 ## English
 
 ### Purpose
@@ -170,4 +189,26 @@ contains:
   and cost scenario.
 - `daily.csv`: the daily return series of each market's primary configuration under the primary
   costs.
+- `summary.md`: a bilingual summary table.
+
+### Holding-aligned evaluation
+
+Following the pre-registered rules in `docs/experiment_protocol.md` §13.6 and the fixed settings in
+`config/holding_eval.json`, this re-evaluates ranking signals on open-to-open returns (buy at the
+next session's open, sell at the open h sessions later): daily Rank IC, top and bottom decile
+excess over equal weight, the top decile's split into sessions and overnight, and a
+fixed-parameter holding portfolio (the stage 1b engine). It is descriptive only, with no gate.
+
+```bash
+uv run python -m twbacktest.holding_eval
+```
+
+The options match stage 1 (`--config` defaults to `config/holding_eval.json`, and the output
+directory defaults to `artifacts/diagnostics/backtest/holding-eval-<UTC time>-<random>`). The
+output directory contains:
+
+- `report.json`: the accounting-identity checks and the watch list.
+- `ranking.csv`: Rank IC, deciles and the session/overnight split for every split, signal, market
+  and horizon.
+- `portfolio.csv`: the fixed-parameter holding portfolio metrics.
 - `summary.md`: a bilingual summary table.
