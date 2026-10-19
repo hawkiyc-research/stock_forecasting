@@ -2416,6 +2416,17 @@ bash scripts/runpod_workflow.sh download-signal-predictions "<ALPHA_RUN_ID>" "<D
 bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays
 ```
 
+本機推論（`inference/`，見 [本機推論說明](inference/README.md)）所需的 validation／test 共用 K 線庫與
+清理後樣本索引，先以 `--list` 列出大小再下載：
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --evaluation-data --list
+```
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --evaluation-data
+```
+
 前者一次最多 16 個指定，各自下載最新完成的匯出並核對 SHA-256，存於被 Git 排除的
 `artifacts/diagnostics/signal-predictions/`。只填 run ID 時，該 run 必須只有一個 checkpoint
 有完成的匯出；同一 run 匯出過多個 checkpoint 時，改用 `RUN_ID/checkpoint-NNNNNN` 逐一指定。`--baseline-arrays` 下載現行兩個 baseline 的
@@ -2634,7 +2645,7 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `cleanup-monitors` | 必填 `--pod-id ID`；預設 dry-run，`--apply` 才終止已核對的本機 guard／GPU monitor／guard-owned caffeinate。先查 API 證實 Pod 不存在；存在、API 失敗或程序身分異常皆拒絕。`--guard-dir PATH` 預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help`。不刪日誌、不關共用 SSH、不操作遠端 |
 | `download [RUN_ID]` | 父 ID 一次下載兩模型；省略 ID 選最新完整完成的結果，成對子模型不當成額外實驗自動選用。`--checkpointScope all` 預設下載各自 retained checkpoints，`best` 取各自最佳；`--resume` 補齊／更新兩份本機結果，**不是接續訓練**；`-h`／`--help` 顯示說明。明確子 ID 保留單模型下載 |
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
-| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`／`--baseline-arrays` | 必填其一 | 1–16 個子模型 run ID 或 `RUN_ID/checkpoint-NNNNNN`：各自下載最新完成的預測匯出並核對 SHA-256；同一 run 匯出過多個 checkpoint 時必須指定 checkpoint；`--baseline-arrays`：下載誤差拆解所需的現行 baseline 評估陣列並依 manifest 驗證；`-h`／`--help` 顯示說明 |
+| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`／`--baseline-arrays`／`--evaluation-data [--list]` | 必填其一 | 1–16 個子模型 run ID 或 `RUN_ID/checkpoint-NNNNNN`：各自下載最新完成的預測匯出並核對 SHA-256；同一 run 匯出過多個 checkpoint 時必須指定 checkpoint；`--baseline-arrays`：下載誤差拆解所需的現行 baseline 評估陣列並依 manifest 驗證；`--evaluation-data [--list]`：依 baseline 記錄找到 validation／test 共用的 K 線庫與樣本索引，逐檔核對 SHA-256 後存入 `artifacts/diagnostics/evaluation-data/`，`--list` 只列出大小；`-h`／`--help` 顯示說明 |
 | `download-research [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/tw-information.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。存於 `artifacts/diagnostics/tw-information-test/<launch-id>/`；仍在執行回傳 3，報告不完整回傳 4；`-h`／`--help` 顯示說明 |
 
 時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
@@ -6315,6 +6326,18 @@ bash scripts/runpod_workflow.sh download-signal-predictions "<ALPHA_RUN_ID>" "<D
 bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays
 ```
 
+Local inference (`inference/`, see the [local inference guide](inference/README.md)) needs the
+shared validation/test bar store and its cleaned sample index; list the size with `--list` first,
+then download:
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --evaluation-data --list
+```
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --evaluation-data
+```
+
 The first form accepts up to 16 selectors, downloads each latest completed export with SHA-256
 checks and stores it in Git-ignored `artifacts/diagnostics/signal-predictions/`. A bare run ID
 requires completed exports of exactly one checkpoint of that run; when a run has exports of
@@ -6560,7 +6583,7 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `cleanup-monitors` | Required `--pod-id ID`; dry-run by default, `--apply` terminates verified local guard/GPU-monitor/guard-owned caffeinate processes. API must confirm Pod absence; existence, API failures or identity errors block cleanup. `--guard-dir PATH` defaults to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help`. No log deletion, shared-SSH closure or remote changes |
 | `download [RUN_ID]` | A parent downloads both models; omission selects latest complete results without separately auto-selecting linked children. `--checkpointScope all` (default) obtains each retained checkpoint set; `best` selects each best. `--resume` fills/refreshes both local results, **not training continuation**; `-h`/`--help` shows help. Explicit child IDs retain individual downloads |
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
-| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`/`--baseline-arrays` | One form required | 1–16 child run IDs or `RUN_ID/checkpoint-NNNNNN`: download each latest completed prediction export with SHA-256 checks; name the checkpoint when a run has exports of several; `--baseline-arrays`: download the current baselines' evaluation arrays needed for decomposition, verified against their manifests; `-h`/`--help` shows help |
+| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`/`--baseline-arrays`/`--evaluation-data [--list]` | One form required | 1–16 child run IDs or `RUN_ID/checkpoint-NNNNNN`: download each latest completed prediction export with SHA-256 checks; name the checkpoint when a run has exports of several; `--baseline-arrays`: download the current baselines' evaluation arrays needed for decomposition, verified against their manifests; `--evaluation-data [--list]`: locate the shared validation/test bar store and sample index recorded by the baseline, verify every file by SHA-256 and store them in `artifacts/diagnostics/evaluation-data/`, or with `--list` only print the size; `-h`/`--help` shows help |
 | `download-research [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/tw-information.json`; a `launch-...` ID selects another. Saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`; exits 3 while running and 4 when the report is incomplete; `-h`/`--help` shows help |
 
 Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,

@@ -36,6 +36,7 @@ Usage:
   bash scripts/runpod_workflow.sh download [--resume] [--checkpointScope all|best] [RUN_ID]
   bash scripts/runpod_workflow.sh download-probes [PROBE_RUN_ID]
   bash scripts/runpod_workflow.sh download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]
+  bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays|--evaluation-data [--list]
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF

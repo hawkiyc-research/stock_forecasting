@@ -1,0 +1,34 @@
+[project]
+name = "stock-forecasting-inference"
+version = "0.1.0"
+description = "Local, read-only Kronos signal inference for backtests, separate from the RunPod Poetry environment."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Same release as the RunPod image (2.9.1+cu128); the macOS wheel provides MPS.
+    "torch==2.9.1",
+    "stock_forecasting",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<10.0",
+    "ruff==0.15.21",
+]
+
+[tool.uv]
+# An application environment only; the main package is installed from the repository.
+package = false
+
+[tool.uv.sources]
+stock_forecasting = { path = "..", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

@@ -477,6 +477,98 @@ class PredictionDownloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 download(reader, project, executor, 2, 60, fetch=fake_download)
 
+    def evaluation_reader(self, *, shard="shards/0001/part-0000.parquet"):
+        """A fake volume with one matching dataset, one other dataset and a sample index."""
+        content = {"shard": b"shard-bytes", "index": b"symbol-index", "ranges": b"ranges",
+                   "universe-ranges": b"universe-ranges"}
+        digest = {name: hashlib.sha256(value).hexdigest() for name, value in content.items()}
+        manifest = {
+            "symbol_index": {"relative_path": "symbol-index.parquet", "sha256": digest["index"],
+                             "size_bytes": len(content["index"])},
+            "cutoff_ranges": {"relative_path": "cutoff-ranges.parquet",
+                              "sha256": digest["ranges"], "size_bytes": len(content["ranges"])},
+            "shards": [{"relative_path": shard, "sha256": digest["shard"],
+                        "size_bytes": len(content["shard"])}],
+        }
+        manifest_sha256 = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
+        identity = {"source_manifest_sha256": manifest_sha256, "window_size": 128}
+        universe = DOWNLOAD["canonical_json_sha256"](identity)
+        good, other = "a" * 64, "b" * 64
+        documents = {
+            f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json": {"data_identity": {"split_sources": {
+                split: {"manifest_sha256": manifest_sha256, "sample_universe": universe}
+                for split in ("validation", "test")
+            }}},
+            f"datasets/{good}/prepared/bar-store/bar-store.json": manifest,
+            f"datasets/{other}/prepared/bar-store/bar-store.json": {"shards": []},
+            f"datasets/{good}/prepared/sample-universes/{universe}/universe.json": {
+                "state": "ready", "identity": identity,
+                "ranges_sha256": digest["universe-ranges"],
+            },
+        }
+
+        class Reader(FakeReader):
+            def json_command(self, arguments, limit=None):
+                self.listings = getattr(self, "listings", 0) + 1
+                return {"CommonPrefixes": [{"Prefix": f"datasets/{good}/"},
+                                           {"Prefix": f"datasets/{other}/"},
+                                           {"Prefix": "datasets/not-a-dataset/"}],
+                        "IsTruncated": False}, "listing"
+
+        files = {
+            f"datasets/{good}/prepared/bar-store/bar-store.json": json.dumps(manifest).encode(),
+            f"datasets/{good}/prepared/bar-store/_SUCCESS.json": b"{}",
+            f"datasets/{good}/prepared/bar-store/symbol-index.parquet": content["index"],
+            f"datasets/{good}/prepared/bar-store/cutoff-ranges.parquet": content["ranges"],
+            f"datasets/{good}/prepared/bar-store/{shard}": content["shard"],
+            f"datasets/{good}/prepared/sample-universes/{universe}/universe.json": b"{}",
+            f"datasets/{good}/prepared/sample-universes/{universe}/cutoff-ranges.parquet":
+                content["universe-ranges"],
+        }
+        return Reader(documents), files, good
+
+    def test_evaluation_data_plan_finds_the_baseline_source_and_verifies_files(self) -> None:
+        reader, files, dataset_id = self.evaluation_reader()
+        plan = DOWNLOAD["evaluation_plan"](reader)
+        self.assertEqual(plan["dataset_id"], dataset_id)
+        self.assertEqual({key for key, _, _ in plan["files"]}, set(files))
+        calls = []
+
+        def fetch(_reader, key, destination, _timeout):
+            calls.append(key)
+            destination.write_bytes(files[key])
+
+        download = DOWNLOAD["download_evaluation_data"]
+        with tempfile.TemporaryDirectory() as temporary, \
+                DOWNLOAD["ThreadPoolExecutor"](max_workers=2) as executor:
+            project = Path(temporary).resolve()
+            root, downloaded, verified = download(reader, project, executor, 2, 60, plan,
+                                                  fetch=fetch)
+            self.assertEqual((downloaded, verified), (len(files), 0))
+            record = json.loads((root / "evaluation-data.json").read_text())
+            self.assertEqual(record["dataset_id"], dataset_id)
+            # Files with a digest are kept on a rerun; the two small records are refetched.
+            _root, downloaded, verified = download(reader, project, executor, 2, 60, plan,
+                                                   fetch=fetch)
+            self.assertEqual((downloaded, verified), (2, len(files) - 2))
+            shard_key = next(key for key in files if "/shards/" in key)
+            files[shard_key] = b"tampered!!!"
+            (root / shard_key.split("/", 2)[2]).write_bytes(b"stale")
+            with self.assertRaises(ValueError):
+                download(reader, project, executor, 2, 60, plan, fetch=fetch)
+
+    def test_evaluation_data_rejects_unsafe_shards_and_identity_mismatch(self) -> None:
+        reader, _files, _dataset_id = self.evaluation_reader(shard="../escape.parquet")
+        with self.assertRaises(ValueError):
+            DOWNLOAD["evaluation_plan"](reader)
+        reader, _files, _dataset_id = self.evaluation_reader()
+        key = f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json"
+        reader.documents[key]["data_identity"]["split_sources"]["test"]["sample_universe"] = (
+            "c" * 64
+        )
+        with self.assertRaises(ValueError):
+            DOWNLOAD["evaluation_plan"](reader)
+
     def test_identity_mismatch_and_unsafe_ids_are_rejected(self) -> None:
         documents = self.documents("run-x-alpha", "export-20261017T000000Z-00000001",
                                    "2026-10-17T00:00:00+00:00")

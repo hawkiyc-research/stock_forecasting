@@ -31,6 +31,7 @@ class SplitIndex:
     market_codes: np.ndarray  # index into MARKETS
     is_etf: np.ndarray
     symbol_codes: np.ndarray  # same code for the same stock on every date
+    symbol_names: tuple[str, ...] = ()  # symbol of each code, for joins by stock and date
 
     @property
     def count(self) -> int:
@@ -51,7 +52,7 @@ def build_split_index(alpha_baseline: Path, split: str) -> SplitIndex:
     day = np.array([value[:10] for value in metadata["date"][rows]])
     dates, date_codes = np.unique(day, return_inverse=True)
     market_codes = np.where(markets[rows] == MARKETS[0], 0, 1).astype(np.int8)
-    _symbols, symbol_codes = np.unique(metadata["symbol"][rows], return_inverse=True)
+    symbols, symbol_codes = np.unique(metadata["symbol"][rows], return_inverse=True)
     return SplitIndex(
         split=split,
         rows=rows,
@@ -60,6 +61,7 @@ def build_split_index(alpha_baseline: Path, split: str) -> SplitIndex:
         market_codes=market_codes,
         is_etf=(metadata["asset_type"][rows] == "etf"),
         symbol_codes=symbol_codes.astype(np.int32),
+        symbol_names=tuple(str(value) for value in symbols),
     )
 
 

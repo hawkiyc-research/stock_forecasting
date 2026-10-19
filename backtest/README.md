@@ -100,6 +100,24 @@ uv run python -m twbacktest.holding_eval
 - `portfolio.csv`：固定參數持有組合的指標。
 - `summary.md`：中英雙語摘要表。
 
+### 本機推論一致性比對
+
+依照 `docs/experiment_protocol.md` §13.7，比較 `inference/` 的本機預測與 RunPod 匯出的參照預測
+（設定見 `config/local_parity.json`）。本機預測以股票與日期對應到評估陣列，必須涵蓋全部台股列。
+
+```bash
+uv run python -m twbacktest.parity --local "<LOCAL_PREDICTION_DIR>"
+```
+
+| 選項 | 說明 | 預設值 |
+| --- | --- | --- |
+| `--local` | 已完成的本機預測目錄 | 必填 |
+| `--config` | 比對設定檔 | `config/local_parity.json` |
+| `--artifacts-root` | 主專案 `artifacts/` 目錄 | `../artifacts` |
+| `--output-root` | 本次輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/parity-<UTC 時間>-<隨機碼>` |
+
+輸出目錄包含 `report.json`（各判準、預測差距與本機執行紀錄）與中英雙語 `summary.md`。
+
 ## English
 
 ### Purpose
@@ -212,3 +230,23 @@ output directory contains:
   and horizon.
 - `portfolio.csv`: the fixed-parameter holding portfolio metrics.
 - `summary.md`: a bilingual summary table.
+
+### Local inference parity check
+
+Following `docs/experiment_protocol.md` §13.7, this compares local predictions from `inference/`
+with the RunPod reference export (settings in `config/local_parity.json`). Local predictions are
+mapped onto the evaluation arrays by stock and date and must cover every Taiwan row.
+
+```bash
+uv run python -m twbacktest.parity --local "<LOCAL_PREDICTION_DIR>"
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--local` | Completed local prediction directory | Required |
+| `--config` | Parity configuration file | `config/local_parity.json` |
+| `--artifacts-root` | Main project `artifacts/` directory | `../artifacts` |
+| `--output-root` | Output directory for this check; it must not exist yet | `artifacts/diagnostics/backtest/parity-<UTC time>-<random>` |
+
+The output directory contains `report.json` (each criterion, prediction differences and the local
+run record) and a bilingual `summary.md`.

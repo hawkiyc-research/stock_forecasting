@@ -4,6 +4,7 @@
 # Keep the local control plane compatible with pre-3.11 system Python.
 # ruff: noqa: UP017
 
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +37,11 @@ safe_local_path = PROBES["safe_local_path"]
 # The decomposition analysis owns the current baseline identities and inputs.
 ANALYSIS = runpy.run_path(str(Path(__file__).with_name("analyze_signal_decomposition.py")))
 BASELINE_LOCAL_ROOT = Path("artifacts/diagnostics/signal-decomposition/baselines")
+# Local Kronos inference reads a copy of the shared evaluation bar store (protocol 13.7).
+EVALUATION_LOCAL_ROOT = Path("artifacts/diagnostics/evaluation-data")
+LIST_PAGE_SIZE = 200
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+SHARD_PATTERN = re.compile(r"shards/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_.-]{1,128}\.parquet")
 
 
 def baseline_files():
@@ -283,11 +289,163 @@ def download_baseline_arrays(reader, project_root, executor, workers, timeout, f
     return destination, states.count("downloaded"), states.count("verified")
 
 
+def canonical_json_sha256(payload):
+    """Same canonical form as stock_forecasting.data.manifest.canonical_json_sha256."""
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def dataset_ids(reader):
+    """Dataset directory names directly below datasets/ (one listing level only)."""
+    token, found = None, []
+    while True:
+        arguments = [
+            "s3api", "list-objects-v2", "--bucket", reader.volume_id, "--prefix", "datasets/",
+            "--delimiter", "/", "--max-keys", str(LIST_PAGE_SIZE), "--no-paginate",
+            "--output", "json",
+        ]
+        if token:
+            arguments.extend(("--continuation-token", token))
+        page, _ = reader.json_command(arguments)
+        for entry in page.get("CommonPrefixes", []) or []:
+            prefix = entry.get("Prefix") if isinstance(entry, dict) else None
+            name = prefix[len("datasets/"):-1] if isinstance(prefix, str) else ""
+            if SHA256_PATTERN.fullmatch(name) is not None:
+                found.append(name)
+        if not page.get("IsTruncated"):
+            return found
+        next_token = page.get("NextContinuationToken")
+        if not isinstance(next_token, str) or not next_token or next_token == token:
+            raise ValueError("Invalid dataset listing continuation")
+        token = next_token
+
+
+def evaluation_identity(reader):
+    """The validation/test source recorded by the current alpha baseline."""
+    payload, _ = reader.read_json(f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json")
+    sources = (payload.get("data_identity") or {}).get("split_sources") or {}
+    validation, test = sources.get("validation") or {}, sources.get("test") or {}
+    identity = (validation.get("manifest_sha256"), validation.get("sample_universe"))
+    if (
+        identity != (test.get("manifest_sha256"), test.get("sample_universe"))
+        or any(not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None
+               for value in identity)
+    ):
+        raise ValueError("The baseline does not record one shared validation/test source")
+    return identity
+
+
+def evaluation_plan(reader):
+    """Locate the shared evaluation dataset and list every file to fetch with its digest."""
+    manifest_sha256, universe = evaluation_identity(reader)
+    matches = []
+    for dataset_id in dataset_ids(reader):
+        key = f"datasets/{dataset_id}/prepared/bar-store/bar-store.json"
+        try:
+            manifest, digest = reader.read_json(key, 64 * 1024**2)
+        except RuntimeError:
+            continue  # a dataset without a published bar store
+        if digest == manifest_sha256:
+            matches.append((dataset_id, manifest))
+    if len(matches) != 1:
+        raise ValueError(f"Expected one evaluation dataset for the baseline, found {len(matches)}")
+    dataset_id, manifest = matches[0]
+    universe_key = f"datasets/{dataset_id}/prepared/sample-universes/{universe}/universe.json"
+    universe_payload, _ = reader.read_json(universe_key)
+    if (
+        universe_payload.get("state") != "ready"
+        or canonical_json_sha256(universe_payload.get("identity")) != universe
+        or (universe_payload.get("identity") or {}).get("source_manifest_sha256")
+        != manifest_sha256
+        or SHA256_PATTERN.fullmatch(str(universe_payload.get("ranges_sha256"))) is None
+    ):
+        raise ValueError("The remote sample index does not match the baseline identity")
+    store = f"datasets/{dataset_id}/prepared/bar-store/"
+    files = [(store + "bar-store.json", None, manifest_sha256),
+             (store + "_SUCCESS.json", None, None),
+             (universe_key, None, None),
+             (universe_key[: -len("universe.json")] + "cutoff-ranges.parquet", None,
+              universe_payload["ranges_sha256"])]
+    for name in ("symbol_index", "cutoff_ranges"):
+        entry = manifest.get(name) or {}
+        files.append((store + str(entry.get("relative_path")), entry.get("size_bytes"),
+                      entry.get("sha256")))
+    for shard in manifest.get("shards") or []:
+        relative = shard.get("relative_path") if isinstance(shard, dict) else None
+        if not isinstance(relative, str) or SHARD_PATTERN.fullmatch(relative) is None:
+            raise ValueError("The evaluation bar store lists an unsafe shard path")
+        files.append((store + relative, shard.get("size_bytes"), shard.get("sha256")))
+    for key, size, digest in files:
+        if (digest is not None and SHA256_PATTERN.fullmatch(str(digest)) is None) or (
+            size is not None and (not isinstance(size, int) or size < 1)
+        ):
+            raise ValueError("Invalid evaluation artifact metadata: " + key)
+    if len({key for key, _, _ in files}) != len(files):
+        raise ValueError("The evaluation file list repeats a path")
+    return {"dataset_id": dataset_id, "manifest_sha256": manifest_sha256,
+            "sample_universe": universe, "files": files}
+
+
+def download_evaluation_data(reader, project_root, executor, workers, timeout, plan,
+                             fetch=None):
+    """Fetch the planned files, verifying each digest; files already verified are kept."""
+    fetch = download_file if fetch is None else fetch
+    destination = project_root / EVALUATION_LOCAL_ROOT
+    safe_local_path(destination)
+
+    def transfer(item):
+        key, size, digest = item
+        target = destination / key[len("datasets/"):]
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise ValueError("Unsafe existing evaluation artifact: " + str(target))
+        if digest is not None and target.is_file() and sha256_file(target) == digest:
+            return "verified"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".download-", dir=target.parent) as temporary:
+            staged = Path(temporary) / target.name
+            fetch(reader, key, staged, timeout)
+            if size is not None and staged.stat().st_size != size:
+                raise ValueError("Downloaded evaluation artifact size mismatch: " + key)
+            if digest is not None and sha256_file(staged) != digest:
+                raise ValueError("Downloaded evaluation artifact SHA-256 mismatch: " + key)
+            staged.replace(target)
+        return "downloaded"
+
+    states = list(parallel_results(executor, transfer, plan["files"], workers))
+    record = {key: plan[key] for key in ("dataset_id", "manifest_sha256", "sample_universe")}
+    record["files"] = len(plan["files"])
+    (destination / plan["dataset_id"] / "evaluation-data.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return destination / plan["dataset_id"], states.count("downloaded"), states.count("verified")
+
+
 def main():
     arguments = sys.argv[1:]
     workers = worker_count(PROJECT_ROOT)
     timeout = transfer_timeout()
     reader = S3Reader(PROJECT_ROOT, os.environ.get("RUNPOD_NETWORK_VOLUME_ID"))
+    if arguments in (["--evaluation-data"], ["--evaluation-data", "--list"]):
+        plan = evaluation_plan(reader)
+        known = sum(size for _, size, _ in plan["files"] if size is not None)
+        print(f"Evaluation dataset: {plan['dataset_id']}")
+        print(f"Sample index: {plan['sample_universe']}")
+        print(f"Files: {len(plan['files'])}, listed size: {known / 1024**3:.2f} GiB "
+              "(plus small JSON records)")
+        if arguments[-1] == "--list":
+            return
+        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="evaluation-data")
+        try:
+            destination, downloaded, verified = download_evaluation_data(
+                reader, PROJECT_ROOT, executor, workers, timeout, plan
+            )
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+        print(f"Evaluation data: downloaded={downloaded} already_verified={verified}")
+        print("Result directory: " + str(destination))
+        return
     if arguments == ["--baseline-arrays"]:
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="baseline-download")
         try:

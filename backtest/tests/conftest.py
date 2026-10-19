@@ -87,7 +87,8 @@ def fixture_config(default_config, tmp_path, name, **overrides):
         "NOISE": {"kind": "alpha", "baseline": "gru-42"},
         "DIRECTION": {"kind": "direction", "baseline": "gru-42"},
     }
-    config["bootstrap"]["replicates"] = 50
+    if "bootstrap" in config:
+        config["bootstrap"]["replicates"] = 50
     config.update(overrides)
     path = tmp_path / name
     path.write_text(json.dumps(config))
