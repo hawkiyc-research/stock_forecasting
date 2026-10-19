@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "name": "local-inference-parity",
+  "description": "Pre-registered parity check of local Kronos inference against a RunPod export (experiment protocol section 13.7).",
+  "inputs": {
+    "alpha_baseline": "audit/baselines/baseline-3befc8e902e5c641b24ddf80c4ab7e11769529fa307e391de47e4416f1d885a3",
+    "direction_baseline": "audit/baselines/baseline-b21f46ea4963562f03c648e9b0394f8a069767bca2a15a9f82e7c8ed69e04cc8",
+    "predictions_root": "diagnostics/signal-predictions"
+  },
+  "rank_markets": [
+    "TWSE",
+    "TPEX"
+  ],
+  "markets": {
+    "TWSE": [
+      "TWSE"
+    ],
+    "TPEX": [
+      "TPEX"
+    ],
+    "TW": [
+      "TWSE",
+      "TPEX"
+    ]
+  },
+  "decile_fraction": 0.1,
+  "portfolio": {
+    "k": 20,
+    "buffer": 2,
+    "version": "long_only"
+  },
+  "price_limit": {
+    "open_gap": 0.095
+  },
+  "costs": {
+    "commission_rate": 0.001425,
+    "transaction_tax": {
+      "stock": 0.003,
+      "etf": 0.001
+    },
+    "slippage_per_side": {
+      "TWSE": 0.001,
+      "TPEX": 0.002
+    },
+    "discounts": [
+      0.6
+    ],
+    "slippage_multipliers": [
+      1
+    ],
+    "turnover_modes": [
+      "positions"
+    ],
+    "primary": {
+      "discount": 0.6,
+      "slippage_multiplier": 1,
+      "turnover": "positions"
+    }
+  },
+  "annualization_days": 252,
+  "identity_check": {
+    "tolerance": 1e-05,
+    "min_fraction": 0.999
+  },
+  "split": "validation",
+  "reference": {
+    "run": "run-20261015T064559Z-624f212a27894308-alpha",
+    "checkpoint": "checkpoint-018399",
+    "export": "export-20261017T223254Z-ce4974f3"
+  },
+  "horizons": [
+    5,
+    10
+  ],
+  "criteria": {
+    "group_spearman_min": 0.999,
+    "group_fraction_min": 0.99,
+    "rank_ic_tolerance": 0.005,
+    "top_decile_tolerance": 0.0005
+  }
+}

@@ -707,6 +707,80 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 接近分割末端的訊號日沒有完整的 h 日標籤，validation 與 test 的有效日期隨 h 減少。
 - 其餘限制同 §13.5（流動性、最低手續費、整股、股利稅、存活者偏誤）。
 
+#### 13.7 本機 Kronos 推論：一致性比對與 checkpoint 選點（本機，事先固定）
+
+§13.6 顯示：同一個 run 中，不同 checkpoint 的隔夜行為差異很大（R22 的 loss 選點隔夜拖累 −213.8 bps，Rank IC-IR 選點只有 −10.7 bps）；上市 10 日的 R22-IR 是唯一在 validation 與 test 都為正的訊號。2026-10-19 決定：訓練仍只在 RunPod；回測需要的推論在本機（M5 Pro）執行。本節固定兩件事：本機推論必須先通過的一致性比對，以及以持有指標選 checkpoint 的規則。設定記錄在 `backtest/config/local_parity.json` 與 `backtest/config/checkpoint_selection.json`。
+
+事先固定的設定（2026-10-19 寫入，早於任何本機推論）：
+
+1. **本機推論**：
+   - 在獨立的 uv 子專案 `inference/` 執行，與 Poetry、RunPod 環境及 `backtest/` 分開。
+   - 載入 checkpoint 自己的 `resolved-config.yaml` 與 `adapter.safetensors`；Kronos 原始碼與基礎權重使用以 sha256 與 revision 固定的版本。
+   - 裝置：MPS fp32；MPS 不支援時改用 CPU fp32。實際採用的裝置必須自己通過一致性比對。
+   - 範圍：只推論 P0 評估母體中的上市、上櫃列。每列記錄股票與日期，`backtest/` 依此一對一對應到評估陣列，對應必須完整。
+   - 推論不改變模型、checkpoint 或任何 lifecycle 紀錄。
+2. **一致性比對（P1）**：
+   - 參照：R22 checkpoint-018399 在 RunPod RTX 5090、bf16 匯出的 validation 預測（`export-20261017T223254Z-ce4974f3`）。
+   - 本機以同一個 checkpoint 推論 validation 的台股列。
+   - 通過條件（全部符合）：
+     1. 每個「日期 × 市場 × 天期」的截面 Spearman（本機對參照），至少 99% 的組合 ≥ 0.999。
+     2. 依 §13.6 的定義，上市、上櫃各自 5 日與 10 日的開盤到開盤 Rank IC，兩者差距 ≤ 0.005。
+     3. 同樣條件下，前十分位超額的差距 ≤ 5 bps。
+   - 另記錄：每秒處理筆數、記憶體峰值、預測的最大絕對差。
+   - 未通過：不進行 checkpoint 選點與 §13.8；回報原因後再討論。
+3. **checkpoint 選點（P2）**：
+   - 候選：三個 alpha run 各自保留的 5 個 checkpoint。
+     - R21（`run-20261015T064558Z-f04e155d4299416f-alpha`）：003680、007360、011040、018399、022079。
+     - R22（`run-20261015T064559Z-624f212a27894308-alpha`）：003680、007360、011040、014720、018399。
+     - R23（`run-20261015T064600Z-13b8b4376ea5413b-alpha`）：003680、007360、018399、022079、025759。
+   - 規則：每個 run 選 validation 上市 10 日前十分位開盤到開盤超額（§13.6 定義）最高的 checkpoint；同分時選步數較晚者。
+   - 只用 validation 選點。選出的 3 個 checkpoint 另對 test 推論，只作描述。
+   - 不設門檻；選出的 checkpoint 在 §13.8 以次要描述檢驗。
+
+判讀限制：
+
+- 選點與描述都用同一段 validation，選出的 checkpoint 在 validation 上的數值偏樂觀；確認只能靠 §13.8 的未見資料。
+- 15 個候選、validation 112 日；選點規則只看上市 10 日，其他市場與天期不參與。
+- 本機為 fp32、參照為 bf16；一致性比對量測的是兩者的差異，不保證逐列相同。
+
+#### 13.8 第三階段：前瞻檢驗（2026-06-01 之後的未見資料，事先固定）
+
+本節是上市 10 日 R22-IR 的第一個確認性檢驗。這個候選是 §13.6 事後找到的，因此判準在前瞻資料準備之前寫入，模型、市場、天期與參數全部凍結。設定記錄在 `backtest/config/stage3.json`。
+
+事先固定的設定（2026-10-19 寫入，早於前瞻資料的下載與任何前瞻推論）：
+
+1. **資料**：
+   - 在 RunPod CPU 以既有資料準備流程建立新資料組：相同 profile（`us_tw_eodhd`）、universe 與清理規則；結束日為準備當時可取得的最新交易日。
+   - 新增 `forward` 分割：訊號日 ≥ 2026-06-01，且 14 日標籤完整。train、validation、test 的定義不變。
+   - 資料檢查（全部通過才評分）：
+     1. 新資料組的 manifest 就緒。
+     2. `forward` 分割的台股列，§13.5 的記帳恆等式至少 99.9% 成立（誤差 ≤ 10⁻⁵）。
+     3. 與現有資料組重疊的 test 期間，台股列的 `absolute_targets`（h = 1…14）至少 99% 的列，最大差距 ≤ 10⁻⁵。
+2. **標籤與指標**：沿用 §13.6 的開盤到開盤定義、十分位與固定組合；只在 `forward` 分割內計算。
+3. **主要假說（唯一影響判定）**：R22-IR（R22 checkpoint-018399）、上市、h = 10。兩項都符合才算通過：
+   1. 前十分位開盤到開盤超額平均的 95% 區間下界大於 0。區間以 circular moving-block bootstrap 計算：區塊 20、重抽 1,000 次、seed 11。
+   2. 固定組合（s = 10、K = 20、b = 2、主要成本情境、只做多）的年化淨超額平均大於 0。
+
+   區間跨 0 即判定未通過，不另作解讀。
+4. **次要描述（不影響判定）**：
+   - ENS-IR、R23（checkpoint-018399）、§13.7 選出的 3 個 checkpoint。
+   - 對照：loss 選出的 R21（003680）與 R22（011040）。
+   - R22-IR 的上櫃結果與 5 日結果。
+5. **程序**：
+   - §13.7 的一致性比對通過後才執行。
+   - 每個凍結的模型只對 `forward` 分割推論一次；不重選模型、市場、天期或參數。
+   - 結果寫成中英雙語報告。
+6. **結果的處置**：
+   - 通過：上市 10 日的 R22-IR 列為交易規則的候選訊號，之後持續前瞻監測。
+   - 未通過：不採用，回到模型本身的改善。
+
+判讀限制：
+
+- 可用訊號日約 80 個，10 日窗口互相重疊，區間會很寬；未通過不一定代表沒有優勢，但不能採用。
+- 只涵蓋 2026 年夏季到秋季這一段行情。
+- 新資料組的還原價會因 6 月之後的除權息而改變歷史數值；評分只在新資料組內部進行。
+- 其餘限制同 §13.5（流動性、最低手續費、整股、股利稅、存活者偏誤）。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1477,6 +1551,80 @@ Limits:
 - 13 signals × 2 markets × 3 horizons create multiple comparisons, so some "worth watching" entries will occur by chance.
 - h-session labels overlap; the block bootstrap only partly handles the autocorrelation.
 - Signal dates near the end of a split lack complete h-session labels, so the usable validation and test dates shrink with h.
+- Other limits are as in §13.5 (liquidity, minimum commissions, board lots, dividend taxes, survivorship bias).
+
+#### 13.7 Local Kronos inference: parity check and checkpoint selection (local, pre-registered)
+
+§13.6 shows that checkpoints of the same run differ widely overnight (R22's loss-selected checkpoint drags −213.8 bps overnight, its Rank IC-IR checkpoint only −10.7 bps), and that TWSE 10-session R22-IR is the only signal positive on both validation and test. On 2026-10-19 it was decided that training stays on RunPod and inference needed for backtests runs locally (M5 Pro). This section fixes two things: the parity check that local inference must pass first, and the rule for selecting checkpoints by a holding metric. The settings are recorded in `backtest/config/local_parity.json` and `backtest/config/checkpoint_selection.json`.
+
+Fixed settings (written 2026-10-19, before any local inference):
+
+1. **Local inference**:
+   - Runs in the separate uv subproject `inference/`, apart from the Poetry and RunPod environments and from `backtest/`.
+   - Loads each checkpoint's own `resolved-config.yaml` and `adapter.safetensors`; the Kronos source and base weights use the versions pinned by sha256 and revision.
+   - Device: MPS fp32, or CPU fp32 where MPS lacks support. The device actually used must pass the parity check itself.
+   - Scope: only the TWSE and TPEX rows of the P0 evaluation population. Each row records its stock and date, and `backtest/` maps rows one-to-one onto the evaluation arrays; the mapping must be complete.
+   - Inference changes no model, checkpoint or lifecycle record.
+2. **Parity check (P1)**:
+   - Reference: the validation predictions of R22 checkpoint-018399 exported on a RunPod RTX 5090 in bf16 (`export-20261017T223254Z-ce4974f3`).
+   - Local inference runs the same checkpoint on the validation Taiwan rows.
+   - Passing requires all of:
+     1. Across date × market × horizon groups, at least 99% have a cross-sectional Spearman (local against reference) ≥ 0.999.
+     2. Using the §13.6 definitions, the open-to-open Rank IC for TWSE and TPEX at 5 and 10 sessions differs by ≤ 0.005.
+     3. Under the same conditions, the top-decile excess differs by ≤ 5 bps.
+   - Also recorded: samples per second, peak memory and the maximum absolute prediction difference.
+   - On failure, neither checkpoint selection nor §13.8 proceeds; the cause is reported for discussion.
+3. **Checkpoint selection (P2)**:
+   - Candidates: the 5 retained checkpoints of each of three alpha runs.
+     - R21 (`run-20261015T064558Z-f04e155d4299416f-alpha`): 003680, 007360, 011040, 018399, 022079.
+     - R22 (`run-20261015T064559Z-624f212a27894308-alpha`): 003680, 007360, 011040, 014720, 018399.
+     - R23 (`run-20261015T064600Z-13b8b4376ea5413b-alpha`): 003680, 007360, 018399, 022079, 025759.
+   - Rule: for each run, select the checkpoint with the highest validation TWSE 10-session top-decile open-to-open excess (§13.6 definition); ties go to the later step.
+   - Selection uses validation only. The 3 selected checkpoints are also run on test, descriptively.
+   - No gate; the selected checkpoints are examined descriptively in §13.8.
+
+Limits:
+
+- Selection and description use the same validation period, so the selected checkpoints' validation values are optimistic; only §13.8's unseen data can confirm them.
+- 15 candidates over 112 validation dates; the rule looks only at TWSE 10-session results.
+- Local inference is fp32 and the reference bf16; the parity check measures their difference and does not guarantee identical rows.
+
+#### 13.8 Stage 3: forward test on unseen data from 2026-06-01 onward (pre-registered)
+
+This section is the first confirmatory test of TWSE 10-session R22-IR, a candidate found after the fact in §13.6. Its criteria are therefore written before the forward data is prepared, with the model, market, horizon and parameters all frozen. The settings are recorded in `backtest/config/stage3.json`.
+
+Fixed settings (written 2026-10-19, before the forward data download and any forward inference):
+
+1. **Data**:
+   - A new dataset is built with the existing data-preparation workflow on a RunPod CPU Pod: the same profile (`us_tw_eodhd`), universe and cleaning rules, ending at the latest trading day available at preparation time.
+   - A new `forward` split covers signal dates on or after 2026-06-01 with complete 14-session labels. The train, validation and test definitions are unchanged.
+   - Data checks (all must pass before scoring):
+     1. The new dataset's manifest is ready.
+     2. For the `forward` split's Taiwan rows, the §13.5 accounting identity holds for at least 99.9% of pairs (within 10⁻⁵).
+     3. Over the test period shared with the current dataset, at least 99% of Taiwan rows have `absolute_targets` (h = 1…14) within 10⁻⁵ at every horizon.
+2. **Labels and metrics**: the §13.6 open-to-open definitions, deciles and fixed portfolio, computed within the `forward` split only.
+3. **Primary hypothesis (the only one that decides)**: R22-IR (R22 checkpoint-018399), TWSE, h = 10. Both conditions must hold to pass:
+   1. The 95% interval lower bound of the mean top-decile open-to-open excess is above 0. The interval uses a circular moving-block bootstrap with block 20, 1,000 replicates and seed 11.
+   2. The fixed portfolio (s = 10, K = 20, b = 2, primary costs, long-only) has a positive mean annual net excess.
+
+   An interval that crosses 0 is a failure, with no further interpretation.
+4. **Secondary description (does not decide)**:
+   - ENS-IR, R23 (checkpoint-018399) and the 3 checkpoints selected in §13.7.
+   - Controls: the loss-selected R21 (003680) and R22 (011040).
+   - R22-IR results on TPEX and at 5 sessions.
+5. **Procedure**:
+   - Runs only after the §13.7 parity check passes.
+   - Each frozen model is run on the `forward` split once; models, markets, horizons and parameters are not re-selected.
+   - Results are written up as a bilingual report.
+6. **Outcome**:
+   - Pass: TWSE 10-session R22-IR becomes a candidate signal for the trading rules, with continued forward monitoring.
+   - Fail: it is not adopted, and work returns to improving the models.
+
+Limits:
+
+- About 80 usable signal dates with overlapping 10-session windows give wide intervals; a failure does not prove the absence of an edge, but the signal cannot be adopted.
+- Only the summer-to-autumn 2026 market is covered.
+- The new dataset's adjusted prices change history after post-June corporate actions; scoring stays within the new dataset.
 - Other limits are as in §13.5 (liquidity, minimum commissions, board lots, dividend taxes, survivorship bias).
 
 ### 14. Remote-validation boundary
