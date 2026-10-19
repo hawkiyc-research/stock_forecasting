@@ -41,6 +41,8 @@ BASELINE_LOCAL_ROOT = Path("artifacts/diagnostics/signal-decomposition/baselines
 EVALUATION_LOCAL_ROOT = Path("artifacts/diagnostics/evaluation-data")
 LIST_PAGE_SIZE = 200
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+# Baseline records (about 4.5 MB) and bar-store manifests exceed the probe JSON limit.
+LARGE_JSON_BYTES = 64 * 1024**2
 SHARD_PATTERN = re.compile(r"shards/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_.-]{1,128}\.parquet")
 
 
@@ -262,7 +264,9 @@ def download_baseline_arrays(reader, project_root, executor, workers, timeout, f
     safe_local_path(destination)
     manifests = {}
     for baseline in (ANALYSIS["ALPHA_ID"], ANALYSIS["DIRECTION_ID"]):
-        payload, _digest = reader.read_json(f"baselines/{baseline}/complete.json")
+        payload, _digest = reader.read_json(
+            f"baselines/{baseline}/complete.json", LARGE_JSON_BYTES
+        )
         if payload.get("state") != "complete" or not isinstance(payload.get("artifacts"), dict):
             raise ValueError(f"Baseline {baseline} is not a complete published result")
         manifests[baseline] = payload
@@ -324,7 +328,9 @@ def dataset_ids(reader):
 
 def evaluation_identity(reader):
     """The validation/test source recorded by the current alpha baseline."""
-    payload, _ = reader.read_json(f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json")
+    payload, _ = reader.read_json(
+        f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json", LARGE_JSON_BYTES
+    )
     sources = (payload.get("data_identity") or {}).get("split_sources") or {}
     validation, test = sources.get("validation") or {}, sources.get("test") or {}
     identity = (validation.get("manifest_sha256"), validation.get("sample_universe"))
@@ -344,7 +350,7 @@ def evaluation_plan(reader):
     for dataset_id in dataset_ids(reader):
         key = f"datasets/{dataset_id}/prepared/bar-store/bar-store.json"
         try:
-            manifest, digest = reader.read_json(key, 64 * 1024**2)
+            manifest, digest = reader.read_json(key, LARGE_JSON_BYTES)
         except RuntimeError:
             continue  # a dataset without a published bar store
         if digest == manifest_sha256:
@@ -353,7 +359,7 @@ def evaluation_plan(reader):
         raise ValueError(f"Expected one evaluation dataset for the baseline, found {len(matches)}")
     dataset_id, manifest = matches[0]
     universe_key = f"datasets/{dataset_id}/prepared/sample-universes/{universe}/universe.json"
-    universe_payload, _ = reader.read_json(universe_key)
+    universe_payload, _ = reader.read_json(universe_key, LARGE_JSON_BYTES)
     if (
         universe_payload.get("state") != "ready"
         or canonical_json_sha256(universe_payload.get("identity")) != universe

@@ -495,7 +495,9 @@ class PredictionDownloadTests(unittest.TestCase):
         universe = DOWNLOAD["canonical_json_sha256"](identity)
         good, other = "a" * 64, "b" * 64
         documents = {
-            f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json": {"data_identity": {"split_sources": {
+            # Real baseline records exceed the 4 MiB probe limit.
+            f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json": {"padding": "x" * (5 * 1024**2),
+                                                                "data_identity": {"split_sources": {
                 split: {"manifest_sha256": manifest_sha256, "sample_universe": universe}
                 for split in ("validation", "test")
             }}},
@@ -508,6 +510,13 @@ class PredictionDownloadTests(unittest.TestCase):
         }
 
         class Reader(FakeReader):
+            def read_json(self, key, limit=4 * 1024**2):
+                # Enforce the bounded read like the real wrapper does.
+                payload, digest = super().read_json(key)
+                if len(json.dumps(payload).encode()) > limit:
+                    raise ValueError("Remote diagnostic metadata exceeds the bounded read limit")
+                return payload, digest
+
             def json_command(self, arguments, limit=None):
                 self.listings = getattr(self, "listings", 0) + 1
                 return {"CommonPrefixes": [{"Prefix": f"datasets/{good}/"},
