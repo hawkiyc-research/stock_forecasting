@@ -95,6 +95,40 @@ def load_config(checkpoint: Path, *, kronos_source: Path = VENDORED_KRONOS):
     return config, state
 
 
+PRECISIONS = ("fp32", "bf16")
+
+
+def apply_precision(model, precision: str) -> None:
+    """Keep float32 weights, or mirror the CUDA path: frozen weights in bf16, trainable
+    parameters and the calibrated scales in float32. Call before loading the checkpoint,
+    while trainable parameters still require gradients."""
+    from stock_forecasting.factory import _promote_trainable_parameters_to_fp32
+
+    if precision not in PRECISIONS:
+        raise ValueError(f"Precision must be one of {', '.join(PRECISIONS)}")
+    if precision == "fp32":
+        return
+    scales = model.alpha_head.robust_scales.clone().float()
+    model.to(dtype=torch.bfloat16)
+    _promote_trainable_parameters_to_fp32(model)
+    # As in the factory: recreate float32 buffers rather than casting rounded values back.
+    model.alpha_head.robust_scales = scales
+    model.market_loss_weights = model.market_loss_weights.float()
+    branch = model.alpha_head.numeric_branch
+    if branch is not None:
+        branch.feature_center = branch.feature_center.float()
+        branch.feature_scale = branch.feature_scale.float()
+
+
+def autocast(device: torch.device, precision: str):
+    """bf16 autocast on the local device, matching the CUDA export; a no-op for fp32."""
+    from contextlib import nullcontext
+
+    if precision == "fp32":
+        return nullcontext()
+    return torch.autocast(device_type=device.type, dtype=torch.bfloat16)
+
+
 def taiwan_positions(dataset, markets: tuple[str, ...] = TAIWAN) -> np.ndarray:
     """Sequential positions of the rows whose symbol belongs to the requested markets."""
     ends = np.asarray(dataset._range_ends, dtype=np.int64)
@@ -148,7 +182,8 @@ def output_directory(root: Path, checkpoint: Path, split: str) -> Path:
 
 
 @torch.inference_mode()
-def predict(bundle, loader, config, device, count: int, output: Path) -> dict[str, Any]:
+def predict(bundle, loader, config, device, count: int, output: Path,
+            precision: str = "fp32") -> dict[str, Any]:
     """Stream float32 predictions, keys and alpha targets for every selected row."""
     from stock_forecasting.training import forward_batch, iter_device_batches
 
@@ -163,7 +198,8 @@ def predict(bundle, loader, config, device, count: int, output: Path) -> dict[st
     completed = 0
     try:
         for batch in iter_device_batches(loader, device):
-            result = forward_batch(bundle, batch, config, device)
+            with autocast(device, precision):
+                result = forward_batch(bundle, batch, config, device)
             values = (result.alpha_point if task == "alpha_point"
                       else result.absolute_direction_logits)
             values = values.detach().float().cpu().numpy()
@@ -204,6 +240,7 @@ def run(
     batch_size: int,
     workers: int,
     output_root: Path,
+    precision: str = "fp32",
 ) -> Path:
     from stock_forecasting.checkpointing import load_checkpoint
     from stock_forecasting.factory import build_model_bundle
@@ -220,8 +257,9 @@ def run(
     status = output / "status.json"
     status.write_text(json.dumps({"state": "running", "checkpoint": str(checkpoint)}))
     try:
-        # Off CUDA the factory keeps every weight in float32.
+        # Off CUDA the factory keeps every weight in float32; bf16 mirrors the CUDA path.
         bundle = build_model_bundle(config, device)
+        apply_precision(bundle.model, precision)
         loaded = load_checkpoint(checkpoint, bundle.model)
         bundle.model.requires_grad_(False)
         bundle.model.eval()
@@ -236,7 +274,7 @@ def run(
             persistent_workers=False,
             prefetch_factor=2,
         )
-        summary = predict(bundle, loader, config, device, len(positions), output)
+        summary = predict(bundle, loader, config, device, len(positions), output, precision)
         report = {
             "schema_version": OUTPUT_SCHEMA,
             "kind": "local-signal-predictions",
@@ -263,7 +301,7 @@ def run(
             },
             "runtime": {
                 "device": device.type,
-                "dtype": "float32",
+                "dtype": "float32" if precision == "fp32" else "bf16-weights-autocast",
                 "batch_size": batch_size,
                 "workers": workers,
                 "python": platform.python_version(),
@@ -292,6 +330,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Local copy of its prepared/sample-universes/<identity> index.")
     parser.add_argument("--split", choices=SPLITS, required=True)
     parser.add_argument("--device", choices=("auto", "mps", "cpu"), default="auto")
+    parser.add_argument("--precision", choices=PRECISIONS, default="fp32",
+                        help="fp32, or bf16 frozen weights with bf16 autocast as on CUDA.")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--workers", type=int, help=f"Data-loading workers, 1-{MAX_WORKERS}.")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
@@ -307,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     output = run(
         args.checkpoint, bar_store=args.bar_store, sample_universe=args.sample_universe,
         split=args.split, device_name=args.device, batch_size=args.batch_size, workers=workers,
-        output_root=args.output_root,
+        output_root=args.output_root, precision=args.precision,
     )
     print(json.dumps({"state": "complete", "output": str(output)}))
     return 0

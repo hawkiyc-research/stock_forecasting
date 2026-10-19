@@ -85,3 +85,57 @@ def test_pinned_models_come_from_the_checkpoint(tmp_path):
         (config.model.time_series_model_id, config.model.time_series_model_revision),
         (config.model.time_series_tokenizer_id, config.model.time_series_tokenizer_revision),
     ]
+
+
+class TinyHead(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer = torch.nn.Linear(2, 2)
+        self.robust_scales = torch.tensor([0.0123456789, 0.0234567891])
+        self.numeric_branch = None
+
+
+class TinyModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.frozen = torch.nn.Linear(2, 2)
+        self.frozen.requires_grad_(False)
+        self.alpha_head = TinyHead()
+        self.market_loss_weights = torch.tensor([1.0, 1.0])
+
+
+def test_bf16_precision_mirrors_the_cuda_cast():
+    model = TinyModel()
+    scales = model.alpha_head.robust_scales.clone()
+    predict.apply_precision(model, "fp32")
+    assert model.frozen.weight.dtype == torch.float32
+    predict.apply_precision(model, "bf16")
+    assert model.frozen.weight.dtype == torch.bfloat16
+    assert model.alpha_head.layer.weight.dtype == torch.float32  # trainable stays fp32
+    assert torch.equal(model.alpha_head.robust_scales, scales)  # not rounded through bf16
+    assert model.market_loss_weights.dtype == torch.float32
+    with pytest.raises(ValueError):
+        predict.apply_precision(model, "fp16")
+    with predict.autocast(torch.device("cpu"), "bf16"):
+        assert torch.get_autocast_dtype("cpu") == torch.bfloat16
+
+
+def test_pilot_selects_one_taiwan_date_and_summarizes_agreement():
+    from localinfer import pilot
+
+    metadata = np.array(
+        [("2330", "2025-06-03T00:00:00+00:00", "TWSE"),
+         ("AAPL", "2025-06-02T00:00:00+00:00", "US"),
+         ("6488", "2025-06-03T00:00:00+00:00", "TPEX"),
+         ("2317", "2025-06-04T00:00:00+00:00", "TWSE")],
+        dtype=[("symbol", "<U8"), ("date", "<U32"), ("market", "<U8")],
+    )
+    date, positions = pilot.date_positions(metadata, None)
+    assert date == "2025-06-03" and positions.tolist() == [0, 2]
+    with pytest.raises(ValueError):
+        pilot.date_positions(metadata, "2025-06-02")
+    rng = np.random.default_rng(0)
+    reference = rng.normal(size=(6, 3))
+    markets = np.array(["TWSE"] * 3 + ["TPEX"] * 3)
+    summary = pilot.agreement(reference.copy(), reference, markets)
+    assert summary["TWSE"]["min"] == pytest.approx(1.0) and summary["TPEX"]["rows"] == 3
