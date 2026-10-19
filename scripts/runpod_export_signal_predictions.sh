@@ -21,6 +21,11 @@ Options:
                             exported sequentially in this one job (no latest default).
   --splits SPLIT [SPLIT]    validation and/or test (default: validation test)
   --confirm-test            Required whenever test is exported
+  --reuse-complete-since YYYYMMDD
+                            Skip a checkpoint that already has a complete export created on
+                            or after this UTC date with the same checkpoint files, splits,
+                            GPU, torch, Python and precision; prediction SHA-256 values are
+                            re-verified first. Use it to resume a crashed multi-checkpoint job.
 
 The resolved checkpoint config is used, never the active stage selection.
 Results: NETWORK_VOLUME_ROOT/diagnostics/signal-predictions/<run>/<checkpoint>/export-*/
@@ -129,7 +134,14 @@ export HF_HOME="${CACHE_ROOT}/huggingface"
 export TORCH_HOME="${CACHE_ROOT}/torch"
 export XDG_CACHE_HOME="${CACHE_ROOT}/xdg"
 export TMPDIR="${NETWORK_VOLUME_ROOT}/tmp"
+# Memory-mapped scratch stays on the container disk; only finished files reach the volume.
+SIGNAL_EXPORT_SCRATCH_ROOT="${SIGNAL_EXPORT_SCRATCH_ROOT:-/tmp/stock-forecasting-signal-export}"
+export SIGNAL_EXPORT_SCRATCH_ROOT
 export PYTHONUNBUFFERED=1
+# On a fatal signal print every thread's Python stack to the tmux log, and skip the
+# core file: writing one held the Pod for about ten minutes after a crash.
+export PYTHONFAULTHANDLER=1
+ulimit -c 0
 export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 if [[ ! -x "${PROJECT_ROOT}/.venv/bin/python" ]]; then
     echo "Persistent project .venv is unavailable; use the existing cloud setup workflow" >&2

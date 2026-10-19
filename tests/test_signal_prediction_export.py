@@ -108,14 +108,24 @@ def test_export_split_streams_every_row_and_recomputes_metrics(
     loader = SimpleNamespace(
         sampler=SequentialSampler(range(samples)), dataset=range(samples), drop_last=False
     )
-    summary = export.export_split(bundle, loader, config, torch.device("cpu"), tmp_path / "out")
+    scratch = tmp_path / "container-scratch"
+    summary = export.export_split(
+        bundle, loader, config, torch.device("cpu"), tmp_path / "out", scratch=scratch
+    )
     saved = np.load(tmp_path / "out" / "predictions.npy")
     np.testing.assert_array_equal(saved, expected.astype(np.float32))
     assert summary["shape"] == [samples, *tail]
     assert summary["samples"] == samples
     assert summary["sample_membership"]["samples"] == samples
+    assert summary["predictions_sha256"] == export.sha256_file(tmp_path / "out/predictions.npy")
     assert json.loads((tmp_path / "out" / "split.json").read_text()) == summary
     assert not (tmp_path / "out" / "predictions.partial.npy").exists()
+    # Mapped arrays lived only in container scratch, which is removed afterwards.
+    assert sorted(path.name for path in (tmp_path / "out").iterdir()) == [
+        "predictions.npy", "split.json"
+    ]
+    assert list(scratch.iterdir()) == []
+    assert not (tmp_path / "logs" / "evaluation-scratch").exists()
     assert np.isfinite(summary["loss"])
     if task == "alpha_point":
         by_market = summary["cross_sectional"]["by_market"]
@@ -201,10 +211,113 @@ def test_export_refuses_partial_coverage_and_existing_output(tmp_path):
     bundle = SimpleNamespace(model=SimpleNamespace(alpha_head=None))
     shuffled = SimpleNamespace(sampler=range(4), dataset=range(4), drop_last=False)
     with pytest.raises(ValueError, match="sequential full coverage"):
-        export.export_split(bundle, shuffled, config, torch.device("cpu"), tmp_path / "a")
+        export.export_split(
+            bundle, shuffled, config, torch.device("cpu"), tmp_path / "a", scratch=tmp_path
+        )
     with pytest.raises(ValueError, match="signal tasks"):
         export.prediction_shape("quantiles", 4, HORIZONS)
     with pytest.raises(SystemExit):
         export.main(["--checkpoint", "run-x-alpha", "--splits", "test"])
     with pytest.raises(SystemExit):
         export.main(["--checkpoint", "run-x-alpha", "--checkpoint", "run-x-alpha"])
+
+
+@pytest.mark.parametrize("value", ["2026-10-19", "20261332", "2026101", "today"])
+def test_reuse_date_must_be_a_real_compact_utc_date(value):
+    with pytest.raises(SystemExit):
+        export.build_parser().parse_args(
+            ["--checkpoint", "run-x-alpha", "--reuse-complete-since", value]
+        )
+    parsed = export.build_parser().parse_args(
+        ["--checkpoint", "run-x-alpha", "--reuse-complete-since", "20261019"]
+    )
+    assert parsed.reuse_complete_since == "20261019"
+
+
+def test_scratch_root_must_be_absolute_and_outside_the_network_volume(tmp_path, monkeypatch):
+    volume = tmp_path / "runpod-volume"
+    volume.mkdir()
+    monkeypatch.delenv(export.SCRATCH_ENV, raising=False)
+    with pytest.raises(RuntimeError, match="absolute"):
+        export.local_scratch_root(volume)
+    monkeypatch.setenv(export.SCRATCH_ENV, "relative/scratch")
+    with pytest.raises(RuntimeError, match="absolute"):
+        export.local_scratch_root(volume)
+    for inside in (volume, volume / "tmp" / "scratch"):
+        monkeypatch.setenv(export.SCRATCH_ENV, str(inside))
+        with pytest.raises(ValueError, match="outside the network volume"):
+            export.local_scratch_root(volume)
+    monkeypatch.setenv(export.SCRATCH_ENV, str(tmp_path / "container" / "scratch"))
+    assert export.local_scratch_root(volume) == (tmp_path / "container" / "scratch").resolve()
+    assert (tmp_path / "container" / "scratch").is_dir()
+
+
+RUNTIME = {"python": "3.12.3", "torch": "2.9.1+cu128", "gpu": "RTX 5090", "mixed_precision": "bf16"}
+
+
+def _checkpoint(root):
+    checkpoint = root / "savedModel" / "run-x-alpha" / "checkpoint-000010"
+    checkpoint.mkdir(parents=True)
+    for name in export.CHECKPOINT_FILES:
+        (checkpoint / name).write_text(f"{name} contents")
+    return checkpoint
+
+
+def _export(directory, name, checkpoint, config, *, state="complete", runtime=RUNTIME,
+            splits=("validation", "test")):
+    """Write a finished export directory the way run_export records it."""
+    path = directory / name
+    results = {}
+    for split in splits:
+        (path / split).mkdir(parents=True)
+        predictions = path / split / "predictions.npy"
+        np.save(predictions, np.arange(6, dtype=np.float32))
+        results[split] = {"predictions_sha256": export.sha256_file(predictions)}
+    (path / "status.json").write_text(json.dumps({"state": state}))
+    (path / "export.json").write_text(json.dumps({
+        "schema_version": export.EXPORT_SCHEMA_VERSION,
+        "prediction_task": config.model.prediction_task,
+        "runtime": runtime,
+        "checkpoint": {
+            "path": str(checkpoint),
+            "model_architecture_sha256": config.model_architecture_digest(),
+            "files_sha256": {
+                name: export.sha256_file(checkpoint / name) for name in export.CHECKPOINT_FILES
+            },
+        },
+        "splits": results,
+    }))
+    return path
+
+
+def test_reuse_accepts_only_an_intact_matching_export_since_the_date(tmp_path):
+    config = _config("a_alpha_point64", tmp_path)
+    checkpoint = _checkpoint(tmp_path)
+    directory = tmp_path / "exports"
+    splits = ["validation", "test"]
+
+    def reusable(since="20261019", runtime=RUNTIME):
+        return export.reusable_export(directory, checkpoint, config, splits, since, runtime)
+
+    directory.mkdir()
+    assert reusable() is None
+    older = _export(directory, "export-20261018T001629Z-aaaaaaaa", checkpoint, config)
+    assert reusable() is None
+    assert reusable(since="20261018") == older
+    _export(directory, "export-20261019T113449Z-cccccccc", checkpoint, config, state="failed")
+    _export(directory, "export-20261019T111000Z-dddddddd", checkpoint, config,
+            runtime={**RUNTIME, "gpu": "NVIDIA H100 80GB HBM3"})
+    _export(directory, "export-20261019T110000Z-eeeeeeee", checkpoint, config,
+            splits=("validation",))
+    assert reusable() is None
+    good = _export(directory, "export-20261019T102900Z-bbbbbbbb", checkpoint, config)
+    assert reusable() == good
+    assert reusable(runtime={**RUNTIME, "torch": "2.10.0"}) is None
+    # A prediction file changed after it was recorded is never reused.
+    np.save(good / "test" / "predictions.npy", np.zeros(6, dtype=np.float32))
+    assert reusable() is None
+    # Neither is an export of different checkpoint weights.
+    _export(directory, "export-20261019T103000Z-ffffffff", checkpoint, config)
+    assert reusable() is not None
+    (checkpoint / "adapter.safetensors").write_text("retrained")
+    assert reusable() is None

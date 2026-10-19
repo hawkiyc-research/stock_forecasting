@@ -2399,7 +2399,10 @@ export.log
 列順序與完整循序評估相同，也就是 baseline 共用評估陣列的順序；`split.json` 的重算指標
 可與已記錄的 benchmark 對照，alpha 另含各市場×天期的 Rank IC 與 IC-IR，可與
 `metrics.jsonl` 同一步的 validation 記錄核對。每個 split 約 30 MB（alpha）或 90 MB（分類），寫入前會檢查
-可用空間。tmux session 為 `stock-forecasting-export-predictions`，沿用 `probe-scales` 的
+可用空間。推論中的 memory-mapped 暫存陣列放在容器磁碟（`SIGNAL_EXPORT_SCRATCH_ROOT`，預設
+`/tmp/stock-forecasting-signal-export`），完成後才以一般寫入複製到 network volume，並核對 SHA-256；
+volume 的 I/O 錯誤因此會讓匯出標記為失敗，而不是讓程序因 SIGBUS 崩潰。程序若因致命訊號結束，
+tmux log 會留下各執行緒的 Python stack，且不寫 core 檔。tmux session 為 `stock-forecasting-export-predictions`，沿用 `probe-scales` 的
 診斷 lifecycle，本機 guard 在成功、失敗或逾時後終止 Pod；查看用法：
 
 ```bash
@@ -2685,6 +2688,7 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 | `--checkpoint MODEL_RUN_ID[/checkpoint-NNNNNN]` | 必填，可重複 1–16 次 | 只填 signal 子模型（`-alpha`／`-direction`）run ID 時使用其 validation-selected best checkpoint；加 `/checkpoint-NNNNNN` 時使用該 run validation leaderboard 保留的指定 checkpoint。在同一工作依序匯出，推論前先解析全部指定，沒有「最新」預設 |
 | `--splits SPLIT [SPLIT]` | `validation test` | 要完整重新推論並保存的評估切分 |
 | `--confirm-test` | 無值 flag | 匯出 test 時必填，避免無意中重複使用 test |
+| `--reuse-complete-since YYYYMMDD` | 不設定時每個 checkpoint 都重新推論 | 用於續跑中斷的多 checkpoint 工作：若某 checkpoint 已有該 UTC 日期（含）之後建立的完成匯出，且 checkpoint 檔案、要求的切分、GPU、torch、Python 與精度都相同，重新核對預測檔 SHA-256 後沿用，不再推論 |
 | `-h`、`--help` | 無值 flag | 顯示參數，不啟動匯出 |
 
 `bash scripts/runpod_wandb_sync.sh [MODEL_RUN_ID]` 在新建 run-scoped Pod 中只處理自身 run；
@@ -6308,7 +6312,12 @@ Rows follow the complete sequential evaluation order, the order of the shared ba
 evaluation arrays; the recomputed metrics in `split.json` can be compared with the recorded
 benchmark, and for alpha they include per-market, per-horizon Rank IC and IC-IR that can be
 checked against the same validation step in `metrics.jsonl`. Each split needs about 30 MB (alpha) or 90 MB (classification), and free space is
-checked before writing. The tmux session is `stock-forecasting-export-predictions` and shares the
+checked before writing. Memory-mapped scratch arrays stay on the container disk
+(`SIGNAL_EXPORT_SCRATCH_ROOT`, default `/tmp/stock-forecasting-signal-export`) and are copied to
+the network volume with ordinary writes only when finished, then checked by SHA-256, so a volume
+I/O error marks the export failed instead of crashing the process with SIGBUS. If the process
+dies from a fatal signal, the tmux log keeps every thread's Python stack and no core file is
+written. The tmux session is `stock-forecasting-export-predictions` and shares the
 `probe-scales` diagnostic lifecycle: the local guard terminates the Pod after success, failure or
 timeout. Show usage with:
 
@@ -6628,6 +6637,7 @@ Only two diagnostics forward options: `probe-scales` uses the table below and
 | `--checkpoint MODEL_RUN_ID[/checkpoint-NNNNNN]` | Required, repeatable 1–16 times | A bare signal child run ID (`-alpha`/`-direction`) uses its validation-selected best checkpoint; `/checkpoint-NNNNNN` uses that checkpoint retained by the run's validation leaderboard. Exported sequentially in one job after resolving every selector, with no latest default |
 | `--splits SPLIT [SPLIT]` | `validation test` | Evaluation splits to re-infer completely and save |
 | `--confirm-test` | Flag with no value | Required whenever test is exported, to avoid accidental repeated test use |
+| `--reuse-complete-since YYYYMMDD` | Unset: every checkpoint is re-inferred | Resumes an interrupted multi-checkpoint job: a checkpoint that already has a complete export created on or after that UTC date, with the same checkpoint files, requested splits, GPU, torch, Python and precision, is reused after its prediction SHA-256 values are re-verified |
 | `-h`, `--help` | Flag with no value | Show options without starting an export |
 
 `bash scripts/runpod_wandb_sync.sh [MODEL_RUN_ID]` in a new run-scoped Pod processes only its

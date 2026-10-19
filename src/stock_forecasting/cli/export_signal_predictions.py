@@ -7,6 +7,10 @@ the shared baseline evaluation arrays; each split records its membership digest 
 local analysis can verify that alignment. Metrics are recomputed with the unchanged
 signal evaluation store and saved next to the predictions for comparison with the
 recorded benchmark. Training, validation lifecycle and checkpoints are never modified.
+
+Memory-mapped arrays live on container-disk scratch, never on the network volume: a volume
+I/O error inside a mapping kills the process with SIGBUS, while the ordinary writes used to
+publish the finished files raise a normal error that marks the export failed.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import time
 from datetime import UTC, datetime
@@ -53,6 +58,9 @@ CHECKPOINT_FILES = ("adapter.safetensors", "resolved-config.yaml", "trainer-stat
 MAX_CHECKPOINTS = 16
 # Scratch for the unchanged metric store plus a margin for logs and manifests.
 DISK_MARGIN_BYTES = 1024**3
+# Container-disk directory for memory-mapped scratch; set by the RunPod launcher.
+SCRATCH_ENV = "SIGNAL_EXPORT_SCRATCH_ROOT"
+COPY_CHUNK_BYTES = 16 * 1024**2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,7 +88,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Required when exporting test, to make repeated test inference explicit.",
     )
+    parser.add_argument(
+        "--reuse-complete-since",
+        metavar="YYYYMMDD",
+        type=since_date,
+        help=(
+            "Skip a checkpoint whose complete export was created on or after this UTC date "
+            "with the same checkpoint files, requested splits, GPU, torch, Python and "
+            "precision, after re-verifying its prediction SHA-256 (resumes a crashed job)."
+        ),
+    )
     return parser
+
+
+def since_date(value: str) -> str:
+    """Accept only a real YYYYMMDD date, the prefix format of export directory names."""
+    try:
+        if re.fullmatch(r"[0-9]{8}", value) is None:
+            raise ValueError
+        datetime.strptime(value, "%Y%m%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a UTC date as YYYYMMDD") from None
+    return value
 
 
 def parse_selector(value: str) -> tuple[str, str | None]:
@@ -146,9 +175,94 @@ def require_disk(path: Path, shape: tuple[int, ...]) -> int:
     return needed
 
 
+def local_scratch_root(volume: Path) -> Path:
+    """Return the container-disk scratch root; mapped writes must not touch the volume."""
+    value = os.environ.get(SCRATCH_ENV, "")
+    if not value or not Path(value).is_absolute():
+        raise RuntimeError(f"{SCRATCH_ENV} must name an absolute container-disk directory")
+    root, volume = Path(value).resolve(strict=False), volume.resolve(strict=False)
+    if root == volume or volume in root.parents:
+        raise ValueError(f"{SCRATCH_ENV} must be outside the network volume")
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def publish_file(source: Path, final: Path) -> None:
+    """Copy a finished local file with ordinary writes, fsync it, then rename it into place."""
+    partial = final.with_name(f"{final.stem}.partial{final.suffix}")
+    with source.open("rb") as reader, partial.open("xb") as writer:
+        shutil.copyfileobj(reader, writer, COPY_CHUNK_BYTES)
+        writer.flush()
+        os.fsync(writer.fileno())
+    os.replace(partial, final)
+
+
+def runtime_identity(config: ExperimentConfig, device: torch.device) -> dict[str, Any]:
+    """Everything outside the checkpoint that can change bf16 inference results."""
+    return {
+        "python": platform.python_version(),
+        "torch": torch.__version__,
+        "gpu": torch.cuda.get_device_name(device),
+        "mixed_precision": config.training.mixed_precision,
+    }
+
+
+def reusable_export(
+    directory: Path,
+    checkpoint: Path,
+    config: ExperimentConfig,
+    splits: list[str],
+    since: str,
+    runtime: dict[str, Any],
+) -> Path | None:
+    """Return the newest complete export since a date that this job would reproduce.
+
+    Only the export source may differ (it changes with scratch handling, not inference),
+    so checkpoint files, architecture, runtime and every requested split must match, and
+    each prediction file must still hash to the value recorded when it was written.
+    """
+    files = None
+    for candidate in sorted(directory.glob("export-*"), reverse=True):
+        if candidate.name[len("export-") :][:8] < since:
+            continue
+        try:
+            status = json.loads((candidate / "status.json").read_text())
+            report = json.loads((candidate / "export.json").read_text())
+        except (OSError, ValueError):
+            continue
+        recorded = report.get("checkpoint") or {}
+        if (
+            status.get("state") != "complete"
+            or report.get("schema_version") != EXPORT_SCHEMA_VERSION
+            or report.get("prediction_task") != config.model.prediction_task
+            or report.get("runtime") != runtime
+            or recorded.get("path") != str(checkpoint)
+            or recorded.get("model_architecture_sha256") != config.model_architecture_digest()
+        ):
+            continue
+        if files is None:
+            files = {name: sha256_file(checkpoint / name) for name in CHECKPOINT_FILES}
+        results = report.get("splits") or {}
+        if recorded.get("files_sha256") == files and all(
+            split in results
+            and (candidate / split / "predictions.npy").is_file()
+            and sha256_file(candidate / split / "predictions.npy")
+            == results[split].get("predictions_sha256")
+            for split in splits
+        ):
+            return candidate
+    return None
+
+
 @torch.inference_mode()
-def export_split(bundle, loader, config, device, output: Path) -> dict[str, Any]:
-    """Stream predictions to a float32 array and recompute the unchanged signal metrics."""
+def export_split(
+    bundle, loader, config, device, output: Path, *, scratch: Path
+) -> dict[str, Any]:
+    """Stream predictions to a float32 array and recompute the unchanged signal metrics.
+
+    Arrays are mapped under ``scratch`` (container disk) and only the finished predictions
+    are copied to ``output`` on the network volume.
+    """
     from stock_forecasting.training import _autocast_context, forward_batch, iter_device_batches
 
     if (
@@ -162,16 +276,17 @@ def export_split(bundle, loader, config, device, output: Path) -> dict[str, Any]
     shape = prediction_shape(task, count, len(config.data.alpha_horizons))
     output.mkdir(parents=True, exist_ok=False)
     require_disk(output, shape)
-    partial = output / "predictions.partial.npy"
-    scratch = config.runtime.log_root / "evaluation-scratch"
     scratch.mkdir(parents=True, exist_ok=True)
+    require_disk(scratch, shape)
     scales = bundle.model.alpha_head.robust_scales.float().cpu().tolist()
     started = time.perf_counter()
-    arrays = np.lib.format.open_memmap(partial, mode="w+", dtype="float32", shape=shape)
-    try:
-        with TemporaryDirectory(prefix="signal-export-", dir=scratch) as directory:
+    final = output / "predictions.npy"
+    with TemporaryDirectory(prefix="signal-export-", dir=scratch) as directory:
+        local = Path(directory) / "predictions.npy"
+        arrays = np.lib.format.open_memmap(local, mode="w+", dtype="float32", shape=shape)
+        try:
             store = SignalEvaluationStore(
-                Path(directory),
+                Path(directory) / "metrics",
                 count,
                 config.data.alpha_horizons,
                 scales,
@@ -223,11 +338,13 @@ def export_split(bundle, loader, config, device, output: Path) -> dict[str, Any]
                 metrics = store.finish()
             finally:
                 store.close()
-        arrays.flush()
-    finally:
-        del arrays
-    final = output / "predictions.npy"
-    os.replace(partial, final)
+            arrays.flush()
+        finally:
+            del arrays
+        digest = sha256_file(local)
+        publish_file(local, final)
+    if sha256_file(final) != digest:
+        raise OSError(f"Published predictions differ from the local scratch copy: {final}")
     summary = {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "prediction_task": task,
@@ -235,7 +352,7 @@ def export_split(bundle, loader, config, device, output: Path) -> dict[str, Any]
         "shape": list(shape),
         "dtype": "float32",
         "values": "alpha_point" if task == "alpha_point" else "absolute_direction_logits",
-        "predictions_sha256": sha256_file(final),
+        "predictions_sha256": digest,
         "sample_membership": metrics.get("sample_membership"),
         "loss": metrics.get("loss"),
         "aggregate": metrics.get("aggregate"),
@@ -248,8 +365,13 @@ def export_split(bundle, loader, config, device, output: Path) -> dict[str, Any]
     return summary
 
 
-def run_export(checkpoint: Path, selector: str, splits: list[str]) -> Path:
-    """Run on an existing GPU Pod under the diagnostic lease, without lifecycle changes."""
+def run_export(
+    checkpoint: Path, selector: str, splits: list[str], reuse_since: str | None = None
+) -> tuple[Path, bool]:
+    """Run on an existing GPU Pod under the diagnostic lease, without lifecycle changes.
+
+    Returns the export directory and whether an earlier complete export was reused.
+    """
     require_export_environment()
     volume = canonical_network_volume_root()
     config = ExperimentConfig.from_yaml(checkpoint / "resolved-config.yaml")
@@ -258,19 +380,23 @@ def run_export(checkpoint: Path, selector: str, splits: list[str]) -> Path:
         SIGNAL_TASKS
     ):
         raise ValueError("Prediction export requires an independent Kronos signal checkpoint")
+    scratch = local_scratch_root(volume)
+    device = torch.device("cuda")
+    runtime = runtime_identity(config, device)
+    directory = volume / "diagnostics" / "signal-predictions" / checkpoint.parent.name
+    directory = directory / checkpoint.name
+    if reuse_since is not None:
+        existing = reusable_export(directory, checkpoint, config, splits, reuse_since, runtime)
+        if existing is not None:
+            LOGGER.info("Reusing complete export %s for %s", existing, checkpoint)
+            return existing, True
     run_preflight(
         config,
         require_data=True,
         enforce_runtime_limit=False,
         allow_historical_inference=True,
     ).require_success()
-    root = volume / "diagnostics" / "signal-predictions"
-    output = (
-        root
-        / checkpoint.parent.name
-        / checkpoint.name
-        / f"export-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
-    )
+    output = directory / f"export-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
     output.mkdir(parents=True, exist_ok=False)
     if output.resolve() != output:
         raise ValueError("Prediction export output must not traverse symlinked directories")
@@ -280,7 +406,6 @@ def run_export(checkpoint: Path, selector: str, splits: list[str]) -> Path:
     atomic_write_json(output / "status.json", {"state": "running", "checkpoint": str(checkpoint)})
     try:
         set_global_seed(config.training.seed)
-        device = torch.device("cuda")
         bundle = build_model_bundle(config, device)
         state = load_checkpoint(
             checkpoint,
@@ -294,7 +419,9 @@ def run_export(checkpoint: Path, selector: str, splits: list[str]) -> Path:
         for split in splits:
             loader = build_evaluation_loader(config, bundle=bundle, device=device, split=split)
             LOGGER.info("Exporting %s predictions for %s", split, checkpoint)
-            results[split] = export_split(bundle, loader, config, device, output / split)
+            results[split] = export_split(
+                bundle, loader, config, device, output / split, scratch=scratch
+            )
             del loader
         report = {
             "schema_version": EXPORT_SCHEMA_VERSION,
@@ -317,12 +444,7 @@ def run_export(checkpoint: Path, selector: str, splits: list[str]) -> Path:
             "prediction_task": config.model.prediction_task,
             "horizons": list(config.data.alpha_horizons),
             "splits": results,
-            "runtime": {
-                "python": platform.python_version(),
-                "torch": torch.__version__,
-                "gpu": torch.cuda.get_device_name(device),
-                "mixed_precision": config.training.mixed_precision,
-            },
+            "runtime": runtime,
             "export_source_sha256": sha256_file(Path(__file__).resolve()),
         }
         atomic_write_json(output / "export.json", report)
@@ -330,7 +452,7 @@ def run_export(checkpoint: Path, selector: str, splits: list[str]) -> Path:
             output / "status.json", {"state": "complete", "checkpoint": str(checkpoint)}
         )
         LOGGER.info("Prediction export complete: %s", output)
-        return output
+        return output, False
     except BaseException as error:
         atomic_write_json(
             output / "status.json", {"state": "failed", "error_type": type(error).__name__}
@@ -368,9 +490,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Two --checkpoint selectors resolve to the same checkpoint")
     outputs = []
     for selector, checkpoint in zip(selectors, checkpoints, strict=True):
-        output = run_export(checkpoint, selector, splits)
+        output, reused = run_export(checkpoint, selector, splits, args.reuse_complete_since)
         outputs.append(str(output))
-        print(json.dumps({"state": "complete", "output": str(output)}, ensure_ascii=False))
+        state = "reused" if reused else "complete"
+        print(json.dumps({"state": state, "output": str(output)}, ensure_ascii=False))
     print(json.dumps({"state": "complete", "exports": outputs}, ensure_ascii=False))
     return 0
 
