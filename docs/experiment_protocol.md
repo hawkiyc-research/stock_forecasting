@@ -672,6 +672,41 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 漲跌停以還原價的開盤跳空近似，除權息日可能誤判。
 - 位置不再平衡，權重會隨價格漂移。
 
+#### 13.6 與持有方式對齊的評估：現有訊號的開盤到開盤重評（本機，事先固定）
+
+§13.4、§13.5 的結果見[回測結果報告](backtest_stage1_results.md)：前 K 名的優勢只出現在交易時段，隔夜就反轉。現行標籤（1 日 = 次一交易日開盤到收盤）與 Rank IC 評估，都和「收盤後產生訊號、隔日開盤買進、持有數天到兩週、開盤賣出」不一致。2026-10-19 決定讓標籤與評估對齊持有方式，分兩部分：
+
+- **A（本節）**：建立與持有方式對齊的評估，對現有訊號做開盤到開盤重評。只在本機計算，不訓練模型。
+- **B（之後另立一節事先登記）**：GBDT 改用開盤到開盤標籤訓練，檢查是否有可學的多日優勢。B 的判準使用本節的評估定義。
+
+本節只作描述，不設門檻，也不據此改選模型；test 已在先前分析中多次使用，只作探索性判讀。程式在 `backtest/`，設定記錄在 `backtest/config/holding_eval.json`。
+
+事先固定的設定（2026-10-19 寫入，早於任何開盤到開盤指標的計算）：
+
+1. **資料**：與 §13.4 相同的母體、分割、13 個訊號與列順序核對；執行時重新檢查 §13.5 的記帳恆等式，不符就停止。
+2. **開盤到開盤標籤**：
+   - 股票在訊號日 d、持有 h 日：`R(d, h) = abs[d, h+1] − abs[d+h, 1] = log(open(d+1+h) / open(d+1))`，需要同一檔股票在第 d+h 個訊號日的資料列，否則為缺值。
+   - 指數以同一方式由「絕對報酬減 alpha」推得；開盤到開盤 alpha = 股票減指數。
+   - 持有天數：主要 h = 5、10；輔助 h = 3。
+3. **訊號**：每個訊號使用自己對天期 h 的預測；方向訊號為 P(漲) − P(跌)。
+4. **指標**（validation 與 test；上市、上櫃分開計算）：
+   - **Rank IC**：每日截面 Spearman（平均名次、至少 3 筆、非常數），對開盤到開盤 alpha；另列對現行標籤的 Rank IC 作對照。報告平均與 IR（平均 ÷ 標準差）。
+   - **十分位**：每日依分數排序，前 10%（至少 1 檔，四捨五入）與後 10% 的開盤到開盤簡單報酬，各減同日同市場有標籤股票的等權平均；另列前後差。
+   - **交易時段與隔夜拆解**：前 10% 的超額 log 報酬拆成 h 個交易時段（各日開盤到收盤）與其餘的隔夜部分，均相對等權。
+   - **固定參數的持有組合**：沿用 §13.5 的引擎與記帳，預測天數 s = h、K = 20、b = 2、主要成本情境（折扣 0.6、滑價 1 倍）、只做多；市場為上市、上櫃與合併。報告年化淨超額、IR、毛超額、成本拖累、每日換手與平均持有天數。
+   - 區間：每日序列的 circular moving-block bootstrap，重抽 1,000 次、seed 11；h 日標籤的序列區塊長度 max(5, 2h)，持有組合的每日序列區塊長度 10。
+5. **判讀**：
+   - 只描述，不設門檻。
+   - 主要天期中，若某訊號在某市場的 validation 前十分位超額 95% 區間下界大於 0，列為「可留意」，但不據此做決策。
+   - 決策只依 B 或之後另行事先登記的檢驗。
+
+判讀限制：
+
+- 13 個訊號 × 2 市場 × 3 天期，多重比較會產生偶然的「可留意」項目。
+- h 日標籤互相重疊，區塊 bootstrap 只部分處理自相關。
+- 接近分割末端的訊號日沒有完整的 h 日標籤，validation 與 test 的有效日期隨 h 減少。
+- 其餘限制同 §13.5（流動性、最低手續費、整股、股利稅、存活者偏誤）。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1408,6 +1443,41 @@ Limits:
 - Volume and liquidity, minimum commissions, board lots, and dividend income tax and the supplementary health premium are still not simulated; the population's survivorship bias is as in §13.4.
 - Price limits are approximated from adjusted opening gaps and may be misjudged on ex-dividend dates.
 - Slots are not rebalanced, so weights drift with prices.
+
+#### 13.6 Holding-aligned evaluation: open-to-open re-evaluation of existing signals (local, pre-registered)
+
+The §13.4 and §13.5 results are in the [backtest results report](backtest_stage1_results.md): the top-K edge exists only during sessions and reverses overnight. The current labels (1 day = the next session's open to close) and Rank IC evaluation do not match the intended trading style: signals after the close, buy at the next open, hold days to two weeks, and sell at an open. On 2026-10-19 it was decided to align labels and evaluation with that holding, in two parts:
+
+- **A (this section)**: build a holding-aligned evaluation and re-evaluate existing signals on open-to-open returns. Local computation only; no model training.
+- **B (pre-registered later in a separate section)**: train GBDT on open-to-open labels to check whether a learnable multi-day edge exists. B's criteria use this section's evaluation definitions.
+
+This section is descriptive only: it has no gate and does not re-select models. Test has been consulted repeatedly in earlier analyses and is exploratory only. The code is in `backtest/`; the settings are recorded in `backtest/config/holding_eval.json`.
+
+Fixed settings (written 2026-10-19, before any open-to-open metric was computed):
+
+1. **Data**: the same population, splits, 13 signals and row-order checks as §13.4; the run re-checks the §13.5 accounting identity and stops if it fails.
+2. **Open-to-open labels**:
+   - For a stock on signal date d and holding h sessions: `R(d, h) = abs[d, h+1] − abs[d+h, 1] = log(open(d+1+h) / open(d+1))`. It needs the same stock's row on signal date d+h; otherwise it is missing.
+   - The index is derived the same way from absolute minus alpha; open-to-open alpha = stock minus index.
+   - Holding periods: h = 5 and 10 are primary; h = 3 is auxiliary.
+3. **Signals**: each signal uses its own prediction for horizon h; direction signals use P(up) − P(down).
+4. **Metrics** (validation and test; TWSE and TPEX separately):
+   - **Rank IC**: daily cross-sectional Spearman (average ties, at least 3 values, non-constant) against open-to-open alpha, with the Rank IC against the current label listed for comparison. Mean and IR (mean ÷ standard deviation) are reported.
+   - **Deciles**: rank by score each day; the top 10% (at least 1 stock, rounded) and bottom 10% open-to-open simple returns, each minus the same-date, same-market equal weight of stocks with labels, plus the top-minus-bottom spread.
+   - **Session versus overnight**: the top decile's excess log return split into the h sessions (each day's open to close) and the remaining overnight part, both relative to equal weight.
+   - **Fixed-parameter holding portfolio**: the §13.5 engine and accounting with score horizon s = h, K = 20, b = 2, the primary costs (discount 0.6, slippage ×1), long-only; markets TWSE, TPEX and combined. Reported: annual net excess, IR, gross excess, cost drag, daily turnover and mean holding period.
+   - Intervals: circular moving-block bootstrap of daily series, 1,000 replicates, seed 11; block length max(5, 2h) for h-session label series and 10 for the portfolio's daily series.
+5. **Interpretation**:
+   - Descriptive only, with no gate.
+   - A signal whose validation top-decile excess has a 95% lower bound above 0 in a market at a primary horizon is listed as "worth watching", but no decision rests on it.
+   - Decisions rest only on B or on later pre-registered tests.
+
+Limits:
+
+- 13 signals × 2 markets × 3 horizons create multiple comparisons, so some "worth watching" entries will occur by chance.
+- h-session labels overlap; the block bootstrap only partly handles the autocorrelation.
+- Signal dates near the end of a split lack complete h-session labels, so the usable validation and test dates shrink with h.
+- Other limits are as in §13.5 (liquidity, minimum commissions, board lots, dividend taxes, survivorship bias).
 
 ### 14. Remote-validation boundary
 
