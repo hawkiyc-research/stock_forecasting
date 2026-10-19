@@ -39,7 +39,6 @@ ANALYSIS = runpy.run_path(str(Path(__file__).with_name("analyze_signal_decomposi
 BASELINE_LOCAL_ROOT = Path("artifacts/diagnostics/signal-decomposition/baselines")
 # Local Kronos inference reads a copy of the shared evaluation bar store (protocol 13.7).
 EVALUATION_LOCAL_ROOT = Path("artifacts/diagnostics/evaluation-data")
-LIST_PAGE_SIZE = 200
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 # Baseline records (about 4.5 MB) and bar-store manifests exceed the probe JSON limit.
 LARGE_JSON_BYTES = 64 * 1024**2
@@ -301,35 +300,18 @@ def canonical_json_sha256(payload):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def dataset_ids(reader):
-    """Dataset directory names directly below datasets/ (one listing level only)."""
-    token, found = None, []
-    while True:
-        arguments = [
-            "s3api", "list-objects-v2", "--bucket", reader.volume_id, "--prefix", "datasets/",
-            "--delimiter", "/", "--max-keys", str(LIST_PAGE_SIZE), "--no-paginate",
-            "--output", "json",
-        ]
-        if token:
-            arguments.extend(("--continuation-token", token))
-        page, _ = reader.json_command(arguments)
-        for entry in page.get("CommonPrefixes", []) or []:
-            prefix = entry.get("Prefix") if isinstance(entry, dict) else None
-            name = prefix[len("datasets/"):-1] if isinstance(prefix, str) else ""
-            if SHA256_PATTERN.fullmatch(name) is not None:
-                found.append(name)
-        if not page.get("IsTruncated"):
-            return found
-        next_token = page.get("NextContinuationToken")
-        if not isinstance(next_token, str) or not next_token or next_token == token:
-            raise ValueError("Invalid dataset listing continuation")
-        token = next_token
+def read_large_json(reader, key, label):
+    """Read one bounded JSON record, naming the record when the read fails."""
+    try:
+        return reader.read_json(key, LARGE_JSON_BYTES)
+    except (RuntimeError, ValueError) as error:
+        raise type(error)(f"{label} ({key}): {error}") from error
 
 
 def evaluation_identity(reader):
-    """The validation/test source recorded by the current alpha baseline."""
-    payload, _ = reader.read_json(
-        f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json", LARGE_JSON_BYTES
+    """The shared validation/test source and its dataset request, from the alpha baseline."""
+    payload, _ = read_large_json(
+        reader, f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json", "Baseline record"
     )
     sources = (payload.get("data_identity") or {}).get("split_sources") or {}
     validation, test = sources.get("validation") or {}, sources.get("test") or {}
@@ -340,26 +322,30 @@ def evaluation_identity(reader):
                for value in identity)
     ):
         raise ValueError("The baseline does not record one shared validation/test source")
-    return identity
+    request = ((payload.get("identity") or {}).get("contract") or {}).get("evaluation_request")
+    if not isinstance(request, dict):
+        raise ValueError("The baseline does not record its evaluation dataset request")
+    return identity[0], identity[1], request
+
+
+def evaluation_dataset_id(request):
+    """The dataset directory of a request, as computed by the data workflow (no listing)."""
+    identity = runpy.run_path(
+        str(PROJECT_ROOT / "src/stock_forecasting/dataset_identity.py")
+    )
+    return canonical_json_sha256(identity["dataset_request_identity_payload"](request))
 
 
 def evaluation_plan(reader):
     """Locate the shared evaluation dataset and list every file to fetch with its digest."""
-    manifest_sha256, universe = evaluation_identity(reader)
-    matches = []
-    for dataset_id in dataset_ids(reader):
-        key = f"datasets/{dataset_id}/prepared/bar-store/bar-store.json"
-        try:
-            manifest, digest = reader.read_json(key, LARGE_JSON_BYTES)
-        except RuntimeError:
-            continue  # a dataset without a published bar store
-        if digest == manifest_sha256:
-            matches.append((dataset_id, manifest))
-    if len(matches) != 1:
-        raise ValueError(f"Expected one evaluation dataset for the baseline, found {len(matches)}")
-    dataset_id, manifest = matches[0]
+    manifest_sha256, universe, request = evaluation_identity(reader)
+    dataset_id = evaluation_dataset_id(request)
+    key = f"datasets/{dataset_id}/prepared/bar-store/bar-store.json"
+    manifest, digest = read_large_json(reader, key, "Evaluation bar-store manifest")
+    if digest != manifest_sha256:
+        raise ValueError(f"{key} differs from the manifest recorded by the baseline")
     universe_key = f"datasets/{dataset_id}/prepared/sample-universes/{universe}/universe.json"
-    universe_payload, _ = reader.read_json(universe_key, LARGE_JSON_BYTES)
+    universe_payload, _ = read_large_json(reader, universe_key, "Sample index record")
     if (
         universe_payload.get("state") != "ready"
         or canonical_json_sha256(universe_payload.get("identity")) != universe

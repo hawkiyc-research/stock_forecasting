@@ -22,6 +22,33 @@ ANALYSIS = runpy.run_path(str(ROOT / "scripts/analyze_signal_decomposition.py"))
 DOWNLOAD = runpy.run_path(str(ROOT / "scripts/download_runpod_signal_predictions.py"))
 HORIZONS = 14
 
+# The storage fields the data workflow hashes into a dataset ID (as in baseline records).
+EVALUATION_REQUEST = {
+    "profile": "us_tw_eodhd", "revision": "v1", "schema_version": 3,
+    "selected_datasets": ["twse_official", "eodhd_us", "tpex_official"],
+    "date_range": {"start_inclusive": "2016-01-01", "end_exclusive": "2026-06-01"},
+    "universe": {"include_delisted_us": True, "mode": "all", "symbol_limit": None,
+                 "us_etfs": [], "us_stocks": []},
+    "preparation": {
+        "alpha_horizons": list(range(1, 15)), "bar_store_schema_version": "1.0",
+        "benchmark_mapping_sha256": "4" * 64, "diagnostic_horizons": [1, 20],
+        "effective_embargo_bars": 14, "effective_sample_stride": 1, "embargo_bars": 5,
+        "entry_day_counts_as_holding_day_one": True,
+        "entry_timing": "regular_session_open_t_plus_1",
+        "exit_timing": "regular_session_close_t_plus_h",
+        "fixed_split": {"test_end": "2026-06-01", "train_end": "2025-06-01",
+                        "validation_end": "2025-12-01"},
+        "flat_volatility_multiplier": 0.25, "h_start": 1,
+        "label_kind": "benchmark_relative_adjusted_log_return", "labels_materialized": False,
+        "max_abs_log_return": 0.5, "max_horizon": 14, "processed_schema_version": "4.0",
+        "purge_bars": 20, "schema_version": 5, "signal_timing": "after_close_t",
+        "split_policy": "fixed_dates_with_exact_label_end_guard_v1",
+        "storage_kind": "symbol-oriented-ohlcv-bar-store", "stride": 5, "target_horizon": 5,
+        "train_fraction": 0.7, "validation_fraction": 0.15, "window_materialized": False,
+        "window_size": 128,
+    },
+}
+
 
 def probe_harness():
     """Reuse the existing launcher harness without importing tests as a package."""
@@ -478,7 +505,7 @@ class PredictionDownloadTests(unittest.TestCase):
                 download(reader, project, executor, 2, 60, fetch=fake_download)
 
     def evaluation_reader(self, *, shard="shards/0001/part-0000.parquet"):
-        """A fake volume with one matching dataset, one other dataset and a sample index."""
+        """A fake volume whose dataset ID follows the baseline's evaluation request."""
         content = {"shard": b"shard-bytes", "index": b"symbol-index", "ranges": b"ranges",
                    "universe-ranges": b"universe-ranges"}
         digest = {name: hashlib.sha256(value).hexdigest() for name, value in content.items()}
@@ -493,16 +520,19 @@ class PredictionDownloadTests(unittest.TestCase):
         manifest_sha256 = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
         identity = {"source_manifest_sha256": manifest_sha256, "window_size": 128}
         universe = DOWNLOAD["canonical_json_sha256"](identity)
-        good, other = "a" * 64, "b" * 64
+        request = EVALUATION_REQUEST
+        good = DOWNLOAD["evaluation_dataset_id"](request)
         documents = {
             # Real baseline records exceed the 4 MiB probe limit.
-            f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json": {"padding": "x" * (5 * 1024**2),
-                                                                "data_identity": {"split_sources": {
-                split: {"manifest_sha256": manifest_sha256, "sample_universe": universe}
-                for split in ("validation", "test")
-            }}},
+            f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json": {
+                "padding": "x" * (5 * 1024**2),
+                "identity": {"contract": {"evaluation_request": request}},
+                "data_identity": {"split_sources": {
+                    split: {"manifest_sha256": manifest_sha256, "sample_universe": universe}
+                    for split in ("validation", "test")
+                }},
+            },
             f"datasets/{good}/prepared/bar-store/bar-store.json": manifest,
-            f"datasets/{other}/prepared/bar-store/bar-store.json": {"shards": []},
             f"datasets/{good}/prepared/sample-universes/{universe}/universe.json": {
                 "state": "ready", "identity": identity,
                 "ranges_sha256": digest["universe-ranges"],
@@ -516,13 +546,6 @@ class PredictionDownloadTests(unittest.TestCase):
                 if len(json.dumps(payload).encode()) > limit:
                     raise ValueError("Remote diagnostic metadata exceeds the bounded read limit")
                 return payload, digest
-
-            def json_command(self, arguments, limit=None):
-                self.listings = getattr(self, "listings", 0) + 1
-                return {"CommonPrefixes": [{"Prefix": f"datasets/{good}/"},
-                                           {"Prefix": f"datasets/{other}/"},
-                                           {"Prefix": "datasets/not-a-dataset/"}],
-                        "IsTruncated": False}, "listing"
 
         files = {
             f"datasets/{good}/prepared/bar-store/bar-store.json": json.dumps(manifest).encode(),
@@ -566,6 +589,14 @@ class PredictionDownloadTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 download(reader, project, executor, 2, 60, plan, fetch=fetch)
 
+    def test_evaluation_dataset_id_matches_the_data_workflow(self) -> None:
+        policy = runpy.run_path(str(ROOT / "src/stock_forecasting/data_policy.py"))
+        request = EVALUATION_REQUEST
+        selection = {"dataset_request": request}
+        workflow = policy["evaluation_dataset_id"](selection, {"evaluation_source_start":
+                                                               "2016-01-01"})
+        self.assertEqual(DOWNLOAD["evaluation_dataset_id"](request), workflow)
+
     def test_evaluation_data_rejects_unsafe_shards_and_identity_mismatch(self) -> None:
         reader, _files, _dataset_id = self.evaluation_reader(shard="../escape.parquet")
         with self.assertRaises(ValueError):
@@ -576,6 +607,10 @@ class PredictionDownloadTests(unittest.TestCase):
             "c" * 64
         )
         with self.assertRaises(ValueError):
+            DOWNLOAD["evaluation_plan"](reader)
+        reader, _files, dataset_id = self.evaluation_reader()
+        reader.documents[f"datasets/{dataset_id}/prepared/bar-store/bar-store.json"]["x"] = 1
+        with self.assertRaisesRegex(ValueError, "differs from the manifest"):
             DOWNLOAD["evaluation_plan"](reader)
 
     def test_identity_mismatch_and_unsafe_ids_are_rejected(self) -> None:
