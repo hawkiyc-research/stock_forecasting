@@ -743,6 +743,30 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 15 個候選、validation 112 日；選點規則只看上市 10 日，其他市場與天期不參與。
 - 本機為 fp32、參照為 bf16；一致性比對量測的是兩者的差異，不保證逐列相同。
 
+**§13.7 修訂（2026-10-19，於本機一致性比對未通過之後；上方原登記內容保留不改）**
+
+本機推論的結果：依原設定以 MPS fp32 推論 R22 checkpoint-018399 的 validation 台股列（97,363 列，每秒 52 筆），一致性比對未通過。
+
+| 判準 | 結果 | 通過 |
+| --- | --- | --- |
+| 截面 Spearman ≥ 0.999 的組合至少 99% | 0%（3,136 組；中位數 0.995，最低 0.908） | 否 |
+| Rank IC 差距 ≤ 0.005 | 最大 0.0017 | 是 |
+| 前十分位差距 ≤ 5 bps | 最大 11.1 bps（上櫃 5 日） | 否 |
+
+診斷：差異來自數值精度，不是系統性偏差，也不是程式錯誤。
+
+- 本機對參照的平均偏移 0.04–0.25 bps（預測標準差 83 bps），迴歸斜率 1.000–1.002，整體相關 0.997。
+- 在 CPU 以 RunPod 相同的 bf16 計算，單日截面 Spearman 為 0.9996–0.9999；只把凍結權重捨入成 bf16 則沒有改善。差異來自計算過程中的 bf16 捨入。
+- MPS bf16 不準（Spearman 0.65–0.93），CPU bf16 太慢（每秒約 2.4 筆），兩者都不可行。
+
+修訂後的設定：
+
+1. 推論改用既有的 RunPod GPU 匯出流程（`export-signal-predictions`，CUDA bf16），與參照匯出是同一套程式與數值。本機只做評分與回測；`inference/` 子專案只作診斷，不用於任何判定。
+2. 一致性比對取消。完整性檢查沿用 P0 的做法：每份匯出的列順序雜湊必須與 baseline 一致；validation 重算的選模分數，必須與該 checkpoint 在 `metrics.jsonl` 同一步的 validation 紀錄一致（差距 ≤ 10⁻⁶）。
+3. 選點規則不變。15 個候選中已有 5 個在 P0 匯出（R21 的 003680、022079；R22 的 011040、018399；R23 的 018399），其餘 10 個以一次匯出工作補齊，validation 與 test 一併匯出。
+4. 選點程式只讀 validation；test 只計算選出的 3 個 checkpoint，由程式強制，只作描述。
+5. §13.8 第 5 點「§13.7 的一致性比對通過後才執行」改為：推論以 RunPod GPU 匯出流程執行，匯出完整性檢查通過後才評分。前瞻資料的推論需要把匯出程式擴充到 `forward` 分割，實作前另行說明。
+
 #### 13.8 第三階段：前瞻檢驗（2026-06-01 之後的未見資料，事先固定）
 
 本節是上市 10 日 R22-IR 的第一個確認性檢驗。這個候選是 §13.6 事後找到的，因此判準在前瞻資料準備之前寫入，模型、市場、天期與參數全部凍結。設定記錄在 `backtest/config/stage3.json`。
@@ -1588,6 +1612,30 @@ Limits:
 - Selection and description use the same validation period, so the selected checkpoints' validation values are optimistic; only §13.8's unseen data can confirm them.
 - 15 candidates over 112 validation dates; the rule looks only at TWSE 10-session results.
 - Local inference is fp32 and the reference bf16; the parity check measures their difference and does not guarantee identical rows.
+
+**§13.7 amendment (2026-10-19, after the local parity check failed; the registered text above is kept unchanged)**
+
+Local inference result: under the original settings, MPS fp32 inference of R22 checkpoint-018399 on the validation Taiwan rows (97,363 rows, 52 per second) failed the parity check.
+
+| Criterion | Result | Passed |
+| --- | --- | --- |
+| At least 99% of groups with cross-sectional Spearman ≥ 0.999 | 0% (3,136 groups; median 0.995, minimum 0.908) | no |
+| Rank IC difference ≤ 0.005 | Maximum 0.0017 | yes |
+| Top-decile difference ≤ 5 bps | Maximum 11.1 bps (TPEX, 5 sessions) | no |
+
+Diagnosis: the difference comes from numerical precision, not systematic bias or a code error.
+
+- Local minus reference shifts by 0.04–0.25 bps on average (prediction standard deviation 83 bps), the regression slope is 1.000–1.002, and the overall correlation is 0.997.
+- Computing on CPU with the same bf16 numerics as RunPod gives a one-date cross-sectional Spearman of 0.9996–0.9999; rounding only the frozen weights to bf16 does not help. The difference comes from bf16 rounding during computation.
+- MPS bf16 is inaccurate (Spearman 0.65–0.93) and CPU bf16 too slow (about 2.4 rows per second); neither is feasible.
+
+Amended settings:
+
+1. Inference uses the existing RunPod GPU export workflow (`export-signal-predictions`, CUDA bf16), the same code and numerics as the reference exports. Local work is scoring and backtesting only; the `inference/` subproject is diagnostic and decides nothing.
+2. The parity check is withdrawn. Integrity checks follow P0: every export's row-order digest must match the baseline, and its recomputed validation selection score must match that checkpoint's validation record at the same step in `metrics.jsonl` (within 10⁻⁶).
+3. The selection rule is unchanged. Of the 15 candidates, 5 were exported in P0 (R21 003680 and 022079; R22 011040 and 018399; R23 018399); the other 10 are added in one export job with validation and test together.
+4. The selection code reads validation only; test is computed only for the 3 selected checkpoints, enforced in code, and is descriptive.
+5. Item 5 of §13.8, "runs only after the §13.7 parity check passes", becomes: inference uses the RunPod GPU export workflow, and scoring starts only after the export integrity checks pass. Forward-data inference needs the export code extended to a `forward` split, which will be described before implementation.
 
 #### 13.8 Stage 3: forward test on unseen data from 2026-06-01 onward (pre-registered)
 

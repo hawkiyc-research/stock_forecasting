@@ -1,4 +1,5 @@
 {
+  "status": "superseded by the section 13.7 amendment: inference uses the RunPod GPU export workflow",
   "schema_version": "1.0",
   "name": "local-inference-parity",
   "description": "Pre-registered parity check of local Kronos inference against a RunPod export (experiment protocol section 13.7).",

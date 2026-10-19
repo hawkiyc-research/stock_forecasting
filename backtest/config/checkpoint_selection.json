@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "name": "holding-checkpoint-selection",
-  "description": "Pre-registered checkpoint selection by validation TWSE 10-session top-decile open-to-open excess (experiment protocol section 13.7).",
+  "description": "Pre-registered checkpoint selection by validation TWSE 10-session top-decile open-to-open excess (experiment protocol section 13.7 and its amendment).",
   "inputs": {
     "alpha_baseline": "audit/baselines/baseline-3befc8e902e5c641b24ddf80c4ab7e11769529fa307e391de47e4416f1d885a3",
     "direction_baseline": "audit/baselines/baseline-b21f46ea4963562f03c648e9b0394f8a069767bca2a15a9f82e7c8ed69e04cc8",
@@ -108,5 +108,11 @@
     "min_block": 5,
     "block_per_holding_day": 2,
     "daily_block": 10
-  }
+  },
+  "inference": "runpod_gpu_export",
+  "integrity": {
+    "metric": "aggregate.selection_score",
+    "tolerance": 1e-06
+  },
+  "test_scope": "selected_only"
 }
