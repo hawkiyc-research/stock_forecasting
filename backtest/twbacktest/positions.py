@@ -29,19 +29,27 @@ class Links:
     prev_row: np.ndarray
 
 
-def links(index: SplitIndex) -> Links:
-    dates = len(index.dates)
-    table = np.full((dates, int(index.symbol_codes.max()) + 1), -1, dtype=np.int64)
+def symbol_date_table(index: SplitIndex) -> np.ndarray:
+    """[date, symbol] -> row position, -1 when the symbol has no row on that date."""
+    table = np.full((len(index.dates), int(index.symbol_codes.max()) + 1), -1, dtype=np.int64)
     table[index.date_codes, index.symbol_codes] = np.arange(index.count)
     if int((table >= 0).sum()) != index.count:
         raise ValueError(f"{index.split} has more than one row for a symbol and date")
-    next_row = np.full(index.count, -1, dtype=np.int64)
-    prev_row = np.full(index.count, -1, dtype=np.int64)
-    later = index.date_codes + 1 < dates
-    next_row[later] = table[index.date_codes[later] + 1, index.symbol_codes[later]]
-    earlier = index.date_codes > 0
-    prev_row[earlier] = table[index.date_codes[earlier] - 1, index.symbol_codes[earlier]]
-    return Links(next_row=next_row, prev_row=prev_row)
+    return table
+
+
+def rows_ahead(index: SplitIndex, table: np.ndarray, offset: int) -> np.ndarray:
+    """Row of the same symbol `offset` signal dates later (or earlier when negative)."""
+    output = np.full(index.count, -1, dtype=np.int64)
+    target = index.date_codes.astype(np.int64) + offset
+    inside = (target >= 0) & (target < len(index.dates))
+    output[inside] = table[target[inside], index.symbol_codes[inside]]
+    return output
+
+
+def links(index: SplitIndex) -> Links:
+    table = symbol_date_table(index)
+    return Links(next_row=rows_ahead(index, table, 1), prev_row=rows_ahead(index, table, -1))
 
 
 def identity_fraction(log_returns: np.ndarray, link: Links, tolerance: float) -> tuple[int, float]:
