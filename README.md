@@ -7,7 +7,7 @@
 ### 閱讀導覽
 
 - [專案定位與授權](#overview-zh)、[模型架構與輸出](#model-zh)
-- [目前兩個獨立任務](#signal-tasks-zh)
+- [橫斷面排序任務](#rank-task-zh)、[目前兩個獨立任務](#signal-tasks-zh)
 - [資料來源、連續性與流動性](#data-zh)、[固定時間切分](#splits-zh)
 - [離線管線](#pipeline-zh)、[訓練、loss 與全量評估](#training-zh)
 - [RunPod 操作手冊](#operations-zh)：[帳號與儲存](#setup-zh) → [設定與同步](#configure-zh)
@@ -54,6 +54,33 @@ Kronos 原始碼、預訓練權重與 tokenizer 保留原有 MIT 授權；本專
 <a id="model-zh"></a>
 
 ### 模型架構與數值輸出
+
+<a id="rank-task-zh"></a>
+
+#### 橫斷面排序任務 `cross_sectional_rank`（目前提供 baseline）
+
+`a-rank64`／`b-rank64` 預測同一 cutoff 日、同一市場內各股票的相對名次，不預測報酬數值。
+標籤區間與其他任務相同：t 收盤後產生訊號，t+1 開盤進場，第 h 個交易日收盤出場
+（h = `h_start`…14）。進出場規則不屬於模型輸出。
+
+| 項目 | 內容 |
+| --- | --- |
+| 標籤 | 在同一 split、cutoff 日與市場內，對 benchmark-relative adjusted log return 取平均名次 r（同分取平均），轉成 Φ⁻¹((r − 0.5) / n)。少於 `rank_min_group_size`（預設 20）檔的分組沒有標籤（NaN） |
+| 標籤儲存 | 每個 split 一份 Parquet：`<prepared>/rank-labels/<識別碼>/`。`shards/bucket-XXXX/shard.parquet` 每個 symbol 一個 row group，欄位為 `timestamp` 與 `rank_h01…rank_h14`；另有 `label-index.parquet` 與 `rank-labels.json` |
+| 建立時機 | Baseline Pod 開始時自動建立；bar store、樣本範圍、horizon、最小組大小與標籤程式都相同時直接重用 |
+| 讀取 | Dataset 依 symbol 與樣本序號讀取，並比對 cutoff 時間戳；dataloader 管線不變 |
+| Baseline | GBDT（squared error）、GRU／DLinear／PatchTST（遮掉無標籤值的 MSE）、6 個規則訊號（原始值直接當排序分數）、`always_buy`／`zero_return`（常數 0，沒有排序能力的對照） |
+| 選模 | 每個市場、每個 horizon 的日 Rank IC 平均（以原報酬計算）；三個市場等權、各 horizon 平均後取負值，越小越好 |
+
+建立 rank baseline（`--experiment a-rank64` 會成為 active selection）：
+
+```bash
+bash scripts/runpod_workflow.sh baseline --experiment a-rank64 --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 4090"
+```
+
+Kronos 的 rank 訓練尚未提供；`train --experiment a-rank64` 會在本機停止，不建立 Pod。
+標籤建立的 worker 數由 `FIN_TS_RANK_LABEL_WORKERS` 設定（預設 8），實際數量另受 CPU 數與
+可用記憶體限制。規格見[實驗協定 §13.10](docs/experiment_protocol.md)。
 
 <a id="signal-tasks-zh"></a>
 
@@ -2762,7 +2789,7 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m`；`--forward YYYY-MM-DD`：改為建立該結束日的前瞻輸入包（見「前瞻推論管線」一節），不讀寫訓練資料組，只接受 `--taiwan-qps`、`--maxRuntime`（預設 `3h`）、`--maxBackoff`、`--cpuNumber`、`--cpuFlavor`，需要已部署的 TPEx relay，結束日不可晚於今天（UTC） |
 | `research tw-information` | 建立台股資訊測試的 CPU Pod，資料組固定為 `a-absolute-direction64`，不改 active selection。`--maxRuntime D` 預設 `12h`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，選項同 `cpu prepare`；`--taiwan-qps Q` 預設 `0.5`、`--eodhd-qps Q` 預設 `2`，均須大於零；`--maxBackoff D` 預設 `1m`。需要已部署的 TPEx relay；Pod 獨占 volume，見[台股資訊測試](#tw-information-zh) |
 | `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 同時核對當前資料篩選規則與 baseline 完成結果、不要求主模型 HF cache。`--baseline --experiment a-signal64`（或 `b-signal64`、`a-signal64-datemix`、`b-signal64-datemix`）查詢兩個任務，省略實驗沿用 active selection；`--experiment` 只供 baseline 模式使用。完成為 exit 0、尚未完成／待整理為 1、驗證錯誤為 2 |
-| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。`train` 接受可重複的 `--experiment NAME`、`--seed N`（0–4294967295；省略沿用 training seed）及 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；實驗 × seeds 最多 30 個組合。`a-signal64`／`b-signal64` 及其 `-datemix` 對照每組別、每 seed 建立一台 Pod，依序執行兩個獨立模型，runtime 共用。`baseline` 接受單一 `--experiment NAME`，成對入口先在本機查兩個 task cache、只建置未完成部分，不改 active selection；不接受 seed／launchWorkers。省略實驗仍使用 active selection，**不自動變成成對實驗**；進階單模型入口見附錄。兩者無 run ID 位置參數 |
+| `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。`train` 接受可重複的 `--experiment NAME`、`--seed N`（0–4294967295；省略沿用 training seed）及 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；實驗 × seeds 最多 30 個組合。`a-signal64`／`b-signal64` 及其 `-datemix` 對照每組別、每 seed 建立一台 Pod，依序執行兩個獨立模型，runtime 共用。`baseline` 接受單一 `--experiment NAME`，成對入口先在本機查兩個 task cache、只建置未完成部分，不改 active selection；不接受 seed／launchWorkers。省略實驗仍使用 active selection，**不自動變成成對實驗**；進階單模型入口見附錄。`baseline --experiment a-rank64`／`b-rank64` 建置[橫斷面排序任務](#rank-task-zh)的 baseline 並設為 active selection；`train` 目前不接受 rank preset。兩者無 run ID 位置參數 |
 | `resume [RUN_ID]` | 父 ID 接續未完成模型或補齊其 test，略過已完成模型；整對已完成則拒絕、不開 Pod。單模型保留原接續功能。省略 ID 須唯一可接續候選，多個候選拒絕猜測。自動讀取原 selection；`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上；接續最新可用 checkpoint，不是 best |
 | `validate [RUN_ID]` | 省略 ID 選最新完成 training 的 run，使用原 selection。`--maxRuntime D` 預設 `12h`、`--gpuId ID` 同上。`--resume` 預設沿用完成工作；`--no-resume` 停用續評估；`--force` 重算並停用續評估，三者擇一。父 ID 在一 Pod 處理兩模型；兩份 test 已完成且無 `--force` 時本機跳過、不開 Pod；`--force` 重算兩份。不重訓 baseline |
 | `runs` | `--experiment NAME`、`--seed N`、`--state STATE`、`--limit N`、`--offset N`、`--workers N`、`--output table\|json`、`--timezone ZONE`；列出 run ID、seed、執行時間與固定設定，詳見[查詢 run](#run-status-zh) |
@@ -3685,7 +3712,7 @@ active selection，與不改 active selection 的成對操作不同。`readiness
 ### Navigation
 
 - [Scope and license](#overview-en), [architecture and outputs](#model-en)
-- [Current independent tasks](#signal-tasks-en)
+- [Cross-sectional rank task](#rank-task-en), [current independent tasks](#signal-tasks-en)
 - [Data sources, continuity and liquidity](#data-en), [fixed time splits](#splits-en)
 - [Offline pipeline](#pipeline-en), [training, losses and full evaluation](#training-en)
 - [RunPod operations](#operations-en): [account/storage](#setup-en) → [configure/sync](#configure-en)
@@ -3742,6 +3769,34 @@ architecture and report snapshots.
 <a id="model-en"></a>
 
 ### Architecture and numerical outputs
+
+<a id="rank-task-en"></a>
+
+#### Cross-sectional rank task `cross_sectional_rank` (baselines available)
+
+`a-rank64`/`b-rank64` predict each stock's relative rank within the same cutoff date and market;
+they do not predict return values. The label window is the same as the other tasks: signals after
+the close of t, entry at the open of t+1, exit at the close of session h (h = `h_start`…14).
+Entry and exit rules are not model outputs.
+
+| Item | Content |
+| --- | --- |
+| Labels | Within one split, cutoff date and market, the benchmark-relative adjusted log return gets an average rank r (ties share the average), transformed to Φ⁻¹((r − 0.5) / n). Groups with fewer than `rank_min_group_size` stocks (default 20) have no label (NaN) |
+| Label storage | One Parquet store per split: `<prepared>/rank-labels/<identity>/`. In `shards/bucket-XXXX/shard.parquet` each symbol is one row group with `timestamp` and `rank_h01…rank_h14`; `label-index.parquet` and `rank-labels.json` complete the store |
+| Build | Built automatically when the baseline Pod starts; reused when the bar store, sample ranges, horizons, minimum group size and label code are unchanged |
+| Reading | The dataset reads labels by symbol and sample ordinal and checks the cutoff timestamp; the dataloader pipeline is unchanged |
+| Baselines | GBDT (squared error), GRU/DLinear/PatchTST (MSE over labelled values), the 6 rule signals (raw value as the ranking score), and `always_buy`/`zero_return` (constant 0, a no-ranking-skill reference) |
+| Selection | Mean daily Rank IC per market and horizon (on raw returns); the three markets weighted equally and the horizons averaged, negated, lower is better |
+
+Build the rank baselines (`--experiment a-rank64` becomes the active selection):
+
+```bash
+bash scripts/runpod_workflow.sh baseline --experiment a-rank64 --maxRuntime 24h --gpuId "NVIDIA GeForce RTX 4090"
+```
+
+Kronos rank training is not available yet; `train --experiment a-rank64` stops locally without
+creating a Pod. `FIN_TS_RANK_LABEL_WORKERS` (default 8) sets the label-build workers; CPU count and
+available memory further limit them. The specification is [protocol §13.10](docs/experiment_protocol.md).
 
 <a id="signal-tasks-en"></a>
 
@@ -6861,7 +6916,7 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m`; `--forward YYYY-MM-DD` builds the forward input package of that end date instead (see the forward-inference pipeline section) without reading or writing a training dataset, accepts only `--taiwan-qps`, `--maxRuntime` (default `3h`), `--maxBackoff`, `--cpuNumber` and `--cpuFlavor`, requires the deployed TPEx relay, and the end date cannot be later than today (UTC) |
 | `research tw-information` | Create the CPU Pod of the Taiwan information test for the fixed `a-absolute-direction64` data group without changing active selection. `--maxRuntime D` defaults to `12h`; `--cpuNumber N` to `8`, choices 2/4/8/16/32; `--cpuFlavor F` to `cpu3g`, with the `cpu prepare` choices; `--taiwan-qps Q` to `0.5` and `--eodhd-qps Q` to `2`, both positive; `--maxBackoff D` to `1m`. Requires the deployed TPEx relay; the Pod owns the volume; see the [Taiwan information test](#tw-information-en) |
 | `readiness` | Choose one: `--code-only` checks uploaded code; `--gpu` checks main-model dependencies; `--baseline` checks current data-cleaning rules and baseline completion without the main-model HF cache. Add `--experiment a-signal64`, `b-signal64`, `a-signal64-datemix` or `b-signal64-datemix` to `--baseline` to check both tasks; omission retains active selection. `--experiment` is only accepted in baseline mode. Exit 0: complete; 1: incomplete/pending finalization; 2: verification error |
-| `train`, `baseline` | `--maxRuntime D`: `12h`; `--gpuId ID`: `NVIDIA GeForce RTX 5090`. `train` accepts repeated `--experiment NAME`, repeated `--seed N` (0–4294967295; training seed when omitted), and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`), at most 30 experiment × seed combinations. Each `a-signal64`/`b-signal64` group/seed, and each `-datemix` control, creates one Pod running two independent models sequentially under one runtime. `baseline` accepts one `--experiment NAME`: a paired entry checks both task caches locally and builds only unfinished work without changing active selection; no seed/launchWorkers. Omitting experiment keeps active selection, **not an implicit pair**. Advanced individual entries remain in the appendix. Neither accepts a positional run ID |
+| `train`, `baseline` | `--maxRuntime D`: `12h`; `--gpuId ID`: `NVIDIA GeForce RTX 5090`. `train` accepts repeated `--experiment NAME`, repeated `--seed N` (0–4294967295; training seed when omitted), and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`), at most 30 experiment × seed combinations. Each `a-signal64`/`b-signal64` group/seed, and each `-datemix` control, creates one Pod running two independent models sequentially under one runtime. `baseline` accepts one `--experiment NAME`: a paired entry checks both task caches locally and builds only unfinished work without changing active selection; no seed/launchWorkers. Omitting experiment keeps active selection, **not an implicit pair**. Advanced individual entries remain in the appendix. `baseline --experiment a-rank64`/`b-rank64` builds the [cross-sectional rank task](#rank-task-en) baselines and makes it the active selection; `train` does not accept rank presets yet. Neither accepts a positional run ID |
 | `resume [RUN_ID]` | A parent resumes unfinished models or missing test evaluation, skipping completed models; a complete pair rejects before renting. Individual-model resume remains supported. Omission requires exactly one eligible candidate. Restore original selection; `--maxRuntime D`: `12h`, GPU as above; use latest usable checkpoint, not best |
 | `validate [RUN_ID]` | Omission selects latest completed training with original selection; `--maxRuntime D`: `12h`, GPU as above. `--resume` (default) reuses completed jobs; `--no-resume` disables continuation; `--force` recomputes and disables resume; choose one. Parent validation handles both models in one Pod. Both tests complete without `--force`: skip locally/no Pod; `--force`: recompute both. No baseline retraining |
 | `runs` | `--experiment NAME`, `--seed N`, `--state STATE`, `--limit N`, `--offset N`, `--workers N`, `--output table\|json`, `--timezone ZONE`; list run IDs, seeds, execution times and frozen settings; see [run queries](#run-status-en) |
