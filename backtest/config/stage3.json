@@ -73,7 +73,7 @@
       "TPEX"
     ],
     "fetch_start_inclusive": "2025-03-01",
-    "end_exclusive": null,
+    "end_exclusive": "2026-10-20",
     "end_rule": "UTC date the forward data is fetched; written here before fetching",
     "forward_label_sessions": 14,
     "calendar_additions_from": "2026-06-01",

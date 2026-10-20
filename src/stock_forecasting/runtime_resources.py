@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
+import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,6 +130,7 @@ def select_available_memory_estimate(
     cgroup_headrooms: Sequence[tuple[str, int]] = (),
     linux_mem_available_bytes: int | None = None,
     posix_free_pages_bytes: int | None = None,
+    macos_reclaimable_bytes: int | None = None,
 ) -> AvailableMemoryEstimate:
     """Select safe capacity without treating POSIX free pages as Linux availability."""
 
@@ -151,12 +155,28 @@ def select_available_memory_estimate(
             raise ValueError("posix_free_pages_bytes must be a positive integer")
         observations.append(("posix_free_pages_fallback", posix_free_pages_bytes))
 
+    if macos_reclaimable_bytes is not None:
+        if isinstance(macos_reclaimable_bytes, bool) or macos_reclaimable_bytes < 1:
+            raise ValueError("macos_reclaimable_bytes must be a positive integer")
+        observations.append(("macos_reclaimable_pages", macos_reclaimable_bytes))
+
     # SC_AVPHYS_PAGES reports immediately free pages and excludes reclaimable
     # Linux page cache. It is only a fallback when cgroup headroom and the
-    # kernel's MemAvailable estimate are both unavailable.
-    candidates = eligible or [
-        observation for observation in observations if observation[0] == "posix_free_pages_fallback"
-    ]
+    # kernel's MemAvailable estimate are both unavailable. macOS has neither
+    # source, so its vm_stat reclaimable pages are the last fallback.
+    candidates = (
+        eligible
+        or [
+            observation
+            for observation in observations
+            if observation[0] == "posix_free_pages_fallback"
+        ]
+        or [
+            observation
+            for observation in observations
+            if observation[0] == "macos_reclaimable_pages"
+        ]
+    )
     if not candidates:
         raise RuntimeError("Unable to determine available runtime memory")
     source, available_bytes = min(candidates, key=lambda observation: observation[1])
@@ -204,6 +224,29 @@ def _read_posix_free_pages_bytes() -> int | None:
     return available_bytes if available_bytes > 0 else None
 
 
+def parse_vm_stat_reclaimable_bytes(output: str) -> int | None:
+    """Free, inactive and speculative pages reported by macOS vm_stat."""
+
+    page_size = re.search(r"page size of (\d+) bytes", output)
+    counts = re.findall(r"Pages (?:free|inactive|speculative):\s+(\d+)\.", output)
+    if page_size is None or not counts:
+        return None
+    available_bytes = int(page_size.group(1)) * sum(int(count) for count in counts)
+    return available_bytes if available_bytes > 0 else None
+
+
+def _read_macos_reclaimable_bytes() -> int | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/bin/vm_stat"], capture_output=True, text=True, check=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_vm_stat_reclaimable_bytes(result.stdout)
+
+
 def detect_available_memory() -> AvailableMemoryEstimate:
     """Detect cgroup headroom and Linux reclaimable memory at runtime."""
 
@@ -238,4 +281,5 @@ def detect_available_memory() -> AvailableMemoryEstimate:
         cgroup_headrooms=cgroup_headrooms,
         linux_mem_available_bytes=_read_linux_mem_available_bytes(),
         posix_free_pages_bytes=_read_posix_free_pages_bytes(),
+        macos_reclaimable_bytes=_read_macos_reclaimable_bytes(),
     )

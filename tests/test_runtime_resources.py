@@ -7,6 +7,7 @@ import pytest
 from stock_forecasting import training
 from stock_forecasting.runtime_resources import (
     AvailableMemoryEstimate,
+    parse_vm_stat_reclaimable_bytes,
     select_available_memory_estimate,
     select_visible_cpu_count,
 )
@@ -47,6 +48,30 @@ def test_posix_free_pages_are_used_only_as_a_fallback() -> None:
 
     with pytest.raises(RuntimeError, match="Unable to determine available runtime memory"):
         select_available_memory_estimate()
+
+
+def test_macos_vm_stat_pages_are_the_last_fallback() -> None:
+    output = (
+        "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+        "Pages free:                               10000.\n"
+        "Pages active:                             90000.\n"
+        "Pages inactive:                           20000.\n"
+        "Pages speculative:                         1000.\n"
+        "Pages wired down:                         30000.\n"
+    )
+    reclaimable = parse_vm_stat_reclaimable_bytes(output)
+    assert reclaimable == 16384 * 31000
+    assert parse_vm_stat_reclaimable_bytes("no statistics") is None
+
+    estimate = select_available_memory_estimate(macos_reclaimable_bytes=reclaimable)
+    assert (estimate.available_bytes, estimate.source) == (reclaimable, "macos_reclaimable_pages")
+    # Linux sources always win, so RunPod behavior is unchanged.
+    linux = select_available_memory_estimate(
+        linux_mem_available_bytes=8 * 1024**3, macos_reclaimable_bytes=reclaimable
+    )
+    assert linux.source == "linux_mem_available"
+    with pytest.raises(ValueError, match="macos_reclaimable_bytes"):
+        select_available_memory_estimate(macos_reclaimable_bytes=0)
 
 
 def test_runpod_memory_observations_allow_requested_dataloader_workers(
