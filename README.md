@@ -2502,9 +2502,11 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline export-cach
    之後的訓練資料準備也能沿用這次的回應。設定 `TPEX_PROXY_URL` 與 `TPEX_PROXY_TOKEN` 時，
    櫃買中心請求改經 relay，與 CPU 準備相同。官方交易日與清理用交易日曆不一致時（例如颱風停市）
    會印出 WARNING，並記錄在 `fetch.json` 的 `calendar`。
-2. `build`：以 `build_symbol_bar_store` 與 `ensure_sample_universe` 建立私有 K 線庫與清理後樣本索引，
-   並封存每個檔案的 SHA-256。`fetch.json` 中 2026-06-01 之後的交易日差異只套用在這個輸入包
-   （記錄於 `calendar_additions`），訓練與評估用的日曆不變；更早的差異會讓建包停止。兩個母體：`overlap`（訊號日 2025-12-01 至 2026-06-01，定義與原 test
+2. `build`：以 `build_symbol_bar_store` 與 `ensure_sample_universe` 的前瞻版本建立私有 K 線庫與
+   清理後樣本索引，並封存每個檔案的 SHA-256。`fetch.json` 中 2026-06-01 之後的交易日差異只套用在
+   這個輸入包（記錄於 `calendar_additions`），訓練與評估用的日曆不變；更早的差異會讓建包停止。
+   前瞻版本放在 `forward/universe.py`，`data/sample_universe.py` 保持不變，因為它的檔案雜湊屬於
+   baseline ID；沒有交易日差異時，兩者產生相同的樣本索引。兩個母體：`overlap`（訊號日 2025-12-01 至 2026-06-01，定義與原 test
    相同）與 `forward`（2026-06-01 至結束日，14 日標籤完整）。
 3. `labels`：以與 validation／test 相同的程式寫出兩個母體的 alpha 與絕對報酬標籤，格式同 baseline
    評估陣列（`targets.npy`、`absolute_targets.npy`、`metadata.npy`）。
@@ -6565,9 +6567,12 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline export-cach
    typhoon closure), a WARNING is printed and the differences are recorded under `calendar` in
    `fetch.json`.
 2. `build` creates a private bar store and cleaned sample index with `build_symbol_bar_store` and
-   `ensure_sample_universe`, then seals the SHA-256 of every file. Session differences from
-   2026-06-01 in `fetch.json` apply to this package only (recorded as `calendar_additions`); the
-   training and evaluation calendar is unchanged, and an earlier difference stops the build. There are two populations:
+   the forward version of `ensure_sample_universe`, then seals the SHA-256 of every file. Session
+   differences from 2026-06-01 in `fetch.json` apply to this package only (recorded as
+   `calendar_additions`); the training and evaluation calendar is unchanged, and an earlier
+   difference stops the build. The forward version lives in `forward/universe.py` and
+   `data/sample_universe.py` stays unchanged, because its file hash is part of every baseline ID;
+   without session differences both build the same sample index. There are two populations:
    `overlap` (signal dates 2025-12-01 to 2026-06-01, the original test definition) and `forward`
    (2026-06-01 to the end date, with complete 14-session labels).
 3. `labels` writes both populations' alpha and absolute-return labels with the same code as

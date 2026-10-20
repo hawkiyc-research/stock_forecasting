@@ -1,7 +1,8 @@
 """Forward input packages: a private bar store and cleaned sample index.
 
-The package reuses ``build_symbol_bar_store`` and ``ensure_sample_universe`` unchanged.
-Those functions know only train/validation/test, so the package fixes the boundaries at
+The package reuses ``build_symbol_bar_store`` unchanged and builds the sample index with
+``forward.universe`` (``ensure_sample_universe`` plus forward-only session changes).
+Those builders know only train/validation/test, so the package fixes the boundaries at
 2025-12-01, 2026-06-01 and the end date: the ``overlap`` population (the original test
 definition) occupies the validation slot and the ``forward`` population the test slot.
 Every caller addresses populations by name; the slot mapping stays inside this module.
@@ -22,8 +23,8 @@ from stock_forecasting.data.manifest import (
     canonical_json_sha256,
     sha256_file,
 )
-from stock_forecasting.data.sample_universe import ensure_sample_universe
 from stock_forecasting.data_policy import load_data_policy
+from stock_forecasting.forward.universe import ensure_forward_sample_universe
 
 PACKAGE_SCHEMA_VERSION = "1.0"
 PACKAGE_KIND = "forward-input-package"
@@ -127,7 +128,7 @@ def build_package(
         },
         workers=workers,
     )
-    universe = ensure_sample_universe(
+    universe = ensure_forward_sample_universe(
         store, workers=workers, calendar_additions=calendar_additions
     )
     marker = json.loads((universe / "universe.json").read_text())

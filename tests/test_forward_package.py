@@ -116,7 +116,31 @@ def stores(tmp_path_factory):
         reference, split="test", window_size=128, h_start=1, sample_index_root=universe
     )
     return {"test": test, "package": root / "package", "payload": payload,
-            "unadjusted": unadjusted, "sessions": sessions}
+            "unadjusted": unadjusted, "unadjusted_root": root / "unadjusted",
+            "sessions": sessions}
+
+
+def test_forward_builder_copy_is_pinned_to_the_frozen_builder():
+    import ast
+    import hashlib
+    import inspect
+
+    from stock_forecasting.data import sample_universe
+    from stock_forecasting.forward import universe
+
+    # The forward copy must be reviewed whenever the frozen builder changes.
+    source = inspect.getsource(sample_universe)
+    node = next(n for n in ast.parse(source).body
+                if getattr(n, "name", "") == "ensure_sample_universe")
+    digest = hashlib.sha256(ast.get_source_segment(source, node).encode()).hexdigest()
+    assert digest == universe.BASE_BUILDER_SHA256
+
+
+def test_forward_builder_without_additions_is_the_frozen_builder(stores):
+    # Same identity, sessions and ranges: the frozen builder reuses the index as is.
+    store = stores["unadjusted_root"] / "bar-store"
+    built = stores["unadjusted_root"] / stores["unadjusted"]["sample_universe"]["relative_path"]
+    assert ensure_sample_universe(store, workers=1) == built
 
 
 def test_overlap_inputs_and_labels_match_the_validation_test_pipeline(stores):
