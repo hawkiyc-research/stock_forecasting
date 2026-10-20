@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.0",
+  "name": "capturability",
+  "description": "Exploratory, validation-only analysis of how much of the Kronos ranking implementable constructions capture (experiment protocol section 13.9).",
+  "inputs": {
+    "alpha_baseline": "audit/baselines/baseline-3befc8e902e5c641b24ddf80c4ab7e11769529fa307e391de47e4416f1d885a3",
+    "direction_baseline": "audit/baselines/baseline-b21f46ea4963562f03c648e9b0394f8a069767bca2a15a9f82e7c8ed69e04cc8",
+    "predictions_root": "diagnostics/signal-predictions",
+    "bar_store": "diagnostics/evaluation-data/aa49bbbdb9061c74a37eb659c8f8908c03014fc49b4a57f341b61061999eda0a/prepared/bar-store",
+    "taifex": "diagnostics/taifex"
+  },
+  "splits": [
+    "validation"
+  ],
+  "markets": {
+    "TWSE": [
+      "TWSE"
+    ],
+    "TPEX": [
+      "TPEX"
+    ],
+    "TW": [
+      "TWSE",
+      "TPEX"
+    ]
+  },
+  "signals": {
+    "R22_IR": {
+      "kind": "alpha",
+      "members": [
+        [
+          "run-20261015T064559Z-624f212a27894308-alpha",
+          "checkpoint-018399"
+        ]
+      ]
+    },
+    "ENS_IR": {
+      "kind": "alpha",
+      "members": [
+        [
+          "run-20261015T064558Z-f04e155d4299416f-alpha",
+          "checkpoint-022079"
+        ],
+        [
+          "run-20261015T064559Z-624f212a27894308-alpha",
+          "checkpoint-018399"
+        ],
+        [
+          "run-20261015T064600Z-13b8b4376ea5413b-alpha",
+          "checkpoint-018399"
+        ]
+      ]
+    },
+    "R23": {
+      "kind": "alpha",
+      "members": [
+        [
+          "run-20261015T064600Z-13b8b4376ea5413b-alpha",
+          "checkpoint-018399"
+        ]
+      ]
+    },
+    "R21_LOSS": {
+      "kind": "alpha",
+      "members": [
+        [
+          "run-20261015T064558Z-f04e155d4299416f-alpha",
+          "checkpoint-003680"
+        ]
+      ]
+    },
+    "R22_LOSS": {
+      "kind": "alpha",
+      "members": [
+        [
+          "run-20261015T064559Z-624f212a27894308-alpha",
+          "checkpoint-011040"
+        ]
+      ]
+    },
+    "R21_018399": {
+      "kind": "alpha",
+      "members": [
+        [
+          "run-20261015T064558Z-f04e155d4299416f-alpha",
+          "checkpoint-018399"
+        ]
+      ]
+    }
+  },
+  "horizons": {
+    "segments": [
+      5,
+      10
+    ],
+    "deciles": [
+      5,
+      10
+    ],
+    "decay": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ]
+  },
+  "decile_fraction": 0.1,
+  "segments": {
+    "futures": "the stock has a TAIFEX stock futures contract (standard or small) listed in the regular session on the signal date",
+    "liquid_futures_min_volume": 100,
+    "liquid_futures_lookback_sessions": 20,
+    "liquidity_lookback_sessions": 20,
+    "liquidity_groups": 3
+  },
+  "taifex": {
+    "start": "2025-05-01",
+    "end_exclusive": "2025-12-01",
+    "pause_seconds": 2.0
+  },
+  "bootstrap": {
+    "replicates": 1000,
+    "seed": 11,
+    "min_block": 5,
+    "block_per_holding_day": 2,
+    "daily_block": 10
+  },
+  "annualization_days": 252
+}

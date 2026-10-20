@@ -871,6 +871,37 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 4. 推論不載入任何資料組，只檢查模型契約；匯出紀錄輸入包的雜湊。管線一致性檢查改用 `overlap`。
 5. 其餘不變：GPU 型號、6 個 checkpoint、判準、程序、描述性補充。
 
+**§13.8 結果（2026-10-20）**：主要假說未通過，依第 6 點不採用；見[前瞻檢驗結果報告](stage3_forward_results.md)。
+
+#### 13.9 可捕捉性分析（validation，探索性，2026-10-20 於分析前寫入）
+
+背景：§13.8 未通過，但上市的開盤到開盤 Rank IC 在 validation、test、前瞻三個期間都為正。只做多前十分位、持有 10 日，只用到排序資訊的一小部分，而且現股成本高。使用者可交易的工具：做多現股、台指期／小台／微台、個股期貨（可放空）。本節找出哪一種可實作的做法，最能把排序資訊轉成扣成本後的超額。設定記錄在 `backtest/config/capturability.json`。
+
+1. **資料範圍**：
+   - 只用 validation（訊號日 2025-06-02 至 2025-11-10，116 日）做比較與選擇。
+   - test 與 §13.8 前瞻期間都已看過，只作探索性對照，不參與選擇。
+   - 不訓練、不重新推論：使用 2026-10-19 匯出的 validation 預測。訊號為 §13.8 的 6 個登記與選點訊號。
+2. **A：排序資訊在哪裡（不計成本）**：
+   1. 分群：有無個股期貨（期交所標的清單，且該日有掛牌交易）、流動性三分位（訊號日前 20 個交易日的平均成交值，同日同市場內分組）、上市與上櫃。各群計算 Rank IC、前後十分位超額與前後差（h = 5、10）。
+   2. 十分位曲線：h = 5、10 的十個十分位超額。
+   3. 衰減：h = 1…13 的 Rank IC，以及前、後十分位的交易時段與隔夜分解。
+3. **B：可實作組合（扣成本）**，候選固定為：
+   - B0（基準）：只做多現股前 20 檔（§13.6 的固定組合）。
+   - B1：B0 加上以台指期貨避險（避險比例 1 與滾動 beta 兩種）。
+   - B2：個股期貨多空，在有期貨的標的中前段做多、後段放空，多空金額相等。
+   - B3：個股期貨依排名分配多空權重，全部有期貨的標的都持有，多空中性。
+   - 每個候選比較 5 日與 10 日換倉，以及分數平滑（前幾日分數平均）開或關。
+   - 成本：現股沿用主要情境；期貨交易稅十萬分之二、每口手續費、依成交量分級的滑價情境、每月轉倉。手續費與資金規模（決定契約口數的顆粒度）由使用者提供，未提供前以參數列出敏感度。
+4. **期貨資料**：期交所每日期貨行情（公開下載表單），涵蓋 validation 期間與其前 20 個交易日。契約代碼以期交所目前的標的清單對照股票代號；對不到的契約列出數量。個股期貨的報酬以標的股票的開盤到開盤報酬近似。
+5. **判讀**：探索性，不設門檻。依 validation 選出一個做法（訊號、組合、換倉頻率、平滑），之後另寫事先登記，以 2026-10-20 之後的新資料確認。結果寫成中英雙語報告。
+
+判讀限制：
+
+- validation 只有 116 日，區間會很寬；組合之間的差異以配對方式比較。
+- 期貨開盤（08:45）早於現股（09:00），另有基差、除權息調整與轉倉，近似報酬會有誤差。
+- 期交所目前的清單可能缺少期間內已下市的契約。
+- 保證金、追繳與期貨部位的容量限制，除口數顆粒度外不模擬。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1806,6 +1837,37 @@ Reason: the training data pipeline's split logic is part of the dataset fingerpr
    - New check 4 (before GPU work): on `overlap` Taiwan rows, at least 99% of rows have model inputs within a maximum relative difference of 10⁻⁶ of the shared evaluation snapshot.
 4. Inference loads no dataset and checks only the model contract; exports record the input package hash. The pipeline consistency check uses `overlap`.
 5. Everything else is unchanged: GPU model, the 6 checkpoints, criteria, procedure and descriptive additions.
+
+**§13.8 result (2026-10-20)**: the primary hypothesis failed and, under item 6, is not adopted; see the [forward test results report](stage3_forward_results.md).
+
+#### 13.9 Capturability analysis (validation, exploratory; written 2026-10-20 before the analysis)
+
+Background: §13.8 failed, yet TWSE open-to-open Rank IC is positive in validation, test and the forward period. A long-only top decile held for 10 sessions uses only a small part of the ranking information, and stock trading costs are high. The instruments the user can trade: long stocks, TAIEX futures (standard, mini, micro), and stock futures (which allow shorting). This section finds which implementable construction turns the most ranking information into net excess after costs. The settings are recorded in `backtest/config/capturability.json`.
+
+1. **Data scope**:
+   - Only validation (signal dates 2025-06-02 to 2025-11-10, 116 dates) is used for comparison and selection.
+   - Test and the §13.8 forward period have been seen; they are exploratory references only and take no part in selection.
+   - No training and no new inference: the 2026-10-19 validation exports are used. Signals are the 6 registered and selected signals of §13.8.
+2. **A: where the ranking information lies (before costs)**:
+   1. Segments: with or without stock futures (TAIFEX underlying list, contract listed and traded that day), liquidity terciles (average traded value over the 20 sessions before the signal date, within the same date and market), and TWSE versus TPEX. For each segment: Rank IC, top- and bottom-decile excess, and the spread (h = 5, 10).
+   2. Decile curves: the ten decile excesses at h = 5 and 10.
+   3. Decay: Rank IC for h = 1…13, and the session/overnight split of the top and bottom deciles.
+3. **B: implementable portfolios (after costs)**; the candidates are fixed:
+   - B0 (reference): long-only top 20 stocks (the §13.6 fixed portfolio).
+   - B1: B0 hedged with TAIEX futures (hedge ratio 1 and rolling beta).
+   - B2: stock-futures long-short among the stocks with futures: long the top, short the bottom, equal dollar amounts.
+   - B3: stock-futures rank-weighted long-short over every stock with futures, market neutral.
+   - Each candidate is compared at 5- and 10-session rebalancing, with score smoothing (the mean of recent days' scores) on or off.
+   - Costs: stocks use the primary scenario; futures use the 0.002% futures transaction tax, a per-contract commission, volume-tiered slippage scenarios and monthly rolls. The commission and the capital (which sets contract granularity) come from the user; until then they are parameters with sensitivities listed.
+4. **Futures data**: TAIFEX daily futures trading data (public download form) for the validation period and the 20 sessions before it. Contract codes map to stock codes through TAIFEX's current underlying list; unmatched contracts are counted. Stock futures returns are approximated by the underlying stock's open-to-open return.
+5. **Interpretation**: exploratory, with no gate. Validation selects one construction (signal, portfolio, rebalancing and smoothing); a new pre-registration then confirms it on data after 2026-10-20. Results are written as a bilingual report.
+
+Interpretation limits:
+
+- Validation has only 116 dates, so intervals are wide; constructions are compared in pairs.
+- Futures open (08:45) before stocks (09:00), and basis, dividend adjustments and rolls make the approximate returns imprecise.
+- TAIFEX's current list may miss contracts delisted during the period.
+- Margin, margin calls and futures capacity are not simulated beyond contract granularity.
 
 ### 14. Remote-validation boundary
 
