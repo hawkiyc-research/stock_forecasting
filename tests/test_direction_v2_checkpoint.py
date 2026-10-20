@@ -315,6 +315,7 @@ def test_legacy_direction_architecture_digest_matches_the_pre_v2_payload():
         "prediction_task",
         "point_loss_beta",
         "neutral_return_threshold",
+        "rank_min_group_size",
         "market_aware",
         "explicit_output_scale",
         "decoupled_output_scale",

@@ -109,6 +109,38 @@ class ExperimentSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SELECTION["_validate_selection"](tampered)
 
+    def test_rank_preset_has_its_own_integer_task_and_baseline(self):
+        task = {"prediction_task": "cross_sectional_rank", "rank_min_group_size": 20}
+        select = SELECTION["_with_experiment"]
+        for group in ("a", "b"):
+            point = select(self.original, group + "-alpha-point64", self.project)
+            rank = select(self.original, group + "-rank64", self.project)
+            self.assertEqual(rank["baseline_task"], task)
+            self.assertEqual(rank["dataset_request_sha256"], point["dataset_request_sha256"])
+            identity = BASELINE["baseline_contract"](ROOT, rank)
+            self.assertNotEqual(
+                identity["baseline_id"], BASELINE["baseline_contract"](ROOT, point)["baseline_id"]
+            )
+            self.assertEqual(identity["contract"]["parameters"]["signal_task"], task)
+            self.assertIn(
+                "src/stock_forecasting/data/rank_labels.py",
+                identity["contract"]["implementation"],
+            )
+        path = self.project / "configs/experiments/a_rank64.yaml"
+        source = path.read_text()
+        path.write_text(source.replace("rank_min_group_size: 20", "rank_min_group_size: 2.5"))
+        with self.assertRaises(ValueError):
+            select(self.original, "a-rank64", self.project)
+        path.write_text(source.replace("rank_min_group_size: 20", "rank_min_group_size: 1"))
+        with self.assertRaisesRegex(ValueError, "invalid rank_min_group_size"):
+            select(self.original, "a-rank64", self.project)
+
+    def test_rank_training_stops_before_any_pod(self):
+        cache = runpy.run_path(str(ROOT / "scripts/runpod_baseline_cache.py"))
+        rank = SELECTION["_with_experiment"](self.original, "a-rank64", self.project)
+        with self.assertRaisesRegex(ValueError, "Kronos rank training is not available"):
+            cache["check_baseline"](ROOT, rank, command="require")
+
     def test_task_cannot_be_missing_or_attached_to_legacy_experiment(self):
         point = SELECTION["_with_experiment"](self.original, "a-alpha-point64", self.project)
         del point["baseline_task"]

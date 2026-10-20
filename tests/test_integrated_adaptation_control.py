@@ -89,7 +89,8 @@ class IntegratedAdaptationControlTests(unittest.TestCase):
             for v in ("alpha-point64", "absolute-direction64")
             for suffix in ("", "-datemix")
         }
-        self.assertEqual(set(names), expected | independent)
+        rank = {f"{g}-rank64" for g in ("a", "b")}
+        self.assertEqual(set(names), expected | independent | rank)
         args = argparse.Namespace(
             stage="stage2",
             data_profile="us_tw_eodhd",

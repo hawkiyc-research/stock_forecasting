@@ -66,6 +66,7 @@ EXPERIMENT_CONFIGS = {
         "absolute-direction64",
         "alpha-point64-datemix",
         "absolute-direction64-datemix",
+        "rank64",
     )
 }
 # Independent signal presets name their supervised task explicitly; the datemix
@@ -75,7 +76,15 @@ SIGNAL_TASK_VARIANTS = {
     "absolute-direction64": "absolute_direction",
     "alpha-point64-datemix": "alpha_point",
     "absolute-direction64-datemix": "absolute_direction",
+    "rank64": "cross_sectional_rank",
 }
+# Each independent task owns one label/objective parameter (config.TASK_PARAMETERS).
+TASK_PARAMETERS = {
+    "alpha_point": "point_loss_beta",
+    "absolute_direction": "neutral_return_threshold",
+    "cross_sectional_rank": "rank_min_group_size",
+}
+TASK_DEFAULTS = {"alpha_point": "1.0", "absolute_direction": "0.01", "cross_sectional_rank": "20"}
 STAGE_RUNTIME = {
     # Keep terminate_after in immutable selection hashes created before REST v2 migration.
     # Pod creation does not send this legacy field to RunPod.
@@ -273,13 +282,14 @@ def _validate_baseline_task(task: Any) -> Dict[str, Any]:
     if not isinstance(task, dict):
         _fail("Baseline task must be an object")
     name = task.get("prediction_task")
-    parameter = {
-        "alpha_point": "point_loss_beta",
-        "absolute_direction": "neutral_return_threshold",
-    }.get(name)
+    parameter = TASK_PARAMETERS.get(name)
     if parameter is None or set(task) != {"prediction_task", parameter}:
         _fail("Baseline task has unsupported or incomplete parameters")
     value = task[parameter]
+    if name == "cross_sectional_rank":
+        if type(value) is not int or value < 2:
+            _fail("Baseline task has an invalid " + parameter)
+        return task
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
@@ -307,15 +317,12 @@ def _config_baseline_task(path: Path) -> Optional[Dict[str, Any]]:
     task = scalar("prediction_task", "quantiles")
     if task == "quantiles":
         return None
-    parameter = {
-        "alpha_point": "point_loss_beta",
-        "absolute_direction": "neutral_return_threshold",
-    }.get(task)
+    parameter = TASK_PARAMETERS.get(task)
     if parameter is None:
         _fail("Unsupported experiment prediction_task: " + task)
-    default = "1.0" if task == "alpha_point" else "0.01"
+    literal = scalar(parameter, TASK_DEFAULTS[task])
     try:
-        value = float(scalar(parameter, default))
+        value = int(literal) if task == "cross_sectional_rank" else float(literal)
     except ValueError as error:
         raise SelectionError("Model task parameters must be literal finite numbers") from error
     return _validate_baseline_task({"prediction_task": task, parameter: value})

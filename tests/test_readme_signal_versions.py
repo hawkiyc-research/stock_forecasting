@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_VARIANTS = ("signal64", "signal64-datemix")
 INDIVIDUAL_VARIANTS = ("alpha-point64", "absolute-direction64")
+# The rank task currently exposes only its baseline build (protocol §13.10).
+RANK_VARIANTS = ("rank64",)
 HISTORICAL_VARIANTS = (
     "lora32",
     "lora64",
@@ -157,7 +159,7 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
         allowed = {
             f"{group}-{variant}"
             for group in ("a", "b")
-            for variant in CURRENT_VARIANTS
+            for variant in (*CURRENT_VARIANTS, *RANK_VARIANTS)
         }
         for language, text in self.languages.items():
             current = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[0]
@@ -179,7 +181,7 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                             self.assertIn(preset, allowed)
                         found.add(preset)
             with self.subTest(language=language):
-                for variant in CURRENT_VARIANTS:
+                for variant in (*CURRENT_VARIANTS, *RANK_VARIANTS):
                     self.assertIn(f"a-{variant}", found)
 
     def test_pair_workflow_and_model_scoped_advanced_operations_are_explicit(self):
