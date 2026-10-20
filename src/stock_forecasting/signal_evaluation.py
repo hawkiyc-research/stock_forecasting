@@ -15,6 +15,10 @@ from stock_forecasting.evaluation_store import CHUNK_ROWS, META_DTYPE
 from stock_forecasting.metrics import cross_sectional_metrics
 from stock_forecasting.runtime_resources import detect_available_memory, detect_visible_cpu_count
 
+SIGNAL_EVALUATION_TASKS = ("alpha_point", "absolute_direction", "cross_sectional_rank")
+# Point-valued tasks store one prediction per horizon; direction stores three logits.
+POINT_TASKS = ("alpha_point", "cross_sectional_rank")
+
 
 def direction_labels(values, threshold):
     """Classify simple-return boundaries in the stored log-return coordinates."""
@@ -38,7 +42,7 @@ class SignalMoments:
         self.scales = np.asarray(scales, dtype=np.float64)
         self.beta, self.threshold, self.count = float(beta), float(threshold), 0
         if (
-            task not in ("alpha_point", "absolute_direction")
+            task not in SIGNAL_EVALUATION_TASKS
             or not np.isfinite(beta)
             or beta <= 0
             or not 0 < threshold < 1
@@ -53,14 +57,34 @@ class SignalMoments:
 
     def add(self, targets, predictions):
         y, p = np.asarray(targets, dtype=np.float64), np.asarray(predictions, dtype=np.float64)
-        expected = y.shape if self.task == "alpha_point" else (*y.shape, 3)
+        expected = y.shape if self.task in POINT_TASKS else (*y.shape, 3)
+        # Rank labels are NaN only for groups below the minimum size.
+        finite_targets = self.task == "cross_sectional_rank" or np.isfinite(y).all()
         if (
             y.shape != (len(y), len(self.horizons))
             or p.shape != expected
-            or not np.isfinite(y).all()
+            or not finite_targets
             or not np.isfinite(p).all()
         ):
             raise ValueError("Nonfinite or incompatible signal predictions/targets")
+        if self.task == "cross_sectional_rank":
+            labelled = np.isfinite(y)
+            values = np.where(labelled, y, 0.0)
+            squared = np.where(labelled, (p - values) ** 2, 0.0)
+            masked = np.where(labelled, p, 0.0)
+            self.sums[:7] += np.stack(
+                [
+                    squared.sum(0),
+                    labelled.sum(0),
+                    values.sum(0),
+                    masked.sum(0),
+                    (values * values).sum(0),
+                    (masked * masked).sum(0),
+                    (values * masked).sum(0),
+                ]
+            )
+            self.count += len(y)
+            return squared.sum(1) / np.maximum(labelled.sum(1), 1)
         if self.task == "alpha_point":
             error = p - y
             residual = np.abs(error / self.scales)
@@ -113,6 +137,25 @@ class SignalMoments:
         m = self.sums / self.count
         per = {}
         for i, horizon in enumerate(self.horizons):
+            if self.task == "cross_sectional_rank":
+                labelled = self.sums[1, i]
+                n = max(labelled, 1.0)
+                mean_y, mean_p = self.sums[2, i] / n, self.sums[3, i] / n
+                covariance = self.sums[6, i] / n - mean_y * mean_p
+                variance_y = max(0, self.sums[4, i] / n - mean_y**2)
+                denom = np.sqrt(variance_y * max(0, self.sums[5, i] / n - mean_p**2))
+                item = {
+                    "rank_mse": float(self.sums[0, i] / n),
+                    "rank_label_correlation": float(np.clip(covariance / denom, -1, 1))
+                    if denom > 1e-20
+                    else 0.0,
+                    "rank_label_correlation_status": "ok" if denom > 1e-20 else "unavailable",
+                    "labelled_fraction": float(labelled / self.count),
+                    # Subgroups keep the label loss; the full evaluator selects on Rank IC.
+                    "selection_score": float(self.sums[0, i] / n),
+                }
+                per[f"{horizon}d"] = item
+                continue
             if self.task == "alpha_point":
                 covariance = m[8, i] - m[4, i] * m[5, i]
                 denom = np.sqrt(max(0, m[6, i] - m[4, i] ** 2) * max(0, m[7, i] - m[5, i] ** 2))
@@ -182,17 +225,32 @@ class SignalMoments:
 class SignalEvaluationStore:
     """Store one task's outputs; never synthesize quantiles for point forecasts."""
 
-    def __init__(self, root, count, horizons, scales, task, beta=1.0, neutral_threshold=0.01):
+    def __init__(
+        self,
+        root,
+        count,
+        horizons,
+        scales,
+        task,
+        beta=1.0,
+        neutral_threshold=0.01,
+        rank_min_group_size=None,
+    ):
         self.root, self.count = Path(root), int(count)
         self.horizons, self.scales, self.task = list(horizons), list(map(float, scales)), task
         self.beta, self.threshold, self.offset = float(beta), float(neutral_threshold), 0
+        self.rank_min_group_size = rank_min_group_size
         SignalMoments(self.horizons, self.scales, task, beta, neutral_threshold)
+        if task == "cross_sectional_rank" and (
+            type(rank_min_group_size) is not int or rank_min_group_size < 2
+        ):
+            raise ValueError("Rank evaluation requires its label minimum group size")
         if count < 1:
             raise ValueError("Evaluation population must be nonempty")
         self.root.mkdir(parents=True, exist_ok=True)
-        width = 1 if task == "alpha_point" else 3
+        width = 1 if task in POINT_TASKS else 3
         required = count * (
-            (1 + width + int(task == "absolute_direction")) * len(horizons) * 4
+            (1 + width + int(task != "alpha_point")) * len(horizons) * 4
             + META_DTYPE.itemsize
             + 4
         )
@@ -210,6 +268,16 @@ class SignalEvaluationStore:
                 shape=(count, len(horizons)),
             )
             if task == "absolute_direction"
+            else None
+        )
+        self.rank_targets = (
+            np.lib.format.open_memmap(
+                self.root / "rank_targets.npy",
+                mode="w+",
+                dtype="float32",
+                shape=(count, len(horizons)),
+            )
+            if task == "cross_sectional_rank"
             else None
         )
         self.predictions = np.lib.format.open_memmap(
@@ -235,6 +303,7 @@ class SignalEvaluationStore:
         asset_types,
         providers,
         target_absolute=None,
+        target_rank=None,
         past_drawdown=None,
     ):
         y, p = np.asarray(targets), np.asarray(predictions)
@@ -255,6 +324,11 @@ class SignalEvaluationStore:
             if absolute.shape != expected or not np.isfinite(absolute).all():
                 raise ValueError("Classification requires explicit finite absolute-return targets")
             self.absolute_targets[section] = absolute
+        if self.rank_targets is not None:
+            ranks = np.asarray(target_rank)
+            if ranks.shape != expected:
+                raise ValueError("Rank evaluation requires explicit per-horizon rank labels")
+            self.rank_targets[section] = ranks
         for key, values in (
             ("symbol", symbols),
             ("date", dates),
@@ -322,7 +396,7 @@ class SignalEvaluationStore:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for market, horizon, values in pool.map(metric, tasks):
                 result.setdefault(market, {})[horizon] = values
-        return {"signal": "alpha_point", "by_market": result}
+        return {"signal": self.task, "by_market": result}
 
     def finish(self, **_kwargs):
         if self.offset != self.count:
@@ -331,8 +405,9 @@ class SignalEvaluationStore:
             return self._result
         for array in (self.targets, self.predictions, self.metadata, self.drawdown):
             array.flush()
-        if self.absolute_targets is not None:
-            self.absolute_targets.flush()
+        for array in (self.absolute_targets, self.rank_targets):
+            if array is not None:
+                array.flush()
         total = self._moments()
         groups = {
             name: {}
@@ -341,7 +416,13 @@ class SignalEvaluationStore:
         digest, daily = hashlib.sha256(b"["), {}
         for start in range(0, self.count, CHUNK_ROWS):
             stop = min(start + CHUNK_ROWS, self.count)
-            target_store = self.targets if self.absolute_targets is None else self.absolute_targets
+            target_store = (
+                self.absolute_targets
+                if self.absolute_targets is not None
+                else self.rank_targets
+                if self.rank_targets is not None
+                else self.targets
+            )
             y, p, meta = (
                 target_store[start:stop],
                 self.predictions[start:stop],
@@ -426,6 +507,9 @@ class SignalEvaluationStore:
         if self.task == "alpha_point":
             result["point_loss_beta"] = self.beta
             result["cross_sectional"] = self._cross_sectional()
+        elif self.task == "cross_sectional_rank":
+            result["rank_min_group_size"] = self.rank_min_group_size
+            result["cross_sectional"] = self._cross_sectional()
         else:
             result["neutral_return_threshold"] = self.threshold
             result["class_order"] = ["down", "neutral", "up"]
@@ -437,8 +521,34 @@ class SignalEvaluationStore:
             )
             for key in result["aggregate"]
         }
+        if self.task == "cross_sectional_rank":
+            self._select_on_rank_ic(result)
         self._result = result
         return result
+
+    def _select_on_rank_ic(self, result):
+        """Protocol §13.10: minimize minus the market-equal, horizon-mean daily Rank IC."""
+        by_market = result["cross_sectional"]["by_market"]
+        per_horizon = {}
+        for horizon in self.horizons:
+            key = f"{horizon}d"
+            values = [by_market[market][key]["rank_ic_mean"] for market in sorted(by_market)]
+            per_horizon[key] = float(np.mean(values))
+            result["per_horizon"][key]["rank_ic_market_macro"] = per_horizon[key]
+            result["per_horizon"][key]["selection_score"] = -per_horizon[key]
+        macro = float(np.mean(list(per_horizon.values())))
+        result["rank_ic_selection"] = {
+            "markets": sorted(by_market),
+            "market_weighting": "equal",
+            "horizon_weighting": "equal",
+            "rank_ic_market_macro": macro,
+            "per_horizon": per_horizon,
+        }
+        result["aggregate"]["rank_ic_market_macro"] = macro
+        result["aggregate"]["selection_score"] = -macro
+        primary = result["per_horizon"].get("5d", next(iter(result["per_horizon"].values())))
+        result["primary_5d"] = {**primary, "selection_score": -macro}
+        result["loss"] = -macro
 
     def metrics(self):
         return self.finish()
@@ -447,6 +557,7 @@ class SignalEvaluationStore:
         for array in (self.targets, self.predictions, self.metadata, self.drawdown):
             array.flush()
             array._mmap.close()
-        if self.absolute_targets is not None:
-            self.absolute_targets.flush()
-            self.absolute_targets._mmap.close()
+        for array in (self.absolute_targets, self.rank_targets):
+            if array is not None:
+                array.flush()
+                array._mmap.close()

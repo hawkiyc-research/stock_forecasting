@@ -26,6 +26,7 @@ BASELINE_SOURCES = (
     "src/stock_forecasting/data/adjustments.py",
     "src/stock_forecasting/data/horizons.py",
     "src/stock_forecasting/data/sample_universe.py",
+    "src/stock_forecasting/data/rank_labels.py",
     "src/stock_forecasting/data_policy.py",
 )
 SHARED_TRAINING_DEFINITIONS = (
@@ -356,7 +357,7 @@ def validate_optimization_alignment(config, parameters):
     task = parameters.get("signal_task", {"prediction_task": "quantiles"})
     if getattr(config.model, "prediction_task", "quantiles") != task["prediction_task"]:
         raise ValueError("Baseline runtime differs from its independent task contract")
-    for name in ("point_loss_beta", "neutral_return_threshold"):
+    for name in ("point_loss_beta", "neutral_return_threshold", "rank_min_group_size"):
         if name in task and getattr(config.model, name) != task[name]:
             raise ValueError(f"Baseline runtime task parameter differs: {name}")
     for name in (
@@ -602,7 +603,7 @@ def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
     task = identity["contract"]["parameters"].get("signal_task", {"prediction_task": "quantiles"})
     if task["prediction_task"] != getattr(config.model, "prediction_task", "quantiles"):
         raise ValueError("Main model and baseline prediction tasks differ")
-    for parameter in ("point_loss_beta", "neutral_return_threshold"):
+    for parameter in ("point_loss_beta", "neutral_return_threshold", "rank_min_group_size"):
         if parameter in task and getattr(config.model, parameter) != task[parameter]:
             raise ValueError(f"Main model and baseline task parameter differs: {parameter}")
     if task["prediction_task"] == "absolute_direction":

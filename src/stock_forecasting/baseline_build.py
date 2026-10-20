@@ -1290,6 +1290,13 @@ def build_baselines(config):
     from stock_forecasting.data.sample_universe import validated_split_roots
 
     roots = {split: str(root) for split, root in validated_split_roots(config).items()}
+    task_name = parameters.get("signal_task", {}).get("prediction_task")
+    rank_labels = None
+    if task_name == "cross_sectional_rank":
+        from stock_forecasting.data.rank_labels import ensure_split_rank_labels
+
+        # Every rank-task dataset and spawned job reads these immutable stores.
+        rank_labels = ensure_split_rank_labels(config, roots)
     train = lazy_dataset(config, "train", validated_root=roots)
     plan = resource_plan(
         parameters, len(train), config.data.alpha_horizons, config.data.input_length
@@ -1317,10 +1324,16 @@ def build_baselines(config):
         ) * 4 + evaluation_count * horizon_count * (
             24 * learned_count + 2 * len(RULE_BASELINE_NAMES)
         )
-    elif parameters.get("signal_task", {}).get("prediction_task") == "absolute_direction":
+    elif task_name == "absolute_direction":
         expected_disk += sum(counts.values()) * (horizon_count + 6) * 4
         expected_disk += (
             evaluation_count * horizon_count * 4 * (plan["gpu_slots"] + plan["cpu_slots"])
+        )
+    elif task_name == "cross_sectional_rank":
+        # Input rank columns plus one rank-label copy in every model's evaluation stores.
+        expected_disk += sum(counts.values()) * horizon_count * 4
+        expected_disk += (
+            evaluation_count * horizon_count * 4 * (len(RULE_BASELINE_NAMES) + learned_count)
         )
     existing_disk = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
     remaining_disk = max(0, expected_disk - existing_disk)
@@ -1504,10 +1517,12 @@ def build_baselines(config):
             for split in ("validation", "test")
             for name in ("absolute_targets", "direction_bands")
         ]
-    elif parameters.get("signal_task", {}).get("prediction_task") == "absolute_direction":
+    elif task_name == "absolute_direction":
         files += [
             root / "inputs" / split / "absolute_targets.npy" for split in ("validation", "test")
         ]
+    elif task_name == "cross_sectional_rank":
+        files += [root / "inputs" / split / "rank_targets.npy" for split in ("validation", "test")]
 
     def artifact(path):
         return path.relative_to(root).as_posix(), {
@@ -1529,8 +1544,10 @@ def build_baselines(config):
         "calibration_identity_sha256": calibration.identity_sha256,
         "artifacts": artifacts,
     }
-    if parameters.get("signal_task", {}).get("prediction_task") == "absolute_direction":
+    if task_name == "absolute_direction":
         payload["class_label_audit"] = cache["class_label_audit"]
+    if rank_labels is not None:
+        payload["rank_labels"] = rank_labels
     validate_complete(payload, identity)
     atomic_write_json(complete, payload)
     return payload

@@ -34,6 +34,11 @@ def signal_task(selection):
         ):
             raise ValueError("neutral_return_threshold must be between zero and one")
         return {"prediction_task": task, "neutral_return_threshold": float(threshold)}
+    if task == "cross_sectional_rank":
+        size = supplied.get("rank_min_group_size", 20)
+        if type(size) is not int or size < 2:
+            raise ValueError("rank_min_group_size must be an integer of at least two")
+        return {"prediction_task": task, "rank_min_group_size": size}
     raise ValueError(f"Unknown baseline prediction task: {task}")
 
 
@@ -45,15 +50,23 @@ def parameters_for_task(parameters, selection):
         return result
     result["signal_task"] = task
     result["direction"] = {"enabled": False}
-    result["objectives"] = (
-        {
+    result["objectives"] = {
+        "alpha_point": {
             "neural": "normalized_smooth_l1",
             "gbdt": "absolute_error",
             "rules": "train_residual_median",
-        }
-        if task["prediction_task"] == "alpha_point"
-        else {"neural": "cross_entropy", "gbdt": "log_loss", "rules": "fixed_return_threshold"}
-    )
+        },
+        "absolute_direction": {
+            "neural": "cross_entropy",
+            "gbdt": "log_loss",
+            "rules": "fixed_return_threshold",
+        },
+        "cross_sectional_rank": {
+            "neural": "masked_mse_gauss_rank",
+            "gbdt": "squared_error_gauss_rank",
+            "rules": "raw_rule_score",
+        },
+    }[task["prediction_task"]]
     if task["prediction_task"] == "absolute_direction":
         result.setdefault(
             "class_balance_audit", {"minimum_fraction": 0.01, "maximum_fraction": 0.98}
@@ -91,6 +104,11 @@ def validate_signal_metrics(metrics, task, samples, horizons):
         and metrics.get("neutral_return_threshold") != task["neutral_return_threshold"]
     ):
         raise ValueError("Baseline fixed-return thresholds do not match")
+    if task["prediction_task"] == "cross_sectional_rank" and (
+        metrics.get("rank_min_group_size") != task["rank_min_group_size"]
+        or not isinstance(metrics.get("cross_sectional", {}).get("by_market"), dict)
+    ):
+        raise ValueError("Baseline rank labels or cross-sectional evaluation do not match")
     actual = metrics.get("per_horizon", {})
     if set(actual) != {f"{h}d" for h in horizons}:
         raise ValueError("Baseline signal evaluation has incomplete horizons")

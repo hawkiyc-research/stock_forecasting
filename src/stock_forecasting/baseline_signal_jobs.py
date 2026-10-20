@@ -20,6 +20,12 @@ from stock_forecasting.baselines import RULE_BASELINE_NAMES
 from stock_forecasting.data.manifest import atomic_write_json
 from stock_forecasting.evaluation_store import CHUNK_ROWS
 
+# Per-model evaluation label copies; the canonical arrays stay under inputs/.
+_SCRATCH_LABELS = {
+    "absolute_direction": "absolute_targets.npy",
+    "cross_sectional_rank": "rank_targets.npy",
+}
+
 
 def _store(output, count, horizons, scales, task):
     from stock_forecasting.signal_evaluation import SignalEvaluationStore
@@ -32,6 +38,7 @@ def _store(output, count, horizons, scales, task):
         task["prediction_task"],
         beta=task.get("point_loss_beta", 1.0),
         neutral_threshold=task.get("neutral_return_threshold", 0.01),
+        rank_min_group_size=task.get("rank_min_group_size"),
     )
 
 
@@ -47,9 +54,10 @@ def neural_score(model, loader, horizons, scales, output=None):
                 tempfile.TemporaryDirectory(prefix="baseline-signal-validation-")
             )
         store = _store(output, len(loader.dataset), horizons, scales, model.task)
-        if model.prediction_task == "absolute_direction":
+        scratch = _SCRATCH_LABELS.get(model.prediction_task)
+        if scratch:
             # This evaluation owns only a scratch copy; inputs/ keeps the canonical labels.
-            stack.callback((Path(output) / "absolute_targets.npy").unlink, missing_ok=True)
+            stack.callback((Path(output) / scratch).unlink, missing_ok=True)
         stack.callback(store.close)
         try:
             for batch in loader:
@@ -67,6 +75,7 @@ def neural_score(model, loader, horizons, scales, output=None):
                     target_absolute=batch.get("target_absolute", None).numpy()
                     if "target_absolute" in batch
                     else None,
+                    target_rank=batch["target_rank"].numpy() if "target_rank" in batch else None,
                 )
             return store.finish()
         finally:
@@ -81,8 +90,9 @@ def tabular_score(arrays, predict, horizons, scales, task, output=None):
                 tempfile.TemporaryDirectory(prefix="baseline-signal-validation-")
             )
         store = _store(output, len(arrays["targets"]), horizons, scales, task)
-        if task["prediction_task"] == "absolute_direction":
-            stack.callback((Path(output) / "absolute_targets.npy").unlink, missing_ok=True)
+        scratch = _SCRATCH_LABELS.get(task["prediction_task"])
+        if scratch:
+            stack.callback((Path(output) / scratch).unlink, missing_ok=True)
         stack.callback(store.close)
         for start in range(0, len(arrays["targets"]), CHUNK_ROWS):
             stop = min(start + CHUNK_ROWS, len(arrays["targets"]))
@@ -97,6 +107,9 @@ def tabular_score(arrays, predict, horizons, scales, task, output=None):
                 providers=metadata["provider"].tolist(),
                 target_absolute=arrays["absolute_targets"][start:stop]
                 if task["prediction_task"] == "absolute_direction"
+                else None,
+                target_rank=arrays["rank_targets"][start:stop]
+                if task["prediction_task"] == "cross_sectional_rank"
                 else None,
             )
         return store.finish()
@@ -122,12 +135,14 @@ def train_signal_gbdt(root, directory, seed, parameters, horizons, scales):
     }
     task, settings = parameters["signal_task"], parameters["gbdt"]
     classification = task["prediction_task"] == "absolute_direction"
+    ranking = task["prediction_task"] == "cross_sectional_rank"
     constructor = (
         HistGradientBoostingClassifier if classification else HistGradientBoostingRegressor
     )
+    loss = "log_loss" if classification else "squared_error" if ranking else "absolute_error"
     models = [
         constructor(
-            **({"loss": "log_loss"} if classification else {"loss": "absolute_error"}),
+            loss=loss,
             learning_rate=settings["learning_rate"],
             max_iter=1,
             max_leaf_nodes=settings["max_leaf_nodes"],
@@ -198,7 +213,7 @@ def train_signal_gbdt(root, directory, seed, parameters, horizons, scales):
             target = arrays["train"]["absolute_targets"][rows]
         else:
             p = np.column_stack([model.predict(features) for model in models])
-            target = arrays["train"]["targets"][rows]
+            target = arrays["train"]["rank_targets" if ranking else "targets"][rows]
         moments = SignalMoments(
             horizons,
             scales,
@@ -230,18 +245,28 @@ def train_signal_gbdt(root, directory, seed, parameters, horizons, scales):
             )
             model = models[h]
             model.set_params(max_iter=target_iteration)
-            labels = (
-                _full_fixed_labels(arrays["train"], h, task["neutral_return_threshold"])
-                if classification
-                else arrays["train"]["targets"][:, h]
-            )
+            features = arrays["train"]["features"]
+            if ranking:
+                labels = np.asarray(arrays["train"]["rank_targets"][:, h])
+                labelled = np.isfinite(labels)
+                if not labelled.any():
+                    raise ValueError(f"GBDT training horizon {horizons[h]} has no rank labels")
+                if not labelled.all():
+                    # Only small-group rows are dropped; the copy is bounded by gbdt_bytes.
+                    features, labels = features[labelled], labels[labelled]
+            else:
+                labels = (
+                    _full_fixed_labels(arrays["train"], h, task["neutral_return_threshold"])
+                    if classification
+                    else arrays["train"]["targets"][:, h]
+                )
             if classification and len(np.unique(labels)) != 3:
                 raise ValueError(
                     f"GBDT training horizon {horizons[h]} is missing a direction class"
                 )
             with threadpool_limits(limits=threads):
-                model.fit(arrays["train"]["features"], labels)
-            del labels
+                model.fit(features, labels)
+            del labels, features
             cursor = h + 1
             save()
             atomic_write_json(
@@ -297,6 +322,7 @@ def train_signal_rules(root, directory, horizons, scales, parameters):
     """Retain every existing rule; point fitting uses complete train residuals only."""
     task = parameters["signal_task"]
     classification = task["prediction_task"] == "absolute_direction"
+    ranking = task["prediction_task"] == "cross_sectional_rank"
     arrays = {
         split: open_tabular(root / "inputs", split) for split in ("train", "validation", "test")
     }
@@ -310,7 +336,7 @@ def train_signal_rules(root, directory, horizons, scales, parameters):
             result[name] = json.loads(completed.read_text())
             continue
         offsets = np.zeros(len(horizons), dtype=np.float64)
-        if not classification and name != "zero_return":
+        if not classification and not ranking and name != "zero_return":
             for h, multiplier in enumerate(multipliers):
                 residual = np.array(arrays["train"]["targets"][:, h], dtype=np.float64)
                 if name == "always_buy":
@@ -322,7 +348,9 @@ def train_signal_rules(root, directory, horizons, scales, parameters):
                     residual -= arrays["train"]["signals"][:, SIGNAL_NAMES.index(name)] * multiplier
                 offsets[h] = np.median(residual, overwrite_input=True)
         objective = (
-            (
+            ("constant_zero_score" if name in ("always_buy", "zero_return") else "raw_rule_score")
+            if ranking
+            else (
                 "constant_zero_alpha"
                 if name == "zero_return"
                 else "constant_positive_alpha_train_median_floor"
@@ -358,6 +386,12 @@ def train_signal_rules(root, directory, horizons, scales, parameters):
         )
 
         def prediction(split, start, stop, *, name=name, offsets=offsets):
+            if ranking:
+                # A constant has no ranking skill; a rule's raw value is its ranking score.
+                if name in ("always_buy", "zero_return"):
+                    return np.zeros((stop - start, len(horizons)), dtype=np.float64)
+                values = arrays[split]["signals"][start:stop, SIGNAL_NAMES.index(name), None]
+                return np.broadcast_to(values, (stop - start, len(horizons)))
             if classification:
                 if name in ("always_buy", "zero_return"):
                     labels = np.full(

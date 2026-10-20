@@ -1,105 +1,12 @@
 """Cross-sectional gauss-rank labels: exact transform, Parquet layout and dataset alignment."""
 
 import pickle
-from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 from scipy.special import ndtri
-
-ROOT = Path(__file__).resolve().parents[1]
-US_STOCKS = ("AAAA.US", "BBBB.US", "CCCC.US", "DDDD.US", "EEEE.US")
-TW_STOCKS = ("1101.TW", "1102.TW", "1103.TW", "1104.TW", "1216.TW")
-
-
-def ranked_frame() -> pd.DataFrame:
-    from stock_forecasting.data.sample_universe import market_sessions
-
-    rng = np.random.default_rng(7)
-    instruments = [
-        ("VTI.US", "etf", "US", "eodhd", 220.0),
-        ("TAIEX.TW", "index", "TWSE", "twse_official", 15000.0),
-        *((symbol, "stock", "US", "eodhd", 50.0 + 10 * i) for i, symbol in enumerate(US_STOCKS)),
-        *(
-            (symbol, "stock", "TWSE", "twse_official", 30.0 + 5 * i)
-            for i, symbol in enumerate(TW_STOCKS)
-        ),
-    ]
-    frames = []
-    for symbol, asset_type, market, provider, base in instruments:
-        dates = market_sessions("XNYS" if market == "US" else "XTAI", "2022-01-03", "2023-12-31")[
-            :360
-        ]
-        steps = rng.normal(0.0003, 0.015, len(dates))
-        close = base * np.exp(np.cumsum(steps))
-        # Distinct intraday moves give every cutoff a strict cross-sectional order.
-        open_ = close * np.exp(rng.normal(0.0, 0.006, len(dates)))
-        index = np.arange(len(dates), dtype=np.float64)
-        factor = np.exp(0.00005 * index) if asset_type == "index" else np.ones_like(index)
-        frames.append(
-            pd.DataFrame(
-                {
-                    "timestamp": dates,
-                    "symbol": symbol,
-                    "asset_type": asset_type,
-                    "open": open_,
-                    "high": np.maximum(open_, close) * 1.004,
-                    "low": np.minimum(open_, close) * 0.996,
-                    "close": close,
-                    "volume": 1_000_000.0 + index * 100.0,
-                    "adjusted_close": close * factor,
-                    "split_adjusted_volume": 1_000_000.0 + index * 100.0,
-                    "adjustment_source": (
-                        "official_total_return_index" if asset_type == "index" else "fixture"
-                    ),
-                    "provider": provider,
-                    "market": market,
-                    "currency": "USD" if market == "US" else "TWD",
-                    "source_symbol": symbol.split(".", maxsplit=1)[0],
-                    "is_active": True,
-                    "dataset_profile": "us_tw_eodhd",
-                }
-            )
-        )
-    return pd.concat(frames, ignore_index=True)
-
-
-@pytest.fixture
-def rank_config(tmp_path, monkeypatch):
-    import stock_forecasting.data.rank_labels as rank_labels
-    from stock_forecasting.config import ExperimentConfig
-    from stock_forecasting.data.bar_store import build_symbol_bar_store
-    from stock_forecasting.data.manifest import artifact_metadata
-
-    # Linux-only memory probes; a fixed budget keeps the local run deterministic.
-    monkeypatch.setattr(
-        rank_labels,
-        "detect_available_memory",
-        lambda: SimpleNamespace(available_bytes=16 * 1024**3),
-    )
-    frame = ranked_frame()
-    raw, store = tmp_path / "rank.parquet", tmp_path / "prepared" / "bar-store"
-    frame.to_parquet(raw, index=False)
-    build_symbol_bar_store(
-        raw_path=raw,
-        output_root=store,
-        download_manifest={
-            "artifacts": {"raw": artifact_metadata(raw, root=tmp_path, row_count=len(frame))}
-        },
-        window_size=32,
-        bucket_count=4,
-        batch_rows=200,
-        purge_bars=20,
-        embargo_bars=14,
-    )
-    config = ExperimentConfig.from_yaml(ROOT / "configs/local_mock.yaml")
-    config.data.bar_store_path, config.data.input_length = store, 32
-    config.data.h_start = 1
-    config.model.direction.enabled = False
-    return config
 
 
 def expected_ranks(source, min_group_size):

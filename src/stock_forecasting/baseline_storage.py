@@ -96,6 +96,11 @@ def build_tabular_cache(
                 "manifest_sha256": sha256_file(source.root / "bar-store.json"),
                 "sample_universe": source.sample_universe_identity,
                 "samples": len(source),
+                **(
+                    {"rank_labels": source.rank_label_root.name}
+                    if source.rank_label_root is not None
+                    else {}
+                ),
             }
             for split, source in sources.items()
         },
@@ -103,11 +108,16 @@ def build_tabular_cache(
     direction = config.model.direction
     signal_task = getattr(config.model, "prediction_task", "quantiles")
     absolute_signal = signal_task == "absolute_direction"
+    rank_signal = signal_task == "cross_sectional_rank"
     signal_parameters = None
     if signal_task != "quantiles":
-        signal_parameters = {"prediction_task": signal_task}
-        parameter = "neutral_return_threshold" if absolute_signal else "point_loss_beta"
-        signal_parameters[parameter] = getattr(config.model, parameter)
+        from stock_forecasting.config import TASK_PARAMETERS
+
+        parameter = TASK_PARAMETERS[signal_task]
+        signal_parameters = {
+            "prediction_task": signal_task,
+            parameter: getattr(config.model, parameter),
+        }
         identity["signal_task"] = signal_parameters
     if direction.enabled:
         identity["direction"] = {"schema": 1, "costs": direction.costs.model_dump()}
@@ -124,6 +134,7 @@ def build_tabular_cache(
                 len(config.data.alpha_horizons),
                 direction=direction.enabled,
                 absolute_signal=absolute_signal,
+                rank_signal=rank_signal,
             )
         if absolute_signal:
             from stock_forecasting.baseline_signal import validate_label_audit
@@ -155,6 +166,7 @@ def build_tabular_cache(
                 len(source.horizons),
                 direction=direction.enabled,
                 absolute_signal=absolute_signal,
+                rank_signal=rank_signal,
             )
             if absolute_signal and split == "train":
                 class_audit = json.loads((directory / "class-label-audit.json").read_text())
@@ -174,6 +186,8 @@ def build_tabular_cache(
             shapes.update(
                 absolute_targets=(count, len(source.horizons)), absolute_signals=(count, 6)
             )
+        elif rank_signal:
+            shapes.update(rank_targets=(count, len(source.horizons)))
         progress_path = directory / "resume.json"
         offset = 0
         audit_counts = {}
@@ -191,6 +205,7 @@ def build_tabular_cache(
                 len(source.horizons),
                 direction=direction.enabled,
                 absolute_signal=absolute_signal,
+                rank_signal=rank_signal,
             )
             if absolute_signal and split == "train":
                 audit_counts = progress.get("class_label_counts", {})
@@ -277,6 +292,8 @@ def build_tabular_cache(
                             signal_parameters["neutral_return_threshold"],
                             source.horizons,
                         )
+                elif rank_signal:
+                    arrays["rank_targets"][offset:stop] = batch.rank_targets
                 if "metadata" in arrays:
                     for name, values in (
                         ("symbol", batch.symbols),
@@ -359,6 +376,8 @@ def _commit_tabular_progress(directory, arrays, identity, count, offset, class_l
 
 def open_tabular(root: Path, split: str, *, absolute_signal=False) -> dict:
     names = ["features", "targets", "signals"] + ([] if split == "train" else ["metadata"])
+    if (root / split / "rank_targets.npy").is_file():
+        names.append("rank_targets")
     direction = ["absolute_targets", "direction_bands", "absolute_signals"]
     present = [(root / split / f"{name}.npy").is_file() for name in direction]
     if any(present):
@@ -380,17 +399,28 @@ def open_tabular(root: Path, split: str, *, absolute_signal=False) -> dict:
 
 
 def validate_tabular(
-    root: Path, split: str, count: int, horizons: int, *, direction=False, absolute_signal=False
+    root: Path,
+    split: str,
+    count: int,
+    horizons: int,
+    *,
+    direction=False,
+    absolute_signal=False,
+    rank_signal=False,
 ) -> None:
     shapes = {"features": (count, 30), "targets": (count, horizons), "signals": (count, 6)}
     if split != "train":
         shapes["metadata"] = (count,)
     if absolute_signal:
         shapes.update(absolute_targets=(count, horizons), absolute_signals=(count, 6))
+    if rank_signal:
+        shapes["rank_targets"] = (count, horizons)
     arrays = open_tabular(root, split, absolute_signal=absolute_signal)
     try:
         if direction and "absolute_targets" not in arrays:
             raise ValueError("Missing baseline direction input cache")
+        if rank_signal and "rank_targets" not in arrays:
+            raise ValueError("Missing baseline rank-label input cache")
         if "direction_bands" in arrays:
             shapes["features"] = (count, 32)
             shapes.update(

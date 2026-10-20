@@ -107,6 +107,10 @@ class SignalBatchDataset(Dataset):
         }
         if self.task == "absolute_direction":
             result["target_absolute"] = torch.from_numpy(arrays["absolute_targets"])
+        if self.task == "cross_sectional_rank":
+            if "rank_targets" not in arrays:
+                raise ValueError("Rank-task batches require a dataset with attached rank labels")
+            result["target_rank"] = torch.from_numpy(arrays["rank_targets"])
         if self.metadata:
             metadata = arrays["metadata"]
             result.update(
@@ -177,6 +181,14 @@ class SignalBaseline(nn.Module):
         )
 
 
+def masked_rank_loss(prediction, target):
+    """Mean squared error over labelled values; small-group NaN labels carry no gradient."""
+    labelled = torch.isfinite(target)
+    if not bool(labelled.any()):
+        return prediction.sum() * 0.0
+    return F.mse_loss(prediction[labelled].float(), target[labelled].float())
+
+
 def signal_forward_loss(model, batch, scales, device):
     prediction = model(batch["sequences"].to(device, non_blocking=True))
     if model.prediction_task == "alpha_point":
@@ -184,6 +196,8 @@ def signal_forward_loss(model, batch, scales, device):
         loss = F.smooth_l1_loss(
             prediction / scales, target / scales, beta=model.task["point_loss_beta"]
         )
+    elif model.prediction_task == "cross_sectional_rank":
+        loss = masked_rank_loss(prediction, batch["target_rank"].to(device, non_blocking=True))
     else:
         target = batch["target_absolute"].to(device, non_blocking=True)
         lower, upper = log_thresholds(model.task["neutral_return_threshold"])

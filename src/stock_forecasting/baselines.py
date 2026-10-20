@@ -66,6 +66,7 @@ class BaselineArrays:
     providers: list[str]
     absolute_targets: NDArray[np.float32] | None = None
     direction_bands: NDArray[np.float32] | None = None
+    rank_targets: NDArray[np.float32] | None = None
 
 
 class BaselineRecordDataset(Dataset[dict[str, Any]]):
@@ -168,6 +169,7 @@ def baseline_arrays_from_windows(batch):
         providers=[str(m[3]["provider"]) for m in metadata],
         absolute_targets=batch.get("absolute_targets"),
         direction_bands=batch.get("direction_bands"),
+        rank_targets=batch.get("rank_targets"),
     )
 
 

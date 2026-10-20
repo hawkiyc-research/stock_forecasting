@@ -271,7 +271,10 @@ def tune_baseline_runtime(model, source, parameters, plan, *, scales=None, evalu
     per_sample = 2 * source.window_size * 5 * (4 + 8) + len(source.horizons) * 4
     if isinstance(model, DirectionalBaseline):
         per_sample += len(source.horizons) * 4 + 8
-    elif getattr(model, "prediction_task", "quantiles") == "absolute_direction":
+    elif getattr(model, "prediction_task", "quantiles") in (
+        "absolute_direction",
+        "cross_sectional_rank",
+    ):
         per_sample += len(source.horizons) * 4
 
     def host_limits(workers):
