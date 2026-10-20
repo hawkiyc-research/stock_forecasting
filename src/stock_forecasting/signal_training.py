@@ -10,7 +10,18 @@ from tempfile import TemporaryDirectory
 import torch
 from torch.utils.data import SequentialSampler
 
+from stock_forecasting.rank_data import batch_rank_targets
 from stock_forecasting.signal_evaluation import SignalEvaluationStore
+
+
+def signal_predictions(output, task):
+    """The single output tensor that each independent signal task is evaluated on."""
+    name = {
+        "alpha_point": "alpha_point",
+        "absolute_direction": "absolute_direction_logits",
+        "cross_sectional_rank": "rank_score",
+    }[task]
+    return getattr(output, name)
 
 
 def _past_drawdown(close, mask=None):
@@ -51,17 +62,14 @@ def evaluate_signal_loader(bundle, loader, config, device):
                 config.model.prediction_task,
                 beta=config.model.point_loss_beta,
                 neutral_threshold=config.model.neutral_return_threshold,
+                rank_min_group_size=config.model.rank_min_group_size,
             )
             try:
                 completed, last_log = 0, started
                 for batch in iter_device_batches(loader, device):
                     with _autocast_context(config, device):
                         output = forward_batch(bundle, batch, config, device)
-                    predictions = (
-                        output.alpha_point
-                        if config.model.prediction_task == "alpha_point"
-                        else output.absolute_direction_logits
-                    )
+                    predictions = signal_predictions(output, config.model.prediction_task)
                     close = batch["asset_series"][..., 3].float()
                     drawdown = _past_drawdown(close, batch.get("asset_attention_mask"))
                     absolute = batch.get("target_absolute")
@@ -71,6 +79,12 @@ def evaluate_signal_loader(bundle, loader, config, device):
                         target_absolute=None
                         if absolute is None
                         else absolute.detach().float().cpu().numpy(),
+                        target_rank=batch_rank_targets(
+                            batch,
+                            config.model.prediction_task,
+                            len(predictions),
+                            len(config.data.alpha_horizons),
+                        ),
                         past_drawdown=drawdown.cpu().numpy(),
                         symbols=batch["symbols"],
                         dates=batch["cutoff_at"],

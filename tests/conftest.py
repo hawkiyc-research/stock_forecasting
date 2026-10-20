@@ -118,7 +118,7 @@ RANK_US_STOCKS = ("AAAA.US", "BBBB.US", "CCCC.US", "DDDD.US", "EEEE.US")
 RANK_TW_STOCKS = ("1101.TW", "1102.TW", "1103.TW", "1104.TW", "1216.TW")
 
 
-def ranked_market_frame() -> pd.DataFrame:
+def ranked_market_frame(sessions: int = 360) -> pd.DataFrame:
     """Five noisy stocks per market so every cutoff has a strict cross-sectional order."""
 
     from stock_forecasting.data.sample_universe import market_sessions
@@ -135,8 +135,8 @@ def ranked_market_frame() -> pd.DataFrame:
     ]
     frames = []
     for symbol, asset_type, market, provider, base in instruments:
-        dates = market_sessions("XNYS" if market == "US" else "XTAI", "2022-01-03", "2023-12-31")[
-            :360
+        dates = market_sessions("XNYS" if market == "US" else "XTAI", "2021-01-04", "2024-12-31")[
+            :sessions
         ]
         close = base * np.exp(np.cumsum(rng.normal(0.0003, 0.015, len(dates))))
         open_ = close * np.exp(rng.normal(0.0, 0.006, len(dates)))
@@ -174,6 +174,10 @@ def ranked_market_frame() -> pd.DataFrame:
 def rank_config(tmp_path, monkeypatch):
     """A lazily windowed bar store with five ranked stocks per market and date."""
 
+    return build_rank_config(tmp_path, monkeypatch)
+
+
+def build_rank_config(tmp_path, monkeypatch, *, window_size=32, sessions=360):
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -188,7 +192,7 @@ def rank_config(tmp_path, monkeypatch):
         "detect_available_memory",
         lambda: SimpleNamespace(available_bytes=16 * 1024**3),
     )
-    frame = ranked_market_frame()
+    frame = ranked_market_frame(sessions)
     raw, store = tmp_path / "rank.parquet", tmp_path / "prepared" / "bar-store"
     frame.to_parquet(raw, index=False)
     build_symbol_bar_store(
@@ -197,7 +201,7 @@ def rank_config(tmp_path, monkeypatch):
         download_manifest={
             "artifacts": {"raw": artifact_metadata(raw, root=tmp_path, row_count=len(frame))}
         },
-        window_size=32,
+        window_size=window_size,
         bucket_count=4,
         batch_rows=200,
         purge_bars=20,
@@ -205,7 +209,7 @@ def rank_config(tmp_path, monkeypatch):
     )
     project = Path(__file__).resolve().parents[1]
     config = ExperimentConfig.from_yaml(project / "configs/local_mock.yaml")
-    config.data.bar_store_path, config.data.input_length = store, 32
+    config.data.bar_store_path, config.data.input_length = store, window_size
     config.data.h_start = 1
     config.model.direction.enabled = False
     return config

@@ -1046,9 +1046,14 @@ def build_lazy_datasets(
 ]:
     """Open only the compact lazy indexes used by training-time loaders."""
 
+    from stock_forecasting.data.rank_labels import ensure_split_rank_labels
+    from stock_forecasting.rank_data import with_rank_labels
     from stock_forecasting.data.sample_universe import open_clean_dataset, validated_split_roots
 
     roots = validated_split_roots(config)
+    if config.model.prediction_task == "cross_sectional_rank":
+        # Reuses the baseline's stores when identities match; builds them otherwise.
+        ensure_split_rank_labels(config, {split: str(root) for split, root in roots.items()})
 
     train_source = open_clean_dataset(
         config,
@@ -1071,7 +1076,7 @@ def build_lazy_datasets(
     from stock_forecasting.direction_data import with_direction_targets
 
     return tuple(
-        with_direction_targets(source, config)
+        with_direction_targets(with_rank_labels(source, config), config)
         for source in (train_source, validation_dataset, test_dataset)
     )
 
@@ -1472,6 +1477,8 @@ class ModelBatchCollator(FinancialBatchCollator):
             batch["target_absolute"] = torch.stack(
                 [sample["target_absolute"] for sample in samples]
             )
+        if samples and "target_rank" in samples[0]:
+            batch["target_rank"] = torch.stack([sample["target_rank"] for sample in samples])
         if self.direction_costs is not None:
             from stock_forecasting.direction_costs import direction_band_values, direction_cost_band
 
@@ -1538,6 +1545,7 @@ def _move_batch_to_device(
         "security_ids",
         "ranking_pairs",
         "target_absolute",
+        "target_rank",
         "direction_bands",
     ):
         if key in batch:
@@ -1626,6 +1634,8 @@ def forward_batch(
         scale_inputs_validated=batch.get("scale_inputs_validated", False),
         target_absolute=batch.get("target_absolute"),
         direction_bands=batch.get("direction_bands"),
+        # Only rank-task batches carry these labels; other models never receive the key.
+        **({"target_rank": batch["target_rank"]} if "target_rank" in batch else {}),
     )
 
 
@@ -2749,7 +2759,11 @@ def build_evaluation_loader(
         else dataset_factory(workers.symbol_cache_size_per_worker)
     )
     from stock_forecasting.direction_data import with_direction_targets
+    from stock_forecasting.rank_data import with_rank_labels
 
+    if dataset_factory is None:
+        # Forward populations have no rank-label store; their Rank IC uses raw returns.
+        dataset = with_rank_labels(dataset, config)
     dataset = with_direction_targets(dataset, config)
     sample = dataset[0]
     plan = resolve_runtime_batch_plan(
@@ -2988,6 +3002,8 @@ def _training_loss_terms(output, config):
         return {"normalized_smooth_l1": output.point_loss}
     if task == "absolute_direction":
         return {"cross_entropy": output.classification_loss}
+    if task == "cross_sectional_rank":
+        return {"masked_mse_gauss_rank": output.rank_loss}
     pinball = output.pinball_loss
     return {
         "pinball_loss": pinball,
@@ -3818,6 +3834,9 @@ def _train_with_lease(config: ExperimentConfig) -> TrainingResult:
                 else "train=absolute_return_three_class_CE; validation=mean_horizon_CE; "
                 "independent_optimizer; no_costs"
                 if config.model.prediction_task == "absolute_direction"
+                else "train=masked_MSE_gauss_rank_within_date_market; "
+                "validation=minus_market_equal_horizon_mean_rank_IC; independent_optimizer"
+                if config.model.prediction_task == "cross_sectional_rank"
                 else "train=market_weighted_normalized_pinball"
                 "+fixed_reference_scaled_population_absolute_conditional_NLL"
                 "+fixed_reference_scaled_population_alpha_conditional_NLL"

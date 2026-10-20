@@ -135,11 +135,17 @@ class ExperimentSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid rank_min_group_size"):
             select(self.original, "a-rank64", self.project)
 
-    def test_rank_training_stops_before_any_pod(self):
-        cache = runpy.run_path(str(ROOT / "scripts/runpod_baseline_cache.py"))
+    def test_rank_training_passes_the_local_task_comparison_gate(self):
         rank = SELECTION["_with_experiment"](self.original, "a-rank64", self.project)
-        with self.assertRaisesRegex(ValueError, "Kronos rank training is not available"):
-            cache["check_baseline"](ROOT, rank, command="require")
+        identity = BASELINE["baseline_contract"](ROOT, rank)
+        # Kronos and its baselines share the exact rank task; no other check can differ.
+        BASELINE["validate_direction_comparison_config"](
+            ROOT, rank, identity["contract"]["parameters"]
+        )
+        changed = copy.deepcopy(identity["contract"]["parameters"])
+        changed["signal_task"]["rank_min_group_size"] = 21
+        with self.assertRaisesRegex(ValueError, "different independent prediction tasks"):
+            BASELINE["validate_direction_comparison_config"](ROOT, rank, changed)
 
     def test_task_cannot_be_missing_or_attached_to_legacy_experiment(self):
         point = SELECTION["_with_experiment"](self.original, "a-alpha-point64", self.project)

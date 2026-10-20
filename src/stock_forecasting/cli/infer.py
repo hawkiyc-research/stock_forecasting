@@ -309,6 +309,20 @@ def _signal_forecast_payload(output: Any, config: ExperimentConfig) -> dict[str,
                 f"{h}d": {"alpha_point": float(values[0, i])} for i, h in enumerate(horizons)
             },
         }
+    if task == "cross_sectional_rank":
+        scores = output.rank_score.detach().float().cpu()
+        if tuple(scores.shape) != (1, len(horizons)) or not torch.isfinite(scores).all():
+            raise ValueError("Rank output must be finite [1, horizons]")
+        return {
+            "prediction_task": task,
+            "units": "within_date_market_gauss_rank_score",
+            # One window alone has no peers; scores are comparable only across a date's stocks.
+            "estimand": "relative_order_within_cutoff_date_and_market",
+            "horizons": horizons,
+            "by_horizon": {
+                f"{h}d": {"rank_score": float(scores[0, i])} for i, h in enumerate(horizons)
+            },
+        }
     if task != "absolute_direction":
         raise ValueError("Signal inference requires an independent signal task")
     logits = output.absolute_direction_logits.detach().float().cpu()

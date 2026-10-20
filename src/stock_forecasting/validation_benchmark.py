@@ -91,6 +91,8 @@ SIGNAL_EVALUATION_IMPLEMENTATION_PATHS = (
     "signal_evaluation.py",
     "signal_training.py",
     "models/signal.py",
+    "data/rank_labels.py",
+    "rank_data.py",
 )
 VALIDATION_NON_NUMERICAL_CONFIG_FIELDS = (
     "enabled",
@@ -631,6 +633,13 @@ def _comparison_summary(
             "macro_f1": "primary_5d/macro_f1",
             "brier_score": "primary_5d/brier_score",
         }
+    elif prediction_task == "cross_sectional_rank":
+        paths = {
+            "selection_score": "aggregate/selection_score",
+            "rank_ic_market_macro": "aggregate/rank_ic_market_macro",
+            "rank_mse": "aggregate/rank_mse",
+            "rank_label_correlation": "aggregate/rank_label_correlation",
+        }
     rows: list[dict[str, Any]] = []
     for name, result in models.items():
         if result.get("state") != "complete":
@@ -647,7 +656,7 @@ def _comparison_summary(
                 for metric_name, metric_path in paths.items()
             }
         )
-        if prediction_task == "alpha_point":
+        if prediction_task in ("alpha_point", "cross_sectional_rank"):
             markets = sorted(
                 {
                     market
@@ -827,17 +836,26 @@ class ValidationBenchmark:
         if self.config.model.prediction_task != "quantiles":
             task = self.config.model.prediction_task
             payload["prediction_task"] = task
-            payload["protocol"]["model_selection"] = (
-                "Validation-only equal-horizon normalized SmoothL1."
-                if task == "alpha_point"
-                else "Validation-only equal-horizon absolute-direction cross entropy."
-            )
-            payload["protocol"]["classification"] = (
-                "No classifier: an independent robust alpha point regressor."
-                if task == "alpha_point"
-                else "Independent down/neutral/up absolute-return classifier with a fixed "
-                "simple-return neutral threshold; no transaction-cost labels or inputs."
-            )
+            payload["protocol"]["model_selection"] = {
+                "alpha_point": "Validation-only equal-horizon normalized SmoothL1.",
+                "absolute_direction": (
+                    "Validation-only equal-horizon absolute-direction cross entropy."
+                ),
+                "cross_sectional_rank": (
+                    "Validation-only minus the market-equal, horizon-mean daily Rank IC."
+                ),
+            }[task]
+            payload["protocol"]["classification"] = {
+                "alpha_point": "No classifier: an independent robust alpha point regressor.",
+                "absolute_direction": (
+                    "Independent down/neutral/up absolute-return classifier with a fixed "
+                    "simple-return neutral threshold; no transaction-cost labels or inputs."
+                ),
+                "cross_sectional_rank": (
+                    "No classifier: an independent regressor of gauss-rank labels within "
+                    "each cutoff date and market."
+                ),
+            }[task]
             payload["model_definitions"] = {
                 name: (
                     f"{name}: independently fitted {task} statistical signal; "
@@ -1196,9 +1214,11 @@ class ValidationBenchmark:
                 for metrics in scores.values():
                     if metrics.get("prediction_task") != task:
                         raise ValueError(f"{name} used a different prediction task")
-                    contract_key = (
-                        "point_loss_beta" if task == "alpha_point" else "neutral_return_threshold"
-                    )
+                    contract_key = {
+                        "alpha_point": "point_loss_beta",
+                        "absolute_direction": "neutral_return_threshold",
+                        "cross_sectional_rank": "rank_min_group_size",
+                    }[task]
                     if contract_key not in metrics or (
                         full and metrics.get(contract_key) != full.get(contract_key)
                     ):

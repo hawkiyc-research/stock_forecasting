@@ -59,7 +59,7 @@ def _is_non_negative_int(value: Any) -> bool:
 def _valid_output_schema(payload: dict[str, Any]) -> bool:
     """Recognize exact task/output pairs without rewriting historical artifacts."""
     task = payload.get("prediction_task", "quantiles")
-    if task not in ("quantiles", "alpha_point", "absolute_direction"):
+    if task not in ("quantiles", "alpha_point", "absolute_direction", "cross_sectional_rank"):
         return False
     expected = MODEL_OUTPUT_SCHEMA_VERSION if task == "quantiles" else "signal-1.0"
     return payload.get("model_output_schema_version") == expected

@@ -67,6 +67,8 @@ SIGNAL_IMPLEMENTATION_PATHS = (
     "models/signal.py",
     "signal_evaluation.py",
     "signal_training.py",
+    "data/rank_labels.py",
+    "rank_data.py",
 )
 
 

@@ -21,7 +21,7 @@ from stock_forecasting.data.manifest import artifact_metadata
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires isolated cloud CUDA")
-@pytest.mark.parametrize("task", ["alpha_point", "absolute_direction"])
+@pytest.mark.parametrize("task", ["alpha_point", "absolute_direction", "cross_sectional_rank"])
 def test_independent_signal_train_resume_full_test(
     tmp_path, market_frame, monkeypatch, deterministic_resume_cuda, task
 ):
@@ -48,6 +48,8 @@ def test_independent_signal_train_resume_full_test(
             "prediction_task": task,
             "direction": {"enabled": False},
             "decoupled_output_scale": False,
+            # The fixture has few stocks per market; rank labels need groups of two.
+            "rank_min_group_size": 2,
         }
     )
     config.training.checkpoint_monitor = "primary_5d/selection_score"
@@ -76,7 +78,11 @@ def test_independent_signal_train_resume_full_test(
     ]
     session = next(row for row in events if row.get("event") == "training_session_started")
     assert "pinball" not in session["loss_definition"]
-    metric_name = "train/normalized_smooth_l1" if task == "alpha_point" else "train/cross_entropy"
+    metric_name = {
+        "alpha_point": "train/normalized_smooth_l1",
+        "absolute_direction": "train/cross_entropy",
+        "cross_sectional_rank": "train/masked_mse_gauss_rank",
+    }[task]
     assert any(metric_name in row for row in events)
     assert not any("train/pinball_loss" in row for row in events)
     assert continuous.processed_train_samples == 128 and continuous.validation_evaluations == 4

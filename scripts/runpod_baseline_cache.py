@@ -182,13 +182,6 @@ def check_baseline(project, selection, *, command="check"):
         project, selection, identity["contract"]["parameters"]
     )
     if command == "require":
-        task = (selection.get("baseline_task") or {}).get("prediction_task")
-        if task == "cross_sectional_rank":
-            # Protocol §13.10 builds the rank baselines first; Kronos is registered separately.
-            raise ValueError(
-                "Kronos rank training is not available yet; build the rank baselines with "
-                "bash scripts/runpod_workflow.sh baseline --experiment a-rank64"
-            )
         contract_tools["validate_direction_comparison_config"](
             project, selection, identity["contract"]["parameters"]
         )

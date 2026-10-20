@@ -1,4 +1,4 @@
-"""Independent alpha-point or absolute-direction models on paired Kronos histories."""
+"""Independent alpha-point, absolute-direction or rank models on paired Kronos histories."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .quant import QuantForecastModel
 from .scale_features import NumericalResidualBranch, historical_scale_features
 
 SIGNAL_OUTPUT_SCHEMA_VERSION = "signal-1.0"
-SIGNAL_TASKS = ("alpha_point", "absolute_direction")
+SIGNAL_TASKS = ("alpha_point", "absolute_direction", "cross_sectional_rank")
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,8 @@ class SignalForecastOutput(OutputMapping):
     conditioned_latent_tokens: Tensor
     conditioning_gate: Tensor
     scale_features: Tensor | None = None
+    rank_score: Tensor | None = None
+    rank_loss: Tensor | None = None
 
 
 def fixed_direction_labels(target_absolute: Tensor, threshold: float = 0.01) -> Tensor:
@@ -117,7 +119,7 @@ class SingleTaskHead(nn.Module):
             nn.GELU(),
             nn.Dropout(dropout),
         )
-        output_dim = 1 if prediction_task == "alpha_point" else 3
+        output_dim = 3 if prediction_task == "absolute_direction" else 1
         self.prediction = nn.Linear(hidden_dim, output_dim)
         self.numeric_branch = (
             None
@@ -170,6 +172,9 @@ class SingleTaskHead(nn.Module):
             raw = raw + self.numeric_branch(hidden, scale_features, benchmark_tokens)
         if self.prediction_task == "alpha_point":
             return raw.squeeze(-1).float() * self.robust_scales.float()[None]
+        if self.prediction_task == "cross_sectional_rank":
+            # Gauss-rank labels are already unit scale; return scales do not apply.
+            return raw.squeeze(-1).float()
         return raw.float()
 
     def point_loss(self, predictions: Tensor, target: Tensor) -> Tensor:
@@ -187,6 +192,18 @@ class SingleTaskHead(nn.Module):
             residual, torch.zeros_like(residual), beta=self.point_loss_beta, reduction="none"
         )
         return self._equal_horizon_mean(values, valid)
+
+    def rank_loss(self, scores: Tensor, target_rank: Tensor) -> Tensor:
+        """Mean squared error on gauss-rank labels; small-group NaN labels are excluded."""
+        if self.prediction_task != "cross_sectional_rank":
+            raise ValueError("Rank loss requires the cross_sectional_rank task")
+        expected = (scores.shape[0], len(self.horizons))
+        if scores.shape != expected or target_rank.shape != expected:
+            raise ValueError("Rank scores and target_rank must be [batch, horizons]")
+        target = target_rank.to(device=scores.device, dtype=torch.float32)
+        valid = torch.isfinite(target)
+        safe_target = torch.where(valid, target, torch.zeros_like(target))
+        return self._equal_horizon_mean((scores.float() - safe_target) ** 2, valid)
 
     def direction_labels(self, target_absolute: Tensor) -> Tensor:
         return fixed_direction_labels(target_absolute, self.neutral_return_threshold)
@@ -243,6 +260,7 @@ class SignalForecastModel(QuantForecastModel):
         benchmark_timestamps: Tensor | None = None,
         target_alpha: Tensor | None = None,
         target_absolute: Tensor | None = None,
+        target_rank: Tensor | None = None,
         market_ids: Tensor | None = None,
         scale_inputs_validated: bool = False,
         ranking_group_ids: Tensor | None = None,
@@ -321,17 +339,26 @@ class SignalForecastModel(QuantForecastModel):
             benchmark_tokens=benchmark.latent_tokens,
             market_ids=market_ids,
         )
-        point = logits = point_loss = classification_loss = None
+        point = logits = rank = point_loss = classification_loss = rank_loss = None
         if self.prediction_task == "alpha_point":
             point = prediction
             if target_alpha is not None:
                 point_loss = head.point_loss(point, target_alpha)
+        elif self.prediction_task == "cross_sectional_rank":
+            rank = prediction
+            if target_rank is not None:
+                rank_loss = head.rank_loss(rank, target_rank)
         else:
             logits = prediction
             if target_absolute is not None:
                 classification_loss = head.classification_loss(logits, target_absolute)
+        loss = {
+            "alpha_point": point_loss,
+            "absolute_direction": classification_loss,
+            "cross_sectional_rank": rank_loss,
+        }[self.prediction_task]
         return SignalForecastOutput(
-            loss=point_loss if self.prediction_task == "alpha_point" else classification_loss,
+            loss=loss,
             point_loss=point_loss,
             classification_loss=classification_loss,
             alpha_point=point,
@@ -345,4 +372,6 @@ class SignalForecastModel(QuantForecastModel):
             conditioned_latent_tokens=conditioned,
             conditioning_gate=gate,
             scale_features=scales,
+            rank_score=rank,
+            rank_loss=rank_loss,
         )

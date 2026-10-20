@@ -51,7 +51,8 @@ from stock_forecasting.run_paths import (
     validate_training_output_root,
 )
 from stock_forecasting.signal_evaluation import SignalEvaluationStore
-from stock_forecasting.signal_training import _past_drawdown
+from stock_forecasting.rank_data import batch_rank_targets
+from stock_forecasting.signal_training import _past_drawdown, signal_predictions
 from stock_forecasting.training import build_evaluation_loader, set_global_seed
 
 LOGGER = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ def require_export_environment() -> None:
 
 
 def prediction_shape(task: str, samples: int, horizons: int) -> tuple[int, ...]:
-    if task == "alpha_point":
+    if task in ("alpha_point", "cross_sectional_rank"):
         return (samples, horizons)
     if task == "absolute_direction":
         return (samples, horizons, 3)
@@ -341,18 +342,14 @@ def export_split(
                 task,
                 beta=config.model.point_loss_beta,
                 neutral_threshold=config.model.neutral_return_threshold,
+                rank_min_group_size=config.model.rank_min_group_size,
             )
             try:
                 completed, last_log = 0, started
                 for batch in iter_device_batches(loader, device):
                     with _autocast_context(config, device):
                         result = forward_batch(bundle, batch, config, device)
-                    predictions = (
-                        result.alpha_point
-                        if task == "alpha_point"
-                        else result.absolute_direction_logits
-                    )
-                    values = predictions.detach().float().cpu().numpy()
+                    values = signal_predictions(result, task).detach().float().cpu().numpy()
                     close = batch["asset_series"][..., 3].float()
                     absolute = batch.get("target_absolute")
                     store.append(
@@ -361,6 +358,7 @@ def export_split(
                         target_absolute=None
                         if absolute is None
                         else absolute.detach().float().cpu().numpy(),
+                        target_rank=batch_rank_targets(batch, task, len(values), shape[1]),
                         past_drawdown=_past_drawdown(close, batch.get("asset_attention_mask"))
                         .cpu()
                         .numpy(),
@@ -399,7 +397,11 @@ def export_split(
         "samples": count,
         "shape": list(shape),
         "dtype": "float32",
-        "values": "alpha_point" if task == "alpha_point" else "absolute_direction_logits",
+        "values": {
+            "alpha_point": "alpha_point",
+            "absolute_direction": "absolute_direction_logits",
+            "cross_sectional_rank": "rank_score",
+        }[task],
         "predictions_sha256": digest,
         "sample_membership": metrics.get("sample_membership"),
         "loss": metrics.get("loss"),
