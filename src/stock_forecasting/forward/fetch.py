@@ -2,8 +2,11 @@
 
 The sequence is the CPU preparation's Taiwan loop: corporate actions for the interval,
 benchmark months (which also define the official sessions), then one adjusted quote
-request per session. Responses are cached per end date, so a re-run resumes without
-network calls and a later end date never reuses a partial month.
+request per session. Responses use the CPU preparation's request-keyed cache: on the
+network volume the cache lives under datasets/ and every other dataset cache is read
+first, so sessions fetched once are never fetched again, and later dataset preparations
+reuse these responses in turn. An unfinished benchmark month is keyed to its cut-off date
+and never reused as complete (cache_scope.py).
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ import pandas as pd
 
 from stock_forecasting.data.ingestion import (
     _canonical_raw_batch,
+    _dataset_cache_fallback_roots,
     _fetch_taiwan_actions,
     _fetch_taiwan_adjusted_date,
     _fetch_taiwan_benchmark_month,
@@ -28,7 +32,12 @@ from stock_forecasting.data.ingestion import (
     _taiwan_materialization_months,
 )
 from stock_forecasting.data.manifest import atomic_write_json, sha256_file
-from stock_forecasting.data.providers.http import CachedJsonClient, NetworkRequestBudget
+from stock_forecasting.data.providers.cache_scope import taiwan_month_scope
+from stock_forecasting.data.providers.http import (
+    CachedJsonClient,
+    NetworkRequestBudget,
+    TpexRelayTransport,
+)
 from stock_forecasting.data.providers.taiwan import TPExProvider, TWSEProvider
 from stock_forecasting.data.sample_universe import market_sessions
 from stock_forecasting.data_policy import load_data_policy
@@ -80,20 +89,25 @@ def _fetch_provider(
     start: str,
     end_exclusive: str,
     cache_root: Path,
+    read_cache_roots: tuple[Path, ...],
     requests_per_second: float,
     max_backoff_seconds: float,
     workers: int,
     budget: NetworkRequestBudget,
+    tpex_transport: TpexRelayTransport | None,
     progress: Callable[[str], None],
 ) -> tuple[list[pd.DataFrame], dict[str, Any]]:
     client = CachedJsonClient(
         provider=name,
         raw_cache_root=cache_root,
+        read_cache_roots=read_cache_roots,
         max_requests_per_second=requests_per_second,
         max_backoff_seconds=max_backoff_seconds,
         headers=_headers(name),
         retryable_status_codes=RETRYABLE_STATUS_CODES,
+        transport=tpex_transport if name == "tpex_official" else None,
         request_budget=budget,
+        cache_scope=taiwan_month_scope(end_exclusive),
     )
     provider = PROVIDERS[name](client)
     actions = _fetch_taiwan_actions(provider, start=start, exclusive_end=end_exclusive)
@@ -171,9 +185,17 @@ def fetch_taiwan(
     requests_per_second: float = DEFAULT_REQUESTS_PER_SECOND,
     max_backoff_seconds: float = DEFAULT_MAX_BACKOFF_SECONDS,
     workers: int = 2,
+    cache_root: str | Path | None = None,
+    shared_cache: bool = False,
+    tpex_transport: TpexRelayTransport | None = None,
     progress: Callable[[str], None] = print,
 ) -> dict[str, Any]:
-    """Write ``raw/market.parquet`` and ``fetch.json`` under ``output_root``."""
+    """Write ``raw/market.parquet`` and ``fetch.json`` under ``output_root``.
+
+    ``cache_root`` defaults to ``output_root/api-cache``. With ``shared_cache`` the
+    cache must sit in ``<volume>/datasets/<namespace>/api-cache`` and every other dataset
+    cache there is read first, exactly as the CPU preparation does.
+    """
     _validated_interval(start, end_exclusive)
     if workers < 1:
         raise ValueError("workers must be positive")
@@ -181,7 +203,10 @@ def fetch_taiwan(
     raw_path = root / "raw" / "market.parquet"
     if raw_path.exists():
         raise FileExistsError(f"Forward raw data already exists: {raw_path}")
-    cache_root = root / "api-cache"
+    cache_root = Path(cache_root) if cache_root is not None else root / "api-cache"
+    read_cache_roots = _dataset_cache_fallback_roots(cache_root) if shared_cache else ()
+    if shared_cache and cache_root.resolve(strict=False).parent.parent.name != "datasets":
+        raise ValueError("A shared cache must be <volume>/datasets/<namespace>/api-cache")
     budget = NetworkRequestBudget(10**9, limited_providers=frozenset())
     # I/O bound and paced per provider: one thread per exchange, bounded per-request workers.
     with ThreadPoolExecutor(max_workers=len(PROVIDERS), thread_name_prefix="forward") as pool:
@@ -192,10 +217,12 @@ def fetch_taiwan(
                 start=start,
                 end_exclusive=end_exclusive,
                 cache_root=cache_root,
+                read_cache_roots=read_cache_roots,
                 requests_per_second=requests_per_second,
                 max_backoff_seconds=max_backoff_seconds,
                 workers=workers,
                 budget=budget,
+                tpex_transport=tpex_transport,
                 progress=progress,
             )
             for name in PROVIDERS
@@ -214,6 +241,11 @@ def fetch_taiwan(
         "start_inclusive": start,
         "end_exclusive": end_exclusive,
         "requests_per_second_per_provider": requests_per_second,
+        "cache": {
+            "root": str(cache_root),
+            "shared_read_roots": len(read_cache_roots),
+            "tpex_relay": tpex_transport is not None,
+        },
         "providers": {
             name: {
                 key: value for key, value in results[name][1].items() if key != "sessions"

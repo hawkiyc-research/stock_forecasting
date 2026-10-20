@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 import json
-from datetime import date
+import os
+from datetime import UTC, date, datetime
 from typing import Any
 
 import requests
@@ -96,6 +97,46 @@ def test_an_unfinished_month_is_refetched_by_a_later_end_date(tmp_path):
     assert payload == {"data": ["full October"]} and not record.cache_hit
     _payload, cached = client.get_json(TWSE_MONTH, params=september)
     assert cached.cache_hit and len(later.calls) == 1
+
+
+def _written(path, day):
+    stamp = datetime(day.year, day.month, day.day, 12, tzinfo=UTC).timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+def test_history_cached_before_scopes_is_reused_only_when_written_after_month_end(tmp_path):
+    legacy_root = tmp_path / "datasets" / "training" / "api-cache"
+    september = {"response": "json", "date": "20260901"}
+    august = {"response": "json", "date": "20260801"}
+    october = {"response": "json", "date": "20261001"}
+    legacy = _client(legacy_root, _Session({"data": ["legacy"]}))
+    for params, written in (
+        (september, date(2026, 10, 2)),
+        (august, date(2026, 8, 20)),
+        (october, date(2026, 10, 19)),
+    ):
+        legacy.get_json(TWSE_MONTH, params=params)
+        sha, _identity = legacy._identity(endpoint=TWSE_MONTH, params=params)
+        _written(legacy._cache_path(sha), written)
+    session = _Session({"data": ["fresh"]})
+    client = CachedJsonClient(
+        provider="twse_official",
+        raw_cache_root=tmp_path / "datasets" / "forward" / "api-cache",
+        read_cache_roots=(legacy_root,),
+        max_requests_per_second=10.0,
+        session=session,
+        clock=lambda: 1.0,
+        sleeper=lambda _seconds: None,
+        cache_scope=taiwan_month_scope("2026-10-20", today=TODAY),
+    )
+    # Written after September ended: complete history, reused from the other namespace.
+    payload, record = client.get_json(TWSE_MONTH, params=september)
+    assert payload == {"data": ["legacy"]} and record.cache_hit and session.calls == []
+    assert record.request_sha256 == legacy._identity(endpoint=TWSE_MONTH, params=september)[0]
+    # Written mid-August, or an unfinished month: fetched again under the scoped key.
+    assert client.get_json(TWSE_MONTH, params=august)[0] == {"data": ["fresh"]}
+    assert client.get_json(TWSE_MONTH, params=october)[0] == {"data": ["fresh"]}
+    assert len(session.calls) == 2
 
 
 def test_scope_covers_every_provider_benchmark_month_endpoint():

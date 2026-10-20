@@ -75,6 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument(
                 "--workers", type=int, default=2, help="Concurrent requests per exchange"
             )
+            command.add_argument(
+                "--shared-cache", type=Path, metavar="VOLUME/datasets/NAMESPACE/api-cache",
+                help=(
+                    "Provider cache on the network volume; every other datasets/*/api-cache "
+                    "is read first (default: a private cache under the fetch directory)"
+                ),
+            )
         if name == "build":
             command.add_argument("--workers", type=int, help="Build processes (default: auto)")
         if name == "compare-inputs":
@@ -106,14 +113,27 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = _root(args)
     if args.command == "fetch":
+        from stock_forecasting.data.providers.http import TpexRelayTransport
         from stock_forecasting.forward.fetch import fetch_taiwan
 
+        # Same relay settings as the CPU preparation; both must be set together.
+        relay_url = os.environ.get("TPEX_PROXY_URL") or None
+        relay_token = os.environ.get("TPEX_PROXY_TOKEN") or None
+        if (relay_url is None) != (relay_token is None):
+            raise SystemExit("TPEX_PROXY_URL and TPEX_PROXY_TOKEN must be configured together")
         manifest = fetch_taiwan(
             output_root=root / "fetch",
             start=args.start,
             end_exclusive=args.end,
             requests_per_second=args.qps,
             workers=args.workers,
+            cache_root=args.shared_cache,
+            shared_cache=args.shared_cache is not None,
+            tpex_transport=(
+                TpexRelayTransport(origin=relay_url, token=relay_token)
+                if relay_url is not None
+                else None
+            ),
         )
         print(json.dumps({key: manifest[key] for key in ("raw", "calendar")}, indent=1))
         if any(manifest["calendar"].values()):

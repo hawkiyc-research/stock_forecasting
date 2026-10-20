@@ -2489,8 +2489,13 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 
 1. `fetch`：以既有的證交所與櫃買中心 provider 抓取 `--start`（預設 2025-03-01）到 `--end`
    （不含）的日行情、除權息與加權／櫃買指數，速率與 CPU 準備相同。`--end` 不可晚於今天（UTC），
-   須先寫入 `backtest/config/stage3.json`。原始回應依結束日快取，重跑不再連網。官方交易日與清理用
-   交易日曆不一致時（例如颱風停市）會印出 WARNING，並記錄在 `fetch.json` 的 `calendar`。
+   須先寫入 `backtest/config/stage3.json`。原始回應使用與 CPU 準備相同的請求快取：日行情與除權息
+   依請求內容快取，抓過一次就不再重抓；指數月資料只有在該月結束後抓取的回應才標為完整月份並供之後共用，
+   未結束月份的回應綁定截止日，較晚的結束日一定重新抓取。快取預設在 `fetch/api-cache`；
+   `--shared-cache` 指向網路磁碟的 `datasets/<名稱>/api-cache` 時，會先讀取其他所有資料組的快取，
+   之後的訓練資料準備也能沿用這次的回應。設定 `TPEX_PROXY_URL` 與 `TPEX_PROXY_TOKEN` 時，
+   櫃買中心請求改經 relay，與 CPU 準備相同。官方交易日與清理用交易日曆不一致時（例如颱風停市）
+   會印出 WARNING，並記錄在 `fetch.json` 的 `calendar`。
 2. `build`：以 `build_symbol_bar_store` 與 `ensure_sample_universe` 建立私有 K 線庫與清理後樣本索引，
    並封存每個檔案的 SHA-256。`fetch.json` 中 2026-06-01 之後的交易日差異只套用在這個輸入包
    （記錄於 `calendar_additions`），訓練與評估用的日曆不變；更早的差異會讓建包停止。兩個母體：`overlap`（訊號日 2025-12-01 至 2026-06-01，定義與原 test
@@ -2508,6 +2513,7 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 | `--start YYYY-MM-DD` | `2025-03-01` | `fetch` 的起始日 |
 | `--qps N` | 0.5 | `fetch` 每個交易所每秒請求數 |
 | `--workers N` | `fetch` 2；`build` 自動 | `fetch` 為每個交易所的並行請求數；`build` 為建包程序數，預設依 CPU 與可用記憶體決定，也可用 `FORWARD_PIPELINE_WORKERS` 設定 |
+| `--shared-cache PATH` | 不設定時為 `fetch/api-cache` | `fetch` 的共用快取，必須是 `<磁碟>/datasets/<名稱>/api-cache`；先讀取其他 `datasets/*/api-cache` |
 | `--reference PATH` | `compare-inputs` 必填 | 共用評估快照的 `prepared` 目錄（含 `bar-store` 與唯一一個 `sample-universes/<id>`） |
 | `--tolerance X`、`--min-fraction X` | 10⁻⁶、0.99 | 資料檢查第 4 項的門檻 |
 
@@ -6486,9 +6492,16 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 1. `fetch` uses the existing TWSE and TPEx providers to fetch daily quotes, corporate actions
    and the TAIEX/TPEx indices from `--start` (default 2025-03-01) to `--end` (exclusive), at the
    CPU preparation's pacing. `--end` cannot be later than today (UTC) and must first be written
-   to `backtest/config/stage3.json`. Raw responses are cached per end date, so a re-run needs no
-   network. If the official sessions differ from the cleaning calendar (for example a typhoon
-   closure), a WARNING is printed and the differences are recorded under `calendar` in
+   to `backtest/config/stage3.json`. Raw responses use the CPU preparation's request cache: daily
+   quotes and corporate actions are cached by request content and never fetched twice; an index
+   month response counts as a complete month, shared from then on, only when it was fetched after
+   the month ended, while a response for an unfinished month is bound to its cut-off date and is
+   always fetched again for a later end date. The cache defaults to `fetch/api-cache`; when
+   `--shared-cache` points to `datasets/<name>/api-cache` on the network volume, every other
+   dataset cache is read first, and later training-data preparations reuse these responses too.
+   With `TPEX_PROXY_URL` and `TPEX_PROXY_TOKEN` set, TPEx requests go through the relay, as in the
+   CPU preparation. If the official sessions differ from the cleaning calendar (for example a
+   typhoon closure), a WARNING is printed and the differences are recorded under `calendar` in
    `fetch.json`.
 2. `build` creates a private bar store and cleaned sample index with `build_symbol_bar_store` and
    `ensure_sample_universe`, then seals the SHA-256 of every file. Session differences from
@@ -6512,6 +6525,7 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 | `--start YYYY-MM-DD` | `2025-03-01` | First date for `fetch` |
 | `--qps N` | 0.5 | `fetch` requests per second per exchange |
 | `--workers N` | `fetch` 2; `build` auto | Concurrent requests per exchange for `fetch`; build processes for `build`, by default from CPUs and available memory, or `FORWARD_PIPELINE_WORKERS` |
+| `--shared-cache PATH` | Unset: `fetch/api-cache` | Shared cache for `fetch`; must be `<volume>/datasets/<name>/api-cache`, and every other `datasets/*/api-cache` is read first |
 | `--reference PATH` | Required for `compare-inputs` | The shared evaluation snapshot's `prepared` directory (with `bar-store` and exactly one `sample-universes/<id>`) |
 | `--tolerance X`, `--min-fraction X` | 10⁻⁶, 0.99 | Thresholds of data check 4 |
 

@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from stock_forecasting.data.providers.base import ProviderFetch
+from stock_forecasting.data.providers.http import TpexRelayTransport
 from stock_forecasting.data.sample_universe import market_sessions
 from stock_forecasting.forward import fetch as forward_fetch
 
@@ -41,6 +42,7 @@ def _fake(name, market, stock, index, sessions, calls):
     class Fake:
         def __init__(self, client):
             self.client = client
+            calls.append((name, "client", client))
 
         def fetch_actions(self, *, start, end):
             calls.append((name, "actions", start, end))
@@ -113,3 +115,40 @@ def test_fetch_rejects_tampering_and_invalid_intervals(tmp_path, official):
     for start, end in ((END, START), ("2026-5-01", END), (START, "2999-01-01")):
         with pytest.raises(ValueError):
             forward_fetch.fetch_taiwan(output_root=tmp_path / "x", start=start, end_exclusive=end)
+
+
+def test_shared_cache_reads_every_dataset_cache_and_relays_only_tpex(tmp_path, official):
+    _traded, calls = official
+    datasets = tmp_path / "volume" / "datasets"
+    (datasets / "training" / "api-cache").mkdir(parents=True)
+    shared = datasets / "forward-taiwan-2026-07-01" / "api-cache"
+    relay = TpexRelayTransport(origin="https://relay-test.a.run.app", token="t" * 40)
+    manifest = forward_fetch.fetch_taiwan(
+        output_root=tmp_path / "fetch",
+        start=START,
+        end_exclusive=END,
+        cache_root=shared,
+        shared_cache=True,
+        tpex_transport=relay,
+        progress=lambda _message: None,
+    )
+    clients = {name: client for name, kind, *rest in calls if kind == "client" for client in rest}
+    for name, client in clients.items():
+        assert client.raw_cache_root == shared
+        assert client.read_cache_roots == ((datasets / "training" / "api-cache").resolve(),)
+        assert client.cache_scope(
+            "https://www.twse.com.tw/indicesReport/MI_5MINS_HIST", {"date": "20260601"}
+        ) == {"month": "complete"}
+        assert client.transport is (relay if name == "tpex_official" else None)
+    assert manifest["cache"] == {
+        "root": str(shared), "shared_read_roots": 1, "tpex_relay": True
+    }
+    assert not (tmp_path / "fetch" / "api-cache").exists()
+    with pytest.raises(ValueError, match="datasets"):
+        forward_fetch.fetch_taiwan(
+            output_root=tmp_path / "other",
+            start=START,
+            end_exclusive=END,
+            cache_root=tmp_path / "loose" / "api-cache",
+            shared_cache=True,
+        )

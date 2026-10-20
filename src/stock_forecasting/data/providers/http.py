@@ -23,6 +23,7 @@ import requests
 from stock_forecasting.data.manifest import canonical_json_sha256
 
 from .base import RequestRecord
+from .cache_scope import CacheScope
 
 _SECRET_PARAMETER_NAMES = frozenset({"api_token", "api_key", "token", "password", "secret"})
 _CACHE_REVISION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -408,7 +409,7 @@ class CachedJsonClient:
         request_budget: NetworkRequestBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
-        cache_scope: Callable[[str, Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
+        cache_scope: CacheScope | None = None,
     ) -> None:
         if max_requests_per_second <= 0.0:
             raise ValueError("max_requests_per_second must be positive")
@@ -530,6 +531,7 @@ class CachedJsonClient:
         *,
         endpoint: str,
         params: Mapping[str, Any],
+        scoped: bool = True,
     ) -> tuple[str, dict[str, Any]]:
         public_params = {
             key: value
@@ -545,7 +547,11 @@ class CachedJsonClient:
         # reusable. Later provider revisions are isolated by the request digest.
         if self.cache_revision != "v1":
             identity["cache_revision"] = self.cache_revision
-        scope = self.cache_scope(endpoint, params) if self.cache_scope is not None else None
+        scope = (
+            self.cache_scope(endpoint, params)
+            if scoped and self.cache_scope is not None
+            else None
+        )
         if scope:
             identity["cache_scope"] = dict(scope)
         return canonical_json_sha256(identity), identity
@@ -593,6 +599,26 @@ class CachedJsonClient:
                 continue
             return payload, body, candidate
         return None
+
+    def _load_unscoped_response(
+        self,
+        endpoint: str,
+        params: Mapping[str, Any],
+    ) -> tuple[str, tuple[Any, bytes, Path]] | None:
+        """Reuse an entry cached under the historical key when the scope vouches for it."""
+
+        if self.cache_scope is None or not self.cache_scope(endpoint, params):
+            return None
+        unscoped_sha256, _identity = self._identity(
+            endpoint=endpoint, params=params, scoped=False
+        )
+        cached = self._load_cached_response(unscoped_sha256)
+        if cached is None:
+            return None
+        written_at = datetime.fromtimestamp(cached[2].stat().st_mtime, tz=UTC)
+        if not self.cache_scope.reuses_unscoped(endpoint, params, written_at):
+            return None
+        return unscoped_sha256, cached
 
     def _publish_cache_entry(
         self,
@@ -660,12 +686,17 @@ class CachedJsonClient:
         request_sha256, _identity = self._identity(endpoint=endpoint, params=params)
         cache_path = self._cache_path(request_sha256)
         cached = self._load_cached_response(request_sha256)
+        cached_sha256 = request_sha256
+        if cached is None:
+            unscoped = self._load_unscoped_response(endpoint, params)
+            if unscoped is not None:
+                cached_sha256, cached = unscoped
         if cached is not None:
             payload, body, cached_path = cached
             return (
                 payload,
                 self._record(
-                    request_sha256=request_sha256,
+                    request_sha256=cached_sha256,
                     body=body,
                     cache_hit=True,
                     requested_at=datetime.fromtimestamp(
