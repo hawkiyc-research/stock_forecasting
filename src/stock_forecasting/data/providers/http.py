@@ -408,6 +408,7 @@ class CachedJsonClient:
         request_budget: NetworkRequestBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        cache_scope: Callable[[str, Mapping[str, Any]], Mapping[str, Any] | None] | None = None,
     ) -> None:
         if max_requests_per_second <= 0.0:
             raise ValueError("max_requests_per_second must be positive")
@@ -450,6 +451,9 @@ class CachedJsonClient:
         self.transport = transport
         self.session = session
         self.request_budget = request_budget
+        # Optional extra key fields for responses that change until a period ends
+        # (see cache_scope.py); requests it returns None for keep their historical key.
+        self.cache_scope = cache_scope
         self.clock = clock
         self.sleeper = sleeper
         self._last_request_at: float | None = None
@@ -541,6 +545,9 @@ class CachedJsonClient:
         # reusable. Later provider revisions are isolated by the request digest.
         if self.cache_revision != "v1":
             identity["cache_revision"] = self.cache_revision
+        scope = self.cache_scope(endpoint, params) if self.cache_scope is not None else None
+        if scope:
+            identity["cache_scope"] = dict(scope)
         return canonical_json_sha256(identity), identity
 
     def _cache_path(self, request_sha256: str) -> Path:
