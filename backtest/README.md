@@ -179,6 +179,38 @@ uv run python -m twbacktest.stage3
 輸出目錄包含 `report.json`（各項檢查、使用的匯出與判定）、通過檢查時的 `ranking.csv` 與
 `portfolio.csv`，以及中英雙語 `summary.md`。
 
+### Kronos 排序模型試行（§13.11）
+
+依照 `docs/experiment_protocol.md` §13.11 與 `config/rank_pilot.json`，比較 `a-rank64` seed 42 與
+§13.10 的 rank baseline。執行前在主專案完成三件事：訓練、在診斷 Pod 以
+`export-signal-predictions --checkpoint "<RUN_ID>" --splits validation test --confirm-test` 匯出
+validation 最佳 checkpoint，然後下載（`<RUN_ID>` 是訓練時印出的 run ID）：
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions "<RUN_ID>"
+bash scripts/runpod_workflow.sh download-signal-predictions --rank-baseline-arrays
+```
+
+```bash
+uv run python -m twbacktest.rank_pilot --kronos-run "<RUN_ID>"
+```
+
+程式先確認 Kronos 匯出與 baseline 陣列的列順序相同，再計算每個（市場、horizon、訊號日）的
+Spearman Rank IC。每個模型在各市場、各 horizon 的平均值，必須重現訓練或匯出時記錄的值（差距
+≤ 10⁻⁹），否則不輸出任何判定，exit code 為 1。通過後依設定計算各格（台股／US × 短／中／長
+天期）的每日序列與 block bootstrap 區間、Kronos 與每個 baseline 的配對差，並在 test 上判定 H1–H3。
+
+| 選項 | 說明 | 預設值 |
+| --- | --- | --- |
+| `--kronos-run` | `a-rank64` seed 42 的 run ID（必填） | — |
+| `--config` | 試行設定檔 | `config/rank_pilot.json` |
+| `--artifacts-root` | 主專案 `artifacts/` 目錄 | `../artifacts` |
+| `--output-root` | 本次輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/rank-pilot-<UTC 時間>-<隨機碼>` |
+| `--workers` | 平行 process 數，1 至 16 | 依 CPU 核心數與實體記憶體計算 |
+
+輸出目錄包含 `report.json`（一致性檢查、使用的匯出與判定）、`daily.csv`（每日 Rank IC）、
+`cells.csv`、`pairs.csv`、`per_horizon.csv`，以及中英雙語 `summary.md`。
+
 ## English
 
 ### Purpose
@@ -378,3 +410,39 @@ Once one set of forward exports has been scored, scoring a different set is refu
 
 The output directory contains `report.json` (every check, the exports used and the decision),
 `ranking.csv` and `portfolio.csv` when the checks pass, and a bilingual `summary.md`.
+
+### Kronos rank model pilot (§13.11)
+
+Compares `a-rank64` seed 42 with the §13.10 rank baselines, following
+`docs/experiment_protocol.md` §13.11 and `config/rank_pilot.json`. Before running it, the main project
+trains the model, exports the validation-best checkpoint on a diagnostic Pod with
+`export-signal-predictions --checkpoint "<RUN_ID>" --splits validation test --confirm-test`, and
+downloads (`<RUN_ID>` is the run ID printed at training time):
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions "<RUN_ID>"
+bash scripts/runpod_workflow.sh download-signal-predictions --rank-baseline-arrays
+```
+
+```bash
+uv run python -m twbacktest.rank_pilot --kronos-run "<RUN_ID>"
+```
+
+The program first confirms that the Kronos export and the baseline arrays share one row order, then
+computes the Spearman Rank IC per (market, horizon, signal date). Each model's mean per market and
+horizon must reproduce the value recorded at training or export time (difference ≤ 10⁻⁹); otherwise
+no decision is written and the exit code is 1. After that it computes each cell's daily series (Taiwan
+or US × short, medium or long horizons) with block-bootstrap intervals, the paired differences between
+Kronos and every baseline, and the H1–H3 decisions on test.
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--kronos-run` | Run ID of `a-rank64` seed 42 (required) | — |
+| `--config` | Pilot configuration file | `config/rank_pilot.json` |
+| `--artifacts-root` | Main project `artifacts/` directory | `../artifacts` |
+| `--output-root` | Output directory for this run; it must not exist yet | `artifacts/diagnostics/backtest/rank-pilot-<UTC time>-<random>` |
+| `--workers` | Parallel processes, 1 to 16 | Computed from CPU cores and physical memory |
+
+The output directory contains `report.json` (consistency check, exports used and decisions),
+`daily.csv` (daily Rank IC), `cells.csv`, `pairs.csv`, `per_horizon.csv` and a bilingual
+`summary.md`.

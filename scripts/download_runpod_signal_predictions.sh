@@ -11,6 +11,7 @@ usage() {
     echo "Usage: bash scripts/runpod_workflow.sh download-signal-predictions SELECTOR [SELECTOR ...]"
     echo "       bash scripts/runpod_workflow.sh download-signal-predictions --forward YYYY-MM-DD SELECTOR [...]"
     echo "       bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays"
+    echo "       bash scripts/runpod_workflow.sh download-signal-predictions --rank-baseline-arrays"
     echo "       bash scripts/runpod_workflow.sh download-signal-predictions --evaluation-data [--list]"
     echo "Pass 1-16 selectors: a signal child run ID (the -alpha/-direction runs, not a parent"
     echo "ID), or RUN_ID/checkpoint-NNNNNN when that run has exports of several checkpoints."
@@ -20,6 +21,9 @@ usage() {
     echo "them under artifacts/diagnostics/forward-predictions/END/<run>/<checkpoint>/<export>/."
     echo "--baseline-arrays fetches the current baselines' evaluation arrays (about 1.3 GB),"
     echo "verified against their manifests, into artifacts/diagnostics/signal-decomposition/."
+    echo "--rank-baseline-arrays fetches the rank baseline arrays named in"
+    echo "backtest/config/rank_pilot.json (about 1 GB), verified the same way, into"
+    echo "artifacts/audit/baselines/<baseline-id>/."
     echo "--evaluation-data fetches the baselines' shared validation/test bar store and its"
     echo "cleaned sample index for local inference into artifacts/diagnostics/evaluation-data/;"
     echo "every file is verified by SHA-256 and verified files are kept on a rerun. --list only"
@@ -48,7 +52,7 @@ if [[ "$1" == "--evaluation-data" ]]; then
         usage >&2
         exit 2
     fi
-elif [[ "$1" != "--baseline-arrays" || $# -ne 1 ]]; then
+elif [[ ( "$1" != "--baseline-arrays" && "$1" != "--rank-baseline-arrays" ) || $# -ne 1 ]]; then
     for selector in "${selectors[@]}"; do
         if [[ ! "${selector}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,119}(/checkpoint-[0-9]{6,})?$ \
             || "${selector}" == *--* ]]; then

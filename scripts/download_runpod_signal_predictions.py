@@ -37,6 +37,8 @@ safe_local_path = PROBES["safe_local_path"]
 # The decomposition analysis owns the current baseline identities and inputs.
 ANALYSIS = runpy.run_path(str(Path(__file__).with_name("analyze_signal_decomposition.py")))
 BASELINE_LOCAL_ROOT = Path("artifacts/diagnostics/signal-decomposition/baselines")
+# The protocol 13.11 scorer names its rank baseline and comparator jobs.
+RANK_PILOT_CONFIG = Path("backtest/config/rank_pilot.json")
 # Local Kronos inference reads a copy of the shared evaluation bar store (protocol 13.7).
 EVALUATION_LOCAL_ROOT = Path("artifacts/diagnostics/evaluation-data")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -282,13 +284,48 @@ def download_export(reader, result, project_root, executor, workers, timeout, la
     return destination
 
 
-def download_baseline_arrays(reader, project_root, executor, workers, timeout, fetch=None):
-    """Fetch decomposition inputs, verifying every array against its baseline manifest."""
+def rank_baseline_plan(project_root):
+    """The rank baseline and arrays that the protocol 13.11 scorer reads."""
+    config = json.loads((project_root / RANK_PILOT_CONFIG).read_text())
+    baseline = config["inputs"]["rank_baseline"]
+    if not re.fullmatch(r"baseline-[0-9a-f]{64}", baseline):
+        raise ValueError("Rank pilot config names an invalid baseline")
+    files = []
+    for split in config["splits"]:
+        if split not in SPLITS:
+            raise ValueError(f"Unsupported rank pilot split: {split}")
+        files.extend((f"{baseline}/inputs/{split}/metadata.npy",
+                      f"{baseline}/inputs/{split}/targets.npy"))
+        for job in config["baselines"].values():
+            if not re.fullmatch(r"jobs/(?:rules/[a-z0-9_]+|[a-z0-9_]+-[0-9]+)", job):
+                raise ValueError(f"Rank pilot config names an invalid baseline job: {job}")
+            files.append(f"{baseline}/{job}/{split}/predictions.npy")
+    files.extend(
+        f"{baseline}/{job}/validation-metrics.json" for job in config["baselines"].values()
+    )
+    return {
+        "baselines": (baseline,),
+        "files": files,
+        "destination": project_root / "artifacts" / config["inputs"]["baseline_root"],
+    }
+
+
+def download_baseline_arrays(
+    reader, project_root, executor, workers, timeout, fetch=None, plan=None
+):
+    """Fetch baseline inputs, verifying every array against its baseline manifest.
+
+    Without ``plan`` this is the decomposition's alpha/direction set; a plan names other
+    baselines, files and a destination (the rank pilot).
+    """
     fetch = download_file if fetch is None else fetch
-    destination = project_root / BASELINE_LOCAL_ROOT
+    destination = project_root / BASELINE_LOCAL_ROOT if plan is None else plan["destination"]
     safe_local_path(destination)
     manifests = {}
-    for baseline in (ANALYSIS["ALPHA_ID"], ANALYSIS["DIRECTION_ID"]):
+    baselines = (
+        (ANALYSIS["ALPHA_ID"], ANALYSIS["DIRECTION_ID"]) if plan is None else plan["baselines"]
+    )
+    for baseline in baselines:
         payload, _digest = reader.read_json(
             f"baselines/{baseline}/complete.json", LARGE_JSON_BYTES
         )
@@ -314,7 +351,8 @@ def download_baseline_arrays(reader, project_root, executor, workers, timeout, f
             staged.replace(target)
         return "downloaded"
 
-    states = list(parallel_results(executor, transfer, baseline_files(), workers))
+    files = baseline_files() if plan is None else plan["files"]
+    states = list(parallel_results(executor, transfer, files, workers))
     return destination, states.count("downloaded"), states.count("verified")
 
 
@@ -464,15 +502,18 @@ def main():
         print(f"Evaluation data: downloaded={downloaded} already_verified={verified}")
         print("Result directory: " + str(destination))
         return
-    if arguments == ["--baseline-arrays"]:
+    if arguments in (["--baseline-arrays"], ["--rank-baseline-arrays"]):
+        rank = arguments == ["--rank-baseline-arrays"]
+        plan = rank_baseline_plan(PROJECT_ROOT) if rank else None
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="baseline-download")
         try:
             destination, downloaded, verified = download_baseline_arrays(
-                reader, PROJECT_ROOT, executor, workers, timeout
+                reader, PROJECT_ROOT, executor, workers, timeout, plan=plan
             )
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
-        print(f"Baseline decomposition inputs: downloaded={downloaded} already_verified={verified}")
+        label = "Rank pilot baseline inputs" if rank else "Baseline decomposition inputs"
+        print(f"{label}: downloaded={downloaded} already_verified={verified}")
         print("Result directory: " + str(destination))
         return
     forward_end = None
@@ -484,7 +525,10 @@ def main():
     for value in arguments:
         safe_selector(value)
     if not 1 <= len(arguments) <= MAX_RUNS or len(set(arguments)) != len(arguments):
-        raise ValueError(f"Pass 1-{MAX_RUNS} distinct export selectors or --baseline-arrays")
+        raise ValueError(
+            f"Pass 1-{MAX_RUNS} distinct export selectors, --baseline-arrays or "
+            "--rank-baseline-arrays"
+        )
     executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prediction-download")
     try:
         for selector in arguments:
