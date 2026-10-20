@@ -902,6 +902,39 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 期交所目前的清單可能缺少期間內已下市的契約。
 - 保證金、追繳與期貨部位的容量限制，除口數顆粒度外不模擬。
 
+#### 13.10 橫斷面排序任務：rank 標籤與 baseline（2026-10-21 於實作前寫入）
+
+背景：數值 alpha 與絕對方向都沒有穩健勝過 baseline；只有同日同市場內的相對排序有正的 Rank IC（Kronos alpha 在 validation 0.099–0.119、test 0.091–0.124）。專案改為預測橫斷面名次。標籤區間不變：t0 收盤產生訊號，t1 開盤進場，第 h 日收盤（h = 1…14）。進場門檻與出場規則由使用者的 hermes agent 以逐日滾動預測回測決定，模型只提供各 horizon 的排序。舊的 alpha、方向模型與 baseline 不再保留相容。
+
+1. **任務**：`cross_sectional_rank`，參數只有最小組大小 `rank_min_group_size`（預設 20）。
+2. **標籤**：
+   - 來源：既有的相對大盤調整後對數報酬（t+1 開盤到 t+h 收盤）。每個市場只有一個大盤（TWSE 為 TAIEX.TW、TPEX 為 TPEX.TWO、US 為 VTI.US），所以同日同市場內，相對報酬的名次與絕對報酬的名次相同。
+   - 分組：同一 split、同一 cutoff 日、同一市場；只用該 split 的樣本範圍內的股票。
+   - 轉換：同分取平均名次 r，計算 (r − 0.5) / n，再取標準常態分配的反函數。
+   - 少於 `rank_min_group_size` 檔的分組不給標籤（NaN），訓練時遮掉。評估仍以原報酬計算 Rank IC，不受遮罩影響。
+3. **標籤儲存（Parquet）**：
+   - 每個 split 一份，放在該 split 的 bar store 旁：`rank-labels/<識別碼>/`。
+   - `shards/bucket-XXXX/shard.parquet` 沿用 bar store 的分桶；每個 symbol 一個 row group，欄位為 cutoff 時間與 `rank_h01…rank_h14`（float32）。
+   - `label-index.parquet` 記錄每個 symbol 的檔案、row group、列數與樣本序號起點；`rank-labels.json` 記錄識別內容、各檔 sha256 與各市場的分組統計。
+   - 識別碼由 bar store manifest、樣本範圍、split、horizon、轉換規則、最小組大小與標籤程式的雜湊組成；任一項改變就重建。
+   - dataset 依 (symbol, cutoff) 對位並比對時間戳後讀取，dataloader 管線不變。
+4. **Baseline**（模型與 seed 沿用 `configs/baseline.json`）：
+   - GBDT：每個 horizon 一個 squared-error 回歸樹模型；去掉無標籤的列。
+   - GRU、DLinear、PatchTST：每個 horizon 一個輸出，損失為遮掉無標籤值後的均方誤差。
+   - 6 個規則訊號：原始訊號值直接當排序分數。
+   - always_buy、zero_return：常數 0，作為沒有排序能力的對照。
+5. **評估與選點**：
+   - 主要指標：每個（市場、horizon）的日 Rank IC 平均，以原報酬計算，與既有評估相同。
+   - 選點分數：三個市場等權、14 個 horizon 平均的 Rank IC，取負號，越小越好。早停與 checkpoint 選擇都用它。
+   - 輔助：rank 標籤上的均方誤差與相關係數、各市場與 horizon 的 Rank IC-IR、既有的前後五分位價差診斷。
+6. **執行**：標籤在 baseline GPU Pod 開始時建立（有界的多程序：計算報酬、排名、寫 Parquet）。之後的 Kronos 訓練使用同一份標籤。
+7. **判讀**：這組 baseline 只建立比較基準，不設門檻。Kronos `a-rank64` 另行登記並與這組 baseline 比較。日期混洗（`*-rank64-datemix`）在 `a-rank64` 之後再評估。
+
+判讀限制：
+
+- US 的樣本占多數；選點採市場等權，台股（TWSE、TPEX）合占三分之二。
+- validation 約 116 個交易日，Rank IC 的區間仍寬。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1868,6 +1901,39 @@ Interpretation limits:
 - Futures open (08:45) before stocks (09:00), and basis, dividend adjustments and rolls make the approximate returns imprecise.
 - TAIFEX's current list may miss contracts delisted during the period.
 - Margin, margin calls and futures capacity are not simulated beyond contract granularity.
+
+#### 13.10 Cross-sectional rank task: rank labels and baselines (written 2026-10-21 before implementation)
+
+Background: neither the numeric alpha nor the absolute direction robustly beat the baselines; only relative ranking within the same date and market has positive Rank IC (Kronos alpha: validation 0.099–0.119, test 0.091–0.124). The project changes to predicting the cross-sectional rank. The label window is unchanged: signals at the t0 close, entry at the t1 open, exit at the close of session h (h = 1…14). Entry thresholds and exit rules are set by the user's hermes agent, which backtests daily rolling predictions; the model only supplies the ranking at each horizon. The old alpha and direction models and baselines are not kept compatible.
+
+1. **Task**: `cross_sectional_rank`; its only parameter is the minimum group size `rank_min_group_size` (default 20).
+2. **Labels**:
+   - Source: the existing benchmark-relative adjusted log return (t+1 open to t+h close). Each market has one benchmark (TAIEX.TW for TWSE, TPEX.TWO for TPEX, VTI.US for US), so within a date and market the rank of the relative return equals the rank of the absolute return.
+   - Groups: same split, same cutoff date, same market; only stocks in that split's sample ranges.
+   - Transform: average rank r for ties, then (r − 0.5) / n, then the inverse standard normal distribution.
+   - Groups with fewer than `rank_min_group_size` stocks get no label (NaN) and are masked in training. Evaluation still computes Rank IC on the raw returns and is not affected by the mask.
+3. **Label storage (Parquet)**:
+   - One store per split, next to that split's bar store: `rank-labels/<identity>/`.
+   - `shards/bucket-XXXX/shard.parquet` keeps the bar store's buckets; each symbol is one row group with the cutoff time and `rank_h01…rank_h14` (float32).
+   - `label-index.parquet` records each symbol's file, row group, row count and first sample ordinal; `rank-labels.json` records the identity, each file's sha256 and per-market group statistics.
+   - The identity combines the bar-store manifest, the sample ranges, the split, the horizons, the transform, the minimum group size and the label code's hash; any change rebuilds the store.
+   - The dataset reads labels by (symbol, cutoff) after checking timestamps; the dataloader pipeline is unchanged.
+4. **Baselines** (models and seeds from `configs/baseline.json`):
+   - GBDT: one squared-error regressor per horizon; rows without labels are dropped.
+   - GRU, DLinear, PatchTST: one output per horizon; the loss is the mean squared error over labelled values.
+   - The 6 rule signals: the raw signal value is the ranking score.
+   - always_buy and zero_return: constant 0, a no-ranking-skill reference.
+5. **Evaluation and selection**:
+   - Primary metric: mean daily Rank IC for each (market, horizon), on raw returns, as in the existing evaluation.
+   - Selection score: the negative of the Rank IC averaged over the three markets with equal weight and over the 14 horizons; lower is better. Early stopping and checkpoint selection both use it.
+   - Supporting: mean squared error and correlation on the rank labels, Rank IC-IR per market and horizon, and the existing top-minus-bottom quintile diagnostic.
+6. **Execution**: the labels are built at the start of the baseline GPU Pod (bounded multiprocessing: returns, ranks, Parquet writes). Kronos training later uses the same labels.
+7. **Interpretation**: these baselines only set the reference, with no gate. Kronos `a-rank64` is registered separately and compared with them. Date mixing (`*-rank64-datemix`) is evaluated after `a-rank64`.
+
+Interpretation limits:
+
+- US has most of the samples; selection weights markets equally, so Taiwan (TWSE, TPEX) carries two thirds.
+- Validation has about 116 trading dates, so Rank IC intervals remain wide.
 
 ### 14. Remote-validation boundary
 
