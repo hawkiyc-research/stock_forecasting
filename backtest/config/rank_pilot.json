@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "name": "rank_pilot",
+  "description": "Kronos a-rank64 seed 42 against the rank baselines (experiment protocol section 13.11). Written before any Kronos rank prediction exists.",
+  "inputs": {
+    "rank_baseline": "baseline-5fb3473add4ee32a10fa563c53757d78bc30a527ef50d803b17360e313212a4d",
+    "baseline_root": "audit/baselines",
+    "predictions_root": "diagnostics/signal-predictions"
+  },
+  "kronos": {
+    "experiment": "a-rank64",
+    "seed": 42,
+    "checkpoint": "validation_best",
+    "prediction_task": "cross_sectional_rank"
+  },
+  "baselines": {
+    "patchtst": "jobs/patchtst-42",
+    "gbdt": "jobs/gbdt-42",
+    "gru": "jobs/gru-42",
+    "dlinear": "jobs/dlinear-42",
+    "ma_crossover": "jobs/rules/ma_crossover"
+  },
+  "primary_comparator": "patchtst",
+  "splits": ["validation", "test"],
+  "decision_split": "test",
+  "markets": {
+    "TW": ["TWSE", "TPEX"],
+    "US": ["US"]
+  },
+  "horizon_groups": {
+    "short": [1],
+    "medium": [2, 3, 4, 5],
+    "long": [6, 7, 8, 9, 10, 11, 12, 13, 14]
+  },
+  "rank_ic": {
+    "method": "spearman_average_ties",
+    "minimum_valid_stocks": 3
+  },
+  "bootstrap": {
+    "replicates": 1000,
+    "seed": 11,
+    "block_sessions": {"short": 5, "medium": 10, "long": 28}
+  },
+  "decisions": {
+    "H1": {"kind": "level", "market": "TW", "horizons": "short"},
+    "H2": {"kind": "paired", "market": "TW", "horizons": "short", "comparator": "patchtst"},
+    "H3": {"kind": "level", "market": "TW", "horizons": "long"}
+  },
+  "consistency_tolerance": 1e-9
+}
