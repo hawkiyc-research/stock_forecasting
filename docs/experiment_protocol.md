@@ -855,6 +855,22 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 台股標的清單以官方來源的下載內容為準，可能缺少期間內下市的標的（存活者偏誤，同 §13.4）。
 - 一致性檢查只涵蓋 test 期間；只發生在前瞻期間的資料問題，由資料檢查第 2 項把關。
 
+**§13.8 修訂補充（2026-10-20，實作前、取得前瞻資料之前）**
+
+原因：訓練資料管線的切分邏輯被納入資料組指紋，新增切分會讓現有資料組全部失效；而且模型若證實有價值，之後本來就需要獨立的推論流程。
+
+1. 前瞻資料改由獨立的前瞻推論管線產生，不建立新的訓練資料組。這一點取代修訂第 1 點的「在 RunPod CPU 以既有流程建立新資料組」：
+   - 在本機（台灣網路）以既有的證交所與櫃買中心 provider，抓取 2025-03-01 起至結束日的台股資料。
+   - 正規化、還原價、合格標的、基準對照與清理規則，一律呼叫訓練資料管線的同一批函式。
+2. 樣本群有兩個，都沿用 validation／test 的樣本規則：
+   - `overlap`：訊號日 2025-12-01 ≤ d < 2026-06-01，標籤早於 2026-06-01，與原 test 定義相同。
+   - `forward`：定義不變。
+3. 資料檢查：
+   - 第 3 項改與 `overlap` 比對。
+   - 新增第 4 項（GPU 前）：`overlap` 的台股列，新管線的模型輸入與共用評估快照逐列比對，至少 99% 的列最大相對差距 ≤ 10⁻⁶。
+4. 推論不載入任何資料組，只檢查模型契約；匯出紀錄輸入包的雜湊。管線一致性檢查改用 `overlap`。
+5. 其餘不變：GPU 型號、6 個 checkpoint、判準、程序、描述性補充。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1774,6 +1790,22 @@ Additional limits:
 - The new dataset holds Taiwan only; US rows are out of scope and affect no decision in this section.
 - The Taiwan instrument list is whatever the official sources return at download time and may miss stocks delisted during the period (survivorship bias, as in §13.4).
 - The consistency check covers the test period only; data problems confined to the forward period are caught by data check 2.
+
+**§13.8 supplement (2026-10-20, before implementation and before obtaining any forward data)**
+
+Reason: the training data pipeline's split logic is part of the dataset fingerprint, so a new split would invalidate every existing dataset; and if the model proves valuable, an independent inference flow is needed anyway.
+
+1. Forward data comes from an independent forward-inference pipeline; no training dataset is built. This replaces amendment item 1's "a new dataset is built with the existing workflow on a RunPod CPU Pod":
+   - Taiwan data from 2025-03-01 to the end date is fetched locally (Taiwan network) with the existing TWSE and TPEx providers.
+   - Normalization, adjustment, eligibility, benchmark mapping and cleaning all call the same functions as the training data pipeline.
+2. There are two populations, both using the validation/test sample rule:
+   - `overlap`: signal dates 2025-12-01 ≤ d < 2026-06-01, labels before 2026-06-01, equal to the original test definition.
+   - `forward`: defined as registered.
+3. Data checks:
+   - Check 3 compares against `overlap`.
+   - New check 4 (before GPU work): on `overlap` Taiwan rows, at least 99% of rows have model inputs within a maximum relative difference of 10⁻⁶ of the shared evaluation snapshot.
+4. Inference loads no dataset and checks only the model contract; exports record the input package hash. The pipeline consistency check uses `overlap`.
+5. Everything else is unchanged: GPU model, the 6 checkpoints, criteria, procedure and descriptive additions.
 
 ### 14. Remote-validation boundary
 

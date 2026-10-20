@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "name": "stage3-forward-test",
-  "description": "Pre-registered stage 3 forward test of TWSE 10-session R22-IR on unseen data from 2026-06-01 (experiment protocol section 13.8 and its 2026-10-20 amendment).",
+  "description": "Pre-registered stage 3 forward test of TWSE 10-session R22-IR on unseen data from 2026-06-01 (experiment protocol section 13.8, its 2026-10-20 amendment and supplement).",
   "inputs": {
     "alpha_baseline": "audit/baselines/baseline-3befc8e902e5c641b24ddf80c4ab7e11769529fa307e391de47e4416f1d885a3",
     "direction_baseline": "audit/baselines/baseline-b21f46ea4963562f03c648e9b0394f8a069767bca2a15a9f82e7c8ed69e04cc8",
@@ -65,21 +65,45 @@
   "split": "forward",
   "forward_start": "2026-06-01",
   "amendment": "2026-10-20",
+  "supplement": "2026-10-20",
   "data": {
-    "profile": "tw_only",
-    "start_inclusive": "2016-01-01",
+    "source": "forward_pipeline",
+    "markets": [
+      "TWSE",
+      "TPEX"
+    ],
+    "fetch_start_inclusive": "2025-03-01",
     "end_exclusive": null,
-    "end_rule": "UTC date the CPU Pod is created; written here before the Pod starts",
+    "end_rule": "UTC date the forward data is fetched; written here before fetching",
     "forward_label_sessions": 14,
-    "calendar_additions_from": "2026-06-01"
+    "calendar_additions_from": "2026-06-01",
+    "populations": {
+      "overlap": {
+        "start_inclusive": "2025-12-01",
+        "end_exclusive": "2026-06-01",
+        "labels_before": "2026-06-01"
+      },
+      "forward": {
+        "start_inclusive": "2026-06-01",
+        "end_exclusive": "end_exclusive",
+        "labels_before": "end_exclusive"
+      }
+    },
+    "sample_rule": "validation_test"
   },
   "data_checks": {
     "identity_tolerance": 1e-05,
     "identity_min_fraction": 0.999,
-    "overlap_split": "test",
+    "overlap_split": "overlap",
     "overlap_tolerance": 1e-05,
     "overlap_min_fraction": 0.99,
-    "overlap_min_coverage": 0.99
+    "overlap_min_coverage": 0.99,
+    "input_comparison": {
+      "population": "overlap",
+      "reference": "shared_evaluation_snapshot",
+      "max_relative_difference": 1e-06,
+      "min_fraction": 0.99
+    }
   },
   "inference": {
     "gpu": "NVIDIA GeForce RTX 5090",
@@ -110,11 +134,16 @@
         "run-20261015T064600Z-13b8b4376ea5413b-alpha",
         "checkpoint-018399"
       ]
+    ],
+    "dataset": null,
+    "contract": "model_only",
+    "records": [
+      "input_package_sha256"
     ]
   },
   "pipeline_check": {
     "signal": "R22_IR",
-    "split": "test",
+    "split": "overlap",
     "match_keys": [
       "symbol",
       "date"
