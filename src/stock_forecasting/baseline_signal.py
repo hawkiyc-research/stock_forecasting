@@ -80,12 +80,13 @@ class SignalBatchDataset(Dataset):
             from stock_forecasting.baseline_input import NeuralBatchDataset
 
             return NeuralBatchDataset(self.source, metadata=self.metadata).__getitems__(indices)
+        include_metadata = not self.neural or self.metadata
         arrays = (
-            signal_array_batch(
-                self.source, indices, include_metadata=not self.neural or self.metadata
-            )
+            signal_array_batch(self.source, indices, include_metadata=include_metadata)
             if self.task == "absolute_direction"
-            else self.source.array_batch(indices, include_timestamps=False)
+            else self.source.array_batch(
+                indices, include_timestamps=False, include_metadata=include_metadata
+            )
         )
         if not self.neural:
             return baseline_arrays_from_windows(arrays)

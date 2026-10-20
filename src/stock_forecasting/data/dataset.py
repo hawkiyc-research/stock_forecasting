@@ -379,6 +379,9 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
         self.rank_label_root: Path | None = None
         self._rank_index: dict[str, dict[str, Any]] | None = None
         self._rank_cache: OrderedDict[str, tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        # Rank shards keep separate handles so random sampling never evicts bar shards.
+        self._rank_parquet_cache: OrderedDict[str, tuple[Any, int]] = OrderedDict()
+        self._rank_parquet_bytes = 0
         if rank_label_root is not None:
             self.attach_rank_labels(rank_label_root)
 
@@ -427,7 +430,7 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
     def _rank_rows(self, symbol: str) -> tuple[np.ndarray, np.ndarray]:
         cached = self._rank_cache.pop(symbol, None)
         if cached is None:
-            table = self._read_symbol_table(self._rank_index[symbol], root=self.rank_label_root)
+            table = self._read_rank_table(self._rank_index[symbol])
             stamps = table["timestamp"].to_numpy().astype("datetime64[ns]").view(np.int64)
             values = np.column_stack(
                 [table[f"rank_h{h:02d}"].to_numpy() for h in self.horizons]
@@ -492,13 +495,42 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             self._timestamp_indexes.pop(evicted_symbol)
         return frame
 
-    def _read_symbol_table(self, row, *, numerical=False, root=None):
+    def _read_rank_table(self, row):
+        """Read one symbol's rank row group through a separate, bounded handle cache."""
+        import pyarrow.parquet as pq
+
+        key = str(row["shard_relative_path"])
+        # Rank footers are small; a quarter of the bar budget bounds all of them.
+        budget = self.parquet_cache_bytes // 4
+        cached = self._rank_parquet_cache.pop(key, None)
+        if cached is None:
+            handle = pq.ParquetFile(self.rank_label_root / key)
+            size = max(4096, handle.metadata.serialized_size * 4)
+            if size <= budget:
+                while self._rank_parquet_cache and (
+                    self._rank_parquet_bytes + size > budget
+                    or len(self._rank_parquet_cache) >= self.parquet_cache_files
+                ):
+                    _, (previous, previous_size) = self._rank_parquet_cache.popitem(last=False)
+                    previous.close()
+                    self._rank_parquet_bytes -= previous_size
+                self._rank_parquet_bytes += size
+                cached = (handle, size)
+        else:
+            handle, size = cached
+        if cached is not None:
+            self._rank_parquet_cache[key] = cached
+        try:
+            return handle.read_row_group(int(row["row_group"]))
+        finally:
+            if cached is None:
+                handle.close()
+
+    def _read_symbol_table(self, row, *, numerical=False):
         """Reuse bounded immutable shard metadata, not decoded windows or whole files."""
         import pyarrow.parquet as pq
 
-        relative = str(row["shard_relative_path"])
-        # Rank-label shards share relative names with bar shards; key them by full path.
-        key = relative if root is None else str(Path(root) / relative)
+        key = str(row["shard_relative_path"])
         cached = self._parquet_cache.pop(key, None)
         if cached is None:
             handle = pq.ParquetFile(self.root / key)
@@ -521,6 +553,8 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
         try:
             columns = None
             if numerical:
+                # schema_arrow is rebuilt on every access; read the names once.
+                available = set(handle.schema_arrow.names)
                 columns = [
                     name
                     for name in (
@@ -529,7 +563,7 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
                         ADJUSTED_CLOSE_FIELD,
                         ADJUSTED_VOLUME_FIELD,
                     )
-                    if name in handle.schema_arrow.names
+                    if name in available
                 ]
             return handle.read_row_group(int(row["row_group"]), columns=columns)
         finally:
@@ -537,6 +571,10 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
                 handle.close()
 
     def close(self):
+        for handle, _size in self._rank_parquet_cache.values():
+            handle.close()
+        self._rank_parquet_cache.clear()
+        self._rank_parquet_bytes = 0
         for handle, _size in self._parquet_cache.values():
             handle.close()
         self._parquet_cache.clear()
@@ -876,7 +914,6 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
                 "raw": raw,
                 "adjusted_close": adjusted,
                 "timestamps": timestamps,
-                "time_features": _timestamp_features(timestamps).numpy(),
                 "price_factor": adjusted / np.maximum(raw[:, 3], 1e-12),
                 "volume_factor": np.divide(
                     adjusted_volume,
@@ -957,6 +994,9 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             result["asset"][selected] = self._numeric_context(asset, context)
             result["benchmark"][selected] = self._numeric_context(benchmark, benchmark_context)
             if include_timestamps:
+                # Only Kronos consumes calendar features; baselines never pay for them.
+                if "time_features" not in asset:
+                    asset["time_features"] = _timestamp_features(asset["timestamps"]).numpy()
                 result["timestamp_features"][selected] = asset["time_features"][context]
             result["targets"][selected] = self._alpha_targets(
                 asset, benchmark, future, benchmark_future
