@@ -935,6 +935,53 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - US 的樣本占多數；選點採市場等權，台股（TWSE、TPEX）合占三分之二。
 - validation 約 116 個交易日，Rank IC 的區間仍寬。
 
+**§13.10 結果（2026-10-21）**：baseline `baseline-5fb3473a…` 全部完成。市場等權 Rank IC（validation → test）：PatchTST 0.057 → 0.035、GRU 0.056 → 0.007、GBDT 0.044 → 0.020、DLinear 0.033 → 0.003、均線交叉 0.020 → 0.043。US 在 test 維持 0.04–0.056；台股除 1 日外在 test 接近 0（GBDT、GRU、PatchTST 的 TWSE 1 日約 0.08）。只有 seed 42；每個市場與 horizon 的日 Rank IC 標準誤約 0.01–0.018。
+
+#### 13.11 Kronos 橫斷面排序模型 `a-rank64`（2026-10-21 於實作與訓練前寫入）
+
+背景：§13.10 的 baseline 顯示，學習型模型在 validation 有排序能力，但台股在 test 只剩 1 日 horizon 維持。本節登記 Kronos 排序模型的設定、指標分組與判定方式。台股 1 日與長天期的分開報告，是看過 §13.10 的 test 結果後才決定的，因此 test 上的判定屬於試行；最終確認以 2026-10-20 之後的前瞻資料為準，屆時另行登記。
+
+1. **模型與訓練**：
+   - Preset `a-rank64`：架構與 `a-alpha-point64` 相同（Kronos-base、LoRA 64、combined 數值分支、市場 embedding）。輸出頭每個 horizon 一個排序分數，不乘報酬尺度。
+   - 損失：§13.10 的 gauss-rank 標籤上的均方誤差；無標籤的值不計，各 horizon 等權。
+   - 資料：A 組（2021-01-01 起），切分不變；rank 標籤與 §13.10 的 baseline 使用同一份 Parquet。
+   - 最佳化設定沿用 `a-alpha-point64`（5 個 epoch、相同學習率與排程）。early stopping 與 checkpoint 選擇都用 §13.10 的選點分數（validation 上三個市場等權、14 個 horizon 平均的 Rank IC，取負號）。
+   - 只跑 seed 42；是否加跑其他 seed 依第 6 點決定。
+2. **評估樣本**：validation 只用於選點；test 用於本節判定；2026-10-20 之後的前瞻資料用於最終確認。
+3. **指標與分組**：
+   - 基本量：每個（市場、horizon、訊號日）的 Spearman Rank IC，以原報酬（benchmark-relative adjusted log return）計算，與 §13.10 相同。
+   - horizon 分組：短（h = 1）、中（h = 2–5）、長（h = 6–14）。
+   - 市場分組：台股（TWSE 與 TPEX 等權）、US。
+   - 每一格（市場組 × horizon 組）的每日值：先對組內 horizon 平均，台股再對 TWSE、TPEX 平均。這一格的指標是每日值在全部訊號日上的平均。
+   - 95% 區間：每日值序列的 circular moving-block bootstrap，重抽 1,000 次、seed 11；區塊長度短組 5、中組 10、長組 28 個交易日。
+   - 配對比較：同一訊號日上，Kronos 與比較模型的每日值相減，再用相同方式計算區間。
+   - 另報各市場、各 horizon 的值，只作描述。
+4. **比較對象**（依 validation 事先固定）：
+   - 主要：PatchTST。它在 §13.10 的 baseline 中 validation 選點分數最佳（市場等權 Rank IC 0.057）。
+   - 次要描述：GBDT、GRU、DLinear；均線交叉在 test 最佳，但這是事後觀察，只作描述。
+5. **判定**（test，seed 42）：
+   - H1（台股短天期）：Kronos 台股短組的 95% 區間下界大於 0。
+   - H2（台股短天期勝過 baseline）：Kronos 減 PatchTST 的台股短組配對差，95% 區間下界大於 0。
+   - H3（台股長天期，獨立判定）：Kronos 台股長組的 95% 區間下界大於 0。
+   - 中組與 US 只作描述。區間跨 0 即判定未通過，不另作解讀。
+6. **處置**：
+   - H1、H2 都通過：台股 1 日排序列為 hermes 的候選訊號；加跑 seed 43、44，並另行登記前瞻確認。
+   - H1 通過、H2 未通過：台股 1 日有排序能力，但 Kronos 沒有勝過 PatchTST；候選訊號由兩者在前瞻確認中比較，不預設採用 Kronos。
+   - H1 未通過：Kronos 在 test 沒有台股短天期排序能力，回到模型設計。
+   - H3 只決定台股長天期能否作為候選，不影響 H1、H2 的處置。
+   - 日期混洗（`a-rank64-datemix`）在本節結果之後另行登記。
+7. **程序**：
+   - 在 RunPod GPU 訓練；Pod 的可用 CPU 至少 12 顆才啟動。
+   - 以 `export-signal-predictions` 匯出所選 checkpoint 的 validation、test 逐筆預測；baseline 的逐筆預測從 volume 下載。
+   - 在本機 `backtest/` 計分，設定在計分前寫入 `backtest/config/rank_pilot.json`。結果寫成中英雙語報告。
+
+判讀限制：
+
+- test 已在 §13.10 看過；分組方式在看過結果後決定，所以 test 判定只是試行。
+- 台股 test 約 103 個訊號日，h 日標籤互相重疊，區塊 bootstrap 只部分處理自相關。
+- 只有一個 seed；§13.10 顯示模型間 0.01–0.02 的差距常在雜訊範圍內。
+- test 期間（2025-12 到 2026-05）台股的長天期排序對所有學習型模型都失效，可能是期間特性，不一定代表模型缺陷。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1934,6 +1981,53 @@ Interpretation limits:
 
 - US has most of the samples; selection weights markets equally, so Taiwan (TWSE, TPEX) carries two thirds.
 - Validation has about 116 trading dates, so Rank IC intervals remain wide.
+
+**§13.10 result (2026-10-21)**: baseline `baseline-5fb3473a…` completed. Market-equal Rank IC (validation → test): PatchTST 0.057 → 0.035, GRU 0.056 → 0.007, GBDT 0.044 → 0.020, DLinear 0.033 → 0.003, moving-average crossover 0.020 → 0.043. US holds on test at 0.04–0.056; Taiwan is near 0 on test except at 1 session (TWSE 1-session about 0.08 for GBDT, GRU and PatchTST). Seed 42 only; the standard error of the daily Rank IC is about 0.01–0.018 per market and horizon.
+
+#### 13.11 Kronos cross-sectional rank model `a-rank64` (written 2026-10-21 before implementation and training)
+
+Background: the §13.10 baselines show ranking skill on validation, but on test Taiwan keeps it only at 1 session. This section registers the Kronos rank model's settings, metric groups and decisions. Reporting Taiwan 1 session separately from long horizons was decided after seeing the §13.10 test results, so decisions on test are a pilot; final confirmation uses data after 2026-10-20 and will be registered separately.
+
+1. **Model and training**:
+   - Preset `a-rank64`: the same architecture as `a-alpha-point64` (Kronos-base, LoRA 64, combined numerical branch, market embedding). The head outputs one ranking score per horizon, not multiplied by return scales.
+   - Loss: mean squared error on the §13.10 gauss-rank labels; values without labels are excluded and horizons are weighted equally.
+   - Data: group A (from 2021-01-01) with unchanged splits; the rank labels are the same Parquet stores as the §13.10 baselines.
+   - Optimization settings follow `a-alpha-point64` (5 epochs, the same learning rates and schedule). Early stopping and checkpoint selection both use the §13.10 selection score (minus the validation Rank IC averaged over the three markets with equal weight and over the 14 horizons).
+   - Seed 42 only; item 6 decides whether more seeds run.
+2. **Evaluation samples**: validation only selects checkpoints; test decides this section; data after 2026-10-20 gives the final confirmation.
+3. **Metrics and groups**:
+   - Basic quantity: the Spearman Rank IC per (market, horizon, signal date), computed on raw returns (benchmark-relative adjusted log returns) as in §13.10.
+   - Horizon groups: short (h = 1), medium (h = 2–5), long (h = 6–14).
+   - Market groups: Taiwan (TWSE and TPEX weighted equally) and US.
+   - Each cell (market group × horizon group) has a daily value: the mean over the group's horizons, and for Taiwan the mean of TWSE and TPEX. The cell's metric is the mean of the daily values over all signal dates.
+   - 95% intervals: a circular moving-block bootstrap of the daily series, 1,000 replicates, seed 11; block length 5 sessions for short, 10 for medium and 28 for long.
+   - Paired comparisons: on the same signal dates, subtract the comparator's daily value from Kronos's and compute the interval the same way.
+   - Each market and each horizon is also reported, descriptively.
+4. **Comparators** (fixed from validation):
+   - Primary: PatchTST, the §13.10 baseline with the best validation selection score (market-equal Rank IC 0.057).
+   - Secondary descriptions: GBDT, GRU and DLinear; the moving-average crossover is best on test, but that is a post hoc observation and stays descriptive.
+5. **Decisions** (test, seed 42):
+   - H1 (Taiwan short horizon): the 95% interval lower bound of Kronos's Taiwan short cell is above 0.
+   - H2 (Taiwan short horizon beats the baseline): the 95% interval lower bound of the paired Kronos-minus-PatchTST difference in the Taiwan short cell is above 0.
+   - H3 (Taiwan long horizon, decided independently): the 95% interval lower bound of Kronos's Taiwan long cell is above 0.
+   - The medium group and US are descriptive. An interval that crosses 0 fails, with no further interpretation.
+6. **Disposition**:
+   - H1 and H2 pass: Taiwan 1-session ranking becomes a candidate signal for hermes; seeds 43 and 44 run, and a forward confirmation is registered separately.
+   - H1 passes and H2 fails: Taiwan 1-session ranking exists, but Kronos does not beat PatchTST; the forward confirmation compares the two, with no default preference for Kronos.
+   - H1 fails: Kronos has no Taiwan short-horizon ranking skill on test; work returns to model design.
+   - H3 only decides whether Taiwan long horizons can be candidates; it does not change the H1/H2 disposition.
+   - Date mixing (`a-rank64-datemix`) is registered separately after these results.
+7. **Procedure**:
+   - Training runs on a RunPod GPU, launched only when the Pod has at least 12 usable CPUs.
+   - `export-signal-predictions` exports the selected checkpoint's per-sample validation and test predictions; the baselines' per-sample predictions are downloaded from the volume.
+   - Scoring runs locally in `backtest/`, with settings written to `backtest/config/rank_pilot.json` before scoring. Results are written as a bilingual report.
+
+Interpretation limits:
+
+- Test was seen in §13.10, and the groups were chosen after those results, so the test decisions are only a pilot.
+- Taiwan test has about 103 signal dates, and h-session labels overlap; the block bootstrap only partly handles the autocorrelation.
+- One seed only; §13.10 shows that 0.01–0.02 differences between models are often within noise.
+- During test (2025-12 to 2026-05), Taiwan long-horizon ranking failed for every learned model; this may be a property of the period rather than a model defect.
 
 ### 14. Remote-validation boundary
 
