@@ -322,6 +322,11 @@ mkdir -p "${JOB_DIR}"
 
 {
     printf '#!/usr/bin/env bash\n'
+    # Bash reads scripts lazily and this runner lives on the network volume. One brace
+    # group makes bash parse it all before the job starts; otherwise a short or failed
+    # read after a long crash ends the runner with a syntax error (exit 2) before it
+    # publishes status.json or the terminal probe state.
+    printf '{\n'
     printf 'set -uo pipefail\n'
     printf 'umask 077\n'
     printf 'export RUNPOD_ROLE=%q\n' "${JOB_ROLE}"
@@ -481,10 +486,18 @@ mkdir -p "${JOB_DIR}"
         printf '  training_phase_completed=1\n'
         printf 'fi\n'
     fi
+    if [[ "${JOB_ROLE}" == "gpu-probe" ]]; then
+        printf 'status_retry_pending=0\n'
+    fi
     printf 'if ! publish_status "${status_state}" "${job_exit_code}" 0; then\n'
     printf '  printf '\''Unable to publish initial workflow status after three attempts\\n'\'' >&2\n'
     printf '  finalization_exit_code=74\n'
-    printf '  if ! publish_failed_status; then :; fi\n'
+    if [[ "${JOB_ROLE}" == "gpu-probe" ]]; then
+        # The diagnostic wait loop retries status.json while the volume is unavailable.
+        printf '  if ! publish_failed_status; then status_retry_pending=1; fi\n'
+    else
+        printf '  if ! publish_failed_status; then :; fi\n'
+    fi
     printf 'fi\n'
     if [[ "${JOB_ROLE}" == "gpu-train" || "${JOB_ROLE}" == "gpu-validation" || "${JOB_ROLE}" == "gpu-baseline" ]]; then
         printf 'if [[ ${job_exit_code} -eq 75 ]]; then\n'
@@ -547,14 +560,32 @@ mkdir -p "${JOB_DIR}"
         printf 'probe_terminal_state=failed\n'
         printf 'if [[ ${job_exit_code} -eq 0 ]]; then probe_terminal_state=succeeded; fi\n'
         printf 'if [[ ${job_exit_code} -eq 124 ]]; then probe_terminal_state=timed_out; fi\n'
-        printf 'if ! publish_probe_state "${probe_terminal_state}" "${job_exit_code}"; then\n'
-        printf '  printf '\''Diagnostic terminal signal could not be saved; local guard hard limit remains the fallback\\n'\'' >&2\n'
+        printf 'probe_terminal_exit_code=${job_exit_code}\n'
+        printf 'probe_state_retry_pending=0\n'
+        printf 'if ! publish_probe_state "${probe_terminal_state}" "${probe_terminal_exit_code}"; then\n'
+        printf '  printf '\''Diagnostic terminal signal could not be saved; retrying every 60 s, local guard hard limit remains the fallback\\n'\'' >&2\n'
+        printf '  probe_state_retry_pending=1\n'
         printf '  if [[ ${job_exit_code} -eq 0 ]]; then job_exit_code=74; fi\n'
         printf 'fi\n'
         printf 'printf '\''Diagnostic finished; awaiting Pod termination by the local guard\\n'\''\n'
         # Retain the GPU lease until the local guard removes the Pod; another
         # workload must not start between terminal publication and local polling.
-        printf 'while sleep 60; do :; done\n'
+        # A volume outage at job end can fail every publication attempt above, so
+        # retry what is still missing until the guard can see the terminal state.
+        printf 'while sleep 60; do\n'
+        # write-state accepts a terminal signal only after status.json records the same
+        # state and exit code, so status.json goes first and both reuse the probe pair.
+        # While status.json is pending, finalization_exit_code is 74 and the pair matches
+        # what publish_failed_status tried, except that a timeout stays timed_out.
+        printf '  if [[ ${status_retry_pending} -eq 1 ]] && publish_status "${probe_terminal_state}" "${probe_terminal_exit_code}" "${finalization_exit_code}"; then\n'
+        printf '    status_retry_pending=0\n'
+        printf '    printf '\''[%%s] Published %%s workflow status on retry\\n'\'' "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" "${probe_terminal_state}"\n'
+        printf '  fi\n'
+        printf '  if [[ ${status_retry_pending} -eq 0 && ${probe_state_retry_pending} -eq 1 ]] && publish_probe_state "${probe_terminal_state}" "${probe_terminal_exit_code}"; then\n'
+        printf '    probe_state_retry_pending=0\n'
+        printf '    printf '\''[%%s] Published %%s diagnostic terminal signal on retry\\n'\'' "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" "${probe_terminal_state}"\n'
+        printf '  fi\n'
+        printf 'done\n'
     elif [[ "${JOB_ROLE}" == "gpu-baseline" ]]; then
         printf 'if [[ ${job_exit_code} -eq 75 ]]; then exit 75; fi\n'
         printf 'printf '\''Baseline finished; awaiting Pod termination by the local guard\\n'\''\n'
@@ -567,6 +598,7 @@ mkdir -p "${JOB_DIR}"
         printf 'fi\n'
     fi
     printf 'exit "${job_exit_code}"\n'
+    printf '}\n'
 } > "${RUNNER_TMP}"
 mv "${RUNNER_TMP}" "${RUNNER}"
 chmod 700 "${RUNNER}"

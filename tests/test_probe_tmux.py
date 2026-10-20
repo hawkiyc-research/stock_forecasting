@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,49 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# GNU timeout without --foreground: when the job dies from a signal before the deadline,
+# it reports any core dump, disables its own core and re-raises that signal on itself.
+GNU_TIMEOUT_EMULATOR = r"""
+import contextlib
+import os
+import resource
+import signal
+import sys
+
+if sys.argv[1:3] != ["--signal=TERM", "--kill-after=60"]:
+    sys.exit(94)
+os.setpgid(0, 0)
+child = os.fork()
+if child == 0:
+    os.execvp(sys.argv[4], sys.argv[4:])
+_, status = os.waitpid(child, 0)
+if os.WIFEXITED(status):
+    sys.exit(os.WEXITSTATUS(status))
+job_signal = os.WTERMSIG(status)
+if os.WCOREDUMP(status):
+    print("timeout: the monitored command dumped core", file=sys.stderr, flush=True)
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+with contextlib.suppress(OSError, ValueError):
+    signal.signal(job_signal, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, [job_signal])
+os.kill(os.getpid(), job_signal)
+sys.exit(128 + job_signal)
+"""
+
+CRASHING_JOB = r"""
+import os
+import signal
+import sys
+
+runner, cut_runner = sys.argv[1], sys.argv[2] == "1"
+if cut_runner:
+    # End the runner file inside its post-job section, as a short volume read would.
+    content = open(runner, "rb").read()
+    os.truncate(runner, content.index(b"publish_status() {") + len(b"publish_status() {"))
+# SIGKILL leaves no macOS crash report; GNU timeout re-raises it like the SIGBUS seen.
+os.kill(os.getpid(), signal.SIGKILL)
+"""
 
 
 class ProbeHarness:
@@ -401,6 +445,114 @@ class ProbeTmuxTests(unittest.TestCase):
                 self.assertTrue((harness.root / "waiting-for-local-guard").is_file())
                 self.assertFalse((harness.root / "shutdown-called").exists())
                 self.assert_no_training_markers(harness)
+
+    def test_signal_killed_job_publishes_failure_even_if_runner_file_is_cut(self) -> None:
+        # On 2026-10-19 the runner exited 2 after a crash, with no status.json or probe
+        # state, because bash had not yet parsed its post-job tail on the volume.
+        python = shlex.quote(sys.executable)
+        killed_exit_code = 128 + signal.SIGKILL
+        for workflow, job_script in (
+            ("probe-scales", "runpod_probe_scales.sh"),
+            ("export-signal-predictions", "runpod_export_signal_predictions.sh"),
+        ):
+            for cut_runner in ("0", "1"):
+                with self.subTest(workflow=workflow, cut_runner=cut_runner):
+                    harness = self.harness()
+                    emulator = harness.bin / "gnu-timeout.py"
+                    emulator.write_text(GNU_TIMEOUT_EMULATOR, encoding="utf-8")
+                    harness.write_script(
+                        harness.bin / "timeout",
+                        f'exec {python} {shlex.quote(str(emulator))} "$@"\n',
+                    )
+                    job = harness.bin / "crashing-job.py"
+                    job.write_text(CRASHING_JOB, encoding="utf-8")
+                    harness.write_script(
+                        harness.scripts / job_script,
+                        f"""
+                        printf 'fixture worker crashing\\n'
+                        runner="$(dirname "${{RUNPOD_TMUX_LOG_FILE}}")/runner.sh"
+                        exec {python} {shlex.quote(str(job))} "${{runner}}" {cut_runner}
+                        """,
+                    )
+                    result = harness.command("runpod_tmux_launch.sh", workflow)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    runner = harness.run_worker()
+                    self.assertEqual(
+                        runner.returncode, killed_exit_code, runner.stdout + runner.stderr
+                    )
+                    self.assertEqual(harness.status()["state"], "failed")
+                    self.assertEqual(harness.status()["exit_code"], killed_exit_code)
+                    marker = json.loads(harness.diagnostic_marker().read_text())
+                    self.assertEqual(marker["state"], "failed")
+                    self.assertEqual(marker["exit_code"], killed_exit_code)
+                    self.assertTrue((harness.root / "waiting-for-local-guard").is_file())
+                    self.assertFalse((harness.root / "shutdown-called").exists())
+
+    def test_wait_loop_retries_publication_until_volume_recovers(self) -> None:
+        # A volume I/O error at job end fails every finalization attempt within seconds;
+        # the guard learns the terminal state only if the waiting runner retries it.
+        for workflow, job_script in (
+            ("probe-scales", "runpod_probe_scales.sh"),
+            ("export-signal-predictions", "runpod_export_signal_predictions.sh"),
+        ):
+            with self.subTest(workflow=workflow):
+                harness = self.harness()
+                harness.environment["RUNPOD_TEST_MODE"] = "1"
+                # Blocker files replace the job directory and diagnostic lifecycle root.
+                harness.write_script(
+                    harness.scripts / job_script,
+                    r"""
+                    job_dir="$(dirname "${RUNPOD_TMUX_LOG_FILE}")"
+                    printf '%s\n' "${job_dir}" > "${HARNESS_ROOT}/job-dir"
+                    for path in "${job_dir}" "${NETWORK_VOLUME_ROOT}/lifecycle/diagnostics"; do
+                        mv "${path}" "${path}.offline"
+                        printf 'fixture-volume-error\n' > "${path}"
+                    done
+                    printf 'fixture worker failed\n'
+                    exit 7
+                    """,
+                )
+                harness.write_script(
+                    harness.bin / "sleep",
+                    r"""
+                    if [[ "$1" != 60 ]]; then exec /bin/sleep "$@"; fi
+                    [[ "${RUNPOD_GPU_WORKFLOW_LEASE_HELD:-0}" == 1 && -e /dev/fd/9 ]] || exit 99
+                    waits="${HARNESS_ROOT}/guard-waits"
+                    count=$(( $(cat "${waits}" 2>/dev/null || printf 0) + 1 ))
+                    printf '%s\n' "${count}" > "${waits}"
+                    # The first retry still fails; the volume recovers before the second.
+                    if [[ ${count} -eq 2 ]]; then
+                        job_dir="$(cat "${HARNESS_ROOT}/job-dir")"
+                        for path in "${job_dir}" "${NETWORK_VOLUME_ROOT}/lifecycle/diagnostics"; do
+                            rm "${path}"
+                            mv "${path}.offline" "${path}"
+                        done
+                    fi
+                    if [[ ${count} -ge 4 ]]; then exit 1; fi
+                    """,
+                )
+                result = harness.command("runpod_tmux_launch.sh", workflow)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runner = harness.run_worker()
+                output = runner.stdout + runner.stderr
+                self.assertEqual(runner.returncode, 7, output)
+                self.assertEqual(harness.read("guard-waits"), "4\n", output)
+                self.assertIn("Diagnostic terminal signal could not be saved", output)
+                self.assertEqual(harness.status()["state"], "failed")
+                self.assertEqual(harness.status()["exit_code"], 7)
+                self.assertEqual(harness.status()["finalization_exit_code"], 74)
+                marker = json.loads(harness.diagnostic_marker().read_text())
+                self.assertEqual(marker["state"], "failed")
+                self.assertEqual(marker["exit_code"], 7)
+                self.assertEqual(
+                    marker["status_path"], str(harness.runners()[0].parent / "status.json")
+                )
+                # Each publication is retried until it succeeds once, then never again.
+                self.assertEqual(output.count("Published failed workflow status on retry"), 1)
+                self.assertEqual(
+                    output.count("Published failed diagnostic terminal signal on retry"), 1
+                )
+                self.assertFalse((harness.root / "shutdown-called").exists())
 
     def test_contended_lease_preserves_pod_without_running_probe(self) -> None:
         harness = self.harness()
