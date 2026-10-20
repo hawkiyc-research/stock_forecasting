@@ -805,6 +805,56 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 新資料組的還原價會因 6 月之後的除權息而改變歷史數值；評分只在新資料組內部進行。
 - 其餘限制同 §13.5（流動性、最低手續費、整股、股利稅、存活者偏誤）。
 
+**§13.8 修訂（2026-10-20，於前瞻資料下載與任何前瞻推論之前；上方原登記內容保留不改）**
+
+修訂原因：
+
+1. **只需要台股資料**：
+   - 第三階段只評台股。台股樣本的輸入只有個股本身和台股基準（`TAIEX.TW`、`TPEX.TWO`），行情來自證交所與櫃買中心官方來源，完全不用美股資料。
+   - 沿用 `us_tw_eodhd` 就得重新下載全部美股歷史，而這些列不參與評分。
+2. **需要明確的例外範圍**：§13.7 修訂後，推論改用 RunPod GPU 匯出流程。現行 checkpoint 載入規則要求資料組與訓練時完全相同，前瞻推論需要明確寫出可放行的差異。
+3. **需要後十分位才能解讀**：P2 發現 test 期間前、後十分位都勝過等權平均，前十分位要和後十分位一起看。
+
+修訂後的設定：
+
+1. **資料**（取代原第 1 點的前兩項）：
+   - 在 RunPod CPU 以既有流程建立新資料組，profile 改為 `tw_only`，只含證交所與櫃買中心官方資料。
+   - 起始日（2016-01-01）、universe 模式、清理規則、benchmark 對照、固定切分邊界，都與目前推論所用的共用評估快照相同。
+   - 結束日（不含）為建立 CPU Pod 當天（UTC），開 Pod 前寫入 `backtest/config/stage3.json`。
+   - 新增 `forward` 切分：訊號日 d 滿足 2026-06-01 ≤ d < 結束日，且第 14 個交易日的標籤日早於結束日。train、validation、test 的定義不變。
+   - 休市日：2026-06-01 之後若有證交所公告的臨時休市（例如颱風）或調整交易日，只補這段期間的日期，每一筆都列在報告中。2026-06-01 之前的日曆不變。
+2. **資料檢查**（取代原第 1 點的檢查清單；在本機進行，全部通過才開 GPU）：
+   1. 新資料組的 manifest 就緒。
+   2. `forward` 切分的台股列，§13.5 的記帳恆等式至少 99.9% 成立（誤差 ≤ 10⁻⁵）。
+   3. 與共用評估快照的 test 期間比對，以代號與訊號日對齊：
+      - 舊資料組的台股列，至少 99% 要在新資料組找得到。
+      - 對到的列中，至少 99% 的 `absolute_targets`（h = 1…14）差距都 ≤ 10⁻⁵。
+3. **推論範圍**（新增）：
+   - 只放行這些差異：資料組身分與產物、profile（`us_tw_eodhd` → `tw_only`）、結束日、`forward` 邊界，以及第 1 點允許補的休市日。
+   - 模型、輸入長度、天期、標籤定義、其餘清理規則、train／validation／test 邊界，都必須與 checkpoint 訓練時相同，由程式逐項檢查。
+   - `export.json` 記錄新舊兩個資料組的身分。
+   - 推論用的 GPU 型號（RTX 5090）、torch、Python 和 bf16 設定，都與 2026-10-19 的匯出相同。租不到 RTX 5090 時等待，不換 GPU。
+   - 推論 6 個 checkpoint 的 `forward` 切分：R21 的 003680、018399、022079，R22 的 011040、018399，R23 的 018399。
+4. **管線一致性檢查**（新增，評分前必須通過）：
+   - 在同一個 GPU 工作中，以新資料組對 R22-IR 推論 test 切分。
+   - 以代號與訊號日對齊 2026-10-19 匯出的 test 台股列，至少 99% 的舊列要對得到。
+   - 預期兩次的預測逐位元相同。若不完全相同，以下兩項都符合才算通過：
+     - (a) 對到的列，14 個天期合併計算的預測相關係數 ≥ 0.999。
+     - (b) 依 §13.6 重算的上市 10 日前十分位超額，與選點報告的 +103.2 bps 相差 ≤ 5 bps。
+   - 未通過：不評分；查明原因並記錄後才能重跑。
+5. **程序**（補充原第 5 點）：
+   - 順序：CPU 準備資料 → 本機資料檢查 → GPU 推論（含一致性檢查）→ 本機評分。
+   - 資料檢查與一致性檢查全部通過前，不計算任何前瞻指標。檢查紀錄不完整時，評分程式拒絕執行。
+   - 評分前若因技術故障重跑推論，可以，但要記錄原因；評分只使用一次推論的結果。
+   - 開始評分後不再重跑，也不重選模型、市場、天期或參數。
+6. **描述性補充**（不影響判定）：主要假說與每個次要訊號，都在前十分位旁同時列出後十分位超額，以及前後十分位差。
+
+判讀限制（補充）：
+
+- 新資料組只含台股，美股列不在範圍內，不影響本節任何判定。
+- 台股標的清單以官方來源的下載內容為準，可能缺少期間內下市的標的（存活者偏誤，同 §13.4）。
+- 一致性檢查只涵蓋 test 期間；只發生在前瞻期間的資料問題，由資料檢查第 2 項把關。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -1674,6 +1724,56 @@ Limits:
 - Only the summer-to-autumn 2026 market is covered.
 - The new dataset's adjusted prices change history after post-June corporate actions; scoring stays within the new dataset.
 - Other limits are as in §13.5 (liquidity, minimum commissions, board lots, dividend taxes, survivorship bias).
+
+**§13.8 amendment (2026-10-20, before the forward data download and any forward inference; the registered text above is kept unchanged)**
+
+Reasons:
+
+1. **Only Taiwan data is needed**:
+   - Stage 3 scores Taiwan only. A Taiwan sample's inputs are the stock itself and its Taiwan benchmark (`TAIEX.TW`, `TPEX.TWO`), and its prices come from the official TWSE and TPEx sources; it uses no US data.
+   - Keeping `us_tw_eodhd` would mean re-downloading the full US history for rows that are never scored.
+2. **An explicit exception is needed**: after the §13.7 amendment, inference runs through the RunPod GPU export. The current checkpoint loading rule requires the dataset to be identical to the training dataset, so forward inference needs the allowed differences written down.
+3. **The bottom decile is needed to interpret the top decile**: P2 found that on test both the top and the bottom decile beat the equal-weight average.
+
+Amended settings:
+
+1. **Data** (replaces the first two items of the original item 1):
+   - A new dataset is built with the existing workflow on a RunPod CPU Pod, with profile `tw_only`: official TWSE and TPEx data only.
+   - The start date (2016-01-01), universe mode, cleaning rules, benchmark mapping and fixed split boundaries equal those of the shared evaluation snapshot used for inference so far.
+   - The exclusive end date is the UTC date on which the CPU Pod is created, written to `backtest/config/stage3.json` before the Pod starts.
+   - A new `forward` split: signal date d with 2026-06-01 ≤ d < end date, whose 14th-session label date is before the end date. The train, validation and test definitions are unchanged.
+   - Holidays: only dates on or after 2026-06-01 may be added, for unscheduled closures (such as typhoons) or adjusted trading days announced by TWSE. Each addition is listed in the report; the calendar before 2026-06-01 is unchanged.
+2. **Data checks** (replace the original item 1 check list; run locally; all must pass before any GPU work):
+   1. The new dataset's manifest is ready.
+   2. For the `forward` split's Taiwan rows, the §13.5 accounting identity holds for at least 99.9% of pairs (within 10⁻⁵).
+   3. Against the shared evaluation snapshot's test period, matched by symbol and signal date:
+      - At least 99% of the old Taiwan rows are found in the new dataset.
+      - At least 99% of the matched rows have `absolute_targets` (h = 1…14) within 10⁻⁵ at every horizon.
+3. **Inference scope** (new):
+   - Only these differences are allowed: dataset identity and artifacts, profile (`us_tw_eodhd` → `tw_only`), end date, `forward` boundary, and the holidays allowed in item 1.
+   - Model, input length, horizons, label definitions, the rest of the cleaning rules and the train, validation and test boundaries must equal the checkpoint's training settings, checked item by item in code.
+   - `export.json` records the identities of both datasets.
+   - Inference uses the same GPU model (RTX 5090), torch, Python and bf16 settings as the 2026-10-19 exports. If no RTX 5090 is available, the work waits; the GPU is not changed.
+   - The `forward` split is inferred for 6 checkpoints: R21 003680, 018399 and 022079; R22 011040 and 018399; R23 018399.
+4. **Pipeline consistency check** (new; must pass before scoring):
+   - In the same GPU job, R22-IR infers the test split of the new dataset.
+   - Matched by symbol and signal date with the test Taiwan rows of the 2026-10-19 export, at least 99% of the old rows must be found.
+   - The predictions are expected to be bit-identical. If they are not, both of the following must hold:
+     - (a) On the matched rows, the correlation of predictions pooled over all 14 horizons is at least 0.999.
+     - (b) The TWSE 10-session top-decile excess recomputed per §13.6 is within 5 bps of the +103.2 bps in the selection report.
+   - Failure: no scoring; the cause is found and recorded before any re-run.
+5. **Procedure** (adds to the original item 5):
+   - Order: CPU data preparation → local data checks → GPU inference (with the consistency check) → local scoring.
+   - No forward metric is computed before all data checks and the consistency check pass. The scoring code refuses to run if the check records are incomplete.
+   - A technical re-run of inference before scoring is allowed, with the cause recorded; scoring uses the results of a single inference run.
+   - After scoring starts there are no re-runs, and models, markets, horizons and parameters are not re-selected.
+6. **Descriptive additions** (do not decide): the primary hypothesis and every secondary signal also list the bottom-decile excess and the top-minus-bottom spread next to the top decile.
+
+Additional limits:
+
+- The new dataset holds Taiwan only; US rows are out of scope and affect no decision in this section.
+- The Taiwan instrument list is whatever the official sources return at download time and may miss stocks delisted during the period (survivorship bias, as in §13.4).
+- The consistency check covers the test period only; data problems confined to the forward period are caught by data check 2.
 
 ### 14. Remote-validation boundary
 
