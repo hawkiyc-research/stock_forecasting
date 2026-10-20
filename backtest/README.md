@@ -152,6 +152,33 @@ uv run python -m twbacktest.selection --training-records "<RUNPOD_ARTIFACTS_DIR>
 輸出目錄包含 `report.json`（匯出核對、各候選的分數與選出結果）、`ranking.csv`、`portfolio.csv`
 與中英雙語 `summary.md`。
 
+### 第三階段前瞻檢驗
+
+依照 `docs/experiment_protocol.md` §13.8、其修訂與修訂補充，以 `config/stage3.json` 評分前瞻母體。
+執行前須先完成主專案 README「前瞻推論管線」的各步驟：`labels`、`compare-inputs`、上傳輸入包、
+GPU 推論，以及加 `--forward` 的下載。
+
+```bash
+uv run python -m twbacktest.stage3
+```
+
+程式先執行全部檢查並記錄結果：輸入包雜湊（資料檢查 1）、前瞻台股列的記帳恆等式（2）、
+`overlap` 標籤與共用評估快照（3）、`compare-inputs` 的結果與門檻（4），以及 R22-IR `overlap`
+預測與 2026-10-19 test 匯出的管線一致性檢查。任一項未通過就不計算任何前瞻指標，exit code 為 1。
+全部通過後，以 §13.6 的評估程式評分登記的訊號與選點結果，並只依主要假說（R22-IR、上市、10 日）
+判定：前十分位超額的 95% 區間下界大於 0，且固定組合年化淨超額大於 0。後十分位與前後差只作描述。
+某一組前瞻匯出評分過之後，再用另一組匯出評分會被拒絕。
+
+| 選項 | 說明 | 預設值 |
+| --- | --- | --- |
+| `--config` | 第三階段設定檔 | `config/stage3.json` |
+| `--artifacts-root` | 主專案 `artifacts/` 目錄 | `../artifacts` |
+| `--output-root` | 本次輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/stage3-<UTC 時間>-<隨機碼>` |
+| `--workers` | 平行 process 數，1 至 16 | 依 CPU 核心數與實體記憶體計算 |
+
+輸出目錄包含 `report.json`（各項檢查、使用的匯出與判定）、通過檢查時的 `ranking.csv` 與
+`portfolio.csv`，以及中英雙語 `summary.md`。
+
 ## English
 
 ### Purpose
@@ -320,3 +347,34 @@ uv run python -m twbacktest.selection --training-records "<RUNPOD_ARTIFACTS_DIR>
 
 The output directory contains `report.json` (export checks, every candidate's score and the
 selection), `ranking.csv`, `portfolio.csv` and a bilingual `summary.md`.
+
+### Stage 3 forward test
+
+Scores the forward population with `config/stage3.json`, following `docs/experiment_protocol.md`
+§13.8, its amendment and its supplement. First complete the steps of "Forward-inference
+pipeline" in the main project README: `labels`, `compare-inputs`, the package upload, GPU
+inference and the download with `--forward`.
+
+```bash
+uv run python -m twbacktest.stage3
+```
+
+Every check runs first and is recorded: the input package hashes (data check 1), the
+open-to-open identity on forward Taiwan rows (2), `overlap` labels against the shared evaluation
+snapshot (3), the `compare-inputs` result and thresholds (4), and the pipeline consistency check
+of R22-IR `overlap` predictions against the 2026-10-19 test export. If any fails, no forward
+metric is computed and the exit code is 1. When all pass, the §13.6 evaluation scores the
+registered signals and the selection picks, and only the primary hypothesis (R22-IR, TWSE,
+10 sessions) decides: the 95% interval lower bound of the top-decile excess is above 0 and the
+fixed portfolio's annual net excess is above 0. The bottom decile and the spread are descriptive.
+Once one set of forward exports has been scored, scoring a different set is refused.
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--config` | Stage 3 configuration file | `config/stage3.json` |
+| `--artifacts-root` | Main project `artifacts/` directory | `../artifacts` |
+| `--output-root` | Output directory for this run; it must not exist yet | `artifacts/diagnostics/backtest/stage3-<UTC time>-<random>` |
+| `--workers` | Parallel processes, 1 to 16 | Derived from CPU cores and physical memory |
+
+The output directory contains `report.json` (every check, the exports used and the decision),
+`ranking.csv` and `portfolio.csv` when the checks pass, and a bilingual `summary.md`.

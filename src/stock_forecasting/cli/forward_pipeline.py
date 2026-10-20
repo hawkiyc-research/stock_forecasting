@@ -152,10 +152,11 @@ def main(argv: list[str] | None = None) -> int:
         from stock_forecasting.forward.labels import write_population_labels
         from stock_forecasting.forward.package import POPULATION_SLOTS, open_population
 
+        # labels/inputs/<population>/ mirrors <baseline>/inputs/<split>/ for the backtest.
         for population in POPULATION_SLOTS:
             dataset = open_population(root / "package", population, h_start=1)
             summary = write_population_labels(
-                dataset, root / "labels" / population, population=population
+                dataset, root / "labels" / "inputs" / population, population=population
             )
             print(json.dumps({population: summary["sample_membership"]}, indent=1))
         return 0
