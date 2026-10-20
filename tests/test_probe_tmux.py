@@ -488,6 +488,72 @@ class ProbeTmuxTests(unittest.TestCase):
                     self.assertTrue((harness.root / "waiting-for-local-guard").is_file())
                     self.assertFalse((harness.root / "shutdown-called").exists())
 
+    def test_wait_loop_retries_publication_until_volume_recovers(self) -> None:
+        # A volume I/O error at job end fails every finalization attempt within seconds;
+        # the guard learns the terminal state only if the waiting runner retries it.
+        for workflow, job_script in (
+            ("probe-scales", "runpod_probe_scales.sh"),
+            ("export-signal-predictions", "runpod_export_signal_predictions.sh"),
+        ):
+            with self.subTest(workflow=workflow):
+                harness = self.harness()
+                harness.environment["RUNPOD_TEST_MODE"] = "1"
+                # Blocker files replace the job directory and diagnostic lifecycle root.
+                harness.write_script(
+                    harness.scripts / job_script,
+                    r"""
+                    job_dir="$(dirname "${RUNPOD_TMUX_LOG_FILE}")"
+                    printf '%s\n' "${job_dir}" > "${HARNESS_ROOT}/job-dir"
+                    for path in "${job_dir}" "${NETWORK_VOLUME_ROOT}/lifecycle/diagnostics"; do
+                        mv "${path}" "${path}.offline"
+                        printf 'fixture-volume-error\n' > "${path}"
+                    done
+                    printf 'fixture worker failed\n'
+                    exit 7
+                    """,
+                )
+                harness.write_script(
+                    harness.bin / "sleep",
+                    r"""
+                    if [[ "$1" != 60 ]]; then exec /bin/sleep "$@"; fi
+                    [[ "${RUNPOD_GPU_WORKFLOW_LEASE_HELD:-0}" == 1 && -e /dev/fd/9 ]] || exit 99
+                    waits="${HARNESS_ROOT}/guard-waits"
+                    count=$(( $(cat "${waits}" 2>/dev/null || printf 0) + 1 ))
+                    printf '%s\n' "${count}" > "${waits}"
+                    # The first retry still fails; the volume recovers before the second.
+                    if [[ ${count} -eq 2 ]]; then
+                        job_dir="$(cat "${HARNESS_ROOT}/job-dir")"
+                        for path in "${job_dir}" "${NETWORK_VOLUME_ROOT}/lifecycle/diagnostics"; do
+                            rm "${path}"
+                            mv "${path}.offline" "${path}"
+                        done
+                    fi
+                    if [[ ${count} -ge 4 ]]; then exit 1; fi
+                    """,
+                )
+                result = harness.command("runpod_tmux_launch.sh", workflow)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runner = harness.run_worker()
+                output = runner.stdout + runner.stderr
+                self.assertEqual(runner.returncode, 7, output)
+                self.assertEqual(harness.read("guard-waits"), "4\n", output)
+                self.assertIn("Diagnostic terminal signal could not be saved", output)
+                self.assertEqual(harness.status()["state"], "failed")
+                self.assertEqual(harness.status()["exit_code"], 7)
+                self.assertEqual(harness.status()["finalization_exit_code"], 74)
+                marker = json.loads(harness.diagnostic_marker().read_text())
+                self.assertEqual(marker["state"], "failed")
+                self.assertEqual(marker["exit_code"], 7)
+                self.assertEqual(
+                    marker["status_path"], str(harness.runners()[0].parent / "status.json")
+                )
+                # Each publication is retried until it succeeds once, then never again.
+                self.assertEqual(output.count("Published failed workflow status on retry"), 1)
+                self.assertEqual(
+                    output.count("Published failed diagnostic terminal signal on retry"), 1
+                )
+                self.assertFalse((harness.root / "shutdown-called").exists())
+
     def test_contended_lease_preserves_pod_without_running_probe(self) -> None:
         harness = self.harness()
         harness.environment.update(
