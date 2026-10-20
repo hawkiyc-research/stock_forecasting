@@ -322,6 +322,11 @@ mkdir -p "${JOB_DIR}"
 
 {
     printf '#!/usr/bin/env bash\n'
+    # Bash reads scripts lazily and this runner lives on the network volume. One brace
+    # group makes bash parse it all before the job starts; otherwise a short or failed
+    # read after a long crash ends the runner with a syntax error (exit 2) before it
+    # publishes status.json or the terminal probe state.
+    printf '{\n'
     printf 'set -uo pipefail\n'
     printf 'umask 077\n'
     printf 'export RUNPOD_ROLE=%q\n' "${JOB_ROLE}"
@@ -567,6 +572,7 @@ mkdir -p "${JOB_DIR}"
         printf 'fi\n'
     fi
     printf 'exit "${job_exit_code}"\n'
+    printf '}\n'
 } > "${RUNNER_TMP}"
 mv "${RUNNER_TMP}" "${RUNNER}"
 chmod 700 "${RUNNER}"
