@@ -118,29 +118,36 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({key: manifest[key] for key in ("raw", "calendar")}, indent=1))
         if any(manifest["calendar"].values()):
             print(
-                "WARNING: official sessions differ from the cleaning calendar; windows over "
-                "these dates are rejected. Report this before building the package.",
+                "WARNING: official sessions differ from the cleaning calendar. build applies "
+                "differences from 2026-06-01 to the forward package only and refuses earlier "
+                "ones. Report this before building the package.",
                 file=sys.stderr,
             )
         return 0
     if args.command == "build":
         from stock_forecasting.forward.fetch import load_fetch
-        from stock_forecasting.forward.package import build_package
+        from stock_forecasting.forward.package import build_package, calendar_additions_from_fetch
 
         fetch = load_fetch(root / "fetch")
         if fetch["end_exclusive"] != args.end:
             raise SystemExit("The fetch end date differs from --end")
+        try:
+            additions = calendar_additions_from_fetch(fetch)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
         payload = build_package(
             root / "fetch" / fetch["raw"]["relative_path"],
             root / "package",
             end_exclusive=args.end,
             workers=args.workers or default_workers(),
             fetch_manifest=fetch,
+            calendar_additions=additions,
         )
         print(json.dumps(
             {
                 "package": str(root / "package"),
                 "package_sha256": payload["package_sha256"],
+                "calendar_additions": payload["calendar_additions"],
                 "populations": {
                     name: values["samples"] for name, values in payload["populations"].items()
                 },

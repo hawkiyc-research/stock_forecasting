@@ -2490,9 +2490,10 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 1. `fetch`：以既有的證交所與櫃買中心 provider 抓取 `--start`（預設 2025-03-01）到 `--end`
    （不含）的日行情、除權息與加權／櫃買指數，速率與 CPU 準備相同。`--end` 不可晚於今天（UTC），
    須先寫入 `backtest/config/stage3.json`。原始回應依結束日快取，重跑不再連網。官方交易日與清理用
-   交易日曆不一致時（例如颱風停市）會印出 WARNING，此時先回報，不要繼續建包。
+   交易日曆不一致時（例如颱風停市）會印出 WARNING，並記錄在 `fetch.json` 的 `calendar`。
 2. `build`：以 `build_symbol_bar_store` 與 `ensure_sample_universe` 建立私有 K 線庫與清理後樣本索引，
-   並封存每個檔案的 SHA-256。兩個母體：`overlap`（訊號日 2025-12-01 至 2026-06-01，定義與原 test
+   並封存每個檔案的 SHA-256。`fetch.json` 中 2026-06-01 之後的交易日差異只套用在這個輸入包
+   （記錄於 `calendar_additions`），訓練與評估用的日曆不變；更早的差異會讓建包停止。兩個母體：`overlap`（訊號日 2025-12-01 至 2026-06-01，定義與原 test
    相同）與 `forward`（2026-06-01 至結束日，14 日標籤完整）。
 3. `labels`：以與 validation／test 相同的程式寫出兩個母體的 alpha 與絕對報酬標籤，格式同 baseline
    評估陣列（`targets.npy`、`absolute_targets.npy`、`metadata.npy`）。
@@ -6487,9 +6488,12 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
    CPU preparation's pacing. `--end` cannot be later than today (UTC) and must first be written
    to `backtest/config/stage3.json`. Raw responses are cached per end date, so a re-run needs no
    network. If the official sessions differ from the cleaning calendar (for example a typhoon
-   closure), a WARNING is printed; report it before building the package.
+   closure), a WARNING is printed and the differences are recorded under `calendar` in
+   `fetch.json`.
 2. `build` creates a private bar store and cleaned sample index with `build_symbol_bar_store` and
-   `ensure_sample_universe`, then seals the SHA-256 of every file. There are two populations:
+   `ensure_sample_universe`, then seals the SHA-256 of every file. Session differences from
+   2026-06-01 in `fetch.json` apply to this package only (recorded as `calendar_additions`); the
+   training and evaluation calendar is unchanged, and an earlier difference stops the build. There are two populations:
    `overlap` (signal dates 2025-12-01 to 2026-06-01, the original test definition) and `forward`
    (2026-06-01 to the end date, with complete 14-session labels).
 3. `labels` writes both populations' alpha and absolute-return labels with the same code as

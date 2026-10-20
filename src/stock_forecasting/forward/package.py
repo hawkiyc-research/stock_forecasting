@@ -73,6 +73,22 @@ def _package_files(root: Path) -> dict[str, str]:
     return files
 
 
+def calendar_additions_from_fetch(fetch_manifest: dict[str, Any]) -> dict[str, Any]:
+    """Official sessions that differ from the pinned calendar, allowed only from 2026-06-01."""
+    differences = fetch_manifest["calendar"]
+    closed = list(differences["calendar_sessions_without_trading"])
+    opened = list(differences["trading_days_missing_from_calendar"])
+    early = sorted(day for day in closed + opened if day < FORWARD_START)
+    if early:
+        raise ValueError(
+            f"Official sessions differ from the pinned calendar before {FORWARD_START}: "
+            f"{', '.join(early)}; the protocol allows additions only from {FORWARD_START}"
+        )
+    if not closed and not opened:
+        return {}
+    return {load_data_policy()["calendars"]["TWSE"]: {"open": opened, "closed": closed}}
+
+
 def build_package(
     raw_path: str | Path,
     output_root: str | Path,
@@ -80,9 +96,13 @@ def build_package(
     end_exclusive: str,
     workers: int = 1,
     fetch_manifest: dict[str, Any] | None = None,
+    calendar_additions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the store and sample index for both populations, then seal the package."""
     bounds = population_bounds(end_exclusive)
+    for changes in (calendar_additions or {}).values():
+        if any(day < FORWARD_START for days in changes.values() for day in days):
+            raise ValueError(f"Calendar additions are allowed only from {FORWARD_START}")
     raw = Path(raw_path).resolve(strict=True)
     root = Path(output_root).resolve(strict=False)
     if (root / PACKAGE_FILE).exists():
@@ -107,7 +127,9 @@ def build_package(
         },
         workers=workers,
     )
-    universe = ensure_sample_universe(store, workers=workers)
+    universe = ensure_sample_universe(
+        store, workers=workers, calendar_additions=calendar_additions
+    )
     marker = json.loads((universe / "universe.json").read_text())
     populations = {
         name: {
@@ -139,6 +161,8 @@ def build_package(
             "ranges_sha256": marker["ranges_sha256"],
         },
         "data_cleaning": load_data_policy(),
+        # Forward-only exchange announcements (protocol 13.8 amendment, item 1).
+        "calendar_additions": calendar_additions or {},
         "files": _package_files(root),
     }
     payload["package_sha256"] = canonical_json_sha256(payload["files"])

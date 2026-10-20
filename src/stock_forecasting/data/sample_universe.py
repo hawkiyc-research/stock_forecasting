@@ -303,13 +303,51 @@ def _split_spec(manifest):
     ]
 
 
+def validated_calendar_additions(additions, policy) -> dict:
+    """Exchange-announced session changes that apply to one sample universe only."""
+    if not additions:
+        return {}
+    calendars = set(policy["calendars"].values())
+    output = {}
+    for name, changes in additions.items():
+        if name not in calendars or not set(changes) <= {"open", "closed"}:
+            raise ValueError("Calendar additions name a configured calendar with open/closed")
+        for days in changes.values():
+            if days != sorted(set(days)) or any(
+                pd.Timestamp(day).date().isoformat() != day for day in days
+            ):
+                raise ValueError("Calendar addition dates must be sorted unique YYYY-MM-DD")
+        output[name] = {kind: list(changes.get(kind, [])) for kind in ("open", "closed")}
+        if set(output[name]["open"]) & set(output[name]["closed"]):
+            raise ValueError("A calendar addition cannot both open and close a date")
+    return output
+
+
+def apply_calendar_additions(sessions: pd.DatetimeIndex, changes) -> pd.DatetimeIndex:
+    if not changes:
+        return sessions
+    added = pd.DatetimeIndex(changes["open"]).tz_localize("UTC").as_unit("ns")
+    removed = pd.DatetimeIndex(changes["closed"]).tz_localize("UTC").as_unit("ns")
+    added = added[(added >= sessions.min()) & (added <= sessions.max())]
+    return sessions.union(added).difference(removed)
+
+
 def ensure_sample_universe(
-    root: Path, *, workers: int | None = None, cache_root: Path | None = None
+    root: Path,
+    *,
+    workers: int | None = None,
+    cache_root: Path | None = None,
+    calendar_additions=None,
 ):
-    """Build all split ranges with bounded workers, resuming completed bucket scans."""
+    """Build all split ranges with bounded workers, resuming completed bucket scans.
+
+    ``calendar_additions`` ({calendar: {"open": [...], "closed": [...]}}) is for the
+    forward pipeline only; without it the identity and sessions are unchanged.
+    """
     policy = load_data_policy()
     if version("exchange_calendars") != policy["calendar_version"]:
         raise ValueError("The offline calendar version differs from the data-cleaning policy")
+    additions = validated_calendar_additions(calendar_additions, policy)
     manifest = json.loads((root / "bar-store.json").read_text())
     identity = {
         "algorithm": ALGORITHM,
@@ -318,6 +356,8 @@ def ensure_sample_universe(
         "window_size": manifest["identity"]["window_size"],
         "splits": [list(row) for row in _split_spec(manifest)],
     }
+    if additions:
+        identity["calendar_additions"] = additions
     key = canonical_json_sha256(identity)
     parent = cache_root or root.parent / "sample-universes"
     output = parent / key
@@ -347,12 +387,11 @@ def ensure_sample_universe(
             market_rows = index.loc[index["market"] == market]
             start = pd.Timestamp(market_rows["start_at"].min()).date().isoformat()
             end = pd.Timestamp(market_rows["end_at"].max()).date().isoformat()
+            calendar = policy["calendars"][market]
             sessions[market] = [
                 v.isoformat()
-                for v in market_sessions(
-                    policy["calendars"][market],
-                    start,
-                    end,
+                for v in apply_calendar_additions(
+                    market_sessions(calendar, start, end), additions.get(calendar)
                 )
             ]
         atomic_write_json(output / "sessions.json", sessions)

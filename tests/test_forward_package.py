@@ -25,10 +25,14 @@ END = "2026-08-01"
 # A dividend inside the overlap windows, and one after 2026-06-01 that only the
 # forward fetch sees: it rescales every earlier adjusted price.
 EX_DATES = {"2026-01-15": 0.97, "2026-07-15": 0.98}
+# An unscheduled closure that the pinned calendar still lists as a session.
+CLOSED = "2026-07-10"
+ADDITIONS = {"XTAI": {"open": [], "closed": [CLOSED]}}
 
 
 def _bars(sessions, symbol, asset_type, market, *, scale, phase, last_day):
     sessions = sessions[sessions < pd.Timestamp(last_day, tz="UTC")]
+    sessions = sessions[sessions != pd.Timestamp(CLOSED, tz="UTC")]
     steps = np.arange(len(sessions), dtype=np.float64)
     close = scale * np.exp(0.0005 * steps + 0.02 * np.sin(steps / 7 + phase))
     opening = close * (1 + 0.002 * np.cos(steps + phase))
@@ -102,13 +106,17 @@ def stores(tmp_path_factory):
         )
         universe = ensure_sample_universe(reference, workers=1)
         forward_raw, sessions = _raw(root / "forward.parquet", END)
-        payload = build_package(forward_raw, root / "package", end_exclusive=END)
+        payload = build_package(
+            forward_raw, root / "package", end_exclusive=END, calendar_additions=ADDITIONS
+        )
+        unadjusted = build_package(forward_raw, root / "unadjusted", end_exclusive=END)
     except PermissionError as error:
         pytest.skip(f"process pools are not permitted here: {error}")
     test = LazyFinancialWindowDataset(
         reference, split="test", window_size=128, h_start=1, sample_index_root=universe
     )
-    return {"test": test, "package": root / "package", "payload": payload, "sessions": sessions}
+    return {"test": test, "package": root / "package", "payload": payload,
+            "unadjusted": unadjusted, "sessions": sessions}
 
 
 def test_overlap_inputs_and_labels_match_the_validation_test_pipeline(stores):
@@ -129,7 +137,8 @@ def test_overlap_inputs_and_labels_match_the_validation_test_pipeline(stores):
 def test_forward_population_follows_the_registered_definition(stores):
     forward = open_population(stores["package"], "forward", h_start=1)
     sessions = stores["sessions"]
-    sessions = sessions[sessions < pd.Timestamp(END, tz="UTC")]
+    sessions = sessions[(sessions < pd.Timestamp(END, tz="UTC"))
+                        & (sessions != pd.Timestamp(CLOSED, tz="UTC"))]
     expected = [
         day for position, day in enumerate(sessions[:-14])
         if day >= pd.Timestamp("2026-06-01", tz="UTC")
@@ -142,6 +151,31 @@ def test_forward_population_follows_the_registered_definition(stores):
     for symbol in ("2330.TW", "6488.TWO"):
         assert days[labels["metadata"]["symbol"] == symbol].equals(pd.DatetimeIndex(expected))
     assert set(labels["metadata"]["market"]) == {"TWSE", "TPEX"}
+    assert stores["payload"]["calendar_additions"] == ADDITIONS
+    # Without the closure, every window over 2026-07-10 counts as a missing session.
+    unadjusted = stores["unadjusted"]["populations"]
+    assert unadjusted["forward"]["samples"] < recorded // 2
+    assert unadjusted["overlap"]["samples"] == stores["payload"]["populations"]["overlap"][
+        "samples"
+    ]
+
+
+def test_calendar_additions_come_only_from_forward_dates(tmp_path):
+    from stock_forecasting.forward.package import calendar_additions_from_fetch
+
+    def fetch(closed, opened=()):
+        return {"calendar": {"calendar_sessions_without_trading": list(closed),
+                             "trading_days_missing_from_calendar": list(opened)}}
+
+    assert calendar_additions_from_fetch(fetch([])) == {}
+    assert calendar_additions_from_fetch(fetch([CLOSED])) == ADDITIONS
+    with pytest.raises(ValueError, match="2026-05-29"):
+        calendar_additions_from_fetch(fetch([CLOSED, "2026-05-29"]))
+    with pytest.raises(ValueError, match="only from 2026-06-01"):
+        build_package(
+            tmp_path / "none.parquet", tmp_path / "p", end_exclusive=END,
+            calendar_additions={"XTAI": {"open": [], "closed": ["2026-05-29"]}},
+        )
 
 
 def test_package_is_sealed_and_labels_are_written_in_baseline_format(stores, tmp_path):
