@@ -8,12 +8,16 @@ identity field: complete months share one key, while an incomplete month is keye
 date the data was cut off and is never reused by a later end date. Every other request
 keeps its historical key.
 
-Month entries cached before scopes existed carry the historical key. Such an entry is
-reused for a complete month only when its file was written after the month ended (the
-same file time the client already reports as a cache hit's request time), so history
-already on the volume is not downloaded again while an entry written mid-month never
-passes as complete. Unscoped month entries must therefore never be copied: a copy gets a
-new file time.
+The dataset preparation is frozen (tests/test_full_workflow_control_plane.py) and keeps
+the historical key without a scope. The two stay compatible in both directions:
+- a complete month fetched with a scope is also stored under the historical key, so the
+  dataset preparation reuses it; an unfinished month never is;
+- an entry under the historical key is reused for a complete month only when its file was
+  written after the month ended (the same file time the client already reports as a cache
+  hit's request time), so history already on the volume is not downloaded again while an
+  entry written mid-month never passes as complete.
+An unscoped month entry is therefore copied only once it is known to be complete: a copy
+gets a new file time.
 """
 
 from __future__ import annotations

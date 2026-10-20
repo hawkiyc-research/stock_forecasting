@@ -48,6 +48,8 @@ GUARD_LIFECYCLE_KINDS = frozenset(
         "stage1-baseline",
         # CPU research Pods never touch training, validation or dataset markers.
         "research-tw-information",
+        # Forward input packages (protocol 13.8) are prepared apart from any training dataset.
+        "forward-cpu-preparation",
     }
 )
 GUARD_LIFECYCLE_STATES = frozenset(
@@ -2124,6 +2126,9 @@ def command_write_state(arguments):
         "stage1-baseline": volume_root / "lifecycle" / "stage1" / "baseline.json",
         "research-tw-information": (
             volume_root / "lifecycle" / "research" / "tw-information.json"
+        ),
+        "forward-cpu-preparation": (
+            volume_root / "lifecycle" / "forward" / "cpu-preparation.json"
         ),
     }
     expected_output = canonical_outputs.get(arguments.kind)

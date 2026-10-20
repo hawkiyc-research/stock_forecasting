@@ -620,6 +620,29 @@ class CachedJsonClient:
             return None
         return unscoped_sha256, cached
 
+    def _publish_unscoped_twin(
+        self,
+        endpoint: str,
+        params: Mapping[str, Any],
+        *,
+        body: bytes,
+        payload: Any,
+    ) -> None:
+        """Also store a response the scope calls complete under its historical key.
+
+        Readers without a scope, such as the dataset preparation, then reuse it; an
+        unfinished period is never stored there.
+        """
+
+        if self.cache_scope is None or not self.cache_scope(endpoint, params):
+            return
+        if not self.cache_scope.reuses_unscoped(endpoint, params, datetime.now(UTC)):
+            return
+        unscoped_sha256, _identity = self._identity(
+            endpoint=endpoint, params=params, scoped=False
+        )
+        self._publish_cache_entry(self._cache_path(unscoped_sha256), body=body, payload=payload)
+
     def _publish_cache_entry(
         self,
         path: Path,
@@ -743,6 +766,7 @@ class CachedJsonClient:
                     body=body,
                     payload=payload,
                 )
+                self._publish_unscoped_twin(endpoint, params, body=body, payload=payload)
                 return (
                     payload,
                     self._record(

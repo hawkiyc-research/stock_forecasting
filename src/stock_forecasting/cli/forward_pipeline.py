@@ -4,6 +4,7 @@
     build           sealed input package: private bar store and cleaned sample index
     labels          realized labels of the overlap and forward populations
     compare-inputs  data check 4: overlap inputs against the shared evaluation snapshot
+    export-cache    copy of the fetch cache for the shared cache on the network volume
 
 Everything is written below ARTIFACTS/forward/<end>/. GPU inference runs on RunPod with
 ``export-signal-predictions --forward-package``; no training dataset is created or read.
@@ -54,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("build", "Build the sealed forward input package"),
         ("labels", "Write overlap and forward labels"),
         ("compare-inputs", "Data check 4 against the shared evaluation snapshot"),
+        ("export-cache", "Re-keyed fetch cache for the network volume's shared cache"),
     ):
         command = commands.add_parser(name, help=text, allow_abbrev=False)
         command.add_argument(
@@ -63,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--artifacts", type=Path, default=Path("artifacts"))
         if name == "fetch":
             from stock_forecasting.forward.fetch import (
+                DEFAULT_MAX_BACKOFF_SECONDS,
                 DEFAULT_REQUESTS_PER_SECOND,
                 DEFAULT_START,
             )
@@ -74,6 +77,10 @@ def build_parser() -> argparse.ArgumentParser:
             )
             command.add_argument(
                 "--workers", type=int, default=2, help="Concurrent requests per exchange"
+            )
+            command.add_argument(
+                "--max-backoff-seconds", type=float, default=DEFAULT_MAX_BACKOFF_SECONDS,
+                help="Longest wait between retries of one request",
             )
             command.add_argument(
                 "--shared-cache", type=Path, metavar="VOLUME/datasets/NAMESPACE/api-cache",
@@ -126,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             start=args.start,
             end_exclusive=args.end,
             requests_per_second=args.qps,
+            max_backoff_seconds=args.max_backoff_seconds,
             workers=args.workers,
             cache_root=args.shared_cache,
             shared_cache=args.shared_cache is not None,
@@ -186,6 +194,22 @@ def main(argv: list[str] | None = None) -> int:
                 dataset, root / "labels" / "inputs" / population, population=population
             )
             print(json.dumps({population: summary["sample_membership"]}, indent=1))
+        return 0
+    if args.command == "export-cache":
+        from stock_forecasting.forward.cache_export import export_shared_cache
+
+        manifest = export_shared_cache(
+            root / "fetch", root / "shared-cache", end_exclusive=args.end
+        )
+        print(json.dumps(
+            {
+                "output": str(root / "shared-cache"),
+                "files": len(manifest["files"]),
+                "rekeyed_complete_months": manifest["rekeyed_complete_months"],
+                "skipped_unfinished_months": len(manifest["skipped_unfinished_months"]),
+            },
+            indent=1,
+        ))
         return 0
     from stock_forecasting.data.manifest import atomic_write_json
     from stock_forecasting.forward.compare import compare_inputs

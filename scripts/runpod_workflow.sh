@@ -21,6 +21,7 @@ Usage:
   bash scripts/runpod_workflow.sh selection show
   bash scripts/runpod_workflow.sh sync [--dry-run|--apply]
   bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
+  bash scripts/runpod_workflow.sh cpu prepare --forward YYYY-MM-DD [--taiwan-qps QPS] [--maxRuntime DURATION] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh research tw-information [--maxRuntime DURATION] [--taiwan-qps QPS] [--eodhd-qps QPS] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline [--experiment a-signal64|b-signal64|a-signal64-datemix|b-signal64-datemix]]
   bash scripts/runpod_workflow.sh train [--experiment a-signal64|b-signal64|NAME ...] [--seed N ...] [--launchWorkers N] [--maxRuntime DURATION] [--gpuId GPU_ID]
@@ -39,6 +40,8 @@ Usage:
   bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays|--evaluation-data [--list]
   bash scripts/runpod_workflow.sh download-signal-predictions --forward YYYY-MM-DD RUN_ID[/checkpoint-NNNNNN] [...]
   bash scripts/runpod_workflow.sh upload-forward-package YYYY-MM-DD
+  bash scripts/runpod_workflow.sh download-forward-package YYYY-MM-DD
+  bash scripts/runpod_workflow.sh upload-forward-cache YYYY-MM-DD
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF
@@ -115,33 +118,48 @@ case "${COMMAND}" in
         cpu_number=8
         cpu_flavor=cpu3g
         cpu_interactive=0
+        # --forward END prepares the forward input package (protocol 13.8) instead of
+        # the selected training dataset; dataset-only options are refused with it.
+        cpu_forward_end=""
+        cpu_dataset_option=""
+        cpu_max_runtime_given=0
         if [[ $# -eq 0 ]]; then
             cpu_interactive=1
         fi
         while [[ $# -gt 0 ]]; do
             case "$1" in
+                --forward)
+                    [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+                    cpu_forward_end="$2"
+                    shift 2
+                    ;;
                 --interactive)
                     cpu_interactive=1
+                    cpu_dataset_option="$1"
                     shift
                     ;;
                 --maxRuntime|--max-runtime)
                     [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
                     cpu_max_runtime="$2"
+                    cpu_max_runtime_given=1
                     shift 2
                     ;;
                 --prepareReserve|--prepare-reserve)
                     [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
                     cpu_prepare_reserve="$2"
+                    cpu_dataset_option="$1"
                     shift 2
                     ;;
                 --maxApiCalls|--max-api-calls)
                     [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
                     cpu_max_api_calls="$2"
+                    cpu_dataset_option="$1"
                     shift 2
                     ;;
                 --eodhdQps|--eodhd-qps)
                     [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
                     cpu_eodhd_qps="$2"
+                    cpu_dataset_option="$1"
                     shift 2
                     ;;
                 --taiwanQps|--taiwan-qps)
@@ -171,6 +189,44 @@ case "${COMMAND}" in
                     ;;
             esac
         done
+        if [[ -n "${cpu_forward_end}" ]]; then
+            if [[ -n "${cpu_dataset_option}" ]]; then
+                echo "${cpu_dataset_option} applies only to dataset preparation, not --forward" >&2
+                exit 2
+            fi
+            if [[ ! "${cpu_forward_end}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+                || ! python3 -c 'import datetime, sys; datetime.date.fromisoformat(sys.argv[1])' \
+                    "${cpu_forward_end}" 2>/dev/null; then
+                echo "--forward requires a YYYY-MM-DD end date" >&2
+                exit 2
+            fi
+            # Only published sessions can be fetched (the end date is exclusive).
+            if [[ "${cpu_forward_end}" > "$(date -u +%Y-%m-%d)" ]]; then
+                echo "--forward end date cannot be later than today (UTC)" >&2
+                exit 2
+            fi
+            if [[ ${cpu_max_runtime_given} -eq 0 ]]; then
+                cpu_max_runtime=3h
+            fi
+            runpod_validate_cpu_number "${cpu_number}"
+            runpod_validate_cpu_flavor "${cpu_flavor}"
+            runpod_validate_positive_number "${cpu_taiwan_qps}" --taiwan-qps
+            cpu_max_seconds="$(runpod_duration_seconds "${cpu_max_runtime}" --maxRuntime)"
+            cpu_max_backoff_seconds="$(runpod_duration_seconds \
+                "${cpu_max_backoff}" --maxBackoff)"
+            export RUNPOD_CPU_PREPARE_MODE=forward
+            export RUNPOD_FORWARD_END="${cpu_forward_end}"
+            export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${cpu_max_seconds}"
+            export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((cpu_max_seconds + 3600))"
+            export RUNPOD_CPU_TAIWAN_QPS="${cpu_taiwan_qps}"
+            export RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS="${cpu_max_backoff_seconds}"
+            export RUNPOD_CPU_VCPU_COUNT="${cpu_number}"
+            export RUNPOD_CPU_FLAVOR_ID="${cpu_flavor}"
+            unset RUNPOD_CPU_MAX_API_CALLS RUNPOD_CPU_EODHD_QPS RUNPOD_CPU_PREPARE_RESERVE_SECONDS
+            exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
+        fi
+        export RUNPOD_CPU_PREPARE_MODE=dataset
+        unset RUNPOD_FORWARD_END
         if [[ ${cpu_interactive} -eq 1 ]]; then
             cat >&2 <<'EOF'
 CPU preparation acquisition and resource configuration
@@ -412,6 +468,7 @@ EOF
         export RUNPOD_CPU_VCPU_COUNT="${research_cpu_number}"
         export RUNPOD_CPU_FLAVOR_ID="${research_cpu_flavor}"
         unset RUNPOD_CPU_MAX_API_CALLS RUNPOD_CPU_PREPARE_RESERVE_SECONDS
+        unset RUNPOD_CPU_PREPARE_MODE RUNPOD_FORWARD_END
         exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
         ;;
     readiness)
@@ -556,6 +613,12 @@ EOF
         ;;
     upload-forward-package)
         exec bash "${SCRIPT_DIR}/upload_runpod_forward_package.sh" "$@"
+        ;;
+    download-forward-package)
+        exec bash "${SCRIPT_DIR}/download_runpod_forward_package.sh" "$@"
+        ;;
+    upload-forward-cache)
+        exec bash "${SCRIPT_DIR}/upload_runpod_forward_cache.sh" "$@"
         ;;
     download-research)
         exec bash "${SCRIPT_DIR}/download_runpod_research.sh" "$@"

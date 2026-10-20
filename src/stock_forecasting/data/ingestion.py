@@ -58,7 +58,6 @@ from stock_forecasting.data.providers import (
     TpexRelayTransport,
     TWSEProvider,
 )
-from stock_forecasting.data.providers.cache_scope import taiwan_month_scope
 from stock_forecasting.data.schema import (
     TRAINING_SECURITY_SCOPE,
     TRAINING_TARGET_ASSET_TYPES,
@@ -1401,8 +1400,6 @@ def ingest_daily_ohlcv(
                         retryable_status_codes={403, 408, 425, 429},
                         transport=tpex_transport,
                         request_budget=request_budget,
-                        # An unfinished benchmark month must never be shared as complete.
-                        cache_scope=taiwan_month_scope(options.end),
                     )
                     provider = provider_class(client)
                     action_fetch = _provider_data_call(

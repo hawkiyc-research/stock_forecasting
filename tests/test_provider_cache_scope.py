@@ -139,6 +139,21 @@ def test_history_cached_before_scopes_is_reused_only_when_written_after_month_en
     assert len(session.calls) == 2
 
 
+def test_a_fetched_complete_month_is_also_stored_for_readers_without_a_scope(tmp_path):
+    september = {"response": "json", "date": "20260901"}
+    october = {"response": "json", "date": "20261001"}
+    fetched = _Session({"data": ["fetched"]})
+    _client(tmp_path, fetched, end="2026-10-20").get_json(TWSE_MONTH, params=september)
+    _client(tmp_path, fetched, end="2026-10-20").get_json(TWSE_MONTH, params=october)
+    assert len(fetched.calls) == 2
+    # The dataset preparation (no scope) reuses the complete month, never the partial one.
+    plain = _Session({"data": ["plain"]})
+    payload, record = _client(tmp_path, plain).get_json(TWSE_MONTH, params=september)
+    assert payload == {"data": ["fetched"]} and record.cache_hit
+    payload, record = _client(tmp_path, plain).get_json(TWSE_MONTH, params=october)
+    assert payload == {"data": ["plain"]} and not record.cache_hit
+
+
 def test_scope_covers_every_provider_benchmark_month_endpoint():
     source = inspect.getsource(TWSEProvider.fetch_benchmark_month) + inspect.getsource(
         TPExProvider.fetch_benchmark_month

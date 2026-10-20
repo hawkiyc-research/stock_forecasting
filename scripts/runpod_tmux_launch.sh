@@ -109,6 +109,22 @@ case "$1" in
         FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/stage1/cpu-preparation.json"
         FAILURE_LIFECYCLE_KIND=stage1-cpu-preparation
         PROVIDER_WAIT_EXIT_ALLOWED=1
+        # Forward mode (set when the Pod was created) prepares a forward input package with
+        # its own job and marker; the frozen dataset job and its lifecycle are not involved,
+        # and there is no acquisition budget to pause for.
+        case "${RUNPOD_CPU_PREPARE_MODE:-dataset}" in
+            dataset) ;;
+            forward)
+                JOB_SCRIPT="${SCRIPT_DIR}/runpod_cpu_prepare_forward.sh"
+                FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/forward/cpu-preparation.json"
+                FAILURE_LIFECYCLE_KIND=forward-cpu-preparation
+                PROVIDER_WAIT_EXIT_ALLOWED=0
+                ;;
+            *)
+                echo "RUNPOD_CPU_PREPARE_MODE must be dataset or forward" >&2
+                exit 2
+                ;;
+        esac
         ;;
     cpu-finalize)
         SESSION_NAME=stock-forecasting-cpu-finalize

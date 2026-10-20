@@ -31,9 +31,33 @@ case "${RUNPOD_CPU_WORKFLOW}" in
         exit 2
         ;;
 esac
+# prepare builds the selected training dataset, or in forward mode a forward input
+# package (protocol 13.8) from official Taiwan data; forward never reads or writes a
+# training dataset, its readiness or the active selection.
+RUNPOD_CPU_PREPARE_MODE="${RUNPOD_CPU_PREPARE_MODE:-dataset}"
+RUNPOD_FORWARD_END="${RUNPOD_FORWARD_END:-}"
+case "${RUNPOD_CPU_PREPARE_MODE}" in
+    dataset) RUNPOD_FORWARD_END="" ;;
+    forward)
+        if [[ "${RUNPOD_CPU_WORKFLOW}" != "prepare" ]]; then
+            echo "Forward mode belongs to the prepare workflow" >&2
+            exit 2
+        fi
+        if [[ ! "${RUNPOD_FORWARD_END}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "RUNPOD_FORWARD_END must use YYYY-MM-DD" >&2
+            exit 2
+        fi
+        ;;
+    *)
+        echo "RUNPOD_CPU_PREPARE_MODE must be dataset or forward" >&2
+        exit 2
+        ;;
+esac
 RUNPOD_POD_NAME="${RUNPOD_CPU_POD_NAME:-stock-forecasting-cpu-prepare}"
 if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
     RUNPOD_POD_NAME="${RUNPOD_CPU_RESEARCH_POD_NAME:-stock-forecasting-cpu-research}"
+elif [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" ]]; then
+    RUNPOD_POD_NAME="${RUNPOD_CPU_FORWARD_POD_NAME:-stock-forecasting-cpu-prepare-forward}"
 fi
 runpod_validate_project_resource_name "${RUNPOD_POD_NAME}" RUNPOD_CPU_POD_NAME
 RUNPOD_IMAGE="${RUNPOD_IMAGE:-runpod/pytorch:1.0.7-cu1281-torch291-ubuntu2404}"
@@ -68,13 +92,18 @@ if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
     RUNPOD_CPU_TMUX_WORKFLOW=cpu-research
     RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/research/tw-information.json
     RUNPOD_CPU_POD_LABEL="CPU research"
+elif [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" ]]; then
+    RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/forward/cpu-preparation.json
+    RUNPOD_CPU_POD_LABEL="CPU forward preparation"
 elif [[ "${RUNPOD_STAGE}" == "stage2" ]]; then
     RUNPOD_CPU_TMUX_WORKFLOW=cpu-finalize
     RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/stage1/mixed-finalization.json
 fi
-# Taiwan acquisition (stage 1 preparation or research) reaches TPEx through the relay.
+# Taiwan acquisition (stage 1 preparation, forward preparation or research) reaches TPEx
+# through the relay.
 REQUIRE_TPEX_RELAY=0
 if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" \
+    || "${RUNPOD_CPU_PREPARE_MODE}" == "forward" \
     || ( "${RUNPOD_STAGE}" == "stage1" \
         && ( "${FIN_TS_DATASET_PROFILE}" == "tw_only" \
             || "${FIN_TS_DATASET_PROFILE}" == "us_tw_eodhd" \
@@ -228,10 +257,17 @@ if [[ -n "${STAGE1_SYMBOL_LIMIT}" && ! "${STAGE1_SYMBOL_LIMIT}" =~ ^[1-9][0-9]*$
     echo "STAGE1_SYMBOL_LIMIT must be empty or a positive integer" >&2
     exit 2
 fi
-if [[ ( "${RUNPOD_CPU_WORKFLOW}" == "prepare" \
+# Forward mode fetches only TWSE/TPEx, so it has no EODHD budget or rate.
+if [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" ]]; then
+    RUNPOD_CPU_MAX_API_CALLS=""
+    RUNPOD_CPU_EODHD_QPS=""
+    RUNPOD_CPU_PREPARE_RESERVE_SECONDS=""
+fi
+if [[ ( "${RUNPOD_CPU_WORKFLOW}" == "prepare" && "${RUNPOD_CPU_PREPARE_MODE}" == "dataset" \
         && ! "${RUNPOD_CPU_MAX_API_CALLS}" =~ ^[1-9][0-9]*$ ) \
-    || ! "${RUNPOD_CPU_EODHD_QPS}" =~ ^(0|[1-9][0-9]*)([.][0-9]+)?$ \
-    || "${RUNPOD_CPU_EODHD_QPS}" =~ ^0([.]0+)?$ \
+    || ( "${RUNPOD_CPU_PREPARE_MODE}" == "dataset" \
+        && ( ! "${RUNPOD_CPU_EODHD_QPS}" =~ ^(0|[1-9][0-9]*)([.][0-9]+)?$ \
+            || "${RUNPOD_CPU_EODHD_QPS}" =~ ^0([.]0+)?$ ) ) \
     || ! "${RUNPOD_CPU_TAIWAN_QPS}" =~ ^(0|[1-9][0-9]*)([.][0-9]+)?$ \
     || "${RUNPOD_CPU_TAIWAN_QPS}" =~ ^0([.]0+)?$ ]]; then
     echo "CPU acquisition budget and QPS settings are invalid" >&2
@@ -253,7 +289,11 @@ fi
 
 REMOTE_SELECTION_MOUNT_PATH="${RUNPOD_VOLUME_MOUNT_PATH}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}"
 DATA_ROOT="${RUNPOD_VOLUME_MOUNT_PATH}/datasets/${RUNPOD_DATASET_REQUEST_SHA256}"
-if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
+if [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" ]]; then
+    # No training dataset or selection is read; nothing is uploaded for the selection.
+    DATA_ROOT=""
+fi
+if [[ "${RUNPOD_TEST_MODE:-0}" != "1" && "${RUNPOD_CPU_PREPARE_MODE}" == "dataset" ]]; then
     bash "${SCRIPT_DIR}/runpod_s3_project.sh" s3 cp \
         "${RUNPOD_SELECTION_FILE}" \
         "s3://${RUNPOD_NETWORK_VOLUME_ID}/${RUNPOD_REMOTE_SELECTION_RELATIVE_PATH}" \
@@ -272,11 +312,12 @@ if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
 fi
 
 HF_TOKEN_REFERENCE="{{ RUNPOD_SECRET_${RUNPOD_HF_SECRET_NAME} }}"
-if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
+if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" || "${RUNPOD_CPU_PREPARE_MODE}" == "forward" ]]; then
     HF_TOKEN_REFERENCE=""
 fi
 EODHD_TOKEN_REFERENCE=""
-if [[ "${FIN_TS_DATASET_PROFILE}" == *eodhd* || "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
+if [[ ( "${FIN_TS_DATASET_PROFILE}" == *eodhd* && "${RUNPOD_CPU_PREPARE_MODE}" == "dataset" ) \
+    || "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
     EODHD_TOKEN_REFERENCE="{{ RUNPOD_SECRET_${RUNPOD_EODHD_SECRET_NAME} }}"
 fi
 TPEX_PROXY_TOKEN_REFERENCE=""
@@ -286,7 +327,7 @@ if [[ ${REQUIRE_TPEX_RELAY} -eq 1 ]]; then
     TPEX_PROXY_POD_URL="${TPEX_PROXY_URL}"
 fi
 POD_ENV_JSON="$(printf \
-    '{"NETWORK_VOLUME_ROOT":"%s","RUNPOD_VOLUME_ROOT":"%s","RUNPOD_EXPECTED_VOLUME_ID":"%s","RUNPOD_REQUESTED_CPU_COUNT":"%s","PROJECT_ROOT":"%s","DATA_ROOT":"%s","RUNPOD_CONFIG":"%s","RUNPOD_STAGE":"%s","RUNPOD_STAGE_CONFIG_SHA256":"%s","RUNPOD_SELECTION_ID":"%s","RUNPOD_SELECTION_SHA256":"%s","RUNPOD_DATASET_REQUEST_SHA256":"%s","RUNPOD_DATASET_REVISION":"%s","RUNPOD_REMOTE_SELECTION_PATH":"%s","RUNPOD_ROLE":"%s","RUNPOD_CPU_MAX_RUNTIME_SECONDS":"%s","RUNPOD_CPU_PREPARE_RESERVE_SECONDS":"%s","RUNPOD_CPU_MAX_API_CALLS":"%s","RUNPOD_CPU_EODHD_QPS":"%s","RUNPOD_CPU_TAIWAN_QPS":"%s","RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS":"%s","RUNPOD_SHUTDOWN_ACTION":"terminate","RUNPOD_IMAGE":"%s","RUNPOD_EXPECTED_TORCH_VERSION":"%s","RUNPOD_EXPECTED_CUDA_PREFIX":"%s","RUNPOD_EXPECTED_UBUNTU_VERSION":"%s","HF_TOKEN":"%s","EODHD_API_TOKEN":"%s","TPEX_PROXY_URL":"%s","TPEX_PROXY_TOKEN":"%s","FIN_TS_DATASET_PROFILE":"%s","FIN_TS_H_START":"%s","FIN_TS_FEATURE_MODE":"%s","STAGE1_US_SYMBOLS":"%s","STAGE1_US_ETF_SYMBOLS":"%s","STAGE1_SYMBOL_LIMIT":"%s","STAGE1_DATA_START":"%s","STAGE1_DATA_END":"%s"}' \
+    '{"NETWORK_VOLUME_ROOT":"%s","RUNPOD_VOLUME_ROOT":"%s","RUNPOD_EXPECTED_VOLUME_ID":"%s","RUNPOD_REQUESTED_CPU_COUNT":"%s","PROJECT_ROOT":"%s","DATA_ROOT":"%s","RUNPOD_CONFIG":"%s","RUNPOD_STAGE":"%s","RUNPOD_STAGE_CONFIG_SHA256":"%s","RUNPOD_SELECTION_ID":"%s","RUNPOD_SELECTION_SHA256":"%s","RUNPOD_DATASET_REQUEST_SHA256":"%s","RUNPOD_DATASET_REVISION":"%s","RUNPOD_REMOTE_SELECTION_PATH":"%s","RUNPOD_ROLE":"%s","RUNPOD_CPU_MAX_RUNTIME_SECONDS":"%s","RUNPOD_CPU_PREPARE_RESERVE_SECONDS":"%s","RUNPOD_CPU_MAX_API_CALLS":"%s","RUNPOD_CPU_EODHD_QPS":"%s","RUNPOD_CPU_TAIWAN_QPS":"%s","RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS":"%s","RUNPOD_SHUTDOWN_ACTION":"terminate","RUNPOD_IMAGE":"%s","RUNPOD_EXPECTED_TORCH_VERSION":"%s","RUNPOD_EXPECTED_CUDA_PREFIX":"%s","RUNPOD_EXPECTED_UBUNTU_VERSION":"%s","HF_TOKEN":"%s","EODHD_API_TOKEN":"%s","TPEX_PROXY_URL":"%s","TPEX_PROXY_TOKEN":"%s","FIN_TS_DATASET_PROFILE":"%s","FIN_TS_H_START":"%s","FIN_TS_FEATURE_MODE":"%s","STAGE1_US_SYMBOLS":"%s","STAGE1_US_ETF_SYMBOLS":"%s","STAGE1_SYMBOL_LIMIT":"%s","STAGE1_DATA_START":"%s","STAGE1_DATA_END":"%s","RUNPOD_CPU_PREPARE_MODE":"%s","RUNPOD_FORWARD_END":"%s"}' \
     "${RUNPOD_VOLUME_MOUNT_PATH}" "${RUNPOD_VOLUME_MOUNT_PATH}" \
     "${RUNPOD_NETWORK_VOLUME_ID}" "${RUNPOD_CPU_VCPU_COUNT}" \
     "${PROJECT_ROOT}" "${DATA_ROOT}" "${RUNPOD_CONFIG}" "${RUNPOD_STAGE}" \
@@ -303,7 +344,8 @@ POD_ENV_JSON="$(printf \
     "${TPEX_PROXY_POD_URL}" "${TPEX_PROXY_TOKEN_REFERENCE}" "${FIN_TS_DATASET_PROFILE}" \
     "${FIN_TS_H_START}" "${FIN_TS_FEATURE_MODE}" \
     "${STAGE1_US_SYMBOLS}" "${STAGE1_US_ETF_SYMBOLS}" "${STAGE1_SYMBOL_LIMIT}" \
-    "${STAGE1_DATA_START}" "${STAGE1_DATA_END}")"
+    "${STAGE1_DATA_START}" "${STAGE1_DATA_END}" \
+    "${RUNPOD_CPU_PREPARE_MODE}" "${RUNPOD_FORWARD_END}")"
 
 POD_CREATE_JSON="$(
     POD_ENV_JSON="${POD_ENV_JSON}" \

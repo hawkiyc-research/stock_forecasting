@@ -268,6 +268,9 @@ def expected_lifecycle(pod: dict[str, Any]) -> tuple[str, str] | None:
     role = env.get("RUNPOD_ROLE") if isinstance(env, dict) else None
     if role in PROJECT_ROLES:
         kind, key = PROJECT_ROLES[role]
+        # A forward preparation Pod owns its marker whatever the active selection's stage.
+        if role == "cpu-prep" and env.get("RUNPOD_CPU_PREPARE_MODE") == "forward":
+            return "forward-cpu-preparation", "lifecycle/forward/cpu-preparation.json"
         # Research Pods carry an experiment (stage2) selection but own their own marker.
         if role == "cpu-prep" and env.get("RUNPOD_STAGE") == "stage2":
             return "stage1-mixed-finalization", "lifecycle/stage1/mixed-finalization.json"

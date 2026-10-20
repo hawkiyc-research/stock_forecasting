@@ -2467,8 +2467,9 @@ ties 取平均名次）。另列各市場 1–14 日平均、US／TWSE／TPEX �
 
 ### 前瞻推論管線（第三階段）
 
-前瞻資料不進入任何訓練資料組。管線在本機抓取台股官方資料，呼叫訓練資料管線的同一批函式
-建立封存的「輸入包」，再由 RunPod GPU 以凍結的 checkpoint 推論（[實驗協定 §13.8 修訂補充](docs/experiment_protocol.md)）。
+前瞻資料不進入任何訓練資料組。管線抓取台股官方資料，呼叫訓練資料管線的同一批函式建立封存的
+「輸入包」，再由 RunPod GPU 以凍結的 checkpoint 推論（[實驗協定 §13.8 修訂補充](docs/experiment_protocol.md)）。
+抓取與建包可在本機執行，也可交給 CPU 準備 Pod（見下方「在 CPU 準備 Pod 建立輸入包」）。
 本機步驟在 `inference/` 的 uv 環境執行，產出都在被 Git 排除的 `artifacts/forward/<結束日>/`：
 
 ```bash
@@ -2487,11 +2488,16 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline labels --en
 inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inputs --end YYYY-MM-DD --reference artifacts/diagnostics/evaluation-data/<dataset>/prepared
 ```
 
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline export-cache --end YYYY-MM-DD
+```
+
 1. `fetch`：以既有的證交所與櫃買中心 provider 抓取 `--start`（預設 2025-03-01）到 `--end`
    （不含）的日行情、除權息與加權／櫃買指數，速率與 CPU 準備相同。`--end` 不可晚於今天（UTC），
    須先寫入 `backtest/config/stage3.json`。原始回應使用與 CPU 準備相同的請求快取：日行情與除權息
    依請求內容快取，抓過一次就不再重抓；指數月資料只有在該月結束後抓取的回應才標為完整月份並供之後共用，
-   未結束月份的回應綁定截止日，較晚的結束日一定重新抓取。快取預設在 `fetch/api-cache`；
+   且同時以原本的快取鍵保存，讓訓練資料準備（程式不變）也能沿用；未結束月份的回應只綁定截止日保存，
+   較晚的結束日一定重新抓取。快取預設在 `fetch/api-cache`；
    `--shared-cache` 指向網路磁碟的 `datasets/<名稱>/api-cache` 時，會先讀取其他所有資料組的快取，
    之後的訓練資料準備也能沿用這次的回應。設定 `TPEX_PROXY_URL` 與 `TPEX_PROXY_TOKEN` 時，
    櫃買中心請求改經 relay，與 CPU 準備相同。官方交易日與清理用交易日曆不一致時（例如颱風停市）
@@ -2505,6 +2511,10 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 4. `compare-inputs`：資料檢查第 4 項。以代號與訊號日對齊共用評估快照的 test 台股列，比對模型輸入；
    通過門檻為至少 `--min-fraction`（預設 0.99）的列最大相對差距 ≤ `--tolerance`（預設 10⁻⁶）。
    結果寫入 `checks/input-comparison.json`，未通過時 exit code 為 1。
+5. `export-cache`：把 `fetch` 的本機快取整理成可加入網路磁碟共用快取的副本 `shared-cache/`
+   （清單與雜湊在 `shared-cache.json`）。該月結束後才抓取的指數月資料同時以完整月份的快取鍵與原本的
+   快取鍵輸出；未結束的月份，以及無法證明在月底後抓取的月份都不輸出；其他回應保留原本的快取鍵。
+   只讀本機快取，缺少回應時停止，不會連網。上傳見下方 `upload-forward-cache`。
 
 | 參數 | 預設值／限制 | 說明 |
 | --- | --- | --- |
@@ -2512,12 +2522,54 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 | `--artifacts PATH` | `artifacts` | 輸出根目錄 |
 | `--start YYYY-MM-DD` | `2025-03-01` | `fetch` 的起始日 |
 | `--qps N` | 0.5 | `fetch` 每個交易所每秒請求數 |
+| `--max-backoff-seconds X` | 60 | `fetch` 同一請求兩次重試之間的最長等待秒數 |
 | `--workers N` | `fetch` 2；`build` 自動 | `fetch` 為每個交易所的並行請求數；`build` 為建包程序數，預設依 CPU 與可用記憶體決定，也可用 `FORWARD_PIPELINE_WORKERS` 設定 |
 | `--shared-cache PATH` | 不設定時為 `fetch/api-cache` | `fetch` 的共用快取，必須是 `<磁碟>/datasets/<名稱>/api-cache`；先讀取其他 `datasets/*/api-cache` |
 | `--reference PATH` | `compare-inputs` 必填 | 共用評估快照的 `prepared` 目錄（含 `bar-store` 與唯一一個 `sample-universes/<id>`） |
 | `--tolerance X`、`--min-fraction X` | 10⁻⁶、0.99 | 資料檢查第 4 項的門檻 |
 
-上傳輸入包、在 GPU Pod 推論、下載結果：
+#### 在 CPU 準備 Pod 建立輸入包
+
+`cpu prepare --forward` 讓 CPU 準備 Pod 執行 `fetch` 與 `build`，輸入包直接寫在網路磁碟的
+`/runpod-volume/forward/<結束日>/package`，GPU 推論前不必再上傳：
+
+```bash
+bash scripts/runpod_workflow.sh cpu prepare --forward YYYY-MM-DD
+```
+
+Pod 建立後依畫面指示以 SSH 登入並執行：
+
+```bash
+bash scripts/runpod_tmux_launch.sh cpu-prepare
+```
+
+前瞻模式不讀寫任何訓練資料組、資料組 readiness 或 active selection，也不需要 EODHD 與
+Hugging Face；生命週期記錄在 `lifecycle/forward/cpu-preparation.json`，外部 guard 在完成或失敗後
+終止 Pod。抓取使用網路磁碟上的共用快取 `datasets/forward-taiwan/api-cache`，並先讀取其他所有
+`datasets/*/api-cache`，抓過的交易日不會重抓，之後延長訓練資料時也會沿用這些回應；櫃買中心請求
+一律經 TPEx relay。網路磁碟上已有封存的輸入包時只重新核對全部檔案；已有完整的 `fetch.json` 時
+沿用並只建包；未完成的 `fetch` 或 `package` 目錄移到 `forward/<結束日>/quarantine/`，不會刪除。
+Pod 只負責抓取與建包，標籤與資料檢查第 4 項在本機以下載的輸入包執行：
+
+```bash
+bash scripts/runpod_workflow.sh download-forward-package YYYY-MM-DD
+```
+
+下載逐檔核對 `forward-package.json` 的 SHA-256，全部相符才放到 `artifacts/forward/<結束日>/package`；
+本機已有相同雜湊的包時只回報，不同的包不會被取代。之後在本機執行 `labels` 與 `compare-inputs`。
+
+本機已抓取的資料可加入網路磁碟的共用快取，讓 CPU 準備 Pod 與之後的資料準備沿用；上傳經 S3，
+不需要開 Pod：
+
+```bash
+bash scripts/runpod_workflow.sh upload-forward-cache YYYY-MM-DD
+```
+
+上傳前先執行 `export-cache`，並逐檔核對 `shared-cache.json` 的雜湊；只上傳網路磁碟上還沒有的
+快取項目，同一個快取鍵若大小不同則停止，不覆蓋也不刪除。I/O 執行緒預設 4 個，可用
+`RUNPOD_FORWARD_UPLOAD_WORKERS=1..8` 調整。
+
+本機建立的輸入包先上傳，再在 GPU Pod 推論並下載結果：
 
 ```bash
 bash scripts/runpod_workflow.sh upload-forward-package YYYY-MM-DD
@@ -2705,7 +2757,7 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `configure` | 完整選項與限制見前文「configure 參數與資料範圍」；無參數為互動模式。`-h`／`--help` 顯示底層 parser 說明；`--project-root` 由 workflow 注入，不需使用者提供 |
 | `selection show` | 無額外參數；顯示 active selection |
 | `sync` | `--dry-run` 預設，只檢查／列出上傳清單；`--apply` 才上傳。二者擇一，不接受其他參數 |
-| `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m` |
+| `cpu prepare` | 無參數或 `--interactive` 開啟互動確認。非互動時 `--max-api-calls N` 必填且為正整數；`--eodhd-qps Q` 預設 `16`、`--taiwan-qps Q` 預設 `0.5`，均須大於零；`--maxRuntime D` 預設 `6h`；`--prepareReserve D` 預設 `auto`（25% runtime，最多 2h），明確值須短於 runtime；`--maxBackoff D` 預設 `1m`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，可選 `cpu3c`、`cpu3g`、`cpu3m`、`cpu5c`、`cpu5g`、`cpu5m`；`--forward YYYY-MM-DD`：改為建立該結束日的前瞻輸入包（見「前瞻推論管線」一節），不讀寫訓練資料組，只接受 `--taiwan-qps`、`--maxRuntime`（預設 `3h`）、`--maxBackoff`、`--cpuNumber`、`--cpuFlavor`，需要已部署的 TPEx relay，結束日不可晚於今天（UTC） |
 | `research tw-information` | 建立台股資訊測試的 CPU Pod，資料組固定為 `a-absolute-direction64`，不改 active selection。`--maxRuntime D` 預設 `12h`；`--cpuNumber N` 預設 `8`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`，選項同 `cpu prepare`；`--taiwan-qps Q` 預設 `0.5`、`--eodhd-qps Q` 預設 `2`，均須大於零；`--maxBackoff D` 預設 `1m`。需要已部署的 TPEx relay；Pod 獨占 volume，見[台股資訊測試](#tw-information-zh) |
 | `readiness` | 必須擇一：`--code-only` 核對程式上傳；`--gpu` 核對主模型訓練依賴；`--baseline` 同時核對當前資料篩選規則與 baseline 完成結果、不要求主模型 HF cache。`--baseline --experiment a-signal64`（或 `b-signal64`、`a-signal64-datemix`、`b-signal64-datemix`）查詢兩個任務，省略實驗沿用 active selection；`--experiment` 只供 baseline 模式使用。完成為 exit 0、尚未完成／待整理為 1、驗證錯誤為 2 |
 | `train`、`baseline` | `--maxRuntime D` 預設 `12h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`。`train` 接受可重複的 `--experiment NAME`、`--seed N`（0–4294967295；省略沿用 training seed）及 `--launchWorkers N`（1–6，預設 2，別名 `--launch-workers`）；實驗 × seeds 最多 30 個組合。`a-signal64`／`b-signal64` 及其 `-datemix` 對照每組別、每 seed 建立一台 Pod，依序執行兩個獨立模型，runtime 共用。`baseline` 接受單一 `--experiment NAME`，成對入口先在本機查兩個 task cache、只建置未完成部分，不改 active selection；不接受 seed／launchWorkers。省略實驗仍使用 active selection，**不自動變成成對實驗**；進階單模型入口見附錄。兩者無 run ID 位置參數 |
@@ -2722,6 +2774,8 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
 | `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`／`--baseline-arrays`／`--evaluation-data [--list]` | 必填其一 | 1–16 個子模型 run ID 或 `RUN_ID/checkpoint-NNNNNN`：各自下載最新完成的預測匯出並核對 SHA-256；同一 run 匯出過多個 checkpoint 時必須指定 checkpoint；`--baseline-arrays`：下載誤差拆解所需的現行 baseline 評估陣列並依 manifest 驗證；`--evaluation-data [--list]`：依 baseline 記錄找到 validation／test 共用的 K 線庫與樣本索引，逐檔核對 SHA-256 後存入 `artifacts/diagnostics/evaluation-data/`，`--list` 只列出大小；`--forward YYYY-MM-DD`：改選該結束日前瞻輸入包的推論匯出，存入 `artifacts/diagnostics/forward-predictions/`；`-h`／`--help` 顯示說明 |
 | `upload-forward-package YYYY-MM-DD` | 必填 | 把 `artifacts/forward/<結束日>/package` 逐檔核對雜湊後上傳到 `/runpod-volume/forward/<結束日>/package`；已有相同包時只回報，不同的包拒絕覆蓋 |
+| `download-forward-package YYYY-MM-DD` | 必填 | 把 `cpu prepare --forward` 建立的 `/runpod-volume/forward/<結束日>/package` 逐檔核對 SHA-256 後下載到 `artifacts/forward/<結束日>/package`；本機已有相同包時只回報，不同的包不會被取代 |
+| `upload-forward-cache YYYY-MM-DD` | 必填 | 把 `forward_pipeline export-cache` 寫出的 `artifacts/forward/<結束日>/shared-cache` 逐檔核對雜湊後加入 `/runpod-volume/datasets/forward-taiwan/api-cache`；只上傳尚未存在的項目，同名但大小不同的項目讓上傳停止 |
 | `download-research [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/tw-information.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。存於 `artifacts/diagnostics/tw-information-test/<launch-id>/`；仍在執行回傳 3，報告不完整回傳 4；`-h`／`--help` 顯示說明 |
 
 時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
@@ -6467,11 +6521,13 @@ and limits.
 
 ### Forward-inference pipeline (stage 3)
 
-Forward data never enters a training dataset. The pipeline fetches official Taiwan data
-locally, builds a sealed input package with the same functions as the training data pipeline,
-and a RunPod GPU runs the frozen checkpoints on it
-([experiment protocol §13.8 supplement](docs/experiment_protocol.md)). The local steps run in the
-`inference/` uv environment and write to Git-ignored `artifacts/forward/<end>/`:
+Forward data never enters a training dataset. The pipeline fetches official Taiwan data,
+builds a sealed input package with the same functions as the training data pipeline, and a
+RunPod GPU runs the frozen checkpoints on it
+([experiment protocol §13.8 supplement](docs/experiment_protocol.md)). Fetching and building can
+run locally or on a CPU preparation Pod (see "Building the package on a CPU preparation Pod"
+below). The local steps run in the `inference/` uv environment and write to Git-ignored
+`artifacts/forward/<end>/`:
 
 ```bash
 inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline fetch --end YYYY-MM-DD
@@ -6489,14 +6545,19 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline labels --en
 inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inputs --end YYYY-MM-DD --reference artifacts/diagnostics/evaluation-data/<dataset>/prepared
 ```
 
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline export-cache --end YYYY-MM-DD
+```
+
 1. `fetch` uses the existing TWSE and TPEx providers to fetch daily quotes, corporate actions
    and the TAIEX/TPEx indices from `--start` (default 2025-03-01) to `--end` (exclusive), at the
    CPU preparation's pacing. `--end` cannot be later than today (UTC) and must first be written
    to `backtest/config/stage3.json`. Raw responses use the CPU preparation's request cache: daily
    quotes and corporate actions are cached by request content and never fetched twice; an index
    month response counts as a complete month, shared from then on, only when it was fetched after
-   the month ended, while a response for an unfinished month is bound to its cut-off date and is
-   always fetched again for a later end date. The cache defaults to `fetch/api-cache`; when
+   the month ended, and is also stored under its original key so the (unchanged) training-data
+   preparation reuses it; a response for an unfinished month is stored only under its cut-off
+   date and is always fetched again for a later end date. The cache defaults to `fetch/api-cache`; when
    `--shared-cache` points to `datasets/<name>/api-cache` on the network volume, every other
    dataset cache is read first, and later training-data preparations reuse these responses too.
    With `TPEX_PROXY_URL` and `TPEX_PROXY_TOKEN` set, TPEx requests go through the relay, as in the
@@ -6517,6 +6578,12 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
    `--min-fraction` (default 0.99) of rows have a maximum relative difference within
    `--tolerance` (default 10⁻⁶). The result is written to `checks/input-comparison.json`, and
    the exit code is 1 on failure.
+5. `export-cache` turns the local `fetch` cache into a copy that can join the network volume's
+   shared cache, `shared-cache/` (files and hashes in `shared-cache.json`). An index month
+   fetched after the month ended is exported under both the complete-month cache key and its
+   original key; unfinished months, and months not proven to have been fetched after month end,
+   are left out; every other response keeps its key. It reads only the local cache and stops on a missing response without any
+   network request. See `upload-forward-cache` below for the upload.
 
 | Option | Default or limit | Behavior |
 | --- | --- | --- |
@@ -6524,12 +6591,61 @@ inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inp
 | `--artifacts PATH` | `artifacts` | Output root |
 | `--start YYYY-MM-DD` | `2025-03-01` | First date for `fetch` |
 | `--qps N` | 0.5 | `fetch` requests per second per exchange |
+| `--max-backoff-seconds X` | 60 | Longest wait in seconds between two retries of one `fetch` request |
 | `--workers N` | `fetch` 2; `build` auto | Concurrent requests per exchange for `fetch`; build processes for `build`, by default from CPUs and available memory, or `FORWARD_PIPELINE_WORKERS` |
 | `--shared-cache PATH` | Unset: `fetch/api-cache` | Shared cache for `fetch`; must be `<volume>/datasets/<name>/api-cache`, and every other `datasets/*/api-cache` is read first |
 | `--reference PATH` | Required for `compare-inputs` | The shared evaluation snapshot's `prepared` directory (with `bar-store` and exactly one `sample-universes/<id>`) |
 | `--tolerance X`, `--min-fraction X` | 10⁻⁶, 0.99 | Thresholds of data check 4 |
 
-Upload the package, infer on a GPU Pod and download the results:
+#### Building the package on a CPU preparation Pod
+
+`cpu prepare --forward` has the CPU preparation Pod run `fetch` and `build`; the package is
+written straight to `/runpod-volume/forward/<end>/package` on the network volume, so nothing is
+uploaded before GPU inference:
+
+```bash
+bash scripts/runpod_workflow.sh cpu prepare --forward YYYY-MM-DD
+```
+
+Once the Pod exists, log in over SSH as shown and run:
+
+```bash
+bash scripts/runpod_tmux_launch.sh cpu-prepare
+```
+
+Forward mode reads and writes no training dataset, dataset readiness or active selection, and
+needs neither EODHD nor Hugging Face; its lifecycle is `lifecycle/forward/cpu-preparation.json`,
+and the external guard terminates the Pod when it finishes or fails. Fetching uses the shared
+cache `datasets/forward-taiwan/api-cache` on the network volume and reads every other
+`datasets/*/api-cache` first, so sessions fetched once are never fetched again, and later
+training-data extensions reuse these responses too; TPEx requests always go through the TPEx
+relay. A sealed package already on the volume is only re-verified file by file; a complete
+`fetch.json` is reused and only the build runs; an unfinished `fetch` or `package` directory is
+moved to `forward/<end>/quarantine/`, never deleted. The Pod only fetches and builds; labels and
+data check 4 run locally on the downloaded package:
+
+```bash
+bash scripts/runpod_workflow.sh download-forward-package YYYY-MM-DD
+```
+
+The download checks every file against the SHA-256 in `forward-package.json` and moves the
+package to `artifacts/forward/<end>/package` only when all match; an identical local package is
+only reported, and a different one is never replaced. Then run `labels` and `compare-inputs`
+locally.
+
+Data already fetched locally can join the network volume's shared cache so the CPU preparation
+Pod and later data preparations reuse it; the upload goes over S3 and needs no Pod:
+
+```bash
+bash scripts/runpod_workflow.sh upload-forward-cache YYYY-MM-DD
+```
+
+Run `export-cache` first; every file is re-hashed against `shared-cache.json`, only cache entries
+missing on the volume are uploaded, and an existing key with a different size stops the upload
+without overwriting or deleting anything. Upload I/O uses 4 threads by default, adjustable with
+`RUNPOD_FORWARD_UPLOAD_WORKERS=1..8`.
+
+A locally built package is uploaded first; then infer on a GPU Pod and download the results:
 
 ```bash
 bash scripts/runpod_workflow.sh upload-forward-package YYYY-MM-DD
@@ -6737,7 +6853,7 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `configure` | All options and restrictions are listed under “Configure parameters and dataset scope” above. No options opens interactive mode. `-h`/`--help` shows the underlying parser help; the workflow injects `--project-root`, which users need not supply |
 | `selection show` | No extra options; display the active selection |
 | `sync` | `--dry-run` is the default and only checks/lists planned uploads; `--apply` uploads. Choose one; no other options are accepted |
-| `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m` |
+| `cpu prepare` | No options or `--interactive` opens interactive confirmation. Non-interactive calls require positive `--max-api-calls N`; `--eodhd-qps Q` defaults to `16`, `--taiwan-qps Q` to `0.5`, both positive; `--maxRuntime D` defaults to `6h`; `--prepareReserve D` defaults to `auto` (25% of runtime, capped at 2h), with an explicit duration shorter than runtime; `--maxBackoff D` defaults to `1m`; `--cpuNumber N` defaults to `8`, choices 2/4/8/16/32; `--cpuFlavor F` defaults to `cpu3g`, choices `cpu3c`, `cpu3g`, `cpu3m`, `cpu5c`, `cpu5g`, `cpu5m`; `--forward YYYY-MM-DD` builds the forward input package of that end date instead (see the forward-inference pipeline section) without reading or writing a training dataset, accepts only `--taiwan-qps`, `--maxRuntime` (default `3h`), `--maxBackoff`, `--cpuNumber` and `--cpuFlavor`, requires the deployed TPEx relay, and the end date cannot be later than today (UTC) |
 | `research tw-information` | Create the CPU Pod of the Taiwan information test for the fixed `a-absolute-direction64` data group without changing active selection. `--maxRuntime D` defaults to `12h`; `--cpuNumber N` to `8`, choices 2/4/8/16/32; `--cpuFlavor F` to `cpu3g`, with the `cpu prepare` choices; `--taiwan-qps Q` to `0.5` and `--eodhd-qps Q` to `2`, both positive; `--maxBackoff D` to `1m`. Requires the deployed TPEx relay; the Pod owns the volume; see the [Taiwan information test](#tw-information-en) |
 | `readiness` | Choose one: `--code-only` checks uploaded code; `--gpu` checks main-model dependencies; `--baseline` checks current data-cleaning rules and baseline completion without the main-model HF cache. Add `--experiment a-signal64`, `b-signal64`, `a-signal64-datemix` or `b-signal64-datemix` to `--baseline` to check both tasks; omission retains active selection. `--experiment` is only accepted in baseline mode. Exit 0: complete; 1: incomplete/pending finalization; 2: verification error |
 | `train`, `baseline` | `--maxRuntime D`: `12h`; `--gpuId ID`: `NVIDIA GeForce RTX 5090`. `train` accepts repeated `--experiment NAME`, repeated `--seed N` (0–4294967295; training seed when omitted), and `--launchWorkers N` (1–6, default 2; alias `--launch-workers`), at most 30 experiment × seed combinations. Each `a-signal64`/`b-signal64` group/seed, and each `-datemix` control, creates one Pod running two independent models sequentially under one runtime. `baseline` accepts one `--experiment NAME`: a paired entry checks both task caches locally and builds only unfinished work without changing active selection; no seed/launchWorkers. Omitting experiment keeps active selection, **not an implicit pair**. Advanced individual entries remain in the appendix. Neither accepts a positional run ID |
@@ -6754,6 +6870,8 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
 | `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`/`--baseline-arrays`/`--evaluation-data [--list]` | One form required | 1–16 child run IDs or `RUN_ID/checkpoint-NNNNNN`: download each latest completed prediction export with SHA-256 checks; name the checkpoint when a run has exports of several; `--baseline-arrays`: download the current baselines' evaluation arrays needed for decomposition, verified against their manifests; `--evaluation-data [--list]`: locate the shared validation/test bar store and sample index recorded by the baseline, verify every file by SHA-256 and store them in `artifacts/diagnostics/evaluation-data/`, or with `--list` only print the size; `--forward YYYY-MM-DD`: select the inference exports of the forward input package with that end date instead, stored in `artifacts/diagnostics/forward-predictions/`; `-h`/`--help` shows help |
 | `upload-forward-package YYYY-MM-DD` | Required | Re-hash every file of `artifacts/forward/<end>/package` and upload it to `/runpod-volume/forward/<end>/package`; an identical package is only reported, a different one is refused |
+| `download-forward-package YYYY-MM-DD` | Required | Download `/runpod-volume/forward/<end>/package`, built by `cpu prepare --forward`, to `artifacts/forward/<end>/package`, checking every file's SHA-256; an identical local package is only reported, a different one is never replaced |
+| `upload-forward-cache YYYY-MM-DD` | Required | Re-hash `artifacts/forward/<end>/shared-cache`, written by `forward_pipeline export-cache`, and add it to `/runpod-volume/datasets/forward-taiwan/api-cache`; only missing entries are uploaded, and an existing entry with a different size stops the upload |
 | `download-research [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/tw-information.json`; a `launch-...` ID selects another. Saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`; exits 3 while running and 4 when the report is incomplete; `-h`/`--help` shows help |
 
 Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,
