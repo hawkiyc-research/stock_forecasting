@@ -37,6 +37,8 @@ Usage:
   bash scripts/runpod_workflow.sh download-probes [PROBE_RUN_ID]
   bash scripts/runpod_workflow.sh download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]
   bash scripts/runpod_workflow.sh download-signal-predictions --baseline-arrays|--evaluation-data [--list]
+  bash scripts/runpod_workflow.sh download-signal-predictions --forward YYYY-MM-DD RUN_ID[/checkpoint-NNNNNN] [...]
+  bash scripts/runpod_workflow.sh upload-forward-package YYYY-MM-DD
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF
@@ -551,6 +553,9 @@ EOF
         ;;
     download-signal-predictions)
         exec bash "${SCRIPT_DIR}/download_runpod_signal_predictions.sh" "$@"
+        ;;
+    upload-forward-package)
+        exec bash "${SCRIPT_DIR}/upload_runpod_forward_package.sh" "$@"
         ;;
     download-research)
         exec bash "${SCRIPT_DIR}/download_runpod_research.sh" "$@"

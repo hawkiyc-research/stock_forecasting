@@ -468,6 +468,39 @@ class PredictionDownloadTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 DOWNLOAD["safe_selector"](value)
 
+    def test_forward_exports_are_selected_only_in_their_own_layout(self) -> None:
+        run_id, name = "run-x-alpha", "checkpoint-018399"
+        export = "export-20261021T000000Z-00000004"
+        prefix = f"diagnostics/forward-predictions/2026-10-20/{run_id}/{name}/{export}/"
+        checkpoint = f"/runpod-volume/savedModel/{run_id}/{name}"
+        documents = {
+            prefix + "status.json": {"state": "complete", "checkpoint": checkpoint},
+            prefix + "export.json": {
+                "schema_version": "1.0", "kind": "signal-prediction-export", "run_id": run_id,
+                "checkpoint": {"path": checkpoint}, "created_at": "2026-10-21T00:00:00+00:00",
+                "forward_package": {"end_exclusive": "2026-10-20", "package_sha256": "c" * 64},
+                "splits": {"overlap": {"predictions_sha256": "a" * 64},
+                           "forward": {"predictions_sha256": "b" * 64}},
+            },
+        }
+        reader = FakeReader(documents)
+        layout = DOWNLOAD["export_layout"]("2026-10-20")
+        result = DOWNLOAD["select_export"](reader, f"{run_id}/{name}", layout)
+        self.assertEqual(result["relative"], Path(run_id, name, export))
+        self.assertEqual(result["splits"], {"overlap": "a" * 64, "forward": "b" * 64})
+        self.assertEqual(
+            layout["local"], Path("artifacts/diagnostics/forward-predictions/2026-10-20")
+        )
+        # Regular selection never sees forward exports, and the end date must match.
+        with self.assertRaises(FileNotFoundError):
+            DOWNLOAD["select_export"](reader, f"{run_id}/{name}")
+        documents[prefix + "export.json"]["forward_package"]["end_exclusive"] = "2026-10-19"
+        with self.assertRaisesRegex(ValueError, "identity"):
+            DOWNLOAD["select_export"](reader, f"{run_id}/{name}", layout)
+        for value in ("2026-10-2", "20261020", "2026-13-01"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                DOWNLOAD["export_layout"](value)
+
     def test_baseline_inputs_match_the_analysis_and_verify_digests(self) -> None:
         files = DOWNLOAD["baseline_files"]()
         self.assertEqual(len(files), len(set(files)))

@@ -43,6 +43,28 @@ SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 # Baseline records (about 4.5 MB) and bar-store manifests exceed the probe JSON limit.
 LARGE_JSON_BYTES = 64 * 1024**2
 SHARD_PATTERN = re.compile(r"shards/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_.-]{1,128}\.parquet")
+# Forward-pipeline exports live apart so validation/test consumers never select them.
+FORWARD_REMOTE_ROOT = "diagnostics/forward-predictions/"
+FORWARD_LOCAL_ROOT = Path("artifacts/diagnostics/forward-predictions")
+FORWARD_POPULATIONS = ("overlap", "forward")
+
+
+def export_layout(forward_end=None):
+    """Remote prefix, local directory and allowed splits of one export family."""
+    if forward_end is None:
+        return {"remote": REMOTE_ROOT, "local": LOCAL_ROOT, "splits": SPLITS, "forward_end": None}
+    try:
+        valid = datetime.strptime(forward_end, "%Y-%m-%d").strftime("%Y-%m-%d") == forward_end
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise ValueError("--forward needs the package end date as YYYY-MM-DD")
+    return {
+        "remote": f"{FORWARD_REMOTE_ROOT}{forward_end}/",
+        "local": FORWARD_LOCAL_ROOT / forward_end,
+        "splits": FORWARD_POPULATIONS,
+        "forward_end": forward_end,
+    }
 
 
 def baseline_files():
@@ -143,17 +165,19 @@ def download_file(reader, key, destination, timeout):
         raise RuntimeError(f"RunPod S3 transfer failed (exit {code}); retry the command")
 
 
-def candidate(reader, key):
-    parts = key.split("/")
+def candidate(reader, key, layout=None):
+    layout = layout or export_layout()
+    root = layout["remote"]
+    parts = key[len(root):].split("/") if key.startswith(root) else []
     if (
-        len(parts) != 6 or "/".join(parts[:2]) + "/" != REMOTE_ROOT
-        or re.fullmatch(r"checkpoint-[0-9]{6,}", parts[3]) is None
-        or re.fullmatch(r"export-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", parts[4]) is None
-        or parts[5] != "status.json"
+        len(parts) != 4
+        or re.fullmatch(r"checkpoint-[0-9]{6,}", parts[1]) is None
+        or re.fullmatch(r"export-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", parts[2]) is None
+        or parts[3] != "status.json"
     ):
         return None
-    run_id = safe_run_id(parts[2])
-    expected_checkpoint = f"/runpod-volume/savedModel/{run_id}/{parts[3]}"
+    run_id = safe_run_id(parts[0])
+    expected_checkpoint = f"/runpod-volume/savedModel/{run_id}/{parts[1]}"
     status, status_hash = reader.read_json(key, MAX_STATUS_BYTES)
     if status.get("state") in {"running", "failed"}:
         return None
@@ -170,7 +194,8 @@ def candidate(reader, key):
         or report["checkpoint"].get("path") != expected_checkpoint
         or not isinstance(splits, dict)
         or not splits
-        or set(splits) - set(SPLITS)
+        or set(splits) - set(layout["splits"])
+        or (report.get("forward_package") or {}).get("end_exclusive") != layout["forward_end"]
     ):
         raise ValueError("Export report identity does not match its completed status: " + key)
     for split, summary in splits.items():
@@ -181,22 +206,23 @@ def candidate(reader, key):
     if completed.utcoffset() is None:
         raise ValueError("Export report timestamp must include a timezone: " + key)
     return {
-        "order": (completed.astimezone(timezone.utc), parts[3], parts[4]),
+        "order": (completed.astimezone(timezone.utc), parts[1], parts[2]),
         "run_id": run_id,
-        "relative": Path(*parts[2:5]),
+        "relative": Path(*parts[:3]),
         "prefix": prefix,
         "splits": {split: summary["predictions_sha256"] for split, summary in splits.items()},
         "hashes": {"export.json": report_hash, "status.json": status_hash},
     }
 
 
-def select_export(reader, selector):
+def select_export(reader, selector, layout=None):
     """Pick the newest completed export of one checkpoint; a bare RUN_ID must be unambiguous."""
+    layout = layout or export_layout()
     run_id, checkpoint = safe_selector(selector)
-    prefix = REMOTE_ROOT + run_id + "/" + (checkpoint + "/" if checkpoint else "")
+    prefix = layout["remote"] + run_id + "/" + (checkpoint + "/" if checkpoint else "")
     newest, checkpoints = None, set()
     for key in reader.status_keys(prefix):
-        result = candidate(reader, key)
+        result = candidate(reader, key, layout)
         if result is None:
             continue
         checkpoints.add(result["relative"].parts[1])
@@ -212,8 +238,8 @@ def select_export(reader, selector):
     return newest
 
 
-def download_export(reader, result, project_root, executor, workers, timeout):
-    destination = project_root / LOCAL_ROOT / result["relative"]
+def download_export(reader, result, project_root, executor, workers, timeout, layout=None):
+    destination = project_root / (layout or export_layout())["local"] / result["relative"]
     safe_local_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     names = ["export.json", "export.log"]
@@ -449,6 +475,12 @@ def main():
         print(f"Baseline decomposition inputs: downloaded={downloaded} already_verified={verified}")
         print("Result directory: " + str(destination))
         return
+    forward_end = None
+    if arguments[:1] == ["--forward"]:
+        if len(arguments) < 3:
+            raise ValueError("--forward needs the package end date and 1-16 selectors")
+        forward_end, arguments = arguments[1], arguments[2:]
+    layout = export_layout(forward_end)
     for value in arguments:
         safe_selector(value)
     if not 1 <= len(arguments) <= MAX_RUNS or len(set(arguments)) != len(arguments):
@@ -456,11 +488,13 @@ def main():
     executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="prediction-download")
     try:
         for selector in arguments:
-            result = select_export(reader, selector)
+            result = select_export(reader, selector, layout)
             LOGGER.info(
                 "Selected completed export: %s (%s)", result["relative"], result["order"][0]
             )
-            destination = download_export(reader, result, PROJECT_ROOT, executor, workers, timeout)
+            destination = download_export(
+                reader, result, PROJECT_ROOT, executor, workers, timeout, layout
+            )
             splits = sorted(result["splits"])
             print(f"Downloaded signal predictions: selector={selector} splits={splits}")
             print("Result directory: " + str(destination))

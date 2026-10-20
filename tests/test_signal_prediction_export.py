@@ -264,7 +264,7 @@ def _checkpoint(root):
 
 
 def _export(directory, name, checkpoint, config, *, state="complete", runtime=RUNTIME,
-            splits=("validation", "test")):
+            splits=("validation", "test"), forward=None):
     """Write a finished export directory the way run_export records it."""
     path = directory / name
     results = {}
@@ -275,6 +275,7 @@ def _export(directory, name, checkpoint, config, *, state="complete", runtime=RU
         results[split] = {"predictions_sha256": export.sha256_file(predictions)}
     (path / "status.json").write_text(json.dumps({"state": state}))
     (path / "export.json").write_text(json.dumps({
+        **({"forward_package": forward} if forward else {}),
         "schema_version": export.EXPORT_SCHEMA_VERSION,
         "prediction_task": config.model.prediction_task,
         "runtime": runtime,
@@ -321,3 +322,64 @@ def test_reuse_accepts_only_an_intact_matching_export_since_the_date(tmp_path):
     assert reusable() is not None
     (checkpoint / "adapter.safetensors").write_text("retrained")
     assert reusable() is None
+
+
+def test_forward_exports_are_reused_only_for_the_same_package(tmp_path):
+    config = _config("a_alpha_point64", tmp_path)
+    checkpoint = _checkpoint(tmp_path)
+    directory = tmp_path / "exports"
+    splits = ["overlap", "forward"]
+    package = {"package_sha256": "a" * 64, "end_exclusive": "2026-10-20", "path": "/p"}
+    _export(directory, "export-20261021T000000Z-aaaaaaaa", checkpoint, config,
+            splits=splits, forward=package)
+
+    def reusable(forward):
+        return export.reusable_export(
+            directory, checkpoint, config, splits, "20261021", RUNTIME, forward
+        )
+
+    assert reusable(package) is not None
+    assert reusable({**package, "path": "/elsewhere"}) is not None
+    assert reusable({**package, "package_sha256": "b" * 64}) is None
+    assert reusable(None) is None
+    regular = tmp_path / "regular"
+    _export(regular, "export-20261021T000000Z-bbbbbbbb", checkpoint, config, splits=splits)
+    assert export.reusable_export(
+        regular, checkpoint, config, splits, "20261021", RUNTIME, package
+    ) is None
+
+
+def test_forward_arguments_are_checked_before_any_gpu_work():
+    with pytest.raises(SystemExit, match="require --forward-package"):
+        export.main(["--checkpoint", "run-x-alpha", "--splits", "overlap", "--confirm-test"])
+    with pytest.raises(SystemExit, match="only overlap/forward"):
+        export.main(
+            ["--checkpoint", "run-x-alpha", "--forward-package", "/x", "--splits", "validation"]
+        )
+    # Both populations by default; overlap repeats the test period.
+    with pytest.raises(SystemExit, match="confirm-test"):
+        export.main(["--checkpoint", "run-x-alpha", "--forward-package", "/x"])
+
+
+def test_forward_package_must_be_sealed_and_on_the_volume(tmp_path, monkeypatch):
+    import stock_forecasting.forward.package as package_module
+
+    volume = tmp_path / "runpod-volume"
+    inside = volume / "forward" / "2026-10-20" / "package"
+    outside = tmp_path / "elsewhere" / "package"
+    for path in (inside, outside):
+        path.mkdir(parents=True)
+    payload = {
+        "package_sha256": "c" * 64,
+        "end_exclusive": "2026-10-20",
+        "populations": {"overlap": {"samples": 5}, "forward": {"samples": 3}},
+    }
+    monkeypatch.setattr(package_module, "load_package", lambda root, verify_files: payload)
+    with pytest.raises(ValueError, match="network volume"):
+        export.forward_record(outside, volume)
+    record = export.forward_record(inside, volume)
+    assert record["package_sha256"] == "c" * 64
+    assert record["populations"] == {
+        "overlap": {"slot": "validation", "samples": 5},
+        "forward": {"slot": "test", "samples": 3},
+    }

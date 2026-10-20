@@ -11,6 +11,10 @@ recorded benchmark. Training, validation lifecycle and checkpoints are never mod
 Memory-mapped arrays live on container-disk scratch, never on the network volume: a volume
 I/O error inside a mapping kills the process with SIGBUS, while the ordinary writes used to
 publish the finished files raise a normal error that marks the export failed.
+
+With --forward-package the same loader and metric store run on the overlap and forward
+populations of a sealed forward input package instead of the configured dataset. No
+dataset readiness is required; results go to diagnostics/forward-predictions/<end>/.
 """
 
 from __future__ import annotations
@@ -53,6 +57,8 @@ from stock_forecasting.training import build_evaluation_loader, set_global_seed
 LOGGER = logging.getLogger(__name__)
 EXPORT_SCHEMA_VERSION = "1.0"
 SPLITS = ("validation", "test")
+# Forward populations; overlap repeats the test period and therefore needs --confirm-test.
+FORWARD_POPULATIONS = ("overlap", "forward")
 CHECKPOINT_FILES = ("adapter.safetensors", "resolved-config.yaml", "trainer-state.json")
 # One diagnostic Pod ends with its job, so several checkpoints share one sequential job.
 MAX_CHECKPOINTS = 16
@@ -79,14 +85,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--splits",
         nargs="+",
-        choices=SPLITS,
-        default=list(SPLITS),
-        help="Complete evaluation splits to export (default: validation test).",
+        choices=(*SPLITS, *FORWARD_POPULATIONS),
+        help=(
+            "Complete evaluation splits to export (default: validation test); with "
+            "--forward-package the populations overlap and/or forward (default: both)."
+        ),
     )
     parser.add_argument(
         "--confirm-test",
         action="store_true",
-        help="Required when exporting test, to make repeated test inference explicit.",
+        help=(
+            "Required when exporting test or overlap, to make repeated test-period "
+            "inference explicit."
+        ),
+    )
+    parser.add_argument(
+        "--forward-package",
+        type=Path,
+        metavar="PATH",
+        help="Sealed forward input package on the network volume (forward pipeline).",
     )
     parser.add_argument(
         "--reuse-complete-since",
@@ -207,6 +224,34 @@ def runtime_identity(config: ExperimentConfig, device: torch.device) -> dict[str
     }
 
 
+def _forward_identity(record: dict[str, Any] | None) -> tuple[str, str] | None:
+    if not record:
+        return None
+    return str(record.get("package_sha256")), str(record.get("end_exclusive"))
+
+
+def forward_record(package_root: Path, volume: Path) -> dict[str, Any]:
+    """Verify a sealed package on the volume and describe it for export.json."""
+    from stock_forecasting.forward.package import POPULATION_SLOTS, load_package
+
+    root = package_root.resolve(strict=True)
+    if volume.resolve(strict=True) not in root.parents:
+        raise ValueError("The forward package must be on the network volume")
+    payload = load_package(root, verify_files=True)
+    return {
+        "path": str(root),
+        "package_sha256": payload["package_sha256"],
+        "end_exclusive": payload["end_exclusive"],
+        "populations": {
+            name: {
+                "slot": slot,
+                "samples": payload["populations"][name]["samples"],
+            }
+            for name, slot in POPULATION_SLOTS.items()
+        },
+    }
+
+
 def reusable_export(
     directory: Path,
     checkpoint: Path,
@@ -214,12 +259,14 @@ def reusable_export(
     splits: list[str],
     since: str,
     runtime: dict[str, Any],
+    forward: dict[str, Any] | None = None,
 ) -> Path | None:
     """Return the newest complete export since a date that this job would reproduce.
 
     Only the export source may differ (it changes with scratch handling, not inference),
     so checkpoint files, architecture, runtime and every requested split must match, and
-    each prediction file must still hash to the value recorded when it was written.
+    each prediction file must still hash to the value recorded when it was written. A
+    forward export is reused only for the same sealed input package.
     """
     files = None
     for candidate in sorted(directory.glob("export-*"), reverse=True):
@@ -238,6 +285,7 @@ def reusable_export(
             or report.get("runtime") != runtime
             or recorded.get("path") != str(checkpoint)
             or recorded.get("model_architecture_sha256") != config.model_architecture_digest()
+            or _forward_identity(report.get("forward_package")) != _forward_identity(forward)
         ):
             continue
         if files is None:
@@ -365,12 +413,38 @@ def export_split(
     return summary
 
 
+def _loader(config, bundle, device, split: str, forward: dict[str, Any] | None):
+    if forward is None:
+        return build_evaluation_loader(config, bundle=bundle, device=device, split=split)
+    from stock_forecasting.forward.package import open_population
+
+    # The package was re-hashed once in forward_record; loader workers reopen paths only.
+    return build_evaluation_loader(
+        config,
+        bundle=bundle,
+        device=device,
+        split=forward["populations"][split]["slot"],
+        dataset_factory=lambda symbol_cache_size: open_population(
+            forward["path"],
+            split,
+            h_start=config.data.h_start,
+            symbol_cache_size=symbol_cache_size,
+            verify_files=False,
+        ),
+    )
+
+
 def run_export(
-    checkpoint: Path, selector: str, splits: list[str], reuse_since: str | None = None
+    checkpoint: Path,
+    selector: str,
+    splits: list[str],
+    reuse_since: str | None = None,
+    forward: dict[str, Any] | None = None,
 ) -> tuple[Path, bool]:
     """Run on an existing GPU Pod under the diagnostic lease, without lifecycle changes.
 
     Returns the export directory and whether an earlier complete export was reused.
+    ``forward`` (from ``forward_record``) switches to the forward package populations.
     """
     require_export_environment()
     volume = canonical_network_volume_root()
@@ -383,16 +457,23 @@ def run_export(
     scratch = local_scratch_root(volume)
     device = torch.device("cuda")
     runtime = runtime_identity(config, device)
-    directory = volume / "diagnostics" / "signal-predictions" / checkpoint.parent.name
-    directory = directory / checkpoint.name
+    directory = (
+        volume / "diagnostics" / "signal-predictions"
+        if forward is None
+        else volume / "diagnostics" / "forward-predictions" / forward["end_exclusive"]
+    )
+    directory = directory / checkpoint.parent.name / checkpoint.name
     if reuse_since is not None:
-        existing = reusable_export(directory, checkpoint, config, splits, reuse_since, runtime)
+        existing = reusable_export(
+            directory, checkpoint, config, splits, reuse_since, runtime, forward
+        )
         if existing is not None:
             LOGGER.info("Reusing complete export %s for %s", existing, checkpoint)
             return existing, True
+    # Forward inference reads only the sealed package, never the configured dataset.
     run_preflight(
         config,
-        require_data=True,
+        require_data=forward is None,
         enforce_runtime_limit=False,
         allow_historical_inference=True,
     ).require_success()
@@ -417,7 +498,7 @@ def run_export(
         bundle.model.eval()
         results = {}
         for split in splits:
-            loader = build_evaluation_loader(config, bundle=bundle, device=device, split=split)
+            loader = _loader(config, bundle, device, split, forward)
             LOGGER.info("Exporting %s predictions for %s", split, checkpoint)
             results[split] = export_split(
                 bundle, loader, config, device, output / split, scratch=scratch
@@ -447,6 +528,8 @@ def run_export(
             "runtime": runtime,
             "export_source_sha256": sha256_file(Path(__file__).resolve()),
         }
+        if forward is not None:
+            report["forward_package"] = forward
         atomic_write_json(output / "export.json", report)
         atomic_write_json(
             output / "status.json", {"state": "complete", "checkpoint": str(checkpoint)}
@@ -478,19 +561,30 @@ def main(argv: list[str] | None = None) -> int:
             parse_selector(selector)
     except ValueError as error:
         raise SystemExit(str(error)) from None
-    splits = list(dict.fromkeys(args.splits))
-    if "test" in splits and not args.confirm_test:
-        raise SystemExit("--splits test requires --confirm-test")
+    allowed = FORWARD_POPULATIONS if args.forward_package else SPLITS
+    splits = list(dict.fromkeys(args.splits or allowed))
+    if set(splits) - set(allowed):
+        raise SystemExit(
+            "--forward-package exports only overlap/forward"
+            if args.forward_package
+            else "overlap/forward require --forward-package"
+        )
+    if {"test", "overlap"} & set(splits) and not args.confirm_test:
+        raise SystemExit("--splits test or overlap requires --confirm-test")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     require_export_environment()
-    saved_model_root = canonical_network_volume_root() / "savedModel"
-    # Resolve every selector before GPU work so a typo or pruned checkpoint fails fast.
+    volume = canonical_network_volume_root()
+    saved_model_root = volume / "savedModel"
+    # Resolve every selector and the package before GPU work so mistakes fail fast.
     checkpoints = [resolve_selector(selector, saved_model_root) for selector in selectors]
     if len(set(checkpoints)) != len(checkpoints):
         raise SystemExit("Two --checkpoint selectors resolve to the same checkpoint")
+    forward = forward_record(args.forward_package, volume) if args.forward_package else None
     outputs = []
     for selector, checkpoint in zip(selectors, checkpoints, strict=True):
-        output, reused = run_export(checkpoint, selector, splits, args.reuse_complete_since)
+        output, reused = run_export(
+            checkpoint, selector, splits, args.reuse_complete_since, forward
+        )
         outputs.append(str(output))
         state = "reused" if reused else "complete"
         print(json.dumps({"state": state, "output": str(output)}, ensure_ascii=False))

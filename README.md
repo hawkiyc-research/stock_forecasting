@@ -2465,6 +2465,71 @@ ties 取平均名次）。另列各市場 1–14 日平均、US／TWSE／TPEX �
 因此不計算。匯出若含雲端記錄的 Rank IC，會逐項核對，差距超過 1×10⁻⁹ 時在輸出與畫面標示。
 方法、指標定義與限制見[誤差拆解報告](docs/error_decomposition_audit.md)。
 
+### 前瞻推論管線（第三階段）
+
+前瞻資料不進入任何訓練資料組。管線在本機抓取台股官方資料，呼叫訓練資料管線的同一批函式
+建立封存的「輸入包」，再由 RunPod GPU 以凍結的 checkpoint 推論（[實驗協定 §13.8 修訂補充](docs/experiment_protocol.md)）。
+本機步驟在 `inference/` 的 uv 環境執行，產出都在被 Git 排除的 `artifacts/forward/<結束日>/`：
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline fetch --end YYYY-MM-DD
+```
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline build --end YYYY-MM-DD
+```
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline labels --end YYYY-MM-DD
+```
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inputs --end YYYY-MM-DD --reference artifacts/diagnostics/evaluation-data/<dataset>/prepared
+```
+
+1. `fetch`：以既有的證交所與櫃買中心 provider 抓取 `--start`（預設 2025-03-01）到 `--end`
+   （不含）的日行情、除權息與加權／櫃買指數，速率與 CPU 準備相同。`--end` 不可晚於今天（UTC），
+   須先寫入 `backtest/config/stage3.json`。原始回應依結束日快取，重跑不再連網。官方交易日與清理用
+   交易日曆不一致時（例如颱風停市）會印出 WARNING，此時先回報，不要繼續建包。
+2. `build`：以 `build_symbol_bar_store` 與 `ensure_sample_universe` 建立私有 K 線庫與清理後樣本索引，
+   並封存每個檔案的 SHA-256。兩個母體：`overlap`（訊號日 2025-12-01 至 2026-06-01，定義與原 test
+   相同）與 `forward`（2026-06-01 至結束日，14 日標籤完整）。
+3. `labels`：以與 validation／test 相同的程式寫出兩個母體的 alpha 與絕對報酬標籤，格式同 baseline
+   評估陣列（`targets.npy`、`absolute_targets.npy`、`metadata.npy`）。
+4. `compare-inputs`：資料檢查第 4 項。以代號與訊號日對齊共用評估快照的 test 台股列，比對模型輸入；
+   通過門檻為至少 `--min-fraction`（預設 0.99）的列最大相對差距 ≤ `--tolerance`（預設 10⁻⁶）。
+   結果寫入 `checks/input-comparison.json`，未通過時 exit code 為 1。
+
+| 參數 | 預設值／限制 | 說明 |
+| --- | --- | --- |
+| `--end YYYY-MM-DD` | 必填 | 前瞻資料的結束日（不含），決定輸出目錄 |
+| `--artifacts PATH` | `artifacts` | 輸出根目錄 |
+| `--start YYYY-MM-DD` | `2025-03-01` | `fetch` 的起始日 |
+| `--qps N` | 0.5 | `fetch` 每個交易所每秒請求數 |
+| `--workers N` | `fetch` 2；`build` 自動 | `fetch` 為每個交易所的並行請求數；`build` 為建包程序數，預設依 CPU 與可用記憶體決定，也可用 `FORWARD_PIPELINE_WORKERS` 設定 |
+| `--reference PATH` | `compare-inputs` 必填 | 共用評估快照的 `prepared` 目錄（含 `bar-store` 與唯一一個 `sample-universes/<id>`） |
+| `--tolerance X`、`--min-fraction X` | 10⁻⁶、0.99 | 資料檢查第 4 項的門檻 |
+
+上傳輸入包、在 GPU Pod 推論、下載結果：
+
+```bash
+bash scripts/runpod_workflow.sh upload-forward-package YYYY-MM-DD
+```
+
+```bash
+bash scripts/runpod_tmux_launch.sh export-signal-predictions --forward-package /runpod-volume/forward/YYYY-MM-DD/package --splits overlap forward --confirm-test --checkpoint "<RUN_ID/checkpoint-NNNNNN>"
+```
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --forward YYYY-MM-DD "<RUN_ID/checkpoint-NNNNNN>"
+```
+
+上傳前逐檔重新核對雜湊，`forward-package.json` 最後上傳；網路磁碟上已有相同雜湊的包時只回報，
+不同的包則拒絕覆蓋。上傳 I/O 執行緒預設 4 個，可用 `RUNPOD_FORWARD_UPLOAD_WORKERS=1..8` 調整。
+`--forward-package` 推論前會再核對一次全部檔案；推論不讀任何訓練資料組，批次、worker 與評估程式
+與 validation／test 匯出相同。結果存於 `/runpod-volume/diagnostics/forward-predictions/<結束日>/`，
+與一般匯出分開；下載加 `--forward 結束日` 後存於 `artifacts/diagnostics/forward-predictions/<結束日>/`。
+
 <a id="tw-information-zh"></a>
 
 ### 台股資訊測試
@@ -2648,7 +2713,8 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `cleanup-monitors` | 必填 `--pod-id ID`；預設 dry-run，`--apply` 才終止已核對的本機 guard／GPU monitor／guard-owned caffeinate。先查 API 證實 Pod 不存在；存在、API 失敗或程序身分異常皆拒絕。`--guard-dir PATH` 預設 `RUNPOD_GUARD_LOG_DIR` 或 `~/.local/state/runpod-guards`；`-h`／`--help`。不刪日誌、不關共用 SSH、不操作遠端 |
 | `download [RUN_ID]` | 父 ID 一次下載兩模型；省略 ID 選最新完整完成的結果，成對子模型不當成額外實驗自動選用。`--checkpointScope all` 預設下載各自 retained checkpoints，`best` 取各自最佳；`--resume` 補齊／更新兩份本機結果，**不是接續訓練**；`-h`／`--help` 顯示說明。明確子 ID 保留單模型下載 |
 | `download-probes [PROBE_RUN_ID]` | 省略 ID 下載最新成功診斷；指定被診斷模型的 training run ID，下載該模型最新成功診斷。不需 checkpoint ID、probe ID、volume ID 或路徑；`-h`／`--help` 顯示說明 |
-| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`／`--baseline-arrays`／`--evaluation-data [--list]` | 必填其一 | 1–16 個子模型 run ID 或 `RUN_ID/checkpoint-NNNNNN`：各自下載最新完成的預測匯出並核對 SHA-256；同一 run 匯出過多個 checkpoint 時必須指定 checkpoint；`--baseline-arrays`：下載誤差拆解所需的現行 baseline 評估陣列並依 manifest 驗證；`--evaluation-data [--list]`：依 baseline 記錄找到 validation／test 共用的 K 線庫與樣本索引，逐檔核對 SHA-256 後存入 `artifacts/diagnostics/evaluation-data/`，`--list` 只列出大小；`-h`／`--help` 顯示說明 |
+| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`／`--baseline-arrays`／`--evaluation-data [--list]` | 必填其一 | 1–16 個子模型 run ID 或 `RUN_ID/checkpoint-NNNNNN`：各自下載最新完成的預測匯出並核對 SHA-256；同一 run 匯出過多個 checkpoint 時必須指定 checkpoint；`--baseline-arrays`：下載誤差拆解所需的現行 baseline 評估陣列並依 manifest 驗證；`--evaluation-data [--list]`：依 baseline 記錄找到 validation／test 共用的 K 線庫與樣本索引，逐檔核對 SHA-256 後存入 `artifacts/diagnostics/evaluation-data/`，`--list` 只列出大小；`--forward YYYY-MM-DD`：改選該結束日前瞻輸入包的推論匯出，存入 `artifacts/diagnostics/forward-predictions/`；`-h`／`--help` 顯示說明 |
+| `upload-forward-package YYYY-MM-DD` | 必填 | 把 `artifacts/forward/<結束日>/package` 逐檔核對雜湊後上傳到 `/runpod-volume/forward/<結束日>/package`；已有相同包時只回報，不同的包拒絕覆蓋 |
 | `download-research [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/tw-information.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。存於 `artifacts/diagnostics/tw-information-test/<launch-id>/`；仍在執行回傳 3，報告不完整回傳 4；`-h`／`--help` 顯示說明 |
 
 時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
@@ -2686,8 +2752,9 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 | 參數 | 預設值／限制 | 說明 |
 | --- | --- | --- |
 | `--checkpoint MODEL_RUN_ID[/checkpoint-NNNNNN]` | 必填，可重複 1–16 次 | 只填 signal 子模型（`-alpha`／`-direction`）run ID 時使用其 validation-selected best checkpoint；加 `/checkpoint-NNNNNN` 時使用該 run validation leaderboard 保留的指定 checkpoint。在同一工作依序匯出，推論前先解析全部指定，沒有「最新」預設 |
-| `--splits SPLIT [SPLIT]` | `validation test` | 要完整重新推論並保存的評估切分 |
-| `--confirm-test` | 無值 flag | 匯出 test 時必填，避免無意中重複使用 test |
+| `--splits SPLIT [SPLIT]` | `validation test`；前瞻模式 `overlap forward` | 要完整重新推論並保存的評估切分；搭配 `--forward-package` 時只能是母體 `overlap`、`forward` |
+| `--confirm-test` | 無值 flag | 匯出 test 或 `overlap`（同為 test 期間）時必填，避免無意中重複使用 test |
+| `--forward-package PATH` | 不設定時為一般匯出 | 網路磁碟上封存的前瞻輸入包；推論前重新核對全部檔案，不讀訓練資料組，結果存於 `diagnostics/forward-predictions/<結束日>/` |
 | `--reuse-complete-since YYYYMMDD` | 不設定時每個 checkpoint 都重新推論 | 用於續跑中斷的多 checkpoint 工作：若某 checkpoint 已有該 UTC 日期（含）之後建立的完成匯出，且 checkpoint 檔案、要求的切分、GPU、torch、Python 與精度都相同，重新核對預測檔 SHA-256 後沿用，不再推論 |
 | `-h`、`--help` | 無值 flag | 顯示參數，不啟動匯出 |
 
@@ -6391,6 +6458,81 @@ difference above 1×10⁻⁹ is flagged in the output and on screen. See the
 [error decomposition report](docs/error_decomposition_audit.md) for methods, metric definitions
 and limits.
 
+### Forward-inference pipeline (stage 3)
+
+Forward data never enters a training dataset. The pipeline fetches official Taiwan data
+locally, builds a sealed input package with the same functions as the training data pipeline,
+and a RunPod GPU runs the frozen checkpoints on it
+([experiment protocol §13.8 supplement](docs/experiment_protocol.md)). The local steps run in the
+`inference/` uv environment and write to Git-ignored `artifacts/forward/<end>/`:
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline fetch --end YYYY-MM-DD
+```
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline build --end YYYY-MM-DD
+```
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline labels --end YYYY-MM-DD
+```
+
+```bash
+inference/.venv/bin/python -m stock_forecasting.cli.forward_pipeline compare-inputs --end YYYY-MM-DD --reference artifacts/diagnostics/evaluation-data/<dataset>/prepared
+```
+
+1. `fetch` uses the existing TWSE and TPEx providers to fetch daily quotes, corporate actions
+   and the TAIEX/TPEx indices from `--start` (default 2025-03-01) to `--end` (exclusive), at the
+   CPU preparation's pacing. `--end` cannot be later than today (UTC) and must first be written
+   to `backtest/config/stage3.json`. Raw responses are cached per end date, so a re-run needs no
+   network. If the official sessions differ from the cleaning calendar (for example a typhoon
+   closure), a WARNING is printed; report it before building the package.
+2. `build` creates a private bar store and cleaned sample index with `build_symbol_bar_store` and
+   `ensure_sample_universe`, then seals the SHA-256 of every file. There are two populations:
+   `overlap` (signal dates 2025-12-01 to 2026-06-01, the original test definition) and `forward`
+   (2026-06-01 to the end date, with complete 14-session labels).
+3. `labels` writes both populations' alpha and absolute-return labels with the same code as
+   validation/test, in the baseline evaluation-array format (`targets.npy`,
+   `absolute_targets.npy`, `metadata.npy`).
+4. `compare-inputs` is data check 4. It matches the shared evaluation snapshot's test Taiwan rows
+   by symbol and signal date and compares model inputs; it passes when at least
+   `--min-fraction` (default 0.99) of rows have a maximum relative difference within
+   `--tolerance` (default 10⁻⁶). The result is written to `checks/input-comparison.json`, and
+   the exit code is 1 on failure.
+
+| Option | Default or limit | Behavior |
+| --- | --- | --- |
+| `--end YYYY-MM-DD` | Required | Exclusive end date of the forward data; selects the output directory |
+| `--artifacts PATH` | `artifacts` | Output root |
+| `--start YYYY-MM-DD` | `2025-03-01` | First date for `fetch` |
+| `--qps N` | 0.5 | `fetch` requests per second per exchange |
+| `--workers N` | `fetch` 2; `build` auto | Concurrent requests per exchange for `fetch`; build processes for `build`, by default from CPUs and available memory, or `FORWARD_PIPELINE_WORKERS` |
+| `--reference PATH` | Required for `compare-inputs` | The shared evaluation snapshot's `prepared` directory (with `bar-store` and exactly one `sample-universes/<id>`) |
+| `--tolerance X`, `--min-fraction X` | 10⁻⁶, 0.99 | Thresholds of data check 4 |
+
+Upload the package, infer on a GPU Pod and download the results:
+
+```bash
+bash scripts/runpod_workflow.sh upload-forward-package YYYY-MM-DD
+```
+
+```bash
+bash scripts/runpod_tmux_launch.sh export-signal-predictions --forward-package /runpod-volume/forward/YYYY-MM-DD/package --splits overlap forward --confirm-test --checkpoint "<RUN_ID/checkpoint-NNNNNN>"
+```
+
+```bash
+bash scripts/runpod_workflow.sh download-signal-predictions --forward YYYY-MM-DD "<RUN_ID/checkpoint-NNNNNN>"
+```
+
+Every file is re-hashed before upload and `forward-package.json` goes last; an identical package
+already on the network volume is only reported, and a different one is refused. Upload I/O
+uses 4 threads by default, adjustable with `RUNPOD_FORWARD_UPLOAD_WORKERS=1..8`.
+`--forward-package` re-checks every file before inference; inference reads no training dataset,
+and batching, workers and evaluation code are those of the validation/test exports. Results go
+to `/runpod-volume/diagnostics/forward-predictions/<end>/`, apart from regular exports; with
+`--forward END` the download stores them in `artifacts/diagnostics/forward-predictions/<end>/`.
+
 <a id="tw-information-en"></a>
 
 ### Taiwan information test
@@ -6592,7 +6734,8 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `cleanup-monitors` | Required `--pod-id ID`; dry-run by default, `--apply` terminates verified local guard/GPU-monitor/guard-owned caffeinate processes. API must confirm Pod absence; existence, API failures or identity errors block cleanup. `--guard-dir PATH` defaults to `RUNPOD_GUARD_LOG_DIR` or `~/.local/state/runpod-guards`; `-h`/`--help`. No log deletion, shared-SSH closure or remote changes |
 | `download [RUN_ID]` | A parent downloads both models; omission selects latest complete results without separately auto-selecting linked children. `--checkpointScope all` (default) obtains each retained checkpoint set; `best` selects each best. `--resume` fills/refreshes both local results, **not training continuation**; `-h`/`--help` shows help. Explicit child IDs retain individual downloads |
 | `download-probes [PROBE_RUN_ID]` | Without an ID, download the latest successful diagnostic; supply the diagnosed model's training run ID to download its latest successful diagnostic. No checkpoint ID, probe ID, volume ID or path is needed; `-h`/`--help` shows help |
-| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`/`--baseline-arrays`/`--evaluation-data [--list]` | One form required | 1–16 child run IDs or `RUN_ID/checkpoint-NNNNNN`: download each latest completed prediction export with SHA-256 checks; name the checkpoint when a run has exports of several; `--baseline-arrays`: download the current baselines' evaluation arrays needed for decomposition, verified against their manifests; `--evaluation-data [--list]`: locate the shared validation/test bar store and sample index recorded by the baseline, verify every file by SHA-256 and store them in `artifacts/diagnostics/evaluation-data/`, or with `--list` only print the size; `-h`/`--help` shows help |
+| `download-signal-predictions RUN_ID[/checkpoint-NNNNNN] [...]`/`--baseline-arrays`/`--evaluation-data [--list]` | One form required | 1–16 child run IDs or `RUN_ID/checkpoint-NNNNNN`: download each latest completed prediction export with SHA-256 checks; name the checkpoint when a run has exports of several; `--baseline-arrays`: download the current baselines' evaluation arrays needed for decomposition, verified against their manifests; `--evaluation-data [--list]`: locate the shared validation/test bar store and sample index recorded by the baseline, verify every file by SHA-256 and store them in `artifacts/diagnostics/evaluation-data/`, or with `--list` only print the size; `--forward YYYY-MM-DD`: select the inference exports of the forward input package with that end date instead, stored in `artifacts/diagnostics/forward-predictions/`; `-h`/`--help` shows help |
+| `upload-forward-package YYYY-MM-DD` | Required | Re-hash every file of `artifacts/forward/<end>/package` and upload it to `/runpod-volume/forward/<end>/package`; an identical package is only reported, a different one is refused |
 | `download-research [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/tw-information.json`; a `launch-...` ID selects another. Saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`; exits 3 while running and 4 when the report is incomplete; `-h`/`--help` shows help |
 
 Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,
@@ -6635,8 +6778,9 @@ Only two diagnostics forward options: `probe-scales` uses the table below and
 | Option | Default or limit | Behavior |
 | --- | --- | --- |
 | `--checkpoint MODEL_RUN_ID[/checkpoint-NNNNNN]` | Required, repeatable 1–16 times | A bare signal child run ID (`-alpha`/`-direction`) uses its validation-selected best checkpoint; `/checkpoint-NNNNNN` uses that checkpoint retained by the run's validation leaderboard. Exported sequentially in one job after resolving every selector, with no latest default |
-| `--splits SPLIT [SPLIT]` | `validation test` | Evaluation splits to re-infer completely and save |
-| `--confirm-test` | Flag with no value | Required whenever test is exported, to avoid accidental repeated test use |
+| `--splits SPLIT [SPLIT]` | `validation test`; forward mode `overlap forward` | Evaluation splits to re-infer completely and save; with `--forward-package` only the populations `overlap` and `forward` |
+| `--confirm-test` | Flag with no value | Required whenever test or `overlap` (also the test period) is exported, to avoid accidental repeated test use |
+| `--forward-package PATH` | Unset: regular export | Sealed forward input package on the network volume; every file is re-hashed before inference, no training dataset is read, and results go to `diagnostics/forward-predictions/<end>/` |
 | `--reuse-complete-since YYYYMMDD` | Unset: every checkpoint is re-inferred | Resumes an interrupted multi-checkpoint job: a checkpoint that already has a complete export created on or after that UTC date, with the same checkpoint files, requested splits, GPU, torch, Python and precision, is reused after its prediction SHA-256 values are re-verified |
 | `-h`, `--help` | Flag with no value | Show options without starting an export |
 

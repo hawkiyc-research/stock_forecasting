@@ -8,7 +8,7 @@ import os
 import random
 import shutil
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, replace
 from itertools import islice, pairwise
@@ -2725,8 +2725,13 @@ def build_evaluation_loader(
     bundle: ModelBundle,
     device: torch.device,
     split: str,
+    dataset_factory: Callable[[int], LazyFinancialWindowDataset] | None = None,
 ) -> DataLoader[Any]:
-    """Tune inference on the current device and open only the requested complete split."""
+    """Tune inference on the current device and open only the requested complete split.
+
+    ``dataset_factory(symbol_cache_size)`` replaces the configured dataset for the
+    independent forward pipeline; batching, workers and collation stay identical.
+    """
 
     if split not in ("validation", "test"):
         raise ValueError("Evaluation split must be validation or test")
@@ -2734,10 +2739,14 @@ def build_evaluation_loader(
     workers = replace(plan_dataloader_workers(requested, source=source), active_persistent_pools=1)
     from stock_forecasting.data.sample_universe import open_clean_dataset
 
-    dataset = open_clean_dataset(
-        config,
-        split,
-        symbol_cache_size=workers.symbol_cache_size_per_worker,
+    dataset = (
+        open_clean_dataset(
+            config,
+            split,
+            symbol_cache_size=workers.symbol_cache_size_per_worker,
+        )
+        if dataset_factory is None
+        else dataset_factory(workers.symbol_cache_size_per_worker)
     )
     from stock_forecasting.direction_data import with_direction_targets
 
