@@ -26,6 +26,12 @@ from stock_forecasting.dataset_profiles import DatasetProfile, selected_datasets
 from stock_forecasting.training_stage_contract import PRODUCTION_STAGE_SAMPLE_CONTRACTS
 
 _ENV_DEFAULT_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)}")
+# Each independent signal task owns exactly one label/objective parameter.
+TASK_PARAMETERS = {
+    "alpha_point": "point_loss_beta",
+    "absolute_direction": "neutral_return_threshold",
+    "cross_sectional_rank": "rank_min_group_size",
+}
 TrainingStage = Literal["stage1", "stage2"]
 
 
@@ -244,9 +250,12 @@ class ModelConfig(StrictModel):
     """Shared Kronos encoder, benchmark conditioner, and alpha quantile head."""
 
     time_series_backend: Literal["kronos", "mock"] = "kronos"
-    prediction_task: Literal["quantiles", "alpha_point", "absolute_direction"] = "quantiles"
+    prediction_task: Literal[
+        "quantiles", "alpha_point", "absolute_direction", "cross_sectional_rank"
+    ] = "quantiles"
     point_loss_beta: float = Field(default=1.0, gt=0.0)
     neutral_return_threshold: float = Field(default=0.01, gt=0.0, lt=1.0)
+    rank_min_group_size: int = Field(default=20, ge=2)
     time_series_model_id: str = "NeoQuasar/Kronos-base"
     time_series_tokenizer_id: str = "NeoQuasar/Kronos-Tokenizer-base"
     time_series_model_revision: str | None = None
@@ -371,16 +380,14 @@ class ModelConfig(StrictModel):
         """Hash only model semantics so Stage 1 and Stage 2 can be compared."""
 
         semantics = json.loads(self.model_dump_json())
-        if self.prediction_task == "quantiles":
-            for name in ("prediction_task", "point_loss_beta", "neutral_return_threshold"):
+        own = TASK_PARAMETERS.get(self.prediction_task)
+        for name in TASK_PARAMETERS.values():
+            if name != own:
                 semantics.pop(name)
+        if self.prediction_task == "quantiles":
+            semantics.pop("prediction_task")
         else:
             semantics["output_schema"] = "signal-1.0"
-            semantics.pop(
-                "neutral_return_threshold"
-                if self.prediction_task == "alpha_point"
-                else "point_loss_beta"
-            )
         if self.direction.enabled and self.direction.architecture != "market_ordinal_v3":
             # V3-only selection defaults do not alter retained architecture identities.
             for name in (

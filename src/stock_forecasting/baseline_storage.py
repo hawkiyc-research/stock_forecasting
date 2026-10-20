@@ -51,7 +51,7 @@ def lazy_dataset(config, split: str, *, relative: bool = False, validated_root: 
     root = validated_root.get(split) if isinstance(validated_root, dict) else validated_root
     if root is not None:
         root = Path(root)
-    return open_clean_dataset(
+    source = open_clean_dataset(
         config,
         split,
         validated_root=root,
@@ -62,6 +62,11 @@ def lazy_dataset(config, split: str, *, relative: bool = False, validated_root: 
         ),
         parquet_cache_files=int(os.environ.get("FIN_TS_BASELINE_PARQUET_CACHE_FILES", "128")),
     )
+    if getattr(config.model, "prediction_task", "quantiles") == "cross_sectional_rank":
+        from stock_forecasting.data.rank_labels import attach_rank_labels
+
+        attach_rank_labels(source, config.model.rank_min_group_size)
+    return source
 
 
 def build_tabular_cache(

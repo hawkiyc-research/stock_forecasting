@@ -266,6 +266,7 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
         parquet_cache_bytes: int = 0,
         parquet_cache_files: int = 128,
         sample_index_root: str | Path | None = None,
+        rank_label_root: str | Path | None = None,
     ) -> None:
         if series_mode not in {"raw", "relative"}:
             raise ValueError("series_mode must be 'raw' or 'relative'")
@@ -375,6 +376,67 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
         self._numeric_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._parquet_cache: OrderedDict[str, tuple[Any, int]] = OrderedDict()
         self._parquet_bytes = 0
+        self.rank_label_root: Path | None = None
+        self._rank_index: dict[str, dict[str, Any]] | None = None
+        self._rank_cache: OrderedDict[str, tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        if rank_label_root is not None:
+            self.attach_rank_labels(rank_label_root)
+
+    def symbol_spans(self) -> dict[str, tuple[int, int]]:
+        """Each symbol's contiguous ordinal span; ranges are in canonical symbol order."""
+        first = self.ranges.groupby("symbol", sort=False).head(1).index.to_numpy()
+        last = self.ranges.groupby("symbol", sort=False).tail(1).index.to_numpy()
+        return {
+            str(symbol): (int(begin), int(end))
+            for symbol, begin, end in zip(
+                self._range_symbols[first],
+                self._range_begins[first],
+                self._range_ends[last],
+                strict=True,
+            )
+        }
+
+    def attach_rank_labels(self, root: str | Path) -> None:
+        """Validate one ready per-split rank-label store before any label is read."""
+        from stock_forecasting.data.manifest import sha256_file
+
+        root = Path(root).resolve(strict=True)
+        manifest = json.loads((root / "rank-labels.json").read_text(encoding="utf-8"))
+        identity = manifest.get("identity", {})
+        if (
+            manifest.get("state") != "ready"
+            or identity.get("split") != self.split
+            or identity.get("horizons") != list(self.horizons)
+            or identity.get("samples") != len(self)
+            or identity.get("sample_universe") != self.sample_universe_identity
+            or identity.get("source_manifest_sha256") != sha256_file(self.root / "bar-store.json")
+        ):
+            raise ValueError("Rank labels were built for a different split population")
+        index = pd.read_parquet(root / "label-index.parquet")
+        rows = {str(row["symbol"]): row for row in index.to_dict(orient="records")}
+        spans = self.symbol_spans()
+        if set(rows) != set(spans) or any(
+            int(rows[symbol]["ordinal_begin"]) != begin
+            or int(rows[symbol]["row_count"]) != end - begin
+            for symbol, (begin, end) in spans.items()
+        ):
+            raise ValueError("Rank-label index does not cover every sample exactly once")
+        self.rank_label_root, self._rank_index = root, rows
+        self._rank_cache.clear()
+
+    def _rank_rows(self, symbol: str) -> tuple[np.ndarray, np.ndarray]:
+        cached = self._rank_cache.pop(symbol, None)
+        if cached is None:
+            table = self._read_symbol_table(self._rank_index[symbol], root=self.rank_label_root)
+            stamps = table["timestamp"].to_numpy().astype("datetime64[ns]").view(np.int64)
+            values = np.column_stack(
+                [table[f"rank_h{h:02d}"].to_numpy() for h in self.horizons]
+            ).astype(np.float32, copy=False)
+            cached = (stamps, values)
+        self._rank_cache[symbol] = cached
+        while len(self._rank_cache) > self.symbol_cache_size:
+            self._rank_cache.popitem(last=False)
+        return cached
 
     def __getstate__(self) -> dict[str, Any]:
         # Keep spawn messages below pipe capacity. Sending the entire symbol index
@@ -390,6 +452,7 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             "parquet_cache_bytes": self.parquet_cache_bytes,
             "parquet_cache_files": self.parquet_cache_files,
             "sample_index_root": str(self.sample_index_root) if self.sample_index_root else None,
+            "rank_label_root": str(self.rank_label_root) if self.rank_label_root else None,
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
@@ -429,11 +492,13 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             self._timestamp_indexes.pop(evicted_symbol)
         return frame
 
-    def _read_symbol_table(self, row, *, numerical=False):
+    def _read_symbol_table(self, row, *, numerical=False, root=None):
         """Reuse bounded immutable shard metadata, not decoded windows or whole files."""
         import pyarrow.parquet as pq
 
-        key = str(row["shard_relative_path"])
+        relative = str(row["shard_relative_path"])
+        # Rank-label shards share relative names with bar shards; key them by full path.
+        key = relative if root is None else str(Path(root) / relative)
         cached = self._parquet_cache.pop(key, None)
         if cached is None:
             handle = pq.ParquetFile(self.root / key)
@@ -893,20 +958,16 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
             result["benchmark"][selected] = self._numeric_context(benchmark, benchmark_context)
             if include_timestamps:
                 result["timestamp_features"][selected] = asset["time_features"][context]
-            gross = []
-            for bars, positions in ((asset, future), (benchmark, benchmark_future)):
-                entry = (
-                    bars["raw"][positions[:, 0], 0]
-                    * bars["adjusted_close"][positions[:, 0]]
-                    / np.maximum(bars["raw"][positions[:, 0], 3], 1e-12)
+            result["targets"][selected] = self._alpha_targets(
+                asset, benchmark, future, benchmark_future
+            )
+            if self._rank_index is not None:
+                result.setdefault(
+                    "rank_targets", np.empty((count, len(self.horizons)), dtype=np.float32)
                 )
-                values = bars["adjusted_close"][positions] / np.maximum(entry[:, None], 1e-12)
-                if not np.isfinite(values).all() or (values <= 0).any():
-                    raise ValueError(
-                        "Execution total-return gross factors must be finite and positive"
-                    )
-                gross.append(values[:, np.asarray(self.horizons) - 1])
-            result["targets"][selected] = np.log(gross[0]) - np.log(gross[1])
+                result["rank_targets"][selected] = self._rank_targets(
+                    symbol, ordinals[selected], asset["timestamps"].asi8[cutoff]
+                )
             if include_metadata:
                 for position, cut in zip(selected, cutoff, strict=True):
                     result["metadata"][position] = (
@@ -915,6 +976,66 @@ class LazyFinancialWindowDataset(Dataset[dict[str, Any]]):
                         asset["timestamps"][cut],
                         row,
                     )
+        return result
+
+    def _alpha_targets(self, asset, benchmark, future, benchmark_future) -> np.ndarray:
+        """Next-open to horizon-close log alpha; the only label arithmetic for batches."""
+        gross = []
+        for bars, positions in ((asset, future), (benchmark, benchmark_future)):
+            entry = (
+                bars["raw"][positions[:, 0], 0]
+                * bars["adjusted_close"][positions[:, 0]]
+                / np.maximum(bars["raw"][positions[:, 0], 3], 1e-12)
+            )
+            values = bars["adjusted_close"][positions] / np.maximum(entry[:, None], 1e-12)
+            if not np.isfinite(values).all() or (values <= 0).any():
+                raise ValueError("Execution total-return gross factors must be finite and positive")
+            gross.append(values[:, np.asarray(self.horizons) - 1])
+        return np.log(gross[0]) - np.log(gross[1])
+
+    def _rank_targets(self, symbol, ordinals, cutoff_ns) -> np.ndarray:
+        stamps, values = self._rank_rows(symbol)
+        rows = np.asarray(ordinals, dtype=np.int64) - int(
+            self._rank_index[symbol]["ordinal_begin"]
+        )
+        if (rows < 0).any() or (rows >= len(stamps)).any() or (stamps[rows] != cutoff_ns).any():
+            raise RuntimeError(f"Rank labels are misaligned with sample cutoffs: {symbol}")
+        return values[rows]
+
+    def target_batch(self, indices: Sequence[int]) -> dict[str, Any]:
+        """Labels, cutoffs and markets only: no context windows are decoded or copied."""
+        ordinals = np.asarray(indices, dtype=np.int64)
+        if ordinals.ndim != 1 or len(ordinals) == 0:
+            raise ValueError("A lazy target batch must be non-empty and one-dimensional")
+        if (ordinals < 0).any() or (ordinals >= len(self)).any():
+            raise IndexError("Lazy target index is outside the split")
+        ranges = np.searchsorted(self._range_ends, ordinals, side="right")
+        cutoffs = self._range_starts[ranges] + ordinals - self._range_begins[ranges]
+        symbols = self._range_symbols[ranges]
+        result = {
+            "targets": np.empty((len(ordinals), len(self.horizons)), dtype=np.float64),
+            "cutoff_ns": np.empty(len(ordinals), dtype=np.int64),
+            "markets": np.empty(len(ordinals), dtype=object),
+        }
+        for symbol in np.unique(symbols):
+            selected = np.flatnonzero(symbols == symbol)
+            cutoff = cutoffs[selected]
+            row = self._index[symbol]
+            asset = self._numeric_symbol(symbol)
+            benchmark = self._numeric_symbol(str(row["benchmark_symbol"]))
+            if "alignment" not in asset:
+                asset["alignment"] = benchmark["timestamps"].get_indexer(asset["timestamps"])
+            future = cutoff[:, None] + np.arange(1, MAX_ALPHA_HORIZON + 1)
+            if (future >= len(asset["raw"])).any():
+                raise RuntimeError("Prepared cutoff index is outside the symbol history")
+            benchmark_future = asset["alignment"][future]
+            if (benchmark_future < 0).any():
+                raise RuntimeError("Prepared cutoff range lost exact benchmark calendar coverage")
+            result["targets"][selected] = self._alpha_targets(
+                asset, benchmark, future, benchmark_future
+            )
+            result["cutoff_ns"][selected] = asset["timestamps"].asi8[cutoff]
+            result["markets"][selected] = str(row["market"])
         return result
 
     def record_at(self, index: int) -> dict[str, Any]:
