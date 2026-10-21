@@ -622,6 +622,7 @@ def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
 
     expected_sources = payload.get("data_identity", {}).get("split_sources", {})
     roots = validated_split_roots(config)
+    ranked = task["prediction_task"] == "cross_sectional_rank"
     for split in ("train", "validation", "test"):
         source = open_clean_dataset(config, split, validated_root=roots[split])
         actual = {
@@ -629,14 +630,21 @@ def require_baselines(config, *, verify_artifacts: bool = True) -> dict:
             "sample_universe": source.sample_universe_identity,
             "samples": len(source),
         }
+        expected = dict(expected_sources.get(split) or {})
+        # Rank-task baselines also record the rank-label store each split was read from.
+        recorded_labels = expected.pop("rank_labels", None)
+        current_labels = None
+        if ranked:
+            from stock_forecasting.data.rank_labels import label_root
+
+            current_labels = label_root(source, task["rank_min_group_size"])[0].name
         source.close()
-        if (
-            expected_sources.get(split) != actual
-            or payload["sample_counts"][split] != actual["samples"]
-        ):
+        if expected != actual or payload["sample_counts"][split] != actual["samples"]:
             raise ValueError(
                 f"Baseline {split} population differs from the cleaned sample universe"
             )
+        if recorded_labels != current_labels:
+            raise ValueError(f"Baseline {split} rank labels differ from the current label store")
     if verify_artifacts:
         for relative, metadata in payload["artifacts"].items():
             artifact = (root / relative).resolve()
