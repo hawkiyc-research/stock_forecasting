@@ -45,6 +45,7 @@ Usage:
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
   bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
+  bash scripts/runpod_workflow.sh volume-weights inventory|delete [OPTIONS]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF
 }
@@ -660,6 +661,9 @@ EOF
         ;;
     download-features)
         exec bash "${SCRIPT_DIR}/download_runpod_features.sh" "$@"
+        ;;
+    volume-weights)
+        exec bash "${SCRIPT_DIR}/runpod_volume_weights.sh" "$@"
         ;;
     cpu-logs)
         [[ $# -eq 0 ]] || { usage; exit 2; }

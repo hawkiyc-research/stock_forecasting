@@ -593,7 +593,9 @@ class WandbConfig(StrictModel):
     directory: Path = Path("/runpod-volume")
     mode: Literal["online", "offline", "disabled"] = "online"
     allow_offline_fallback: bool = True
-    log_model_artifact: bool = True
+    # W&B keeps hyperparameters and metrics only; checkpoint and result artifacts stay on the
+    # volume unless a run opts in.
+    log_model_artifact: bool = False
 
     @model_validator(mode="after")
     def validate_directory_contract(self) -> WandbConfig:

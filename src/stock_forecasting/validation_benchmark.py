@@ -1394,9 +1394,10 @@ def log_validation_to_wandb(
         # The training run has already committed its final internal W&B step.
         # Append a new history row and use the checkpoint step as its chart axis.
         run.log(validation_history)
-        artifact = wandb.Artifact(f"validation-benchmark-{run_id}", type="evaluation")
-        artifact.add_file(str(output))
-        run.log_artifact(artifact, aliases=["validation", "latest"])
+        if config.wandb.log_model_artifact:
+            artifact = wandb.Artifact(f"validation-benchmark-{run_id}", type="evaluation")
+            artifact.add_file(str(output))
+            run.log_artifact(artifact, aliases=["validation", "latest"])
         run.summary["benchmark_validation_completed"] = payload.get("state") == "ready"
         run.summary["benchmark_validation_path"] = str(output)
         run.summary["benchmark_validation_global_step"] = validation_step

@@ -37,6 +37,27 @@ fi
 
 case "$1:$2" in
     s3:cp|s3:ls|s3api:head-bucket|s3api:head-object|s3api:list-objects-v2) ;;
+    s3:rm)
+        # Experiment-weight cleanup (runpod_volume_weights.py): one exact object per call,
+        # opted in by the caller, limited to checkpoint weights, baseline model files and
+        # per-sample prediction exports. Records never match these patterns.
+        rm_checkpoint='^savedModel/[A-Za-z0-9][A-Za-z0-9._-]{0,119}/checkpoint-[0-9]+/[A-Za-z0-9._-]+\.(safetensors|pt|pth|bin)$'
+        rm_baseline='^baselines/baseline-[0-9a-f]{64}/jobs/[A-Za-z0-9._/-]+\.(pkl|pt|pth|joblib|safetensors|bin)$'
+        rm_export='^diagnostics/(signal|forward)-predictions/[A-Za-z0-9._/-]+/predictions\.npy$'
+        if [[ "${RUNPOD_S3_ALLOW_DELETE:-0}" != 1 || $# -ne 3 \
+            || ! "${RUNPOD_NETWORK_VOLUME_ID}" =~ ^[A-Za-z0-9_-]+$ \
+            || "${3:-}" != "s3://${RUNPOD_NETWORK_VOLUME_ID}/"* ]]; then
+            echo "s3 rm requires RUNPOD_S3_ALLOW_DELETE=1 and one exact object URL in the configured volume" >&2
+            exit 2
+        fi
+        rm_key="${3#s3://${RUNPOD_NETWORK_VOLUME_ID}/}"
+        if [[ "${rm_key}" == *..* || "${rm_key}" == *--* ]] \
+            || ! { [[ "${rm_key}" =~ $rm_checkpoint ]] || [[ "${rm_key}" =~ $rm_baseline ]] \
+                || [[ "${rm_key}" =~ $rm_export ]]; }; then
+            echo "s3 rm is limited to experiment weights and per-sample prediction exports" >&2
+            exit 2
+        fi
+        ;;
     s3api:delete-object)
         # Only an exact failed-launch selection record may be removed. The
         # caller must verify it was never started and preserve a local backup.

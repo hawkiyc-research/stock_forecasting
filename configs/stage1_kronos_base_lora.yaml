@@ -117,7 +117,7 @@ wandb:
   directory: ${WANDB_DIR:-/runpod-volume}
   mode: online
   allow_offline_fallback: true
-  log_model_artifact: true
+  log_model_artifact: false
 
 validation:
   calibrate_intervals: true

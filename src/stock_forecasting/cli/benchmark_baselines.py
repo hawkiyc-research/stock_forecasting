@@ -193,9 +193,12 @@ def main(argv: list[str] | None = None) -> int:
             mode=config.wandb.mode,
         )
         run.log(_flatten(payload))
-        artifact = wandb.Artifact(f"baseline-results-{run.id}", type="evaluation")
-        artifact.add_file(str(output))
-        run.log_artifact(artifact, aliases=["validation" if not args.unlock_test else "final-test"])
+        if config.wandb.log_model_artifact:
+            artifact = wandb.Artifact(f"baseline-results-{run.id}", type="evaluation")
+            artifact.add_file(str(output))
+            run.log_artifact(
+                artifact, aliases=["validation" if not args.unlock_test else "final-test"]
+            )
         run.finish()
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0
