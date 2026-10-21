@@ -261,10 +261,13 @@ class ProbeTmuxTests(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 harness = self.harness()
                 harness.environment["RUNPOD_SCOPED_LIFECYCLE"] = "1"
-                harness.write_script(harness.bin / "flock", r'''
+                harness.write_script(
+                    harness.bin / "flock",
+                    r"""
                     [[ "$*" == "-n 8" || "$*" == "-s -n 9" ]] || exit 95
                     printf '%s\n' "$*" >> "${HARNESS_ROOT}/lease-calls"
-                ''')
+                """,
+                )
                 result = harness.command("runpod_tmux_launch.sh", workflow)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 runner = harness.run_worker()
@@ -286,7 +289,7 @@ class ProbeTmuxTests(unittest.TestCase):
                 )
                 harness.write_script(
                     harness.scripts / "runpod_tmux_launch.sh",
-                    "printf '%s\\0' \"$@\" > \"${HARNESS_ROOT}/launcher-args\"\n",
+                    'printf \'%s\\0\' "$@" > "${HARNESS_ROOT}/launcher-args"\n',
                 )
                 result = harness.command("runpod_workflow.sh", "probe-scales", *arguments)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -326,8 +329,14 @@ class ProbeTmuxTests(unittest.TestCase):
                 section = readme.split(heading, 1)[1].split("\n### ", 1)[0]
                 language = "zh" if "歷史" in heading else "en"
                 self.assertIn(f"#single-model-{language}", section)
-                advanced = readme.split(f'<a id="single-model-{language}"></a>', 1)[1].split("\n## ", 1)[0]
-                self.assertIn("bash scripts/runpod_workflow.sh train --experiment a-alpha-point64 --seed 42 --maxRuntime 2h", advanced)
+                advanced = readme.split(f'<a id="single-model-{language}"></a>', 1)[1].split(
+                    "\n## ", 1
+                )[0]
+                self.assertIn(
+                    "bash scripts/runpod_workflow.sh train --experiment a-alpha-point64 "
+                    "--seed 42 --maxRuntime 2h",
+                    advanced,
+                )
                 self.assertIn("bash scripts/runpod_tmux_launch.sh probe-scales\n", section)
                 self.assertIn("bash scripts/runpod_tmux_launch.sh probe-scales --help", section)
                 self.assertNotIn("runpod_workflow.sh probe-scales", section)
@@ -348,13 +357,21 @@ class ProbeTmuxTests(unittest.TestCase):
                 section = readme.split(heading, 1)[1].split("\n#### ", 1)[0]
                 commands = [part.split("```", 1)[0] for part in section.split("```bash\n")[1:]]
                 commands_by_language.append(commands)
-                self.assertEqual(commands, [
-                    "bash scripts/runpod_workflow.sh download-probes\n",
-                    'bash scripts/runpod_workflow.sh download-probes "<RUN_ID>"\n',
-                ])
+                self.assertEqual(
+                    commands,
+                    [
+                        "bash scripts/runpod_workflow.sh download-probes\n",
+                        'bash scripts/runpod_workflow.sh download-probes "<RUN_ID>"\n',
+                    ],
+                )
                 for forbidden in (
-                    "runpod_s3_project.sh", "PROBE_VOLUME_ID", "PROBE_CHECKPOINT", "PROBE_ID",
-                    "PROBE_LAUNCH_ID", "s3://", "python3 -m json.tool",
+                    "runpod_s3_project.sh",
+                    "PROBE_VOLUME_ID",
+                    "PROBE_CHECKPOINT",
+                    "PROBE_ID",
+                    "PROBE_LAUNCH_ID",
+                    "s3://",
+                    "python3 -m json.tool",
                 ):
                     self.assertNotIn(forbidden, section)
                 self.assertIn("state: complete", section)
@@ -640,9 +657,7 @@ class ProbeTmuxTests(unittest.TestCase):
         ):
             with self.subTest(workflow=workflow):
                 harness = self.harness()
-                harness.environment.update(
-                    {"WANDB_RUN_ID": "run-legacy", "HARNESS_JOB_EXIT": "7"}
-                )
+                harness.environment.update({"WANDB_RUN_ID": "run-legacy", "HARNESS_JOB_EXIT": "7"})
                 result = harness.command("runpod_tmux_launch.sh", workflow)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 runner = harness.run_worker()
@@ -661,12 +676,14 @@ class ProbeTmuxTests(unittest.TestCase):
         for workflow in ("stage1-train", "stage1-validate"):
             with self.subTest(workflow=workflow):
                 harness = self.harness()
-                harness.environment.update({
-                    "WANDB_RUN_ID": "run-section",
-                    "RUNPOD_SECTION_SAFE_STOP": "1",
-                    "HARNESS_TIMEOUT": "1",
-                    "HARNESS_JOB_EXIT": "7",
-                })
+                harness.environment.update(
+                    {
+                        "WANDB_RUN_ID": "run-section",
+                        "RUNPOD_SECTION_SAFE_STOP": "1",
+                        "HARNESS_TIMEOUT": "1",
+                        "HARNESS_JOB_EXIT": "7",
+                    }
+                )
                 result = harness.command("runpod_tmux_launch.sh", workflow)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 runner = harness.run_worker()

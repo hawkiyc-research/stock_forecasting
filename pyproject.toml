@@ -81,6 +81,12 @@ ignore = ["B008"]
 "scripts/runpod_selection.py" = ["UP006", "UP007", "UP017", "UP035", "UP045"]
 "scripts/utc_deadline.py" = ["UP017"]
 "scripts/update_runpod_env.py" = ["UP006", "UP017", "UP035", "UP045"]
+"scripts/runpod_create_request.py" = ["UP017"]
+"scripts/runpod_paired.py" = ["UP017"]
+"scripts/runpod_paired_baseline.py" = ["UP017"]
+"scripts/runpod_paired_train.py" = ["UP017"]
+# README assertions quote Traditional Chinese text with full-width punctuation on purpose.
+"tests/test_readme_signal_versions.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

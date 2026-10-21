@@ -255,7 +255,7 @@ def _group_statistics(groups, market_codes, markets, min_group_size) -> dict:
             continue
         masked = selected < min_group_size
         result[market] = {
-            "groups": int(len(selected)),
+            "groups": len(selected),
             "unlabelled_groups": int(masked.sum()),
             "unlabelled_samples": int(selected[masked].sum()),
             "samples": int(selected.sum()),
@@ -307,7 +307,7 @@ def ensure_rank_labels(source, min_group_size: int, *, workers: int | None = Non
             flush=True,
         )
         covered = 0
-        for bucket, rows in _bounded_map(
+        for _bucket, rows in _bounded_map(
             _bucket_returns,
             sorted(buckets.items()),
             return_workers,
@@ -328,7 +328,8 @@ def ensure_rank_labels(source, min_group_size: int, *, workers: int | None = Non
         # numpy releases the GIL while sorting; one column per thread bounds peak memory.
         rank_threads, rank_plan = _worker_count(workers, len(horizons), 256 * 1024**2 + count * 72)
 
-        def rank_column(index):
+        # The arrays are bound as defaults because the function outlives the `del` below.
+        def rank_column(index, targets=targets, ranks=ranks, groups=groups):
             column = np.ascontiguousarray(targets[:, index])
             ranks[:, index] = gauss_rank(column, groups, min_group_size)
             return index

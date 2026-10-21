@@ -36,7 +36,11 @@ def selection_api(root: Path = ROOT) -> dict:
 
 
 def safe_run_id(value: object) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", value) or "--" in value:
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", value)
+        or "--" in value
+    ):
         raise ValueError("Paired experiment requires a canonical run ID")
     return value
 
@@ -47,7 +51,11 @@ def manifest_key(run_id: str) -> str:
 
 def validate_manifest(payload: dict, run_id: str | None = None) -> dict:
     """Validate task/data/seed ownership without changing numerical identities."""
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1 or payload.get("kind") != "paired-training":
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or payload.get("kind") != "paired-training"
+    ):
         raise ValueError("Unsupported paired experiment manifest")
     parent = safe_run_id(payload.get("run_id"))
     if run_id is not None and parent != safe_run_id(run_id):
@@ -94,8 +102,14 @@ def validate_manifest(payload: dict, run_id: str | None = None) -> dict:
     return payload
 
 
-def build_plan(root: Path, original_selection: dict, experiment: str, seed: int | None = None,
-               workflow: str = "train", run_id: str | None = None) -> dict:
+def build_plan(
+    root: Path,
+    original_selection: dict,
+    experiment: str,
+    seed: int | None = None,
+    workflow: str = "train",
+    run_id: str | None = None,
+) -> dict:
     root = Path(root).resolve()
     if experiment not in PAIR_EXPERIMENTS:
         raise ValueError("Unknown paired experiment: " + str(experiment))
@@ -127,16 +141,25 @@ def build_plan(root: Path, original_selection: dict, experiment: str, seed: int 
         selected = api["_with_experiment"](copy.deepcopy(original_selection), name, root)
         selected = api["_with_training_seed"](selected, seed, root)
         children[task] = {
-            "task": task, "run_id": f"{parent}-{SUFFIXES[task]}", "experiment": name,
+            "task": task,
+            "run_id": f"{parent}-{SUFFIXES[task]}",
+            "experiment": name,
             "config_path": selected["stage"]["config_path"],
             "selection_path": f"lifecycle/selections/{selected['selection_id']}.json",
             "selection": selected,
         }
-    return validate_manifest({
-        "schema_version": 1, "kind": "paired-training", "workflow": workflow,
-        "run_id": parent, "experiment": experiment, "seed": seed,
-        "created_at": now.isoformat(), "children": children,
-    })
+    return validate_manifest(
+        {
+            "schema_version": 1,
+            "kind": "paired-training",
+            "workflow": workflow,
+            "run_id": parent,
+            "experiment": experiment,
+            "seed": seed,
+            "created_at": now.isoformat(),
+            "children": children,
+        }
+    )
 
 
 def write_json(path: Path, payload: dict) -> None:

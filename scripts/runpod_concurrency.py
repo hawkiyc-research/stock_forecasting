@@ -40,8 +40,9 @@ def safe_run_id(value: str) -> str:
     return value
 
 
-def check_admission(pods: list, volume: str, mode: str, run_id: str,
-                    requested_children: set[str] | None = None) -> None:
+def check_admission(
+    pods: list, volume: str, mode: str, run_id: str, requested_children: set[str] | None = None
+) -> None:
     """Only distinct, run-scoped train/validation consumers may share a volume."""
     if not isinstance(pods, list):
         raise ValueError("Cannot establish active Pod inventory")
@@ -67,10 +68,15 @@ def check_admission(pods: list, volume: str, mode: str, run_id: str,
             pair_path = env.get("RUNPOD_PAIRED_PLAN_PATH")
             if pair_path:
                 mount = env.get("NETWORK_VOLUME_ROOT") or env.get("RUNPOD_VOLUME_ROOT")
-                if (not isinstance(mount, str) or not mount.startswith("/")
-                        or pair_path != f"{mount}/lifecycle/runs/{parent}/pair.json"):
+                if (
+                    not isinstance(mount, str)
+                    or not mount.startswith("/")
+                    or pair_path != f"{mount}/lifecycle/runs/{parent}/pair.json"
+                ):
                     raise ValueError("Active paired Pod has an invalid ownership plan path")
-                active_owners.update((safe_run_id(parent + "-alpha"), safe_run_id(parent + "-direction")))
+                active_owners.update(
+                    (safe_run_id(parent + "-alpha"), safe_run_id(parent + "-direction"))
+                )
         if (
             mode in {"train", "validation"}
             and shared_reader
@@ -132,8 +138,13 @@ def admit(root: Path, mode: str, run_id: str = "") -> None:
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         for start in range(0, len(pods), 16):
-            check_admission(list(pool.map(details, pods[start : start + 16])), volume, mode,
-                            run_id, requested_children=requested_children)
+            check_admission(
+                list(pool.map(details, pods[start : start + 16])),
+                volume,
+                mode,
+                run_id,
+                requested_children=requested_children,
+            )
 
 
 def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | None = None) -> int:
@@ -183,8 +194,7 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
                 env["RUNPOD_POD_NAME"] = "stock-forecasting-" + name
             jobs.append((label, env))
     print(
-        f"Training launch plan: {len(jobs)} Pod(s): "
-        + ", ".join(name for name, _env in jobs),
+        f"Training launch plan: {len(jobs)} Pod(s): " + ", ".join(name for name, _env in jobs),
         flush=True,
     )
 
@@ -222,9 +232,7 @@ def launch(root: Path, experiments: list[str], workers: int, seeds: list[int] | 
         control_lock(root, exclusive=False),
         ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool,
     ):
-        for script, preflight in (
-            ("create_runpod_pod.sh", True),
-        ):
+        for script, preflight in (("create_runpod_pod.sh", True),):
             results = list(
                 pool.map(
                     lambda job, script=script, preflight=preflight: command(

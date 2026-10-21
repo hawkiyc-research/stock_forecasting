@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import contextlib
 import io
+import json
 import os
 import runpy
 import shlex
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Every remote boundary is replaced. Neither RUNPOD_TEST_MODE nor dry-run is used:
 # the production creator, selection validation, paired preflight/publication and
 # local receipt writer execute through their real shell/subprocess entry points.
-BOUNDARY = r'''
+BOUNDARY = r"""
 import json, os, pathlib, sys
 root = pathlib.Path(os.environ["FIXTURE_ROOT"])
 mode, args = sys.argv[1], sys.argv[2:]
@@ -97,7 +97,7 @@ elif mode in {"training-data", "baseline-data"}:
         sys.exit(9)
 else:
     raise AssertionError("Unexpected boundary: " + mode)
-'''
+"""
 
 
 class CreatePublicationTests(unittest.TestCase):
@@ -112,15 +112,28 @@ class CreatePublicationTests(unittest.TestCase):
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
         self.selection = runpy.run_path(str(self.root / "scripts/runpod_selection.py"))
-        args = self.selection["build_parser"]().parse_args([
-            "create", "--project-root", str(self.root), "--stage", "stage2",
-            "--data-profile", "us_tw_eodhd", "--start", "2021-01-01",
-            "--end", "2026-06-01", "--universe", "all",
-        ])
+        args = self.selection["build_parser"]().parse_args(
+            [
+                "create",
+                "--project-root",
+                str(self.root),
+                "--stage",
+                "stage2",
+                "--data-profile",
+                "us_tw_eodhd",
+                "--start",
+                "2021-01-01",
+                "--end",
+                "2026-06-01",
+                "--universe",
+                "all",
+            ]
+        )
         self.original = self.selection["_build_selection"](args, self.root)
         self.selection["_activate_selection"](self.root, self.original)
         self.env = {
-            key: value for key, value in os.environ.items()
+            key: value
+            for key, value in os.environ.items()
             if not key.startswith(("RUNPOD_", "WANDB_", "FIN_TS_", "VALIDATION_", "FIXTURE_"))
             and key not in {"RESUME_CHECKPOINT", "PROJECT_ROOT", "SAVED_MODEL_ROOT", "DATA_ROOT"}
         }
@@ -133,13 +146,15 @@ class CreatePublicationTests(unittest.TestCase):
         )
         env_file.chmod(0o600)
         self.env.update(
-            FIXTURE_ROOT=str(self.root), RUNPOD_ENV_FILE=str(env_file),
+            FIXTURE_ROOT=str(self.root),
+            RUNPOD_ENV_FILE=str(env_file),
             RUNPOD_GUARD_LOG_DIR=str(self.root / "guards"),
             RUNPOD_LAUNCH_CONTROL_LOCK_HELD="1",
         )
         (self.root / "fixture_boundary.py").write_text(BOUNDARY)
         for name, mode in (
-            ("runpodctl_project.sh", "api"), ("runpod_s3_project.sh", "s3"),
+            ("runpodctl_project.sh", "api"),
+            ("runpod_s3_project.sh", "s3"),
             ("launch_runpod_guard.sh", "guard"),
             ("verify_runpod_stage_readiness.sh", "readiness"),
             ("runpod_baseline_cache.py", "baseline"),
@@ -151,14 +166,19 @@ class CreatePublicationTests(unittest.TestCase):
         if name.endswith(".py"):
             path.write_text(
                 "import os,sys\n"
-                f"os.execv(sys.executable, [sys.executable, {str(self.root / 'fixture_boundary.py')!r}, "
+                "os.execv(sys.executable, [sys.executable, "
+                f"{str(self.root / 'fixture_boundary.py')!r}, "
                 f"{mode!r}, *sys.argv[1:]])\n"
             )
         else:
             path.write_text(
-                "#!/bin/bash\nset -eu\nexec " + shlex.quote(sys.executable) + " "
-                + shlex.quote(str(self.root / "fixture_boundary.py")) + " "
-                + shlex.quote(mode) + ' "$@"\n'
+                "#!/bin/bash\nset -eu\nexec "
+                + shlex.quote(sys.executable)
+                + " "
+                + shlex.quote(str(self.root / "fixture_boundary.py"))
+                + " "
+                + shlex.quote(mode)
+                + ' "$@"\n'
             )
         path.chmod(0o700)
 
@@ -167,12 +187,18 @@ class CreatePublicationTests(unittest.TestCase):
             paired_control = runpy.run_path(str(self.root / "scripts/runpod_paired_control.py"))
             with patch.dict(os.environ, self.env, clear=True):
                 self.plan, _, environment = paired_control["prepare_launch"](
-                    self.root, self.original, "a-signal64", 42, workflow=workflow,
+                    self.root,
+                    self.original,
+                    "a-signal64",
+                    42,
+                    workflow=workflow,
                 )
             self.env.update(environment)
             return
         selected = self.selection["_with_experiment"](
-            self.original, "a-alpha-point64", self.root,
+            self.original,
+            "a-alpha-point64",
+            self.root,
         )
         self.selection["_activate_selection"](self.root, selected)
         self.env["RUNPOD_GPU_WORKFLOW"] = workflow
@@ -180,8 +206,12 @@ class CreatePublicationTests(unittest.TestCase):
 
     def create(self, **overrides):
         return subprocess.run(
-            ["bash", "scripts/create_runpod_pod.sh"], cwd=self.root,
-            env={**self.env, **overrides}, capture_output=True, text=True, timeout=30,
+            ["bash", "scripts/create_runpod_pod.sh"],
+            cwd=self.root,
+            env={**self.env, **overrides},
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
 
     def events(self):
@@ -229,7 +259,9 @@ class CreatePublicationTests(unittest.TestCase):
         self.assertLess(kinds.index("create"), kinds.index("guard"))
         writes = [item for item in events if item["kind"] == "write"]
         self.assertTrue(writes)
-        self.assertTrue(all(index > kinds.index("guard") for index, kind in enumerate(kinds) if kind == "write"))
+        self.assertTrue(
+            all(index > kinds.index("guard") for index, kind in enumerate(kinds) if kind == "write")
+        )
         request = next(item["payload"] for item in events if item["kind"] == "create")
         run_id = request["env"]["WANDB_RUN_ID"]
         selection_id = request["env"]["RUNPOD_SELECTION_ID"]
@@ -238,7 +270,9 @@ class CreatePublicationTests(unittest.TestCase):
         if paired:
             expected = {base + child["selection_path"] for child in self.plan["children"].values()}
             expected.add(base + f"lifecycle/runs/{run_id}/pair.json")
-            published = next(item["payload"] for item in writes if item["key"].endswith("/pair.json"))
+            published = next(
+                item["payload"] for item in writes if item["key"].endswith("/pair.json")
+            )
             self.assertEqual(published, self.plan)
         if workflow == "train":
             expected.add(base + f"lifecycle/runs/{run_id}/selection.json")
@@ -296,11 +330,16 @@ class CreatePublicationTests(unittest.TestCase):
         self.configure(paired=True)
         result = self.create(FIXTURE_BASELINE_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(any(item["kind"] in {"write", "guard", "create"} for item in self.events()))
+        self.assertFalse(
+            any(item["kind"] in {"write", "guard", "create"} for item in self.events())
+        )
         self.assertFalse((self.root / ".runpod/launch-attempts").exists())
 
     def restore_readiness_shell(self):
-        shutil.copy2(ROOT / "scripts/verify_runpod_stage_readiness.sh", self.root / "scripts/verify_runpod_stage_readiness.sh")
+        shutil.copy2(
+            ROOT / "scripts/verify_runpod_stage_readiness.sh",
+            self.root / "scripts/verify_runpod_stage_readiness.sh",
+        )
         self.boundary("runpod_readiness.py", "check-code")
         self.boundary("runpod_training_readiness.py", "training-data")
         self.boundary("runpod_baseline_readiness.py", "baseline-data")
@@ -333,7 +372,9 @@ class CreatePublicationTests(unittest.TestCase):
             with self.subTest(gate=gate):
                 result = self.create(FIXTURE_GATE_FAIL=gate)
                 self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(any(item["kind"] in {"write", "guard", "create"} for item in self.events()))
+        self.assertFalse(
+            any(item["kind"] in {"write", "guard", "create"} for item in self.events())
+        )
 
     def test_local_selection_does_not_bypass_local_config_validation(self):
         self.configure()
@@ -342,7 +383,9 @@ class CreatePublicationTests(unittest.TestCase):
         config.write_text(config.read_text() + "\n# Fixture post-selection change.\n")
         result = self.create()
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(any(item["kind"] in {"write", "guard", "create"} for item in self.events()))
+        self.assertFalse(
+            any(item["kind"] in {"write", "guard", "create"} for item in self.events())
+        )
 
     def test_default_readiness_still_compares_published_selection(self):
         self.configure()
@@ -352,13 +395,19 @@ class CreatePublicationTests(unittest.TestCase):
                 before = len(self.events())
                 result = subprocess.run(
                     ["bash", "scripts/verify_runpod_stage_readiness.sh", mode],
-                    cwd=self.root, env=self.env, capture_output=True, text=True, timeout=30,
+                    cwd=self.root,
+                    env=self.env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 reads = [item["key"] for item in self.events()[before:] if item["kind"] == "read"]
                 self.assertEqual(len(reads), 2)
                 self.assertIn("/lifecycle/selections/", reads[1])
-        self.assertFalse(any(item["kind"] in {"write", "guard", "create"} for item in self.events()))
+        self.assertFalse(
+            any(item["kind"] in {"write", "guard", "create"} for item in self.events())
+        )
 
 
 class CreateReceiptTests(unittest.TestCase):
@@ -368,7 +417,8 @@ class CreateReceiptTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.module = runpy.run_path(str(ROOT / "scripts/runpod_create_request.py"))
         self.payload = {
-            "name": "stock-forecasting-fixture", "gpuId": "fixture-gpu",
+            "name": "stock-forecasting-fixture",
+            "gpuId": "fixture-gpu",
             "networkVolumeId": "fixture-volume",
             "env": {"WANDB_RUN_ID": "run-fixture", "API_TOKEN": "never-copy-this-secret"},
         }
@@ -385,8 +435,11 @@ class CreateReceiptTests(unittest.TestCase):
         raw_error = '{"status":400,"error":{"capacity":"GPU unavailable","details":[1,2]}}\n'
         response = subprocess.CompletedProcess([], 7, "provider stdout\n", raw_error)
         out, err = io.StringIO(), io.StringIO()
-        with patch.object(self.module["subprocess"], "run", return_value=response), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with (
+            patch.object(self.module["subprocess"], "run", return_value=response),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = self.module["create"](self.root, self.payload)
         self.assertEqual(code, 7)
         self.assertEqual(out.getvalue(), response.stdout)
@@ -394,9 +447,10 @@ class CreateReceiptTests(unittest.TestCase):
         self.assertEqual(self.record()["state"], "rejected")
 
     def test_request_timeout_leaves_unknown_receipt(self):
-        with patch.object(self.module["subprocess"], "run", side_effect=subprocess.TimeoutExpired("fixture", 90)):
-            with self.assertRaises(subprocess.TimeoutExpired):
-                self.module["create"](self.root, self.payload)
+        with patch.object(
+            self.module["subprocess"], "run", side_effect=subprocess.TimeoutExpired("fixture", 90)
+        ), self.assertRaises(subprocess.TimeoutExpired):
+            self.module["create"](self.root, self.payload)
         self.assertEqual(self.record()["state"], "unknown")
         self.assertIn("finished_at", self.record())
 
@@ -413,9 +467,12 @@ class CreateReceiptTests(unittest.TestCase):
 
         response = subprocess.CompletedProcess([], 0, '{"id":"fixture-pod"}\n', "")
         out, err = io.StringIO(), io.StringIO()
-        with patch.dict(namespace, save=save_then_fail), \
-                patch.object(self.module["subprocess"], "run", return_value=response), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with (
+            patch.dict(namespace, save=save_then_fail),
+            patch.object(self.module["subprocess"], "run", return_value=response),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = self.module["create"](self.root, self.payload)
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue())["id"], "fixture-pod")
@@ -426,10 +483,11 @@ class CreateReceiptTests(unittest.TestCase):
     def test_initial_receipt_failure_prevents_paid_request(self):
         namespace = self.module["create"].__globals__
         provider = Mock()
-        with patch.dict(namespace, save=Mock(side_effect=OSError("fixture disk full"))), \
-                patch.object(self.module["subprocess"], "run", provider):
-            with self.assertRaises(OSError):
-                self.module["create"](self.root, self.payload)
+        with (
+            patch.dict(namespace, save=Mock(side_effect=OSError("fixture disk full"))),
+            patch.object(self.module["subprocess"], "run", provider),self.assertRaises(OSError)
+        ):
+            self.module["create"](self.root, self.payload)
         provider.assert_not_called()
 
 

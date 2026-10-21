@@ -201,7 +201,9 @@ class RunRecords:
             if eligible and run_id not in candidates:
                 nominate(run_id, legacy.get("generated_at"))
         if pairs:
-            inspect = runpy.run_path(str(self.root / "scripts/runpod_run_status.py"))["inspect_pair"]
+            inspect = runpy.run_path(str(self.root / "scripts/runpod_run_status.py"))[
+                "inspect_pair"
+            ]
             for run_id, pair in pairs.items():
                 candidates.pop(run_id, None)
                 for child in pair["children"].values():
@@ -257,7 +259,9 @@ def main(argv=None):
         query = runpy.run_path(str(ROOT / "scripts/runpod_run_status.py"))
         return query["main"](RunRecords(), arguments[0], arguments[1:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("latest", "lifecycle", "selection", "pair", "list", "status"))
+    parser.add_argument(
+        "command", choices=("latest", "lifecycle", "selection", "pair", "list", "status")
+    )
     parser.add_argument("--run-id")
     parser.add_argument("--kind", choices=("training", "validation"), default="training")
     parser.add_argument(

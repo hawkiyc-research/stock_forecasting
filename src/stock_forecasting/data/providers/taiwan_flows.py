@@ -99,7 +99,7 @@ def _integer(value: Any) -> int | None:
     number = _number(value)
     if number is None or number != number:
         return None
-    return int(round(number))
+    return round(number)
 
 
 def _check_identity(violations: int, rows: int, label: str, limit: float) -> None:

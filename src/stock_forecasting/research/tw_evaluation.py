@@ -199,7 +199,7 @@ def backtest(
     frame = frame[np.isfinite(frame["signal"]) & np.isfinite(frame["net"])]
     daily = []
     for _date, group in frame.groupby("date", sort=True):
-        count = max(1, int(round(len(group) * top_fraction)))
+        count = max(1, round(len(group) * top_fraction))
         chosen = group.nlargest(count, "signal")
         chosen = chosen[chosen["signal"] > 0]
         if not chosen.empty:

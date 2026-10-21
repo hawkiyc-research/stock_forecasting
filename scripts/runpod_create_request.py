@@ -27,16 +27,22 @@ def create(root, payload):
     path = directory / f"attempt-{uuid.uuid4().hex}.json"
     env = payload.get("env", {})
     record = {
-        "schema_version": 1, "state": "requesting",
-        "run_id": env.get("WANDB_RUN_ID", ""), "pod_name": payload.get("name"),
-        "gpu_id": payload.get("gpuId"), "volume_id": payload.get("networkVolumeId"),
+        "schema_version": 1,
+        "state": "requesting",
+        "run_id": env.get("WANDB_RUN_ID", ""),
+        "pod_name": payload.get("name"),
+        "gpu_id": payload.get("gpuId"),
+        "volume_id": payload.get("networkVolumeId"),
         "requested_at": datetime.now(timezone.utc).isoformat(),
     }
     save(path, record)
     try:
         result = subprocess.run(
             ["bash", str(root / "scripts/runpodctl_project.sh"), "pod", "create-gpu"],
-            input=json.dumps(payload), text=True, capture_output=True, timeout=90,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            timeout=90,
         )
     except (OSError, subprocess.SubprocessError):
         record.update(state="unknown", finished_at=datetime.now(timezone.utc).isoformat())
@@ -48,7 +54,9 @@ def create(root, payload):
         except (ValueError, TypeError):
             error = {}
         status = error.get("status") if isinstance(error, dict) else None
-        record["state"] = "rejected" if isinstance(status, int) and 400 <= status < 500 else "unknown"
+        record["state"] = (
+            "rejected" if isinstance(status, int) and 400 <= status < 500 else "unknown"
+        )
         record["http_status"] = status
     else:
         try:
@@ -65,7 +73,11 @@ def create(root, payload):
         save(path, record)
     except OSError:
         # A full local disk must not hide a created Pod ID from guard startup.
-        print("Warning: could not update local launch receipt; inspect Pod inventory before retrying.", file=sys.stderr)
+        print(
+            "Warning: could not update local launch receipt; "
+            "inspect Pod inventory before retrying.",
+            file=sys.stderr,
+        )
     # Preserve all provider diagnostics; the existing wrapper handles redaction.
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
@@ -86,5 +98,8 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (ValueError, OSError, subprocess.SubprocessError) as error:
-        print(f"Pod creation outcome is uncertain; inspect Pod inventory before retrying: {error}", file=sys.stderr)
+        print(
+            f"Pod creation outcome is uncertain; inspect Pod inventory before retrying: {error}",
+            file=sys.stderr,
+        )
         raise SystemExit(2) from error

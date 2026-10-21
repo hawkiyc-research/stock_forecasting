@@ -108,11 +108,23 @@ class ParallelControlTests(unittest.TestCase):
                 admit([active_pair], "fixture-volume", "train", requested)
         for child in ("run-parent-alpha", "run-parent-direction"):
             with self.subTest(active=child), self.assertRaises(ValueError):
-                admit([pod(child)], "fixture-volume", "train", "run-parent",
-                      requested_children={"run-parent-alpha", "run-parent-direction"})
-        admit([active_pair], "fixture-volume", "train", "run-other",
-              requested_children={"run-other-alpha", "run-other-direction"})
-        active_pair["env"]["RUNPOD_PAIRED_PLAN_PATH"] = "/runpod-volume/lifecycle/runs/wrong/pair.json"
+                admit(
+                    [pod(child)],
+                    "fixture-volume",
+                    "train",
+                    "run-parent",
+                    requested_children={"run-parent-alpha", "run-parent-direction"},
+                )
+        admit(
+            [active_pair],
+            "fixture-volume",
+            "train",
+            "run-other",
+            requested_children={"run-other-alpha", "run-other-direction"},
+        )
+        active_pair["env"]["RUNPOD_PAIRED_PLAN_PATH"] = (
+            "/runpod-volume/lifecycle/runs/wrong/pair.json"
+        )
         with self.assertRaisesRegex(ValueError, "invalid ownership"):
             admit([active_pair], "fixture-volume", "train", "run-other")
 
@@ -127,12 +139,18 @@ class ParallelControlTests(unittest.TestCase):
 
         def run(command, **kwargs):
             requests.append(command)
-            return subprocess.CompletedProcess(command, 0,
-                                               json.dumps([{"id": active["id"]}] if "list" in command else active), "")
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps([{"id": active["id"]}] if "list" in command else active), ""
+            )
 
-        with patch.dict(os.environ, {"RUNPOD_NETWORK_VOLUME_ID": "fixture-volume", "RUNPOD_PAIRED_MANIFEST": str(path)}), patch.object(subprocess, "run", run):
-            with self.assertRaisesRegex(ValueError, "same run"):
-                CONTROL["admit"](self.root, "train", plan["run_id"])
+        with (
+            patch.dict(
+                os.environ,
+                {"RUNPOD_NETWORK_VOLUME_ID": "fixture-volume", "RUNPOD_PAIRED_MANIFEST": str(path)},
+            ),
+            patch.object(subprocess, "run", run),self.assertRaisesRegex(ValueError, "same run")
+        ):
+            CONTROL["admit"](self.root, "train", plan["run_id"])
         self.assertEqual(len(requests), 2)
         self.assertFalse(any("create-gpu" in command for command in requests))
 
@@ -194,13 +212,19 @@ class ParallelControlTests(unittest.TestCase):
             pair = json.loads((self.root / ".runpod/paired" / f"{run_id}.json").read_text())
             self.assertEqual(set(pair["children"]), {"alpha_point", "absolute_direction"})
             self.assertEqual(pair["seed"], int(pod_record["env"]["RUNPOD_TRAINING_SEED"]))
-            self.assertEqual(pod_record["env"]["RUNPOD_PAIRED_PLAN_PATH"],
-                             f"/runpod-volume/lifecycle/runs/{run_id}/pair.json")
+            self.assertEqual(
+                pod_record["env"]["RUNPOD_PAIRED_PLAN_PATH"],
+                f"/runpod-volume/lifecycle/runs/{run_id}/pair.json",
+            )
             self.assertNotIn("RUNPOD_PAIRED_MANIFEST", pod_record["env"])
             self.assertEqual(pair["children"]["alpha_point"]["run_id"], run_id + "-alpha")
-            self.assertEqual(pair["children"]["absolute_direction"]["run_id"], run_id + "-direction")
-            self.assertNotEqual(pair["children"]["alpha_point"]["config_path"],
-                                pair["children"]["absolute_direction"]["config_path"])
+            self.assertEqual(
+                pair["children"]["absolute_direction"]["run_id"], run_id + "-direction"
+            )
+            self.assertNotEqual(
+                pair["children"]["alpha_point"]["config_path"],
+                pair["children"]["absolute_direction"]["config_path"],
+            )
 
     def test_full_creator_seed_only_uses_configured_experiment(self):
         self.assert_creator_launch([], [42, 43, 44])
@@ -226,7 +250,9 @@ class ParallelControlTests(unittest.TestCase):
         writes = self.root / "cloud"
         writes.mkdir()
         write_script(self.root / "scripts/verify_runpod_stage_readiness.sh", "exit 0\n")
-        (self.root / "scripts/runpod_baseline_cache.py").write_text('print(\'{"complete": true}\')\n')
+        (self.root / "scripts/runpod_baseline_cache.py").write_text(
+            "print('{\"complete\": true}')\n"
+        )
         write_script(
             self.root / "scripts/runpod_s3_project.sh", '[[ "$1 $2" == "s3 cp" ]] || exit 93\n'
         )

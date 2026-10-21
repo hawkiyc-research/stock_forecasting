@@ -24,8 +24,11 @@ class PairedContractRelaunchTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
         for directory in ("configs", "scripts", "src"):
-            shutil.copytree(ROOT / directory, self.root / directory,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copytree(
+                ROOT / directory,
+                self.root / directory,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
         self.plan, self.records = FIXTURE["pair_fixtures"]()
         self.reader = BASE["FakeReader"](self.records)
         self.reader.bucket = "fixture-volume"
@@ -57,7 +60,9 @@ class PairedContractRelaunchTests(unittest.TestCase):
         child = self.plan["children"]["absolute_direction"]["run_id"]
         self.reader.payloads = {k: v for k, v in self.records.items() if child not in k}
         calls = []
-        RELAUNCH["check_children"](self.root, self.reader, self.plan, "resume", execute=lambda *a, **kw: calls.append(a))
+        RELAUNCH["check_children"](
+            self.root, self.reader, self.plan, "resume", execute=lambda *a, **kw: calls.append(a)
+        )
         self.assertEqual(calls, [])
 
     def test_validate_requires_both_trained_and_resume_rejects_complete(self):
@@ -70,30 +75,54 @@ class PairedContractRelaunchTests(unittest.TestCase):
 
     def test_forced_validate_checks_both_best_checkpoints_with_own_config(self):
         calls = []
-        RELAUNCH["check_children"](self.root, self.reader, self.plan, "validate", force=True,
-                                   execute=lambda command, **kw: calls.append((command, kw)))
+        RELAUNCH["check_children"](
+            self.root,
+            self.reader,
+            self.plan,
+            "validate",
+            force=True,
+            execute=lambda command, **kw: calls.append((command, kw)),
+        )
         self.assertEqual(len(calls), 2)
         for command, kw in calls:
             self.assertEqual(command[-1], "best")
             run = command[command.index("--run-id") + 1]
             child = next(c for c in self.plan["children"].values() if c["run_id"] == run)
-            self.assertEqual(command[command.index("--config") + 1], str(self.root / child["config_path"]))
+            self.assertEqual(
+                command[command.index("--config") + 1], str(self.root / child["config_path"])
+            )
             self.assertEqual(kw["env"]["RUNPOD_TRAINING_SEED"], "42")
 
     def test_completed_pair_skips_paid_validation_unless_forced(self):
         execute = Mock()
-        self.assertFalse(RELAUNCH["check_children"](self.root, self.reader, self.plan, "validate", execute=execute))
+        self.assertFalse(
+            RELAUNCH["check_children"](
+                self.root, self.reader, self.plan, "validate", execute=execute
+            )
+        )
         execute.assert_not_called()
 
     def test_partial_model_uses_latest_checkpoint_not_sibling(self):
         child = self.plan["children"]["absolute_direction"]["run_id"]
-        self.reader.payloads = {k: v for k, v in self.records.items() if not (
-            child in k and ("training-completed" in k or "training-result" in k or "evaluation" in k)
-        )}
-        self.reader.payloads[f"lifecycle/runs/{child}/training.json"].update(state="interrupted", training_completed=False)
+        self.reader.payloads = {
+            k: v
+            for k, v in self.records.items()
+            if not (
+                child in k
+                and ("training-completed" in k or "training-result" in k or "evaluation" in k)
+            )
+        }
+        self.reader.payloads[f"lifecycle/runs/{child}/training.json"].update(
+            state="interrupted", training_completed=False
+        )
         calls = []
-        RELAUNCH["check_children"](self.root, self.reader, self.plan, "resume",
-                                   execute=lambda command, **kw: calls.append(command))
+        RELAUNCH["check_children"](
+            self.root,
+            self.reader,
+            self.plan,
+            "resume",
+            execute=lambda command, **kw: calls.append(command),
+        )
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][-1], "latest")
         self.assertIn(child, calls[0])
@@ -104,8 +133,14 @@ class PairedContractRelaunchTests(unittest.TestCase):
         reader.choose.return_value = self.plan["run_id"]
         launch = Mock(return_value=0)
         paths = {
-            "runpod_paired_control.py": {"_bucket": lambda root: "fixture", "launch_existing": launch},
-            "runpod_runs.py": {"RunRecords": lambda *a, **kw: reader, "validate_run": lambda value: value},
+            "runpod_paired_control.py": {
+                "_bucket": lambda root: "fixture",
+                "launch_existing": launch,
+            },
+            "runpod_runs.py": {
+                "RunRecords": lambda *a, **kw: reader,
+                "validate_run": lambda value: value,
+            },
         }
         checks = Mock()
         for arguments in (
@@ -147,17 +182,25 @@ class PairedContractRelaunchTests(unittest.TestCase):
         reader.pair.return_value = None
         paths = {
             "runpod_paired_control.py": {"_bucket": lambda root: "fixture"},
-            "runpod_runs.py": {"RunRecords": lambda *a, **kw: reader, "validate_run": lambda value: value},
+            "runpod_runs.py": {
+                "RunRecords": lambda *a, **kw: reader,
+                "validate_run": lambda value: value,
+            },
         }
         arguments = ["--no-resume", "--maxRuntime", "24h", "run-legacy"]
-        with patch.dict(RELAUNCH["main"].__globals__, {"ROOT": self.root}), \
-             patch("runpy.run_path", side_effect=lambda path: paths[Path(path).name]), \
-             patch("subprocess.check_output", return_value="86400\n"), \
-             patch.dict(os.environ, {}, clear=True), \
-             patch("os.execvp", side_effect=SystemExit(0)) as execute:
+        with (
+            patch.dict(RELAUNCH["main"].__globals__, {"ROOT": self.root}),
+            patch("runpy.run_path", side_effect=lambda path: paths[Path(path).name]),
+            patch("subprocess.check_output", return_value="86400\n"),
+            patch.dict(os.environ, {}, clear=True),
+            patch("os.execvp", side_effect=SystemExit(0)) as execute,
+        ):
             with self.assertRaises(SystemExit):
                 RELAUNCH["main"](["validate", *arguments])
-            execute.assert_called_once_with("bash", ["bash", str(self.root / "scripts/create_runpod_validation_pod.sh"), *arguments])
+            execute.assert_called_once_with(
+                "bash",
+                ["bash", str(self.root / "scripts/create_runpod_validation_pod.sh"), *arguments],
+            )
 
 
 if __name__ == "__main__":

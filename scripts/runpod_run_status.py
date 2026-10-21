@@ -164,11 +164,14 @@ def inspect_pair(reader, run_id, pair):
     pair = reader.validate_pair(pair, run_id)
     if pair.get("workflow") == "baseline":
         return {
-            "run_id": run_id, "kind": "paired-baseline", "state": "unknown",
+            "run_id": run_id,
+            "kind": "paired-baseline",
+            "state": "unknown",
             "configuration": {"experiment": pair["experiment"], "seed": pair["seed"]},
             "initialized_at": pair.get("created_at"),
             "last_activity_at": pair.get("updated_at") or pair.get("created_at"),
-            "message": "Use readiness --baseline --experiment " + pair["experiment"]
+            "message": "Use readiness --baseline --experiment "
+            + pair["experiment"]
             + " to verify both task-specific baseline results.",
         }
     children = {}
@@ -179,7 +182,8 @@ def inspect_pair(reader, run_id, pair):
             if str(error) != f"Run not found: {child['run_id']}":
                 raise
             children[task] = {
-                "run_id": child["run_id"], "state": "not_started",
+                "run_id": child["run_id"],
+                "state": "not_started",
                 "configuration": {"experiment": child["experiment"], "seed": pair["seed"]},
             }
         configured = children[task]["configuration"]
@@ -199,9 +203,11 @@ def inspect_pair(reader, run_id, pair):
         child["evaluation"]["split"] == "test" for child in children.values()
     ):
         state = "complete"
-    elif parent_state in {"failed", "timed_out", "waiting_for_resume", "interrupted"}:
-        state = "incomplete"
-    elif "incomplete" in states or "error" in states:
+    elif (
+        parent_state in {"failed", "timed_out", "waiting_for_resume", "interrupted"}
+        or "incomplete" in states
+        or "error" in states
+    ):
         state = "incomplete"
     elif "training" in states:
         state = "training"
@@ -218,14 +224,20 @@ def inspect_pair(reader, run_id, pair):
     activity = [pair.get("created_at"), pair.get("updated_at"), parent_training.get("generated_at")]
     activity.extend(child.get("last_activity_at") for child in children.values())
     configured = next(
-        (dict(child["configuration"]) for child in children.values()
-         if child["configuration"].get("source")),
+        (
+            dict(child["configuration"])
+            for child in children.values()
+            if child["configuration"].get("source")
+        ),
         configuration(next(iter(pair["children"].values()))["selection"], {}),
     )
     configured.update(experiment=pair["experiment"], seed=pair["seed"])
     return {
-        "run_id": run_id, "kind": "paired-training", "state": state,
-        "configuration": configured, "initialized_at": pair.get("created_at"),
+        "run_id": run_id,
+        "kind": "paired-training",
+        "state": state,
+        "configuration": configured,
+        "initialized_at": pair.get("created_at"),
         "last_activity_at": max((value for value in activity if value), key=stamp, default=None),
         "children": children,
         "pod_id": parent_training.get("pod_id"),

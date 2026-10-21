@@ -1047,8 +1047,8 @@ def build_lazy_datasets(
     """Open only the compact lazy indexes used by training-time loaders."""
 
     from stock_forecasting.data.rank_labels import ensure_split_rank_labels
-    from stock_forecasting.rank_data import with_rank_labels
     from stock_forecasting.data.sample_universe import open_clean_dataset, validated_split_roots
+    from stock_forecasting.rank_data import with_rank_labels
 
     roots = validated_split_roots(config)
     if config.model.prediction_task == "cross_sectional_rank":

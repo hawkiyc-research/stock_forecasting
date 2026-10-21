@@ -24,20 +24,28 @@ def read_plan(root: Path, path: Path) -> dict:
 
 def validate_launch(plan: dict, env: dict) -> None:
     """Bind the paid Pod envelope to its validated plan and primary child."""
-    if env.get("WANDB_RUN_ID") != plan["run_id"] or env.get("RUNPOD_GPU_WORKFLOW", "train") != plan["workflow"]:
+    if (
+        env.get("WANDB_RUN_ID") != plan["run_id"]
+        or env.get("RUNPOD_GPU_WORKFLOW", "train") != plan["workflow"]
+    ):
         raise ValueError("Paired plan does not match the launch identity/workflow")
     mount = env.get("RUNPOD_VOLUME_MOUNT_PATH") or "/runpod-volume"
     expected = f"{mount}/lifecycle/runs/{plan['run_id']}/pair.json"
     if env.get("RUNPOD_PAIRED_PLAN_PATH") != expected:
         raise ValueError("Paired plan path must identify its parent run on the mounted volume")
-    matching = [child for child in plan["children"].values()
-                if child["selection"]["selection_sha256"] == env.get("RUNPOD_SELECTION_SHA256")]
+    matching = [
+        child
+        for child in plan["children"].values()
+        if child["selection"]["selection_sha256"] == env.get("RUNPOD_SELECTION_SHA256")
+    ]
     if len(matching) != 1:
         raise ValueError("The primary Pod selection is not owned by the paired plan")
     selected = matching[0]["selection"]
-    if (env.get("RUNPOD_CONFIG") != selected["stage"]["config_path"]
-            or env.get("RUNPOD_STAGE_CONFIG_SHA256") != selected["stage"]["config_sha256"]
-            or env.get("RUNPOD_DATASET_REQUEST_SHA256") != selected["dataset_request_sha256"]):
+    if (
+        env.get("RUNPOD_CONFIG") != selected["stage"]["config_path"]
+        or env.get("RUNPOD_STAGE_CONFIG_SHA256") != selected["stage"]["config_sha256"]
+        or env.get("RUNPOD_DATASET_REQUEST_SHA256") != selected["dataset_request_sha256"]
+    ):
         raise ValueError("The primary Pod configuration/data differ from the paired plan")
     action = env.get("RUNPOD_PAIRED_ACTION")
     if action and (plan["workflow"] != "train" or action not in {"resume", "validate"}):
@@ -57,9 +65,13 @@ def child_environments(root: Path, plan: dict):
 
 
 def _run(root: Path, command: list[str], env: dict, *, quiet=False):
-    result = subprocess.run(command, cwd=root, env=env, text=True, capture_output=True, timeout=1800)
+    result = subprocess.run(
+        command, cwd=root, env=env, text=True, capture_output=True, timeout=1800
+    )
     if result.returncode:
-        raise RuntimeError(result.stderr or result.stdout or f"Control command failed: {command[0]}")
+        raise RuntimeError(
+            result.stderr or result.stdout or f"Control command failed: {command[0]}"
+        )
     if not quiet and result.stdout:
         print(result.stdout, end="", flush=True)
     return result.stdout
@@ -70,9 +82,16 @@ def _bucket(root: Path) -> str:
     if not value:
         value = _run(
             root,
-            ["bash", "-c", 'source "$1"; runpod_load_s3_env "$2"; printf "%s" "$RUNPOD_NETWORK_VOLUME_ID"',
-             "paired-control", str(root / "scripts/lib/runpod_project_env.sh"), str(root)],
-            os.environ.copy(), quiet=True,
+            [
+                "bash",
+                "-c",
+                'source "$1"; runpod_load_s3_env "$2"; printf "%s" "$RUNPOD_NETWORK_VOLUME_ID"',
+                "paired-control",
+                str(root / "scripts/lib/runpod_project_env.sh"),
+                str(root),
+            ],
+            os.environ.copy(),
+            quiet=True,
         ).strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
         raise ValueError("A valid configured network volume is required")
@@ -85,12 +104,37 @@ def publish(root: Path, path: Path) -> None:
     bucket = _bucket(root)
     # Each job contains metadata only; two requests bound external API pressure.
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(lambda job: _run(root, ["bash", str(root / "scripts/runpod_s3_project.sh"),
-            "s3", "cp", job[1]["RUNPOD_SELECTION_FILE"],
-            f"s3://{bucket}/{job[1]['RUNPOD_REMOTE_SELECTION_RELATIVE_PATH']}",
-            "--only-show-errors"], job[1]), jobs))
-    _run(root, ["bash", str(root / "scripts/runpod_s3_project.sh"), "s3", "cp", str(path),
-                f"s3://{bucket}/lifecycle/runs/{plan['run_id']}/pair.json", "--only-show-errors"], os.environ.copy())
+        list(
+            pool.map(
+                lambda job: _run(
+                    root,
+                    [
+                        "bash",
+                        str(root / "scripts/runpod_s3_project.sh"),
+                        "s3",
+                        "cp",
+                        job[1]["RUNPOD_SELECTION_FILE"],
+                        f"s3://{bucket}/{job[1]['RUNPOD_REMOTE_SELECTION_RELATIVE_PATH']}",
+                        "--only-show-errors",
+                    ],
+                    job[1],
+                ),
+                jobs,
+            )
+        )
+    _run(
+        root,
+        [
+            "bash",
+            str(root / "scripts/runpod_s3_project.sh"),
+            "s3",
+            "cp",
+            str(path),
+            f"s3://{bucket}/lifecycle/runs/{plan['run_id']}/pair.json",
+            "--only-show-errors",
+        ],
+        os.environ.copy(),
+    )
 
 
 def baseline_status(root: Path, plan: dict, *, require=False) -> dict:
@@ -100,8 +144,18 @@ def baseline_status(root: Path, plan: dict, *, require=False) -> dict:
     def check(job):
         task, env = job
         env["RUNPOD_NETWORK_VOLUME_ID"] = bucket
-        raw = _run(root, [sys.executable, str(root / "scripts/runpod_baseline_cache.py"),
-                          "require" if require else "check", "--project-root", str(root)], env, quiet=True)
+        raw = _run(
+            root,
+            [
+                sys.executable,
+                str(root / "scripts/runpod_baseline_cache.py"),
+                "require" if require else "check",
+                "--project-root",
+                str(root),
+            ],
+            env,
+            quiet=True,
+        )
         result = json.loads(raw)
         if not isinstance(result, dict) or not isinstance(result.get("complete"), bool):
             raise ValueError(f"Invalid baseline completion result for {task}")
@@ -121,8 +175,24 @@ def preflight(root: Path, path: Path) -> dict:
     mode = "--gpu" if plan["workflow"] == "train" else "--baseline"
     jobs = child_environments(root, plan)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(lambda job: _run(root, ["bash", str(root / "scripts/verify_runpod_stage_readiness.sh"), mode, "--local-selection"], job[1]), jobs))
-    print("Paired preflight passed: both task baselines and current data rules checked.", flush=True)
+        list(
+            pool.map(
+                lambda job: _run(
+                    root,
+                    [
+                        "bash",
+                        str(root / "scripts/verify_runpod_stage_readiness.sh"),
+                        mode,
+                        "--local-selection",
+                    ],
+                    job[1],
+                ),
+                jobs,
+            )
+        )
+    print(
+        "Paired preflight passed: both task baselines and current data rules checked.", flush=True
+    )
     return result
 
 
@@ -141,10 +211,15 @@ def launch_environment(root: Path, plan: dict, path: Path) -> dict:
     env.update(
         RUNPOD_LAUNCH_SELECTION_FILE=first["RUNPOD_LAUNCH_SELECTION_FILE"],
         RUNPOD_PAIRED_MANIFEST=str(path),
-        RUNPOD_PAIRED_PLAN_PATH=f"{os.environ.get('RUNPOD_VOLUME_MOUNT_PATH', '/runpod-volume')}/lifecycle/runs/{plan['run_id']}/pair.json",
+        RUNPOD_PAIRED_PLAN_PATH=(
+            f"{os.environ.get('RUNPOD_VOLUME_MOUNT_PATH', '/runpod-volume')}"
+            f"/lifecycle/runs/{plan['run_id']}/pair.json"
+        ),
         RUNPOD_GPU_WORKFLOW=plan["workflow"],
         WANDB_RUN_ID=plan["run_id"],
-        RUNPOD_POD_NAME=f"stock-forecasting-{plan['experiment']}-seed{plan['seed']}" if plan["workflow"] == "train" else f"stock-forecasting-{plan['experiment']}-baseline",
+        RUNPOD_POD_NAME=f"stock-forecasting-{plan['experiment']}-seed{plan['seed']}"
+        if plan["workflow"] == "train"
+        else f"stock-forecasting-{plan['experiment']}-baseline",
     )
     return env
 
@@ -161,18 +236,22 @@ def launch_existing(root: Path, plan: dict, action: str) -> int:
     control = runpy.run_path(str(root / "scripts/runpod_concurrency.py"))
     with control["control_lock"](root, exclusive=False):
         env["RUNPOD_LAUNCH_CONTROL_LOCK_HELD"] = "1"
-        return subprocess.call(["bash", str(root / "scripts/create_runpod_pod.sh")], env=env, cwd=root)
+        return subprocess.call(
+            ["bash", str(root / "scripts/create_runpod_pod.sh")], env=env, cwd=root
+        )
 
 
 def launch_baseline(root: Path, experiment: str) -> int:
     selection = runpy.run_path(str(root / "scripts/runpod_selection.py"))
     _, original = selection["_resolve_selection_path"](root, None, validate_local_config=False)
-    _plan, path, env = prepare_launch(root, original, experiment, workflow="baseline")
+    _plan, _path, env = prepare_launch(root, original, experiment, workflow="baseline")
     # Keep the source-sync lock across admission and creation, as for training.
     control = runpy.run_path(str(root / "scripts/runpod_concurrency.py"))
     with control["control_lock"](root, exclusive=True):
         env["RUNPOD_LAUNCH_CONTROL_LOCK_HELD"] = "1"
-        return subprocess.call(["bash", str(root / "scripts/create_runpod_pod.sh")], env=env, cwd=root)
+        return subprocess.call(
+            ["bash", str(root / "scripts/create_runpod_pod.sh")], env=env, cwd=root
+        )
 
 
 def status(root: Path, experiment: str) -> int:
@@ -181,24 +260,45 @@ def status(root: Path, experiment: str) -> int:
     contract = runpy.run_path(str(root / "scripts/runpod_paired.py"))
     plan = contract["build_plan"](root, original, experiment, workflow="baseline")
     jobs = child_environments(root, plan)
+
     # Preserve the current-rule data checks AND result completion, for both tasks.
     def inspect(job):
         task, env = job
         result = subprocess.run(
-            [sys.executable, str(root / "scripts/runpod_baseline_readiness.py"),
-             "--status", "--project-root", str(root), "--selection", env["RUNPOD_SELECTION_FILE"]],
-            cwd=root, env=env, text=True, capture_output=True, timeout=1800,
+            [
+                sys.executable,
+                str(root / "scripts/runpod_baseline_readiness.py"),
+                "--status",
+                "--project-root",
+                str(root),
+                "--selection",
+                env["RUNPOD_SELECTION_FILE"],
+            ],
+            cwd=root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=1800,
         )
         if result.returncode not in (0, 1):
-            raise RuntimeError(result.stderr or result.stdout or f"Baseline status failed for {task}")
+            raise RuntimeError(
+                result.stderr or result.stdout or f"Baseline status failed for {task}"
+            )
         return task, result.returncode, result.stdout
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(inspect, jobs))
         for task, _code, output in results:
             # The child status describes valid artifacts but its generic next
             # command would select only one task. Emit one paired next action.
-            output = "\n".join(line for line in output.splitlines()
-                               if not line.startswith("Next: bash scripts/runpod_workflow.sh baseline")) + "\n"
+            output = (
+                "\n".join(
+                    line
+                    for line in output.splitlines()
+                    if not line.startswith("Next: bash scripts/runpod_workflow.sh baseline")
+                )
+                + "\n"
+            )
             print(f"[{experiment} / {task}]\n{output}", end="", flush=True)
     incomplete = any(code for _task, code, _output in results)
     if incomplete:

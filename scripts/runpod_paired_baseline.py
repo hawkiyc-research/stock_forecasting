@@ -25,8 +25,13 @@ def run(project: Path, volume: Path, manifest: Path, *, environ=None, execute=No
     expected = volume / "lifecycle/runs" / plan["run_id"] / "pair.json"
     if manifest.resolve() != expected.resolve():
         raise ValueError("Paired baseline manifest is outside its owning run")
-    state = {"schema_version": 1, "kind": "paired-baseline-status", "run_id": plan["run_id"],
-             "state": "running", "children": {task: {"state": "pending"} for task in TASKS}}
+    state = {
+        "schema_version": 1,
+        "kind": "paired-baseline-status",
+        "run_id": plan["run_id"],
+        "state": "running",
+        "children": {task: {"state": "pending"} for task in TASKS},
+    }
     status_path = expected.with_name("pair-status.json")
 
     def publish():
@@ -40,7 +45,9 @@ def run(project: Path, volume: Path, manifest: Path, *, environ=None, execute=No
             selected_path = volume / child["selection_path"]
             # Mounted immutable copies must match the plan before any model fitting.
             api = selection_api(project)
-            _, selected = api["_resolve_selection_path"](project, str(selected_path), validate_local_config=False)
+            _, selected = api["_resolve_selection_path"](
+                project, str(selected_path), validate_local_config=False
+            )
             if selected["selection_sha256"] != child["selection"]["selection_sha256"]:
                 raise ValueError("Paired baseline selection does not match the published plan")
             child_env = dict(env)
@@ -48,17 +55,26 @@ def run(project: Path, volume: Path, manifest: Path, *, environ=None, execute=No
             for key in ("MAX_RUNTIME_SECONDS", "RUNPOD_HARD_LIMIT_SECONDS"):
                 exports.pop(key, None)
             child_env.update(exports)
-            child_env.update({"RUNPOD_REMOTE_SELECTION_PATH": str(selected_path),
-                              "RUNPOD_SELECTION_FILE": str(selected_path),
-                              "DATA_ROOT": str(volume / "datasets" / selected["dataset_request_sha256"]),
-                              "RUNPOD_PAIRED_CHILD_TASK": task})
+            child_env.update(
+                {
+                    "RUNPOD_REMOTE_SELECTION_PATH": str(selected_path),
+                    "RUNPOD_SELECTION_FILE": str(selected_path),
+                    "DATA_ROOT": str(volume / "datasets" / selected["dataset_request_sha256"]),
+                    "RUNPOD_PAIRED_CHILD_TASK": task,
+                }
+            )
             state["children"][task] = {"state": "running"}
             publish()
             print(f"Paired baseline {plan['run_id']}: {task}", flush=True)
             for command in (
                 ["bash", str(project / "scripts/verify_runpod_mounted_readiness.sh"), "--baseline"],
-                [str(project / ".venv/bin/python"), "-m", "stock_forecasting.cli.build_baselines",
-                 "--selection", str(selected_path)],
+                [
+                    str(project / ".venv/bin/python"),
+                    "-m",
+                    "stock_forecasting.cli.build_baselines",
+                    "--selection",
+                    str(selected_path),
+                ],
             ):
                 result = execute(command, env=child_env, cwd=project, check=False)
                 if result.returncode:

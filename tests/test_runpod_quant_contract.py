@@ -22,9 +22,7 @@ def test_ruff_preserves_default_virtualenv_exclusions() -> None:
         ruff_config = tomllib.load(stream)["tool"]["ruff"]
 
     assert "exclude" not in ruff_config
-    assert ruff_config["extend-exclude"] == [
-        "src/stock_forecasting/_vendor/kronos"
-    ]
+    assert ruff_config["extend-exclude"] == ["src/stock_forecasting/_vendor/kronos"]
 
 
 def test_runpod_stage_contract_reports_stage1_five_percent_cap() -> None:
@@ -189,8 +187,7 @@ def test_all_shell_scripts_remain_syntax_valid() -> None:
 
 def test_runpod_runtime_never_executes_git() -> None:
     shell_runtime = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted((ROOT / "scripts").rglob("*.sh"))
+        path.read_text(encoding="utf-8") for path in sorted((ROOT / "scripts").rglob("*.sh"))
     )
     python_runtime = "\n".join(
         path.read_text(encoding="utf-8")
@@ -550,12 +547,8 @@ def test_stable_runpod_lifecycle_and_synchronization_boundaries_remain() -> None
     tmux = (ROOT / "scripts/runpod_tmux_launch.sh").read_text(encoding="utf-8")
     validation = (ROOT / "scripts/runpod_validation.sh").read_text(encoding="utf-8")
     guard = (ROOT / "scripts/launch_runpod_guard.sh").read_text(encoding="utf-8")
-    selection_loader = (ROOT / "scripts/lib/runpod_selection.sh").read_text(
-        encoding="utf-8"
-    )
-    pid1_environment = (ROOT / "scripts/runpod_reexec_with_pid1_env.py").read_text(
-        encoding="utf-8"
-    )
+    selection_loader = (ROOT / "scripts/lib/runpod_selection.sh").read_text(encoding="utf-8")
+    pid1_environment = (ROOT / "scripts/runpod_reexec_with_pid1_env.py").read_text(encoding="utf-8")
 
     for script in (create_gpu, create_cpu):
         assert "RUNPOD_NETWORK_VOLUME_ID" in script
@@ -565,7 +558,10 @@ def test_stable_runpod_lifecycle_and_synchronization_boundaries_remain() -> None
     assert "runpodctl_project.sh" in create_gpu
     create_request = (ROOT / "scripts/runpod_create_request.py").read_text(encoding="utf-8")
     assert 'python3 "${SCRIPT_DIR}/runpod_create_request.py"' in create_gpu
-    assert '["bash", str(root / "scripts/runpodctl_project.sh"), "pod", "create-gpu"]' in create_request
+    assert (
+        '["bash", str(root / "scripts/runpodctl_project.sh"), "pod", "create-gpu"]'
+        in create_request
+    )
     assert "--dry-run" in sync
     assert "--apply" in sync
     assert 'CODE_MARKER_KEY="lifecycle/stage1/code.json"' in sync
@@ -635,10 +631,7 @@ def test_cpu_acquisition_budget_is_resumable_and_reserves_preparation_time() -> 
     assert 'limited_providers={"eodhd"}' in ingestion
     assert "_run_parallel_provider_loops(runners)" in ingestion
     assert ingestion.count("max_backoff_seconds=options.max_backoff_seconds") == 2
-    assert (
-        '"provider_max_backoff_scope": ["eodhd", "tpex_official", "twse_official"]'
-        in ingestion
-    )
+    assert '"provider_max_backoff_scope": ["eodhd", "tpex_official", "twse_official"]' in ingestion
     assert "parallel_independent_loops_joined_before_process_exit" in ingestion
     assert '"waiting_for_budget"' in progress
     assert '"waiting_for_resume"' in progress
@@ -661,7 +654,7 @@ def test_cpu_acquisition_budget_is_resumable_and_reserves_preparation_time() -> 
     assert "stock-forecasting-verify-download" in prepare
     assert '--output "${BAR_STORE_FINAL}"' in prepare
     assert '--deadline-epoch-seconds "$((WORKFLOW_DEADLINE_EPOCH - 120))"' in prepare
-    assert 'PREP_RESUMABLE_STATE=waiting_for_preparation' in prepare
+    assert "PREP_RESUMABLE_STATE=waiting_for_preparation" in prepare
     assert 'BAR_STORE_SUCCESS="${BAR_STORE_FINAL}/_SUCCESS.json"' in prepare
     assert (
         'DATASET_MANIFEST_STAGING="${DATA_ROOT}/.dataset-manifest-'
@@ -698,18 +691,13 @@ def test_cpu_execution_lifecycle_cannot_overwrite_immutable_dataset_readiness() 
     prepare = (ROOT / "scripts/runpod_cpu_prepare.sh").read_text(encoding="utf-8")
     finalize = (ROOT / "scripts/runpod_cpu_finalize.sh").read_text(encoding="utf-8")
     tmux = (ROOT / "scripts/runpod_tmux_launch.sh").read_text(encoding="utf-8")
-    create_cpu = (ROOT / "scripts/create_runpod_cpu_pod.sh").read_text(
-        encoding="utf-8"
-    )
+    create_cpu = (ROOT / "scripts/create_runpod_cpu_pod.sh").read_text(encoding="utf-8")
     status = (ROOT / "scripts/show_runpod_status.sh").read_text(encoding="utf-8")
 
-    assert (
-        'CPU_PREPARATION_MARKER="${LIFECYCLE_ROOT}/stage1/cpu-preparation.json"'
-        in prepare
-    )
-    lifecycle_writer = prepare.split(
-        "write_lifecycle_state() {", maxsplit=1
-    )[1].split("\n}", maxsplit=1)[0]
+    assert 'CPU_PREPARATION_MARKER="${LIFECYCLE_ROOT}/stage1/cpu-preparation.json"' in prepare
+    lifecycle_writer = prepare.split("write_lifecycle_state() {", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
     assert '--output "${CPU_PREPARATION_MARKER}"' in lifecycle_writer
     assert "--kind stage1-cpu-preparation" in lifecycle_writer
     assert "DATASET_MARKER" not in lifecycle_writer
@@ -717,22 +705,20 @@ def test_cpu_execution_lifecycle_cannot_overwrite_immutable_dataset_readiness() 
     assert "archive_stale_dataset_readiness" in prepare
     assert "archive_dataset_readiness stale-selection" in prepare
     for writer in (prepare, finalize):
-        assert 'DATASET_MARKER_STAGING=' in writer
-        assert 'stock-forecasting-verify-stage1-data' in writer
+        assert "DATASET_MARKER_STAGING=" in writer
+        assert "stock-forecasting-verify-stage1-data" in writer
         assert '--verify-only > "${DATASET_MARKER_STAGING}"' in writer
         assert '--marker "${DATASET_MARKER_STAGING}"' in writer
         assert 'mv "${DATASET_MARKER_STAGING}" "${DATASET_MARKER}"' in writer
         assert '--output "${DATASET_MARKER}"' not in writer
 
-    prepare_readiness_writer = prepare.split(
-        "publish_dataset_readiness() {", maxsplit=1
-    )[1].split("\n}", maxsplit=1)[0]
+    prepare_readiness_writer = prepare.split("publish_dataset_readiness() {", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
     prepare_verify_index = prepare_readiness_writer.index(
         '--verify-only > "${DATASET_MARKER_STAGING}"'
     )
-    prepare_bind_index = prepare_readiness_writer.index(
-        '--marker "${DATASET_MARKER_STAGING}"'
-    )
+    prepare_bind_index = prepare_readiness_writer.index('--marker "${DATASET_MARKER_STAGING}"')
     prepare_publish_index = prepare_readiness_writer.index(
         'mv "${DATASET_MARKER_STAGING}" "${DATASET_MARKER}"'
     )
@@ -745,34 +731,26 @@ def test_cpu_execution_lifecycle_cannot_overwrite_immutable_dataset_readiness() 
     assert '--marker "${DATASET_MARKER}"' in finalizer_contract_validator
     assert "--network-volume-root" not in finalizer_contract_validator
 
-    finalizer_stager = finalize.split(
-        "stage_dataset_readiness() {", maxsplit=1
-    )[1].split("\n}", maxsplit=1)[0]
-    assert 'stock-forecasting-verify-stage1-data' in finalizer_stager
+    finalizer_stager = finalize.split("stage_dataset_readiness() {", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
+    assert "stock-forecasting-verify-stage1-data" in finalizer_stager
     assert '--dataset-manifest "${DATASET_MANIFEST}"' in finalizer_stager
     assert '--model-manifest "${MODEL_MANIFEST}"' in finalizer_stager
     assert '--verify-only > "${DATASET_MARKER_STAGING}"' in finalizer_stager
 
-    finalizer_publisher = finalize.split(
-        "publish_dataset_readiness() {", maxsplit=1
-    )[1].split("\n}", maxsplit=1)[0]
-    finalizer_bind_index = finalizer_publisher.index(
-        '--marker "${DATASET_MARKER_STAGING}"'
-    )
+    finalizer_publisher = finalize.split("publish_dataset_readiness() {", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
+    finalizer_bind_index = finalizer_publisher.index('--marker "${DATASET_MARKER_STAGING}"')
     finalizer_strict_check_index = finalizer_publisher.index("check-dataset")
     finalizer_publish_index = finalizer_publisher.index(
         'mv "${DATASET_MARKER_STAGING}" "${DATASET_MARKER}"'
     )
     assert '--network-volume-root "${NETWORK_VOLUME_ROOT}"' in finalizer_publisher
-    assert (
-        finalizer_bind_index
-        < finalizer_strict_check_index
-        < finalizer_publish_index
-    )
+    assert finalizer_bind_index < finalizer_strict_check_index < finalizer_publish_index
 
-    finalizer_main = finalize.split(
-        "write_finalization_state finalizing", maxsplit=1
-    )[1]
+    finalizer_main = finalize.split("write_finalization_state finalizing", maxsplit=1)[1]
     assert finalizer_main.index("validate_existing_dataset_contract") < (
         finalizer_main.index("prefetch_hf_models.sh")
     )
@@ -787,20 +765,15 @@ def test_cpu_execution_lifecycle_cannot_overwrite_immutable_dataset_readiness() 
     )
     assert "lifecycle/stage1/cpu-preparation.json" in tmux
     assert "stage1-cpu-preparation" in tmux
-    assert (
-        "RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/stage1/cpu-preparation.json"
-        in create_cpu
-    )
+    assert "RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/stage1/cpu-preparation.json" in create_cpu
     assert "lifecycle/stage1/cpu-preparation.json cpu_prepare" in status
-    assert 'summarize_selected_dataset' in status
-    assert 'verification=manifest-summary' in status
-    assert 'verify-marker' not in status
+    assert "summarize_selected_dataset" in status
+    assert "verification=manifest-summary" in status
+    assert "verify-marker" not in status
 
 
 def test_gpu_gate_verifies_lazy_bar_store_artifacts() -> None:
-    gate = (ROOT / "scripts/verify_runpod_stage_readiness.sh").read_text(
-        encoding="utf-8"
-    )
+    gate = (ROOT / "scripts/verify_runpod_stage_readiness.sh").read_text(encoding="utf-8")
 
     shared = (ROOT / "scripts/runpod_dataset_readiness.py").read_text(encoding="utf-8")
     assert "runpod_training_readiness.py" in gate
@@ -811,12 +784,8 @@ def test_gpu_gate_verifies_lazy_bar_store_artifacts() -> None:
 
 
 def test_checkpoint_contract_persists_runtime_label_scales() -> None:
-    checkpointing = (ROOT / "src/stock_forecasting/checkpointing.py").read_text(
-        encoding="utf-8"
-    )
-    contract = (ROOT / "src/stock_forecasting/run_contract.py").read_text(
-        encoding="utf-8"
-    )
+    checkpointing = (ROOT / "src/stock_forecasting/checkpointing.py").read_text(encoding="utf-8")
+    contract = (ROOT / "src/stock_forecasting/run_contract.py").read_text(encoding="utf-8")
     readiness = (ROOT / "scripts/runpod_readiness.py").read_text(encoding="utf-8")
 
     assert 'CHECKPOINT_ARTIFACT_SCHEMA_VERSION = "4.0"' in contract
@@ -886,7 +855,7 @@ def test_workflow_exposes_bounded_cpu_gpu_resume_and_validation_options() -> Non
     assert "train_max_runtime=12h" in workflow
     assert 'train_gpu_id="NVIDIA GeForce RTX 5090"' in workflow
     assert "cpu3c|cpu3g|cpu3m|cpu5c|cpu5g|cpu5m" in cpu_creator
-    assert '2|4|8|16|32' in cpu_creator
+    assert "2|4|8|16|32" in cpu_creator
     assert "CONTAINER_DISK_GB_PER_VCPU=10" in cpu_creator
     assert "CONTAINER_DISK_GB_PER_VCPU=15" in cpu_creator
     assert "MAX_CONTAINER_DISK_GB" in cpu_creator
@@ -906,7 +875,7 @@ def test_workflow_exposes_bounded_cpu_gpu_resume_and_validation_options() -> Non
     assert '"RUNPOD_CPU_EODHD_QPS"' in reexec
     assert '"RUNPOD_CPU_TAIWAN_QPS"' in reexec
     assert '"RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS"' in reexec
-    assert "runpod_runs.py\" latest --purpose resume" in resume
+    assert 'runpod_runs.py" latest --purpose resume' in resume
     assert "training-completed.json" in resume
     assert "--maxRuntime" in validation
     assert "--gpuId" in validation
@@ -1053,7 +1022,8 @@ def test_download_defaults_to_all_retained_checkpoints_and_can_select_best() -> 
 
 @pytest.mark.parametrize("monitor", ["primary_5d/selection_score", "direction/selection_loss"])
 def test_checkpoint_download_names_follow_validated_retention_manifest(
-    tmp_path: Path, monitor: str,
+    tmp_path: Path,
+    monitor: str,
 ) -> None:
     run_id = "download-contract-run"
     contract_digest = "a" * 64
@@ -1155,12 +1125,8 @@ def test_wandb_contract_logs_dynamic_epoch_points_and_validation_metrics() -> No
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     config = (ROOT / "src/stock_forecasting/config.py").read_text(encoding="utf-8")
     local_config = (ROOT / "configs/local_mock.yaml").read_text(encoding="utf-8")
-    stage1_config = (ROOT / "configs/stage1_kronos_base_lora.yaml").read_text(
-        encoding="utf-8"
-    )
-    stage2_config = (ROOT / "configs/stage2_kronos_base_lora.yaml").read_text(
-        encoding="utf-8"
-    )
+    stage1_config = (ROOT / "configs/stage1_kronos_base_lora.yaml").read_text(encoding="utf-8")
+    stage2_config = (ROOT / "configs/stage2_kronos_base_lora.yaml").read_text(encoding="utf-8")
     create_pod = (ROOT / "scripts/create_runpod_pod.sh").read_text(encoding="utf-8")
     training = (ROOT / "src/stock_forecasting/training.py").read_text(encoding="utf-8")
     validation = (ROOT / "src/stock_forecasting/validation_benchmark.py").read_text(
@@ -1240,34 +1206,22 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
     relay = (ROOT / "cloudrun/tpex-relay/src/relay.mjs").read_text(encoding="utf-8")
     server = (ROOT / "cloudrun/tpex-relay/src/server.mjs").read_text(encoding="utf-8")
     package = (ROOT / "cloudrun/tpex-relay/package.json").read_text(encoding="utf-8")
-    deploy_script = (ROOT / "scripts/deploy_tpex_cloud_run_relay.sh").read_text(
+    deploy_script = (ROOT / "scripts/deploy_tpex_cloud_run_relay.sh").read_text(encoding="utf-8")
+    secret_creator = (ROOT / "scripts/create_runpod_tpex_proxy_secret.py").read_text(
         encoding="utf-8"
     )
-    secret_creator = (
-        ROOT / "scripts/create_runpod_tpex_proxy_secret.py"
-    ).read_text(encoding="utf-8")
     workflow = (ROOT / "scripts/runpod_workflow.sh").read_text(encoding="utf-8")
-    sync = (ROOT / "scripts/sync_project_to_runpod_volume.sh").read_text(
-        encoding="utf-8"
-    )
-    create_cpu = (ROOT / "scripts/create_runpod_cpu_pod.sh").read_text(
-        encoding="utf-8"
-    )
+    sync = (ROOT / "scripts/sync_project_to_runpod_volume.sh").read_text(encoding="utf-8")
+    create_cpu = (ROOT / "scripts/create_runpod_cpu_pod.sh").read_text(encoding="utf-8")
     create_gpu = (ROOT / "scripts/create_runpod_pod.sh").read_text(encoding="utf-8")
-    reexec = (ROOT / "scripts/runpod_reexec_with_pid1_env.py").read_text(
-        encoding="utf-8"
-    )
-    verifier = (ROOT / "scripts/verify_tpex_cloud_run_relay.sh").read_text(
-        encoding="utf-8"
-    )
-    warmup = (ROOT / "scripts/warm_tpex_cloud_run_relay.sh").read_text(
-        encoding="utf-8"
-    )
+    reexec = (ROOT / "scripts/runpod_reexec_with_pid1_env.py").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts/verify_tpex_cloud_run_relay.sh").read_text(encoding="utf-8")
+    warmup = (ROOT / "scripts/warm_tpex_cloud_run_relay.sh").read_text(encoding="utf-8")
     cpu_prepare = (ROOT / "scripts/runpod_cpu_prepare.sh").read_text(encoding="utf-8")
     dotenv_helper = (ROOT / "scripts/update_runpod_env.py").read_text(encoding="utf-8")
-    http_client = (
-        ROOT / "src/stock_forecasting/data/providers/http.py"
-    ).read_text(encoding="utf-8")
+    http_client = (ROOT / "src/stock_forecasting/data/providers/http.py").read_text(
+        encoding="utf-8"
+    )
 
     assert 'const UPSTREAM_ORIGIN = "https://www.tpex.org.tw"' in relay
     for path in (
@@ -1290,7 +1244,7 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
     assert 'redirect: "manual"' in relay
     assert 'cache: "no-store"' in relay
     assert "MAX_UPSTREAM_REDIRECTS = 3" in relay
-    assert 'redirected.origin !== UPSTREAM_ORIGIN' in relay
+    assert "redirected.origin !== UPSTREAM_ORIGIN" in relay
     assert 'error: "tpex_upstream_redirect_limit_exceeded"' in relay
     assert 'error: "tpex_upstream_redirect_loop"' in relay
     assert "visitedStates.has(redirectedState)" in relay
@@ -1301,7 +1255,7 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
     assert "MAX_UPSTREAM_REDIRECT_COOKIES = 8" in relay
     assert '"X-TPEX-Relay-Region"' in relay
     assert '"X-TPEX-Upstream-Redirect-Cookies"' in relay
-    assert 'process.env.TPEX_PROXY_SHARED_SECRET' in server
+    assert "process.env.TPEX_PROXY_SHARED_SECRET" in server
     assert '"node": "22.x.x"' in package
     assert '"gcp-build": "node --test test/*.test.mjs"' in package
     for boundary in (
@@ -1332,9 +1286,7 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
     assert 'RUNPOD_REST_V2_ENDPOINT = "https://api.runpod.io/v2"' in secret_creator
     assert 'path="/account/secrets?name=tpex_relay_token_preflight"' in secret_creator
     assert 'path="/account/secrets"' in secret_creator
-    assert 'RUNPOD_REST_USER_AGENT = "stock-forecasting-runpod-control/0.1"' in (
-        secret_creator
-    )
+    assert 'RUNPOD_REST_USER_AGENT = "stock-forecasting-runpod-control/0.1"' in (secret_creator)
     assert '"User-Agent": RUNPOD_REST_USER_AGENT' in secret_creator
     assert '"Authorization": f"Bearer {api_key}"' in secret_creator
     assert '"error_code", "error_name", "error_category", "detail"' in secret_creator
@@ -1347,12 +1299,12 @@ def test_tpex_cloud_run_relay_is_closed_cpu_only_and_warmed_before_download() ->
         "GCP_TPEX_RELAY_SECRET|RUNPOD_EODHD_SECRET_NAME|RUNPOD_HF_SECRET_NAME|"
         "RUNPOD_TPEX_PROXY_SECRET_NAME|RUNPOD_WANDB_SECRET_NAME" in sync
     )
-    assert '*API_KEY|*TOKEN|*SECRET*|*PASSWORD*' in sync
+    assert "*API_KEY|*TOKEN|*SECRET*|*PASSWORD*" in sync
     assert '"TPEX_PROXY_TOKEN":"%s"' in create_cpu
     assert "workers.dev" not in create_cpu
     assert "run.app" in create_cpu
     assert "legacy workers.dev origin" in dotenv_helper
-    assert 'GCP_CLOUD_RUN_REGION must be asia-east1' in dotenv_helper
+    assert "GCP_CLOUD_RUN_REGION must be asia-east1" in dotenv_helper
     assert "TPEX_PROXY_TOKEN" not in create_gpu
     assert 'imported.pop("TPEX_PROXY_TOKEN", None)' in reexec
     assert "request_sha256, _identity = self._identity(endpoint=endpoint" in http_client
@@ -1380,18 +1332,14 @@ def test_runpod_setup_uses_bundled_kronos_source_without_remote_git() -> None:
     stage1 = ExperimentConfig.from_yaml(ROOT / "configs/stage1_kronos_base_lora.yaml")
     stage2 = ExperimentConfig.from_yaml(ROOT / "configs/stage2_kronos_base_lora.yaml")
     setup = (ROOT / "scripts/setup_runpod_environment.sh").read_text(encoding="utf-8")
-    sync = (ROOT / "scripts/sync_project_to_runpod_volume.sh").read_text(
-        encoding="utf-8"
-    )
+    sync = (ROOT / "scripts/sync_project_to_runpod_volume.sh").read_text(encoding="utf-8")
     factory = (ROOT / "src/stock_forecasting/factory.py").read_text(encoding="utf-8")
     revision = stage1.model.kronos_source_revision
 
     assert revision is not None
     assert stage2.model.kronos_source_revision == revision
     assert stage1.model.kronos_source_root == stage2.model.kronos_source_root
-    assert stage1.model.kronos_source_root.as_posix().endswith(
-        "/third_party/Kronos"
-    )
+    assert stage1.model.kronos_source_root.as_posix().endswith("/third_party/Kronos")
     assert "BUNDLED_KRONOS_ROOT" in setup
     assert "Would install the pinned bundled Kronos source" in setup
     assert "model/kronos.py" in setup

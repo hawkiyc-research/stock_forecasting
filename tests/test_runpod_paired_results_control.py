@@ -20,18 +20,30 @@ PARENT = "run-20261014T120000Z-pair"
 
 
 def pair_fixtures(*, second_complete=True, workflow="train"):
-    selection = PAIRED["selection_api"]()["_build_selection"](argparse.Namespace(
-        stage="stage2", data_profile="us_tw_eodhd", dataset_revision="v1",
-        start="2021-01-01", end="2026-06-01", h_start=1, universe="all",
-        stocks=[], etfs=[], symbol_limit=None,
-    ), ROOT)
+    selection = PAIRED["selection_api"]()["_build_selection"](
+        argparse.Namespace(
+            stage="stage2",
+            data_profile="us_tw_eodhd",
+            dataset_revision="v1",
+            start="2021-01-01",
+            end="2026-06-01",
+            h_start=1,
+            universe="all",
+            stocks=[],
+            etfs=[],
+            symbol_limit=None,
+        ),
+        ROOT,
+    )
     pair = PAIRED["build_plan"](ROOT, selection, "a-signal64", 42, workflow, PARENT)
     pair["created_at"] = "2026-10-14T12:00:00Z"
     payloads = {f"lifecycle/runs/{PARENT}/pair.json": pair}
     for task, child in pair["children"].items():
         run = child["run_id"]
         records = BASE["fixtures"](
-            run, child["experiment"], complete=second_complete or task == "alpha_point",
+            run,
+            child["experiment"],
+            complete=second_complete or task == "alpha_point",
         )
         records[f"lifecycle/runs/{run}/selection.json"] = child["selection"]
         manifest = records[f"savedModel/{run}/run-manifest.json"]
@@ -53,12 +65,16 @@ class PairedResultsTests(unittest.TestCase):
         self.assertEqual(set(result["children"]), {"alpha_point", "absolute_direction"})
         child = pair["children"]["absolute_direction"]["run_id"]
         data[f"evaluations/{child}/validation-benchmark.json"]["evaluation_split"] = "validation"
-        self.assertNotEqual(QUERY["inspect_run"](BASE["FakeReader"](data), PARENT)["state"], "complete")
+        self.assertNotEqual(
+            QUERY["inspect_run"](BASE["FakeReader"](data), PARENT)["state"], "complete"
+        )
 
     def test_parent_failure_cannot_be_hidden_by_stale_running_child(self):
         _, data = pair_fixtures(second_complete=False)
         data[f"lifecycle/runs/{PARENT}/training.json"] = {
-            "kind": "stage1-training", "wandb_run_id": PARENT, "state": "failed",
+            "kind": "stage1-training",
+            "wandb_run_id": PARENT,
+            "state": "failed",
             "generated_at": "2026-10-14T13:00:00Z",
         }
         result = QUERY["inspect_run"](BASE["FakeReader"](data), PARENT)
@@ -80,8 +96,10 @@ class PairedResultsTests(unittest.TestCase):
         pair, _ = pair_fixtures()
         data = {f"lifecycle/runs/{PARENT}/pair.json": pair}
         data[f"lifecycle/runs/{PARENT}/training.json"] = {
-            "kind": "stage1-training", "wandb_run_id": PARENT,
-            "state": "ready", "training_completed": True,
+            "kind": "stage1-training",
+            "wandb_run_id": PARENT,
+            "state": "ready",
+            "training_completed": True,
         }
         result = QUERY["inspect_run"](BASE["FakeReader"](data), PARENT)
         self.assertNotEqual(result["state"], "complete")
@@ -92,10 +110,17 @@ class PairedResultsTests(unittest.TestCase):
             pair, data = pair_fixtures()
             child = pair["children"]["absolute_direction"]["run_id"]
             if artifact == "manifest":
-                data[f"savedModel/{child}/run-manifest.json"]["training_resume_contract"]["model"]["prediction_task"] = "alpha_point"
+                data[f"savedModel/{child}/run-manifest.json"]["training_resume_contract"]["model"][
+                    "prediction_task"
+                ] = "alpha_point"
             else:
-                data[f"evaluations/{child}/validation-benchmark.json"]["prediction_task"] = "alpha_point"
-            with self.subTest(artifact=artifact), self.assertRaisesRegex(ValueError, "prediction task mismatch"):
+                data[f"evaluations/{child}/validation-benchmark.json"]["prediction_task"] = (
+                    "alpha_point"
+                )
+            with (
+                self.subTest(artifact=artifact),
+                self.assertRaisesRegex(ValueError, "prediction task mismatch"),
+            ):
                 QUERY["inspect_run"](BASE["FakeReader"](data), PARENT)
 
     def test_resume_can_finish_evaluation_after_both_models_trained(self):
@@ -104,8 +129,11 @@ class PairedResultsTests(unittest.TestCase):
         del data[f"evaluations/{child}/validation-benchmark.json"]
         del data[f"lifecycle/runs/{child}/validation.json"]
         data[f"lifecycle/runs/{PARENT}/training-completed.json"] = {
-            "kind": "stage1-training-completion", "run_id": PARENT, "state": "ready",
-            "training_completed": True, "completed_at": "2026-10-14T14:00:00Z",
+            "kind": "stage1-training-completion",
+            "run_id": PARENT,
+            "state": "ready",
+            "training_completed": True,
+            "completed_at": "2026-10-14T14:00:00Z",
         }
         self.assertEqual(BASE["FakeReader"](data).choose("resume"), PARENT)
 
@@ -128,8 +156,10 @@ class PairedResultsTests(unittest.TestCase):
             reader.choose("results")
 
     def test_invalid_pair_ownership_fails_without_hiding_children(self):
-        pair, data = pair_fixtures()
-        data[f"lifecycle/runs/{PARENT}/pair.json"]["children"]["alpha_point"]["run_id"] = "other-run"
+        _pair, data = pair_fixtures()
+        data[f"lifecycle/runs/{PARENT}/pair.json"]["children"]["alpha_point"]["run_id"] = (
+            "other-run"
+        )
         with self.assertRaisesRegex(ValueError, "owned"):
             QUERY["discover"](BASE["FakeReader"](data))
 
@@ -146,9 +176,14 @@ class PairedResultsTests(unittest.TestCase):
         reader = BASE["FakeReader"](data)
         reader.root = Path(temporary.name)
         (reader.root / "scripts").mkdir()
-        shutil.copyfile(ROOT / "scripts/runpod_run_status.py", reader.root / "scripts/runpod_run_status.py")
+        shutil.copyfile(
+            ROOT / "scripts/runpod_run_status.py", reader.root / "scripts/runpod_run_status.py"
+        )
         (reader.root / "src/stock_forecasting").mkdir(parents=True)
-        shutil.copyfile(ROOT / "src/stock_forecasting/runtime_resources.py", reader.root / "src/stock_forecasting/runtime_resources.py")
+        shutil.copyfile(
+            ROOT / "src/stock_forecasting/runtime_resources.py",
+            reader.root / "src/stock_forecasting/runtime_resources.py",
+        )
         reader.validate_pair = lambda payload, run: PAIRED["validate_manifest"](payload, run_id=run)
         return reader
 
@@ -156,16 +191,27 @@ class PairedResultsTests(unittest.TestCase):
         pair, data = pair_fixtures()
         reader = self.download_fixture(data)
         with (
-            patch.object(DOWNLOAD["subprocess"], "run", return_value=argparse.Namespace(returncode=0)) as call,
-            patch.object(DOWNLOAD["subprocess"], "check_output", return_value="page size of 4096 bytes\nPages free: 500000.\nPages inactive: 500000."),
+            patch.object(
+                DOWNLOAD["subprocess"], "run", return_value=argparse.Namespace(returncode=0)
+            ) as call,
+            patch.object(
+                DOWNLOAD["subprocess"],
+                "check_output",
+                return_value="page size of 4096 bytes\nPages free: 500000.\n"
+                "Pages inactive: 500000.",
+            ),
         ):
-            result = DOWNLOAD["download_pair"](reader, pair, script="download.sh", resume=True, checkpoint_scope="best")
+            result = DOWNLOAD["download_pair"](
+                reader, pair, script="download.sh", resume=True, checkpoint_scope="best"
+            )
         self.assertEqual(call.call_count, 2)
         for request in call.call_args_list:
             self.assertIn("--resume", request.args[0])
             self.assertIn("best", request.args[0])
         target = reader.root / "artifacts/runpod" / PARENT
-        self.assertEqual({file.name for file in target.iterdir()}, {"pair.json", "download-result.json"})
+        self.assertEqual(
+            {file.name for file in target.iterdir()}, {"pair.json", "download-result.json"}
+        )
         self.assertEqual(result["state"], "complete")
         self.assertEqual(set(result["children"]), {"alpha_point", "absolute_direction"})
 
@@ -173,12 +219,21 @@ class PairedResultsTests(unittest.TestCase):
         pair, data = pair_fixtures()
         reader = self.download_fixture(data)
         with (
-            patch.object(DOWNLOAD["subprocess"], "run", return_value=argparse.Namespace(returncode=1)),
-            patch.object(DOWNLOAD["subprocess"], "check_output", return_value="page size of 4096 bytes\nPages free: 500000.\nPages inactive: 500000."),
+            patch.object(
+                DOWNLOAD["subprocess"], "run", return_value=argparse.Namespace(returncode=1)
+            ),
+            patch.object(
+                DOWNLOAD["subprocess"],
+                "check_output",
+                return_value="page size of 4096 bytes\nPages free: 500000.\n"
+                "Pages inactive: 500000.",
+            ),
+            self.assertRaisesRegex(ValueError, "retry with --resume"),
         ):
-            with self.assertRaisesRegex(ValueError, "retry with --resume"):
-                DOWNLOAD["download_pair"](reader, pair, script="download.sh")
-        self.assertFalse((reader.root / "artifacts/runpod" / PARENT / "download-result.json").exists())
+            DOWNLOAD["download_pair"](reader, pair, script="download.sh")
+        self.assertFalse(
+            (reader.root / "artifacts/runpod" / PARENT / "download-result.json").exists()
+        )
         pair, data = pair_fixtures(second_complete=False)
         reader = self.download_fixture(data)
         with patch.object(DOWNLOAD["subprocess"], "run") as call:
@@ -190,7 +245,12 @@ class PairedResultsTests(unittest.TestCase):
         fixture = DOWNLOAD_TESTS["TrainingResultDownloadTests"]()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
-        for name in ("runpod_paired.py", "runpod_selection.py", "runpod_run_status.py", "download_runpod_pair.py"):
+        for name in (
+            "runpod_paired.py",
+            "runpod_selection.py",
+            "runpod_run_status.py",
+            "download_runpod_pair.py",
+        ):
             shutil.copyfile(ROOT / "scripts" / name, fixture.root / "scripts" / name)
         source = fixture.root / "src/stock_forecasting"
         source.mkdir(parents=True)
@@ -213,7 +273,9 @@ class PairedResultsTests(unittest.TestCase):
             target = fixture.root / "artifacts/runpod" / child["run_id"]
             self.assertTrue((target / "checkpoint-000001/adapter.safetensors").is_file())
             self.assertTrue((target / "validation-benchmark.json").is_file())
-        self.assertTrue((fixture.root / "artifacts/runpod" / PARENT / "download-result.json").is_file())
+        self.assertTrue(
+            (fixture.root / "artifacts/runpod" / PARENT / "download-result.json").is_file()
+        )
         retry = fixture.command("--resume", "--checkpointScope", "best")
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertIn(f"run_id={PARENT}", retry.stdout)

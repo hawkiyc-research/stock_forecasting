@@ -26,39 +26,69 @@ class RuntimeStopTests(unittest.TestCase):
             signal_dir = volume / "lifecycle/runs" / parent_id / "pods/pod-fixture"
             signal_dir.mkdir(parents=True)
             plan_path = signal_dir.parents[1] / "pair.json"
-            plan_path.write_text(json.dumps({
-                "schema_version": 1, "kind": "paired-training", "workflow": "train", "run_id": parent_id,
-                "children": {"alpha_point": {"run_id": parent_id + "-alpha"},
-                             "absolute_direction": {"run_id": child_id}},
-            }))
-            (signal_dir / "stop-request.json").write_text(json.dumps({
-                "schema_version": 1, "kind": "runtime-stop-request", "pod_id": "pod-fixture", "run_id": parent_id,
-            }))
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "paired-training",
+                        "workflow": "train",
+                        "run_id": parent_id,
+                        "children": {
+                            "alpha_point": {"run_id": parent_id + "-alpha"},
+                            "absolute_direction": {"run_id": child_id},
+                        },
+                    }
+                )
+            )
+            (signal_dir / "stop-request.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "runtime-stop-request",
+                        "pod_id": "pod-fixture",
+                        "run_id": parent_id,
+                    }
+                )
+            )
             checkpoint = volume / "savedModel" / child_id / "checkpoint-000123"
             checkpoint.mkdir(parents=True)
             (checkpoint / "trainer-state.json").write_text('{"global_step":123}')
-            env = {"NETWORK_VOLUME_ROOT": str(volume), "RUNPOD_RUN_KEY": child_id,
-                   "RUNPOD_POD_ID": "pod-fixture", "RUNPOD_PARENT_RUN_ID": parent_id,
-                   "RUNPOD_PAIRED_PLAN_PATH": str(plan_path)}
-            with patch.dict(os.environ, env):
-                with self.assertRaises(STOP.RuntimeStopRequested):
-                    STOP.stop_at_saved_boundary(section_kind="training-checkpoint", section_id=checkpoint.name, artifact=checkpoint)
+            env = {
+                "NETWORK_VOLUME_ROOT": str(volume),
+                "RUNPOD_RUN_KEY": child_id,
+                "RUNPOD_POD_ID": "pod-fixture",
+                "RUNPOD_PARENT_RUN_ID": parent_id,
+                "RUNPOD_PAIRED_PLAN_PATH": str(plan_path),
+            }
+            with (
+                patch.dict(os.environ, env),
+                self.assertRaises(STOP.RuntimeStopRequested),
+            ):
+                STOP.stop_at_saved_boundary(
+                    section_kind="training-checkpoint",
+                    section_id=checkpoint.name,
+                    artifact=checkpoint,
+                )
             acknowledgement = json.loads((signal_dir / "stop-ready.json").read_text())
             self.assertEqual(acknowledgement["run_id"], parent_id)
             self.assertEqual(acknowledgement["child_run_id"], child_id)
             self.assertEqual(acknowledgement["artifact"], str(checkpoint))
-            with patch.dict(os.environ, dict(env, RUNPOD_RUN_KEY="run-unrelated")):
-                with self.assertRaisesRegex(ValueError, "does not own"):
-                    STOP.stop_at_saved_boundary(section_kind="training-checkpoint", section_id=checkpoint.name, artifact=checkpoint)
+            with (
+                patch.dict(os.environ, dict(env, RUNPOD_RUN_KEY="run-unrelated")),
+                self.assertRaisesRegex(ValueError, "does not own"),
+            ):
+                STOP.stop_at_saved_boundary(
+                    section_kind="training-checkpoint",
+                    section_id=checkpoint.name,
+                    artifact=checkpoint,
+                )
 
     def test_training_waits_for_matching_request_and_committed_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             volume = Path(directory)
             checkpoint = volume / "savedModel/run-fixture/checkpoint-000123"
             checkpoint.mkdir(parents=True)
-            (checkpoint / "trainer-state.json").write_text(
-                '{"global_step":123}', encoding="utf-8"
-            )
+            (checkpoint / "trainer-state.json").write_text('{"global_step":123}', encoding="utf-8")
             signal_dir = volume / "lifecycle/runs/run-fixture/pods/pod-fixture"
             signal_dir.mkdir(parents=True)
             environment = {
@@ -74,12 +104,14 @@ class RuntimeStopTests(unittest.TestCase):
                 )
                 self.assertFalse((signal_dir / "stop-ready.json").exists())
                 (signal_dir / "stop-request.json").write_text(
-                    json.dumps({
-                        "schema_version": 1,
-                        "kind": "runtime-stop-request",
-                        "pod_id": "pod-other",
-                        "run_id": "run-fixture",
-                    }),
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "kind": "runtime-stop-request",
+                            "pod_id": "pod-other",
+                            "run_id": "run-fixture",
+                        }
+                    ),
                     encoding="utf-8",
                 )
                 STOP.stop_at_saved_boundary(
@@ -89,12 +121,14 @@ class RuntimeStopTests(unittest.TestCase):
                 )
                 self.assertFalse((signal_dir / "stop-ready.json").exists())
                 (signal_dir / "stop-request.json").write_text(
-                    json.dumps({
-                        "schema_version": 1,
-                        "kind": "runtime-stop-request",
-                        "pod_id": "pod-fixture",
-                        "run_id": "run-fixture",
-                    }),
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "kind": "runtime-stop-request",
+                            "pod_id": "pod-fixture",
+                            "run_id": "run-fixture",
+                        }
+                    ),
                     encoding="utf-8",
                 )
                 with self.assertRaises(STOP.RuntimeStopRequested):
@@ -115,12 +149,14 @@ class RuntimeStopTests(unittest.TestCase):
             signal_dir = volume / "lifecycle/runs/run-fixture/pods/pod-fixture"
             signal_dir.mkdir(parents=True)
             (signal_dir / "stop-request.json").write_text(
-                json.dumps({
-                    "schema_version": 1,
-                    "kind": "runtime-stop-request",
-                    "pod_id": "pod-fixture",
-                    "run_id": "run-fixture",
-                }),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "kind": "runtime-stop-request",
+                        "pod_id": "pod-fixture",
+                        "run_id": "run-fixture",
+                    }
+                ),
                 encoding="utf-8",
             )
             environment = {

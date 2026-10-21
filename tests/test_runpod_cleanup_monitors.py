@@ -28,37 +28,77 @@ class CleanupTests(unittest.TestCase):
         self.directory = Path(temporary.name).resolve()
         self.pod = "fixture-pod"
         self.armed = 1_700_000_000
-        self.ready = {"state": "armed", "pod_id": self.pod, "pid": 1234,
-                      "run_id": "run-fixture", "host_boot_id": "fixture-boot",
-                      "armed_at": datetime.fromtimestamp(self.armed, UTC).isoformat(),
-                      "delay_seconds": 3600}
-        self.monitor = {"kind": "runpod-gpu-monitor", "project_root": str(ROOT),
-                        "pod_id": self.pod, "run_id": "run-fixture", "pid": 1235,
-                        "guard_pid": 1234, "guard_identity": self.ready,
-                        "guard_log": str(self.directory / f"{self.pod}.log"),
-                        "updated_at": self.armed + 1000, "state": "monitoring"}
+        self.ready = {
+            "state": "armed",
+            "pod_id": self.pod,
+            "pid": 1234,
+            "run_id": "run-fixture",
+            "host_boot_id": "fixture-boot",
+            "armed_at": datetime.fromtimestamp(self.armed, UTC).isoformat(),
+            "delay_seconds": 3600,
+        }
+        self.monitor = {
+            "kind": "runpod-gpu-monitor",
+            "project_root": str(ROOT),
+            "pod_id": self.pod,
+            "run_id": "run-fixture",
+            "pid": 1235,
+            "guard_pid": 1234,
+            "guard_identity": self.ready,
+            "guard_log": str(self.directory / f"{self.pod}.log"),
+            "updated_at": self.armed + 1000,
+            "state": "monitoring",
+        }
         self.write("ready.json", self.ready)
         self.write("gpu-monitor.json", self.monitor)
-        self.write("keep-awake.json", {"state": "armed", "mechanism": "caffeinate",
-                                        "pid": 1236, "guard_pid": 1234})
+        self.write(
+            "keep-awake.json",
+            {"state": "armed", "mechanism": "caffeinate", "pid": 1236, "guard_pid": 1234},
+        )
         self.write("pid", "1234\n")
         self.write("caffeinate.pid", "1236\n")
         self.processes = {
-            1234: self.identity(1234, ["bash", str(ROOT / "scripts/terminate_runpod_after.sh"),
-                self.pod, "3600", str(self.directory / f"{self.pod}.log")], -1),
-            1235: self.identity(1235, ["python3", str(ROOT / "scripts/runpod_gpu_monitor.py"),
-                "watch", "--pod-id", self.pod, "--run-id", "run-fixture", "--guard-pid",
-                "1234", "--guard-log", str(self.directory / f"{self.pod}.log")], 1),
+            1234: self.identity(
+                1234,
+                [
+                    "bash",
+                    str(ROOT / "scripts/terminate_runpod_after.sh"),
+                    self.pod,
+                    "3600",
+                    str(self.directory / f"{self.pod}.log"),
+                ],
+                -1,
+            ),
+            1235: self.identity(
+                1235,
+                [
+                    "python3",
+                    str(ROOT / "scripts/runpod_gpu_monitor.py"),
+                    "watch",
+                    "--pod-id",
+                    self.pod,
+                    "--run-id",
+                    "run-fixture",
+                    "--guard-pid",
+                    "1234",
+                    "--guard-log",
+                    str(self.directory / f"{self.pod}.log"),
+                ],
+                1,
+            ),
             1236: self.identity(1236, ["caffeinate", "-is", "-w", "1234"], 1),
         }
         self.sent = []
         self.absence_checks = []
         self.globals = API["cleanup"].__globals__
-        self.context = patch.dict(self.globals, {
-            "assert_pod_absent": lambda pod: self.absence_checks.append(pod),
-            "host_boot_identity": lambda: ("fixture-boot", self.armed - 100),
-            "process_identity": lambda pid: self.processes.get(pid),
-        })
+        self.context = patch.dict(
+            self.globals,
+            {
+                "assert_pod_absent": lambda pod: self.absence_checks.append(pod),
+                "host_boot_identity": lambda: ("fixture-boot", self.armed - 100),
+                "process_identity": lambda pid: self.processes.get(pid),
+            },
+        )
         self.context.start()
         self.addCleanup(self.context.stop)
 
@@ -83,12 +123,16 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(report["state"], "dry_run")
         self.assertEqual([item["state"] for item in report["targets"]], ["verified"] * 3)
         self.assertEqual(self.sent, [])
-        self.assertEqual(before, {path.name: path.read_bytes() for path in self.directory.iterdir()})
+        self.assertEqual(
+            before, {path.name: path.read_bytes() for path in self.directory.iterdir()}
+        )
 
     def test_apply_only_signals_exact_owners_and_is_idempotent(self):
         report = self.run_cleanup(True)
         self.assertEqual(report["state"], "complete")
-        self.assertEqual(self.sent, [(1235, signal.SIGTERM), (1234, signal.SIGTERM), (1236, signal.SIGTERM)])
+        self.assertEqual(
+            self.sent, [(1235, signal.SIGTERM), (1234, signal.SIGTERM), (1236, signal.SIGTERM)]
+        )
         self.assertEqual(self.absence_checks, [self.pod, self.pod])
         report = self.run_cleanup(True)
         self.assertEqual(report["state"], "complete")
@@ -96,14 +140,20 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual({item["state"] for item in report["targets"]}, {"already_stopped"})
 
     def test_existing_or_stopped_pod_blocks_before_local_inspection(self):
-        with patch.dict(self.globals, {"assert_pod_absent": lambda _: (_ for _ in ()).throw(RuntimeError("exists"))}):
-            with self.assertRaisesRegex(RuntimeError, "exists"):
-                self.run_cleanup(True)
+        with patch.dict(
+            self.globals,
+            {"assert_pod_absent": lambda _: (_ for _ in ()).throw(RuntimeError("exists"))},
+        ), self.assertRaisesRegex(RuntimeError, "exists"):
+            self.run_cleanup(True)
         self.assertEqual(self.sent, [])
 
     def test_other_run_or_project_commands_block_all_signals(self):
-        for index, value in ((1, "/other/scripts/runpod_gpu_monitor.py"), (6, "run-other"),
-                             (4, "other-pod"), (8, "9999")):
+        for index, value in (
+            (1, "/other/scripts/runpod_gpu_monitor.py"),
+            (6, "run-other"),
+            (4, "other-pod"),
+            (8, "9999"),
+        ):
             with self.subTest(index=index):
                 original = self.processes[1235]["argv"][index]
                 self.processes[1235]["argv"][index] = value
@@ -112,8 +162,10 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
     def test_macos_framework_python_monitor_is_verified_but_other_programs_block(self):
-        framework = ("/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/"
-                     "Versions/3.14/Resources/Python.app/Contents/MacOS/Python")
+        framework = (
+            "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/"
+            "Versions/3.14/Resources/Python.app/Contents/MacOS/Python"
+        )
         self.processes[1235]["argv"][0] = framework
         report = self.run_cleanup()
         self.assertEqual([item["state"] for item in report["targets"]], ["verified"] * 3)
@@ -128,7 +180,13 @@ class CleanupTests(unittest.TestCase):
 
     def test_changed_boot_or_missing_boot_blocks_signals(self):
         for boot in ("another-boot", ""):
-            with self.subTest(boot=boot), patch.dict(self.globals, {"host_boot_identity": lambda: (boot, self.armed - 100)}):
+            with (
+                self.subTest(boot=boot),
+                patch.dict(
+                    self.globals,
+                    {"host_boot_identity": lambda boot=boot: (boot, self.armed - 100)},
+                ),
+            ):
                 self.assertEqual(self.run_cleanup(True)["state"], "blocked")
         self.assertEqual(self.sent, [])
 
@@ -170,37 +228,47 @@ class CleanupTests(unittest.TestCase):
     def test_permission_denied_blocks_no_bypass(self):
         def denied(pid):
             raise PermissionError("Operation not permitted")
+
         with patch.dict(self.globals, {"process_identity": denied}):
             self.assertEqual(self.run_cleanup(True)["state"], "blocked")
         self.assertEqual(self.sent, [])
 
     def test_remote_reappears_at_final_check_blocks_all_signals(self):
         count = 0
+
         def check(pod):
             nonlocal count
             count += 1
             if count == 2:
                 raise RuntimeError("Pod exists")
-        with patch.dict(self.globals, {"assert_pod_absent": check}):
-            with self.assertRaisesRegex(RuntimeError, "exists"):
-                self.run_cleanup(True)
+
+        with (
+            patch.dict(self.globals, {"assert_pod_absent": check}),
+            self.assertRaisesRegex(RuntimeError, "exists"),
+        ):
+            self.run_cleanup(True)
         self.assertEqual(self.sent, [])
 
     def test_identity_change_before_signal_does_not_kill_reused_pid(self):
         calls = 0
+
         def inspect(pid):
             nonlocal calls
             calls += 1
             if calls > 6 and pid == 1235:
                 return {**self.processes[pid], "started_at": self.armed + 3600}
             return self.processes.get(pid)
+
         with patch.dict(self.globals, {"process_identity": inspect}):
             report = self.run_cleanup(True)
         self.assertEqual(report["state"], "blocked")
         self.assertNotIn((1235, signal.SIGTERM), self.sent)
 
     def test_no_force_kill_if_process_ignores_term(self):
-        with patch.object(self.globals["os"], "kill", lambda pid, sig: self.sent.append((pid, sig))), patch.dict(self.globals, {"EXIT_TIMEOUT_SECONDS": 0}):
+        with (
+            patch.object(self.globals["os"], "kill", lambda pid, sig: self.sent.append((pid, sig))),
+            patch.dict(self.globals, {"EXIT_TIMEOUT_SECONDS": 0}),
+        ):
             report = API["cleanup"](self.pod, self.directory, apply=True)
         self.assertEqual(report["state"], "blocked")
         self.assertEqual({sig for _, sig in self.sent}, {signal.SIGTERM})
@@ -208,9 +276,21 @@ class CleanupTests(unittest.TestCase):
     def test_api_checks_all_pods_and_rejects_failure_or_invalid_response(self):
         original = API["assert_pod_absent"]
         # runpy function globals are patched above, but this function itself is preserved.
-        for payload, code in (([], 0), ([{"id": self.pod, "desiredStatus": "EXITED"}], 0),
-                              ({"pods": []}, 0), ([{}], 0), ([], 1)):
-            with self.subTest(payload=payload, code=code), patch.object(original.__globals__["subprocess"], "run", return_value=subprocess.CompletedProcess([], code, json.dumps(payload), "")) as run:
+        for payload, code in (
+            ([], 0),
+            ([{"id": self.pod, "desiredStatus": "EXITED"}], 0),
+            ({"pods": []}, 0),
+            ([{}], 0),
+            ([], 1),
+        ):
+            with (
+                self.subTest(payload=payload, code=code),
+                patch.object(
+                    original.__globals__["subprocess"],
+                    "run",
+                    return_value=subprocess.CompletedProcess([], code, json.dumps(payload), ""),
+                ) as run,
+            ):
                 if payload == [] and code == 0:
                     original(self.pod)
                 else:
@@ -222,20 +302,33 @@ class CleanupTests(unittest.TestCase):
     def test_ps_parser_checks_full_command_and_start_time(self):
         original = API["process_identity"]
         raw = " 1234 501 Tue Nov 14 22:13:20 2023 S bash /project/guard.sh fixture 3600 /log\n"
-        with patch.object(original.__globals__["subprocess"], "run", return_value=subprocess.CompletedProcess([], 0, raw, "")):
+        with patch.object(
+            original.__globals__["subprocess"],
+            "run",
+            return_value=subprocess.CompletedProcess([], 0, raw, ""),
+        ):
             result = original(1234)
         self.assertEqual(result["started_at"], self.armed)
         self.assertEqual(result["argv"], ["bash", "/project/guard.sh", "fixture", "3600", "/log"])
-        with patch.object(original.__globals__["subprocess"], "run", return_value=subprocess.CompletedProcess([], 1, "", "")):
+        with patch.object(
+            original.__globals__["subprocess"],
+            "run",
+            return_value=subprocess.CompletedProcess([], 1, "", ""),
+        ):
             self.assertIsNone(original(1234))
-        with patch.object(original.__globals__["subprocess"], "run", return_value=subprocess.CompletedProcess([], 1, "", "Operation not permitted")):
-            with self.assertRaises(RuntimeError):
-                original(1234)
+        with patch.object(
+            original.__globals__["subprocess"],
+            "run",
+            return_value=subprocess.CompletedProcess([], 1, "", "Operation not permitted"),
+        ), self.assertRaises(RuntimeError):
+            original(1234)
 
     def test_cli_default_is_dry_run_and_retains_existing_dispatch(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(API["main"](["--pod-id", self.pod, "--guard-dir", str(self.directory)]), 0)
+            self.assertEqual(
+                API["main"](["--pod-id", self.pod, "--guard-dir", str(self.directory)]), 0
+            )
         self.assertIn("Dry run only", output.getvalue())
         self.assertEqual(self.sent, [])
         workflow = (ROOT / "scripts/runpod_workflow.sh").read_text()
@@ -244,30 +337,50 @@ class CleanupTests(unittest.TestCase):
         self.assertIn('recover_runpod_after_wake.py" "$@"', workflow)
 
 
-@unittest.skipUnless(os.environ.get("RUNPOD_CLEANUP_PROCESS_FIXTURE") == "1",
-                     "Opt-in harmless subprocess fixture requires local ps permission")
+@unittest.skipUnless(
+    os.environ.get("RUNPOD_CLEANUP_PROCESS_FIXTURE") == "1",
+    "Opt-in harmless subprocess fixture requires local ps permission",
+)
 class RealProcessFixtureTests(unittest.TestCase):
     def test_actual_sigterm_stops_only_the_fixture_guard(self):
         with tempfile.TemporaryDirectory(prefix="cleanup-live-fixture-") as temporary:
             root = Path(temporary).resolve()
             (root / "scripts").mkdir()
             script = root / "scripts/terminate_runpod_after.sh"
-            script.write_text("#!/usr/bin/env bash\ntrap 'exit 0' TERM\nwhile :; do sleep 0.1; done\n")
+            script.write_text(
+                "#!/usr/bin/env bash\ntrap 'exit 0' TERM\nwhile :; do sleep 0.1; done\n"
+            )
             directory = root / "records"
             directory.mkdir()
             pod = "cleanup-fixture"
-            guard = subprocess.Popen(["bash", str(script), pod, "3600", str(directory / f"{pod}.log")],
-                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            protected = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
-                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            guard = subprocess.Popen(
+                ["bash", str(script), pod, "3600", str(directory / f"{pod}.log")],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            protected = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             try:
                 boot, _ = API["host_boot_identity"]()
-                ready = {"state": "armed", "pod_id": pod, "pid": guard.pid,
-                         "run_id": "run-fixture", "host_boot_id": boot,
-                         "armed_at": datetime.now(UTC).isoformat(), "delay_seconds": 3600}
+                ready = {
+                    "state": "armed",
+                    "pod_id": pod,
+                    "pid": guard.pid,
+                    "run_id": "run-fixture",
+                    "host_boot_id": boot,
+                    "armed_at": datetime.now(UTC).isoformat(),
+                    "delay_seconds": 3600,
+                }
                 (directory / f"{pod}.ready.json").write_text(json.dumps(ready))
                 (directory / f"{pod}.pid").write_text(str(guard.pid))
-                with patch.dict(API["cleanup"].__globals__, {"ROOT": root, "assert_pod_absent": lambda _: None}):
+                with patch.dict(
+                    API["cleanup"].__globals__, {"ROOT": root, "assert_pod_absent": lambda _: None}
+                ):
                     report = API["cleanup"](pod, directory, apply=True)
                 self.assertEqual(report["state"], "complete", report)
                 guard.wait(timeout=3)

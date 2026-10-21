@@ -61,9 +61,9 @@ UPPER = float32(math.log1p(0.01))
 
 
 def open_npy(path):
-    handle = Path(path).open("rb")
-    mapped = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
-    handle.close()
+    # The mapping stays valid after the descriptor closes.
+    with Path(path).open("rb") as handle:
+        mapped = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
     if mapped[:6] != b"\x93NUMPY":
         raise ValueError(f"Not an npy file: {path}")
     if mapped[6] == 1:
@@ -162,9 +162,13 @@ class Accumulator:
                 for m, market in enumerate(markets)
                 if market_counts[m]
             }
-            pooled = sum(
-                sum(by_market_h[m][h] for m in range(len(markets))) / total for h in range(HORIZONS)
-            ) / HORIZONS
+            pooled = (
+                sum(
+                    sum(by_market_h[m][h] for m in range(len(markets))) / total
+                    for h in range(HORIZONS)
+                )
+                / HORIZONS
+            )
             result[name] = {
                 "aggregate": pooled,
                 "market_macro": sum(per_market.values()) / len(per_market),
@@ -193,8 +197,13 @@ def group_context(baselines, split):
         date = names[group][0]
         daily_counts[date] = daily_counts.get(date, 0) + size
     return {
-        "groups": groups, "names": names, "count": count, "markets": markets,
-        "market_of": market_of, "sizes": sizes, "market_counts": market_counts,
+        "groups": groups,
+        "names": names,
+        "count": count,
+        "markets": markets,
+        "market_of": market_of,
+        "sizes": sizes,
+        "market_counts": market_counts,
         "daily_counts": daily_counts,
     }
 
@@ -249,7 +258,10 @@ def load_sources(baselines, split, task, models, ensembles, labels=None):
 def alpha_job(baselines, split, models, ensembles):
     context = group_context(baselines, split)
     groups, names, count, sizes = (
-        context["groups"], context["names"], context["count"], context["sizes"]
+        context["groups"],
+        context["names"],
+        context["count"],
+        context["sizes"],
     )
     scales = json.loads((Path(baselines) / ALPHA_ID / "complete.json").read_text())["robust_scales"]
     targets, n = float_array(
@@ -287,7 +299,11 @@ def alpha_job(baselines, split, models, ensembles):
     zero_s, oracle_s = acc.series("zero_return"), acc.series("oracle_date_mean")
     zero_between, zero_within = acc.series("zero_mse_between"), acc.series("zero_mse_within")
     suffixes = (
-        "", "_date_only", "_oracle_date_plus_within", "_mse_between", "_mse_within",
+        "",
+        "_date_only",
+        "_oracle_date_plus_within",
+        "_mse_between",
+        "_mse_within",
         "_within_plus_split_level",
     )
     series = {
@@ -351,7 +367,7 @@ def alpha_job(baselines, split, models, ensembles):
         "samples": count,
         "groups": len(names),
         "sources": list(sources),
-        "markets": dict(zip(context["markets"], context["market_counts"])),
+        "markets": dict(zip(context["markets"], context["market_counts"], strict=False)),
         "metrics": acc.summarize(context),
         "zero_linear_regime": {
             "sample_share": [linear_counts[h] / count for h in range(HORIZONS)],
@@ -367,7 +383,10 @@ def alpha_job(baselines, split, models, ensembles):
 def direction_job(baselines, split, models, ensembles):
     context = group_context(baselines, split)
     groups, names, count, sizes = (
-        context["groups"], context["names"], context["count"], context["sizes"]
+        context["groups"],
+        context["names"],
+        context["count"],
+        context["sizes"],
     )
     markets, market_of = context["markets"], context["market_of"]
     audit = json.loads(
@@ -459,7 +478,7 @@ def direction_job(baselines, split, models, ensembles):
         "samples": count,
         "groups": len(names),
         "sources": list(sources),
-        "markets": dict(zip(markets, context["market_counts"])),
+        "markets": dict(zip(markets, context["market_counts"], strict=False)),
         "metrics": acc.summarize(context),
         "daily_up_share_14d": {date: daily_up[date] / daily_n[date] for date in sorted(daily_up)},
     }
@@ -485,7 +504,11 @@ def date_rank_ic(targets, signals):
     """One date's Spearman Rank IC, or None where the project metric defines none."""
     if len(targets) < MIN_RANK_ROWS:
         return None
-    pairs = [(y, x) for y, x in zip(targets, signals) if math.isfinite(y) and math.isfinite(x)]
+    pairs = [
+        (y, x)
+        for y, x in zip(targets, signals, strict=False)
+        if math.isfinite(y) and math.isfinite(x)
+    ]
     if len(pairs) < MIN_RANK_ROWS:
         return None
     ys = [y for y, _x in pairs]
@@ -496,7 +519,7 @@ def date_rank_ic(targets, signals):
     ry, rx = average_ranks(ys), average_ranks(xs)
     mean = (len(ry) - 1) * 0.5
     sxy = sxx = syy = 0.0
-    for a, b in zip(ry, rx):
+    for a, b in zip(ry, rx, strict=False):
         da, db = a - mean, b - mean
         sxy += da * db
         sxx += da * da
@@ -580,9 +603,11 @@ def rank_ic_job(baselines, split, label, models, ensembles):
         summary[market] = {
             "complete": complete,
             "mean_rank_ic": sum(item["rank_ic_mean"] for item in horizons.values()) / HORIZONS
-            if complete else None,
+            if complete
+            else None,
             "mean_rank_ic_ir": sum(item["rank_ic_ir"] for item in horizons.values()) / HORIZONS
-            if complete else None,
+            if complete
+            else None,
         }
     equal = None
     if all(summary.get(market, {}).get("complete") for market in EQUAL_MARKETS):
@@ -629,8 +654,10 @@ def latest_export(predictions, selector):
     run are never mixed up.
     """
     run_id, _, checkpoint = selector.partition("/")
-    if RUN_ID.fullmatch(run_id) is None or "--" in run_id or (
-        checkpoint and CHECKPOINT.fullmatch(checkpoint) is None
+    if (
+        RUN_ID.fullmatch(run_id) is None
+        or "--" in run_id
+        or (checkpoint and CHECKPOINT.fullmatch(checkpoint) is None)
     ):
         raise ValueError(f"Invalid export selector {selector!r}")
     newest, checkpoints = None, set()
@@ -660,9 +687,9 @@ def resolve_models(baselines, predictions, pairs):
     """Map LABEL=RUN_ID[/checkpoint-NNNNNN] pairs to verified export directories."""
     memberships = {
         task: {
-            "validation": json.loads(
-                (Path(baselines) / baseline / "complete.json").read_text()
-            )["validation_membership"]["ordered_symbol_dates_sha256"],
+            "validation": json.loads((Path(baselines) / baseline / "complete.json").read_text())[
+                "validation_membership"
+            ]["ordered_symbol_dates_sha256"],
             "test": json.loads((Path(baselines) / baseline / "complete.json").read_text())[
                 "evaluation_membership"
             ]["ordered_symbol_dates_sha256"],
@@ -718,7 +745,7 @@ def resolve_ensembles(models, pairs):
 
 def pearson(xs, ys):
     mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=False))
     sxx = sum((x - mx) ** 2 for x in xs)
     syy = sum((y - my) ** 2 for y in ys)
     return sxy / math.sqrt(sxx * syy)
@@ -797,8 +824,9 @@ def rank_ic_peak_bytes(baselines, ensembles, label, split):
 def alpha_labels(models, ensembles):
     """Every alpha source: baselines, exported alpha models and alpha ensembles."""
     exported = [label for label, item in models.items() if item["task"] == "alpha"]
-    combined = [label for label, members in ensembles.items()
-                if models[members[0]]["task"] == "alpha"]
+    combined = [
+        label for label, members in ensembles.items() if models[members[0]]["task"] == "alpha"
+    ]
     return [*BASELINE_MODELS, *exported, *combined]
 
 
@@ -821,13 +849,17 @@ def worker_count(requested, jobs, peak):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        allow_abbrev=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--baselines", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--predictions", type=Path)
-    parser.add_argument("--model", action="append", default=[],
-                        metavar="LABEL=RUN_ID[/checkpoint-NNNNNN]")
+    parser.add_argument(
+        "--model", action="append", default=[], metavar="LABEL=RUN_ID[/checkpoint-NNNNNN]"
+    )
     parser.add_argument("--ensemble", action="append", default=[], metavar="LABEL=A,B,C")
     parser.add_argument("--daily-benchmarks", type=Path)
     parser.add_argument("--workers", type=int)
@@ -859,12 +891,14 @@ def main(argv=None):
         for kind, name, _b, split, _m, _e in jobs
     )
     workers = worker_count(args.workers, len(jobs), peak)
-    print(f"Signal decomposition: {len(jobs)} jobs, {workers} worker(s), peak~{peak >> 20} MiB/job",
-          flush=True)
+    print(
+        f"Signal decomposition: {len(jobs)} jobs, {workers} worker(s), peak~{peak >> 20} MiB/job",
+        flush=True,
+    )
     outputs = []
 
     def collect(results):
-        for job, result in zip(jobs, results):
+        for job, result in zip(jobs, results, strict=False):
             outputs.append(result)
             print(f"Finished {job[0]} {job[1]} {job[3]} ({len(outputs)}/{len(jobs)})", flush=True)
 
@@ -874,17 +908,25 @@ def main(argv=None):
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
             collect(pool.map(run_job, jobs))
-    results = [out for job, out in zip(jobs, outputs) if job[0] == "decomposition"]
+    results = [out for job, out in zip(jobs, outputs, strict=False) if job[0] == "decomposition"]
     rank_ic = {split: {} for split in SPLITS}
-    for job, out in zip(jobs, outputs):
+    for job, out in zip(jobs, outputs, strict=False):
         if job[0] == "rank_ic":
             rank_ic[out["split"]][out["label"]] = out
             check = out["recorded_check"]
             if check is not None and not check["matches"]:
-                print(f"WARNING: {out['label']} {out['split']} Rank IC differs from the "
-                      f"exported record: {check}", flush=True)
-    payload = {"schema_version": "1.1", "models": models, "ensembles": ensembles,
-               "results": results, "rank_ic": rank_ic}
+                print(
+                    f"WARNING: {out['label']} {out['split']} Rank IC differs from the "
+                    f"exported record: {check}",
+                    flush=True,
+                )
+    payload = {
+        "schema_version": "1.1",
+        "models": models,
+        "ensembles": ensembles,
+        "results": results,
+        "rank_ic": rank_ic,
+    }
     if args.daily_benchmarks is not None:
         runs = json.loads(args.daily_benchmarks.read_text())
         payload["main_model_test_daily"] = benchmark_daily(results, runs)

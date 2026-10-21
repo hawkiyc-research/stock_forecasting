@@ -24,27 +24,51 @@ HORIZONS = 14
 
 # The storage fields the data workflow hashes into a dataset ID (as in baseline records).
 EVALUATION_REQUEST = {
-    "profile": "us_tw_eodhd", "revision": "v1", "schema_version": 3,
+    "profile": "us_tw_eodhd",
+    "revision": "v1",
+    "schema_version": 3,
     "selected_datasets": ["twse_official", "eodhd_us", "tpex_official"],
     "date_range": {"start_inclusive": "2016-01-01", "end_exclusive": "2026-06-01"},
-    "universe": {"include_delisted_us": True, "mode": "all", "symbol_limit": None,
-                 "us_etfs": [], "us_stocks": []},
+    "universe": {
+        "include_delisted_us": True,
+        "mode": "all",
+        "symbol_limit": None,
+        "us_etfs": [],
+        "us_stocks": [],
+    },
     "preparation": {
-        "alpha_horizons": list(range(1, 15)), "bar_store_schema_version": "1.0",
-        "benchmark_mapping_sha256": "4" * 64, "diagnostic_horizons": [1, 20],
-        "effective_embargo_bars": 14, "effective_sample_stride": 1, "embargo_bars": 5,
+        "alpha_horizons": list(range(1, 15)),
+        "bar_store_schema_version": "1.0",
+        "benchmark_mapping_sha256": "4" * 64,
+        "diagnostic_horizons": [1, 20],
+        "effective_embargo_bars": 14,
+        "effective_sample_stride": 1,
+        "embargo_bars": 5,
         "entry_day_counts_as_holding_day_one": True,
         "entry_timing": "regular_session_open_t_plus_1",
         "exit_timing": "regular_session_close_t_plus_h",
-        "fixed_split": {"test_end": "2026-06-01", "train_end": "2025-06-01",
-                        "validation_end": "2025-12-01"},
-        "flat_volatility_multiplier": 0.25, "h_start": 1,
-        "label_kind": "benchmark_relative_adjusted_log_return", "labels_materialized": False,
-        "max_abs_log_return": 0.5, "max_horizon": 14, "processed_schema_version": "4.0",
-        "purge_bars": 20, "schema_version": 5, "signal_timing": "after_close_t",
+        "fixed_split": {
+            "test_end": "2026-06-01",
+            "train_end": "2025-06-01",
+            "validation_end": "2025-12-01",
+        },
+        "flat_volatility_multiplier": 0.25,
+        "h_start": 1,
+        "label_kind": "benchmark_relative_adjusted_log_return",
+        "labels_materialized": False,
+        "max_abs_log_return": 0.5,
+        "max_horizon": 14,
+        "processed_schema_version": "4.0",
+        "purge_bars": 20,
+        "schema_version": 5,
+        "signal_timing": "after_close_t",
         "split_policy": "fixed_dates_with_exact_label_end_guard_v1",
-        "storage_kind": "symbol-oriented-ohlcv-bar-store", "stride": 5, "target_horizon": 5,
-        "train_fraction": 0.7, "validation_fraction": 0.15, "window_materialized": False,
+        "storage_kind": "symbol-oriented-ohlcv-bar-store",
+        "stride": 5,
+        "target_horizon": 5,
+        "train_fraction": 0.7,
+        "validation_fraction": 0.15,
+        "window_materialized": False,
         "window_size": 128,
     },
 }
@@ -77,7 +101,7 @@ META_FIELDS = (("symbol", 48), ("date", 40), ("market", 24), ("asset_type", 24),
 def metadata(rows) -> bytes:
     out = b""
     for row in rows:
-        for (name, width), value in zip(META_FIELDS, row, strict=True):
+        for (_name, width), value in zip(META_FIELDS, row, strict=True):
             out += value.ljust(width, "\x00").encode("utf-32-le")
     return out
 
@@ -99,7 +123,7 @@ class Fixture:
         alpha, absolute = [], []
         for index, (_symbol, date, market, _a, _p) in enumerate(self.rows):
             common = (0.02 if market == "US" else -0.03) * (1 if date.endswith("02") else -1)
-            for h in range(HORIZONS):
+            for _h in range(HORIZONS):
                 stock = 0.01 * ((index % 4) - 1.5)
                 alpha.append(common + stock)
                 absolute.append(2 * common + stock)
@@ -109,11 +133,15 @@ class Fixture:
             base = self.baselines / task_id
             membership = {"ordered_symbol_dates_sha256": "f" * 64, "samples": self.count}
             base.mkdir(parents=True)
-            (base / "complete.json").write_text(json.dumps({
-                "robust_scales": scales,
-                "validation_membership": membership,
-                "evaluation_membership": membership,
-            }))
+            (base / "complete.json").write_text(
+                json.dumps(
+                    {
+                        "robust_scales": scales,
+                        "validation_membership": membership,
+                        "evaluation_membership": membership,
+                    }
+                )
+            )
             for split in ("validation", "test"):
                 write_npy(
                     base / "inputs" / split / "metadata.npy",
@@ -121,40 +149,75 @@ class Fixture:
                     (self.count,),
                     metadata(self.rows),
                 )
-                write_npy(base / "inputs" / split / "targets.npy", "<f4",
-                          (self.count, HORIZONS), floats(alpha))
-                write_npy(base / "inputs" / split / "absolute_targets.npy", "<f4",
-                          (self.count, HORIZONS), floats(absolute))
+                write_npy(
+                    base / "inputs" / split / "targets.npy",
+                    "<f4",
+                    (self.count, HORIZONS),
+                    floats(alpha),
+                )
+                write_npy(
+                    base / "inputs" / split / "absolute_targets.npy",
+                    "<f4",
+                    (self.count, HORIZONS),
+                    floats(absolute),
+                )
                 for model, scale in (("gru-42", 0.5), ("gbdt-42", 0.25)):
-                    write_npy(base / "jobs" / model / split / "predictions.npy", "<f4",
-                              (self.count, HORIZONS), floats([scale * v for v in alpha]))
+                    write_npy(
+                        base / "jobs" / model / split / "predictions.npy",
+                        "<f4",
+                        (self.count, HORIZONS),
+                        floats([scale * v for v in alpha]),
+                    )
             if task_id == ANALYSIS["DIRECTION_ID"]:
-                audit = {"counts": {m: {str(h): [3, 2, 3] for h in range(1, 15)}
-                                    for m in ("TWSE", "US", "overall")}}
+                audit = {
+                    "counts": {
+                        m: {str(h): [3, 2, 3] for h in range(1, 15)}
+                        for m in ("TWSE", "US", "overall")
+                    }
+                }
                 (base / "inputs/train").mkdir(parents=True, exist_ok=True)
                 (base / "inputs/train/class-label-audit.json").write_text(json.dumps(audit))
                 for model in ("gru-42", "gbdt-42"):
                     for split in ("validation", "test"):
-                        write_npy(base / "jobs" / model / split / "predictions.npy", "<f4",
-                                  (self.count, HORIZONS, 3), floats([0.0] * self.count * 42))
+                        write_npy(
+                            base / "jobs" / model / split / "predictions.npy",
+                            "<f4",
+                            (self.count, HORIZONS, 3),
+                            floats([0.0] * self.count * 42),
+                        )
 
-    def export(self, run_id: str, task: str, values, digest="f" * 64,
-               checkpoint="checkpoint-003680", records=None) -> None:
+    def export(
+        self,
+        run_id: str,
+        task: str,
+        values,
+        digest="f" * 64,
+        checkpoint="checkpoint-003680",
+        records=None,
+    ) -> None:
         export = "export-20261017T000000Z-0a1b2c3d"
         directory = self.predictions / run_id / checkpoint / export
         tail = (HORIZONS,) if task == "alpha_point" else (HORIZONS, 3)
         splits = {}
         for split in ("validation", "test"):
-            write_npy(directory / split / "predictions.npy", "<f4", (self.count, *tail),
-                      floats(values))
+            write_npy(
+                directory / split / "predictions.npy", "<f4", (self.count, *tail), floats(values)
+            )
             splits[split] = {"sample_membership": {"ordered_symbol_dates_sha256": digest}}
             if records is not None:
                 splits[split]["cross_sectional"] = records
         (directory / "status.json").write_text(json.dumps({"state": "complete"}))
-        (directory / "export.json").write_text(json.dumps({
-            "kind": "signal-prediction-export", "run_id": run_id, "prediction_task": task,
-            "created_at": "2026-10-17T00:00:00+00:00", "splits": splits,
-        }))
+        (directory / "export.json").write_text(
+            json.dumps(
+                {
+                    "kind": "signal-prediction-export",
+                    "run_id": run_id,
+                    "prediction_task": task,
+                    "created_at": "2026-10-17T00:00:00+00:00",
+                    "splits": splits,
+                }
+            )
+        )
 
 
 class DecompositionAnalysisTests(unittest.TestCase):
@@ -166,10 +229,17 @@ class DecompositionAnalysisTests(unittest.TestCase):
     def run_analysis(self, *arguments: str) -> dict:
         output = self.fixture.root / "result.json"
         with contextlib.redirect_stdout(io.StringIO()):
-            ANALYSIS["main"]([
-                "--baselines", str(self.fixture.baselines), "--output", str(output),
-                "--workers", "1", *arguments,
-            ])
+            ANALYSIS["main"](
+                [
+                    "--baselines",
+                    str(self.fixture.baselines),
+                    "--output",
+                    str(output),
+                    "--workers",
+                    "1",
+                    *arguments,
+                ]
+            )
         payload = json.loads(output.read_text())
         return {(item["task"], item["split"]): item for item in payload["results"]}
 
@@ -181,8 +251,9 @@ class DecompositionAnalysisTests(unittest.TestCase):
         expected = sum(0.5 * (d / 0.05) ** 2 for d in (0.015, 0.005, 0.005, 0.015)) / 4
         self.assertAlmostEqual(oracle, expected, places=6)
         self.assertLess(oracle, zero)
-        self.assertAlmostEqual(alpha["gru-42_date_only"]["aggregate"],
-                               alpha["gru-42_date_only"]["aggregate"])
+        self.assertAlmostEqual(
+            alpha["gru-42_date_only"]["aggregate"], alpha["gru-42_date_only"]["aggregate"]
+        )
 
     def test_cross_sectional_prior_normalization_never_uses_labels(self) -> None:
         direction = self.run_analysis()[("absolute_direction", "test")]["metrics"]
@@ -201,8 +272,14 @@ class DecompositionAnalysisTests(unittest.TestCase):
         self.fixture.export("run-a-alpha", "alpha_point", alpha_values)
         self.fixture.export("run-b-alpha", "alpha_point", alpha_values)
         results = self.run_analysis(
-            "--predictions", str(self.fixture.predictions),
-            "--model", "A=run-a-alpha", "--model", "B=run-b-alpha", "--ensemble", "AB=A,B",
+            "--predictions",
+            str(self.fixture.predictions),
+            "--model",
+            "A=run-a-alpha",
+            "--model",
+            "B=run-b-alpha",
+            "--ensemble",
+            "AB=A,B",
         )
         metrics = results[("alpha_point", "test")]["metrics"]
         for name in ("A", "B", "AB"):
@@ -211,8 +288,12 @@ class DecompositionAnalysisTests(unittest.TestCase):
 
     def test_checkpoint_selectors_keep_two_checkpoints_of_one_run_apart(self) -> None:
         self.fixture.export("run-a-alpha", "alpha_point", [0.5 * v for v in self.fixture.alpha])
-        self.fixture.export("run-a-alpha", "alpha_point", [0.25 * v for v in self.fixture.alpha],
-                            checkpoint="checkpoint-022079")
+        self.fixture.export(
+            "run-a-alpha",
+            "alpha_point",
+            [0.25 * v for v in self.fixture.alpha],
+            checkpoint="checkpoint-022079",
+        )
         predictions = str(self.fixture.predictions)
         with self.assertRaisesRegex(ValueError, "checkpoint-003680, checkpoint-022079"):
             self.run_analysis("--predictions", predictions, "--model", "A=run-a-alpha")
@@ -220,26 +301,32 @@ class DecompositionAnalysisTests(unittest.TestCase):
             with self.subTest(selector=selector), self.assertRaises(ValueError):
                 ANALYSIS["latest_export"](self.fixture.predictions, selector)
         results = self.run_analysis(
-            "--predictions", predictions,
-            "--model", "Best=run-a-alpha/checkpoint-003680",
-            "--model", "Late=run-a-alpha/checkpoint-022079",
+            "--predictions",
+            predictions,
+            "--model",
+            "Best=run-a-alpha/checkpoint-003680",
+            "--model",
+            "Late=run-a-alpha/checkpoint-022079",
         )
         metrics = results[("alpha_point", "validation")]["metrics"]
         self.assertAlmostEqual(metrics["Best"]["aggregate"], metrics["gru-42"]["aggregate"])
         self.assertAlmostEqual(metrics["Late"]["aggregate"], metrics["gbdt-42"]["aggregate"])
         models = ANALYSIS["resolve_models"](
-            self.fixture.baselines, self.fixture.predictions,
+            self.fixture.baselines,
+            self.fixture.predictions,
             ["Late=run-a-alpha/checkpoint-022079"],
         )
         self.assertEqual(models["Late"]["run_id"], "run-a-alpha")
         self.assertEqual(models["Late"]["checkpoint"], "checkpoint-022079")
 
     def test_membership_mismatch_or_bad_ensemble_is_rejected(self) -> None:
-        self.fixture.export("run-a-alpha", "alpha_point", [0.0] * self.fixture.count * HORIZONS,
-                            digest="0" * 64)
+        self.fixture.export(
+            "run-a-alpha", "alpha_point", [0.0] * self.fixture.count * HORIZONS, digest="0" * 64
+        )
         with self.assertRaises(ValueError):
-            self.run_analysis("--predictions", str(self.fixture.predictions),
-                              "--model", "A=run-a-alpha")
+            self.run_analysis(
+                "--predictions", str(self.fixture.predictions), "--model", "A=run-a-alpha"
+            )
         with self.assertRaises(ValueError):
             ANALYSIS["resolve_ensembles"]({"A": {"task": "alpha"}}, ["E=A"])
         with self.assertRaises(ValueError):
@@ -265,13 +352,23 @@ def reference_rank_ic(fixture: Fixture, values) -> dict:
         for h in range(HORIZONS):
             ys = [f32(fixture.alpha[r * HORIZONS + h]) for r in rows]
             xs = [f32(values[r * HORIZONS + h]) for r in rows]
-            pairs = [(y, x) for y, x in zip(ys, xs) if math.isfinite(y) and math.isfinite(x)]
+            pairs = [
+                (y, x)
+                for y, x in zip(ys, xs, strict=False)
+                if math.isfinite(y) and math.isfinite(x)
+            ]
             ics = cells.setdefault(market, {}).setdefault(f"{h + 1}d", [])
-            if len(rows) >= 3 and len(pairs) >= 3 and len({x for _y, x in pairs}) > 1 \
-                    and len({y for y, _x in pairs}) > 1:
-                ics.append(statistics.correlation(
-                    [y for y, _x in pairs], [x for _y, x in pairs], method="ranked"
-                ))
+            if (
+                len(rows) >= 3
+                and len(pairs) >= 3
+                and len({x for _y, x in pairs}) > 1
+                and len({y for y, _x in pairs}) > 1
+            ):
+                ics.append(
+                    statistics.correlation(
+                        [y for y, _x in pairs], [x for _y, x in pairs], method="ranked"
+                    )
+                )
     out = {}
     for market, horizons in cells.items():
         for horizon, ics in horizons.items():
@@ -293,10 +390,19 @@ class RankICTests(unittest.TestCase):
     def analyze(self, fixture: Fixture, *arguments: str) -> tuple[dict, str]:
         output, stdout = fixture.root / "result.json", io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            ANALYSIS["main"]([
-                "--baselines", str(fixture.baselines), "--output", str(output),
-                "--predictions", str(fixture.predictions), "--workers", "1", *arguments,
-            ])
+            ANALYSIS["main"](
+                [
+                    "--baselines",
+                    str(fixture.baselines),
+                    "--output",
+                    str(output),
+                    "--predictions",
+                    str(fixture.predictions),
+                    "--workers",
+                    "1",
+                    *arguments,
+                ]
+            )
         return json.loads(output.read_text())["rank_ic"], stdout.getvalue()
 
     def assert_matches(self, computed: dict, expected: dict) -> None:
@@ -332,18 +438,20 @@ class RankICTests(unittest.TestCase):
         # A monotone baseline ranks every date perfectly.
         gru = rank_ic["validation"]["gru-42"]["by_market"]["US"]["5d"]
         self.assertEqual((gru["rank_ic_mean"], gru["rank_ic_evaluated_dates"]), (1.0, 2.0))
-        self.assertEqual(set(rank_ic["validation"]["N"]["daily"]["US"]), {
-            "2025-06-02", "2025-06-03"})
+        self.assertEqual(
+            set(rank_ic["validation"]["N"]["daily"]["US"]), {"2025-06-02", "2025-06-03"}
+        )
 
     def test_ensembles_rank_the_float32_member_mean(self) -> None:
         fixture = Fixture(Path(self.temporary.name))
         first, second = self.noisy(fixture, 3), self.noisy(fixture, 5)
         fixture.export("run-a-alpha", "alpha_point", first)
         fixture.export("run-b-alpha", "alpha_point", second)
-        rank_ic, _ = self.analyze(fixture, "--model", "A=run-a-alpha", "--model",
-                                  "B=run-b-alpha", "--ensemble", "AB=A,B")
+        rank_ic, _ = self.analyze(
+            fixture, "--model", "A=run-a-alpha", "--model", "B=run-b-alpha", "--ensemble", "AB=A,B"
+        )
         f32 = ANALYSIS["float32"]
-        mean = [f32((f32(a) + f32(b)) / 2) for a, b in zip(first, second)]
+        mean = [f32((f32(a) + f32(b)) / 2) for a, b in zip(first, second, strict=False)]
         self.assert_matches(rank_ic["test"]["AB"]["by_market"], reference_rank_ic(fixture, mean))
 
     def test_equal_market_score_follows_the_pre_registered_definition(self) -> None:
@@ -395,7 +503,8 @@ class RankICTests(unittest.TestCase):
             xs = [round(rng.gauss(0.0, 1.0), 1) for _ in range(size)]
             if len(set(xs)) > 1 and len(set(ys)) > 1:
                 self.assertAlmostEqual(
-                    date_rank_ic(ys, xs), statistics.correlation(ys, xs, method="ranked"),
+                    date_rank_ic(ys, xs),
+                    statistics.correlation(ys, xs, method="ranked"),
                     places=12,
                 )
         statistics_of = ANALYSIS["rank_ic_statistics"]
@@ -415,33 +524,46 @@ class FakeReader:
         return payload, hashlib.sha256(raw).hexdigest()
 
     def status_keys(self, prefix):
-        yield from (key for key in self.documents if key.startswith(prefix)
-                    and key.endswith("/status.json"))
+        yield from (
+            key for key in self.documents if key.startswith(prefix) and key.endswith("/status.json")
+        )
 
 
 class PredictionDownloadTests(unittest.TestCase):
-    def documents(self, run_id: str, export: str, created: str, state="complete",
-                  name="checkpoint-003680"):
+    def documents(
+        self, run_id: str, export: str, created: str, state="complete", name="checkpoint-003680"
+    ):
         prefix = f"diagnostics/signal-predictions/{run_id}/{name}/{export}/"
         checkpoint = f"/runpod-volume/savedModel/{run_id}/{name}"
         return {
             prefix + "status.json": {"state": state, "checkpoint": checkpoint},
             prefix + "export.json": {
-                "schema_version": "1.0", "kind": "signal-prediction-export", "run_id": run_id,
-                "checkpoint": {"path": checkpoint}, "created_at": created,
-                "splits": {"validation": {"predictions_sha256": "a" * 64},
-                           "test": {"predictions_sha256": "b" * 64}},
+                "schema_version": "1.0",
+                "kind": "signal-prediction-export",
+                "run_id": run_id,
+                "checkpoint": {"path": checkpoint},
+                "created_at": created,
+                "splits": {
+                    "validation": {"predictions_sha256": "a" * 64},
+                    "test": {"predictions_sha256": "b" * 64},
+                },
             },
         }
 
     def test_selects_the_newest_completed_export_and_skips_running_ones(self) -> None:
         documents = {
-            **self.documents("run-x-alpha", "export-20261017T000000Z-00000001",
-                             "2026-10-17T00:00:00+00:00"),
-            **self.documents("run-x-alpha", "export-20261018T000000Z-00000002",
-                             "2026-10-18T00:00:00+00:00"),
-            **self.documents("run-x-alpha", "export-20261019T000000Z-00000003",
-                             "2026-10-19T00:00:00+00:00", state="running"),
+            **self.documents(
+                "run-x-alpha", "export-20261017T000000Z-00000001", "2026-10-17T00:00:00+00:00"
+            ),
+            **self.documents(
+                "run-x-alpha", "export-20261018T000000Z-00000002", "2026-10-18T00:00:00+00:00"
+            ),
+            **self.documents(
+                "run-x-alpha",
+                "export-20261019T000000Z-00000003",
+                "2026-10-19T00:00:00+00:00",
+                state="running",
+            ),
         }
         result = DOWNLOAD["select_export"](FakeReader(documents), "run-x-alpha")
         self.assertEqual(result["relative"].name, "export-20261018T000000Z-00000002")
@@ -449,16 +571,23 @@ class PredictionDownloadTests(unittest.TestCase):
 
     def test_named_checkpoints_are_selected_and_bare_ids_must_be_unambiguous(self) -> None:
         documents = {
-            **self.documents("run-x-alpha", "export-20261017T000000Z-00000001",
-                             "2026-10-17T00:00:00+00:00"),
-            **self.documents("run-x-alpha", "export-20261018T000000Z-00000002",
-                             "2026-10-18T00:00:00+00:00", name="checkpoint-022079"),
+            **self.documents(
+                "run-x-alpha", "export-20261017T000000Z-00000001", "2026-10-17T00:00:00+00:00"
+            ),
+            **self.documents(
+                "run-x-alpha",
+                "export-20261018T000000Z-00000002",
+                "2026-10-18T00:00:00+00:00",
+                name="checkpoint-022079",
+            ),
         }
         reader = FakeReader(documents)
         with self.assertRaisesRegex(ValueError, "checkpoint-003680, checkpoint-022079"):
             DOWNLOAD["select_export"](reader, "run-x-alpha")
-        for name, export in (("checkpoint-003680", "export-20261017T000000Z-00000001"),
-                             ("checkpoint-022079", "export-20261018T000000Z-00000002")):
+        for name, export in (
+            ("checkpoint-003680", "export-20261017T000000Z-00000001"),
+            ("checkpoint-022079", "export-20261018T000000Z-00000002"),
+        ):
             result = DOWNLOAD["select_export"](reader, f"run-x-alpha/{name}")
             self.assertEqual(result["relative"], Path("run-x-alpha", name, export))
         with self.assertRaises(FileNotFoundError):
@@ -476,11 +605,16 @@ class PredictionDownloadTests(unittest.TestCase):
         documents = {
             prefix + "status.json": {"state": "complete", "checkpoint": checkpoint},
             prefix + "export.json": {
-                "schema_version": "1.0", "kind": "signal-prediction-export", "run_id": run_id,
-                "checkpoint": {"path": checkpoint}, "created_at": "2026-10-21T00:00:00+00:00",
+                "schema_version": "1.0",
+                "kind": "signal-prediction-export",
+                "run_id": run_id,
+                "checkpoint": {"path": checkpoint},
+                "created_at": "2026-10-21T00:00:00+00:00",
                 "forward_package": {"end_exclusive": "2026-10-20", "package_sha256": "c" * 64},
-                "splits": {"overlap": {"predictions_sha256": "a" * 64},
-                           "forward": {"predictions_sha256": "b" * 64}},
+                "splits": {
+                    "overlap": {"predictions_sha256": "a" * 64},
+                    "forward": {"predictions_sha256": "b" * 64},
+                },
             },
         }
         reader = FakeReader(documents)
@@ -508,12 +642,16 @@ class PredictionDownloadTests(unittest.TestCase):
         for baseline in (ANALYSIS["ALPHA_ID"], ANALYSIS["DIRECTION_ID"]):
             self.assertTrue(any(name.startswith(baseline + "/") for name in files))
         payload = b"fixture-array"
-        artifacts = {name.partition("/")[2]: {"sha256": hashlib.sha256(payload).hexdigest()}
-                     for name in files}
-        reader = FakeReader({
-            f"baselines/{baseline}/complete.json": {"state": "complete", "artifacts": artifacts}
-            for baseline in (ANALYSIS["ALPHA_ID"], ANALYSIS["DIRECTION_ID"])
-        })
+        artifacts = {
+            name.partition("/")[2]: {"sha256": hashlib.sha256(payload).hexdigest()}
+            for name in files
+        }
+        reader = FakeReader(
+            {
+                f"baselines/{baseline}/complete.json": {"state": "complete", "artifacts": artifacts}
+                for baseline in (ANALYSIS["ALPHA_ID"], ANALYSIS["DIRECTION_ID"])
+            }
+        )
         calls = []
 
         def fake_download(_reader, key, destination, _timeout):
@@ -521,8 +659,10 @@ class PredictionDownloadTests(unittest.TestCase):
             destination.write_bytes(payload if "corrupt" not in str(destination) else b"x")
 
         download = DOWNLOAD["download_baseline_arrays"]
-        with tempfile.TemporaryDirectory() as temporary, \
-                DOWNLOAD["ThreadPoolExecutor"](max_workers=2) as executor:
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            DOWNLOAD["ThreadPoolExecutor"](max_workers=2) as executor,
+        ):
             project = Path(temporary).resolve()
             first = download(reader, project, executor, 2, 60, fetch=fake_download)
             self.assertEqual(first[1:], (15, 0))
@@ -539,16 +679,31 @@ class PredictionDownloadTests(unittest.TestCase):
 
     def evaluation_reader(self, *, shard="shards/0001/part-0000.parquet"):
         """A fake volume whose dataset ID follows the baseline's evaluation request."""
-        content = {"shard": b"shard-bytes", "index": b"symbol-index", "ranges": b"ranges",
-                   "universe-ranges": b"universe-ranges"}
+        content = {
+            "shard": b"shard-bytes",
+            "index": b"symbol-index",
+            "ranges": b"ranges",
+            "universe-ranges": b"universe-ranges",
+        }
         digest = {name: hashlib.sha256(value).hexdigest() for name, value in content.items()}
         manifest = {
-            "symbol_index": {"relative_path": "symbol-index.parquet", "sha256": digest["index"],
-                             "size_bytes": len(content["index"])},
-            "cutoff_ranges": {"relative_path": "cutoff-ranges.parquet",
-                              "sha256": digest["ranges"], "size_bytes": len(content["ranges"])},
-            "shards": [{"relative_path": shard, "sha256": digest["shard"],
-                        "size_bytes": len(content["shard"])}],
+            "symbol_index": {
+                "relative_path": "symbol-index.parquet",
+                "sha256": digest["index"],
+                "size_bytes": len(content["index"]),
+            },
+            "cutoff_ranges": {
+                "relative_path": "cutoff-ranges.parquet",
+                "sha256": digest["ranges"],
+                "size_bytes": len(content["ranges"]),
+            },
+            "shards": [
+                {
+                    "relative_path": shard,
+                    "sha256": digest["shard"],
+                    "size_bytes": len(content["shard"]),
+                }
+            ],
         }
         manifest_sha256 = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
         identity = {"source_manifest_sha256": manifest_sha256, "window_size": 128}
@@ -560,14 +715,17 @@ class PredictionDownloadTests(unittest.TestCase):
             f"baselines/{ANALYSIS['ALPHA_ID']}/complete.json": {
                 "padding": "x" * (5 * 1024**2),
                 "identity": {"contract": {"evaluation_request": request}},
-                "data_identity": {"split_sources": {
-                    split: {"manifest_sha256": manifest_sha256, "sample_universe": universe}
-                    for split in ("validation", "test")
-                }},
+                "data_identity": {
+                    "split_sources": {
+                        split: {"manifest_sha256": manifest_sha256, "sample_universe": universe}
+                        for split in ("validation", "test")
+                    }
+                },
             },
             f"datasets/{good}/prepared/bar-store/bar-store.json": manifest,
             f"datasets/{good}/prepared/sample-universes/{universe}/universe.json": {
-                "state": "ready", "identity": identity,
+                "state": "ready",
+                "identity": identity,
                 "ranges_sha256": digest["universe-ranges"],
             },
         }
@@ -587,8 +745,9 @@ class PredictionDownloadTests(unittest.TestCase):
             f"datasets/{good}/prepared/bar-store/cutoff-ranges.parquet": content["ranges"],
             f"datasets/{good}/prepared/bar-store/{shard}": content["shard"],
             f"datasets/{good}/prepared/sample-universes/{universe}/universe.json": b"{}",
-            f"datasets/{good}/prepared/sample-universes/{universe}/cutoff-ranges.parquet":
-                content["universe-ranges"],
+            f"datasets/{good}/prepared/sample-universes/{universe}/cutoff-ranges.parquet": content[
+                "universe-ranges"
+            ],
         }
         return Reader(documents), files, good
 
@@ -604,17 +763,21 @@ class PredictionDownloadTests(unittest.TestCase):
             destination.write_bytes(files[key])
 
         download = DOWNLOAD["download_evaluation_data"]
-        with tempfile.TemporaryDirectory() as temporary, \
-                DOWNLOAD["ThreadPoolExecutor"](max_workers=2) as executor:
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            DOWNLOAD["ThreadPoolExecutor"](max_workers=2) as executor,
+        ):
             project = Path(temporary).resolve()
-            root, downloaded, verified = download(reader, project, executor, 2, 60, plan,
-                                                  fetch=fetch)
+            root, downloaded, verified = download(
+                reader, project, executor, 2, 60, plan, fetch=fetch
+            )
             self.assertEqual((downloaded, verified), (len(files), 0))
             record = json.loads((root / "evaluation-data.json").read_text())
             self.assertEqual(record["dataset_id"], dataset_id)
             # Files with a digest are kept on a rerun; the two small records are refetched.
-            _root, downloaded, verified = download(reader, project, executor, 2, 60, plan,
-                                                   fetch=fetch)
+            _root, downloaded, verified = download(
+                reader, project, executor, 2, 60, plan, fetch=fetch
+            )
             self.assertEqual((downloaded, verified), (2, len(files) - 2))
             shard_key = next(key for key in files if "/shards/" in key)
             files[shard_key] = b"tampered!!!"
@@ -626,8 +789,9 @@ class PredictionDownloadTests(unittest.TestCase):
         policy = runpy.run_path(str(ROOT / "src/stock_forecasting/data_policy.py"))
         request = EVALUATION_REQUEST
         selection = {"dataset_request": request}
-        workflow = policy["evaluation_dataset_id"](selection, {"evaluation_source_start":
-                                                               "2016-01-01"})
+        workflow = policy["evaluation_dataset_id"](
+            selection, {"evaluation_source_start": "2016-01-01"}
+        )
         self.assertEqual(DOWNLOAD["evaluation_dataset_id"](request), workflow)
 
     def test_evaluation_data_rejects_unsafe_shards_and_identity_mismatch(self) -> None:
@@ -647,8 +811,9 @@ class PredictionDownloadTests(unittest.TestCase):
             DOWNLOAD["evaluation_plan"](reader)
 
     def test_identity_mismatch_and_unsafe_ids_are_rejected(self) -> None:
-        documents = self.documents("run-x-alpha", "export-20261017T000000Z-00000001",
-                                   "2026-10-17T00:00:00+00:00")
+        documents = self.documents(
+            "run-x-alpha", "export-20261017T000000Z-00000001", "2026-10-17T00:00:00+00:00"
+        )
         export_key = next(key for key in documents if key.endswith("export.json"))
         documents[export_key]["run_id"] = "run-other"
         with self.assertRaises(ValueError):
@@ -666,7 +831,7 @@ class ExportWorkflowTests(unittest.TestCase):
         harness.environment["TMPDIR"] = str(harness.root)
         harness.write_script(
             harness.scripts / "runpod_export_signal_predictions.sh",
-            "printf '%s\\0' \"$@\" > \"${HARNESS_ROOT}/worker-args\"\n",
+            'printf \'%s\\0\' "$@" > "${HARNESS_ROOT}/worker-args"\n',
         )
         return harness
 
@@ -732,9 +897,11 @@ class ExportWorkflowTests(unittest.TestCase):
         )
         result = harness.command(
             "runpod_export_signal_predictions.sh",
-            "--checkpoint", "run-a-alpha",
+            "--checkpoint",
+            "run-a-alpha",
             "--checkpoint=run-a-alpha/checkpoint-022079",
-            "--splits", "validation",
+            "--splits",
+            "validation",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         runners = harness.runners()
@@ -754,7 +921,7 @@ class ExportWorkflowTests(unittest.TestCase):
         self.assertTrue({"save_checkpoint", "write_state", "AdamW"}.isdisjoint(imported))
         self.assertIn("allow_historical_inference=True", source)
         self.assertIn("--confirm-test", source)
-        self.assertEqual(source.count("diagnostics\" / \"signal-predictions\""), 1)
+        self.assertEqual(source.count('diagnostics" / "signal-predictions"'), 1)
 
     def test_export_is_not_part_of_any_numerical_identity(self) -> None:
         contract = ast.parse((ROOT / "src/stock_forecasting/run_contract.py").read_text())

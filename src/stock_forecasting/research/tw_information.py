@@ -322,7 +322,9 @@ def _summary_markdown(report: dict[str, Any]) -> str:
         for group, value in criteria.items()
         if group != "information_found"
     ]
-    lines += [f"| {group} | {count} | {'是' if passed else '否'} |" for group, count, passed in rows]
+    lines += [
+        f"| {group} | {count} | {'是' if passed else '否'} |" for group, count, passed in rows
+    ]
     lines += [
         "",
         "## English",

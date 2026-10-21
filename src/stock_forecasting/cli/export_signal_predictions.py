@@ -44,6 +44,7 @@ from stock_forecasting.data.manifest import atomic_write_json, sha256_file
 from stock_forecasting.factory import build_model_bundle
 from stock_forecasting.models.signal import SIGNAL_TASKS
 from stock_forecasting.preflight import run_preflight
+from stock_forecasting.rank_data import batch_rank_targets
 from stock_forecasting.run_paths import (
     CHECKPOINT_NAME_PATTERN,
     canonical_network_volume_root,
@@ -51,7 +52,6 @@ from stock_forecasting.run_paths import (
     validate_training_output_root,
 )
 from stock_forecasting.signal_evaluation import SignalEvaluationStore
-from stock_forecasting.rank_data import batch_rank_targets
 from stock_forecasting.signal_training import _past_drawdown, signal_predictions
 from stock_forecasting.training import build_evaluation_loader, set_global_seed
 

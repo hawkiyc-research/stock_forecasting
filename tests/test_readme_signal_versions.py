@@ -71,18 +71,40 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                 overview, features = diagrams[language]
                 for token in ("alpha_point", "absolute_direction", "Smooth L1", "logits"):
                     self.assertIn(token, overview)
-                for edge in ("D --> A", "D --> C", "A --> AP", "AP --> AL", "C --> CP", "CP --> CL"):
+                for edge in (
+                    "D --> A",
+                    "D --> C",
+                    "A --> AP",
+                    "AP --> AL",
+                    "C --> CP",
+                    "CP --> CL",
+                ):
                     self.assertIn(edge, overview)
-                for edge in ("D --> N", "N --> K", "K --> R", "R --> G", "G --> H",
-                             "D --> S", "R --> B", "H --> F", "S --> F", "B --> F",
-                             "H --> P", "P --> ADD", "F --> ADD", "ADD --> O"):
+                for edge in (
+                    "D --> N",
+                    "N --> K",
+                    "K --> R",
+                    "R --> G",
+                    "G --> H",
+                    "D --> S",
+                    "R --> B",
+                    "H --> F",
+                    "S --> F",
+                    "B --> F",
+                    "H --> P",
+                    "P --> ADD",
+                    "F --> ADD",
+                    "ADD --> O",
+                ):
                     self.assertIn(edge, features)
                 historical = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[1]
                 self.assertIn("OHLCV through close t (asset + benchmark)", historical)
         # Both translations must retain the same graph topology.
         for chinese, english in zip(diagrams["zh"], diagrams["en"], strict=True):
-            self.assertEqual(re.findall(r"\b(\w+) --> (\w+)\b", chinese),
-                             re.findall(r"\b(\w+) --> (\w+)\b", english))
+            self.assertEqual(
+                re.findall(r"\b(\w+) --> (\w+)\b", chinese),
+                re.findall(r"\b(\w+) --> (\w+)\b", english),
+            )
 
     def test_complete_chinese_precedes_complete_english(self):
         self.assertEqual(self.markdown.count("\n## English\n"), 1)
@@ -100,15 +122,21 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
             historical = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[1]
             with self.subTest(language=language):
                 for marker in (
-                    "V × (O+H+L+C)/4", "1e-5", "[-5, 5]",
-                    "model.direction.enabled", "technical_channels",
+                    "V × (O+H+L+C)/4",
+                    "1e-5",
+                    "[-5, 5]",
+                    "model.direction.enabled",
+                    "technical_channels",
                     "src/stock_forecasting/models/scale_features.py",
                     "src/stock_forecasting/factory.py",
                 ):
                     self.assertIn(marker, current)
                 for channel in (
-                    "close_sma20", "sma5_sma20", "sma20_sma60",
-                    "prior20_range", "signed_volume20",
+                    "close_sma20",
+                    "sma5_sma20",
+                    "sma20_sma60",
+                    "prior20_range",
+                    "signed_volume20",
                 ):
                     self.assertIn(channel, historical)
                 for variant in HISTORICAL_VARIANTS:
@@ -142,9 +170,18 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
             current, historical = text.split(appendix_marker, 1)
             with self.subTest(language=language):
                 for section in (
-                    "signal-tasks", "data", "training", "operations", "baseline",
-                    "train", "run-status", "download", "artifacts", "cli-reference",
-                    "acceptance", "references",
+                    "signal-tasks",
+                    "data",
+                    "training",
+                    "operations",
+                    "baseline",
+                    "train",
+                    "run-status",
+                    "download",
+                    "artifacts",
+                    "cli-reference",
+                    "acceptance",
+                    "references",
                 ):
                     self.assertIn(f'<a id="{section}-{language}"></a>', current)
                     self.assertNotIn(f'<a id="{section}-{language}"></a>', historical)
@@ -168,13 +205,16 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
             for block in blocks:
                 commands = block.replace("\\\n", " ")
                 for command in commands.splitlines():
-                    workflow = re.search(r"runpod_workflow\.sh\s+(train|baseline|runs|readiness)\b", command)
+                    workflow = re.search(
+                        r"runpod_workflow\.sh\s+(train|baseline|runs|readiness)\b", command
+                    )
                     if not workflow:
                         continue
                     presets = re.findall(r"--experiment\s+([a-z][a-z0-9-]+)", command)
                     if workflow.group(1) in {"train", "baseline"}:
                         self.assertTrue(
-                            presets, f"Launch example must select its current task: {command.strip()}"
+                            presets,
+                            f"Launch example must select its current task: {command.strip()}",
                         )
                     for preset in presets:
                         with self.subTest(language=language, command=command.strip()):
@@ -194,10 +234,18 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                         self.assertIn(f"`{group}-{variant}`", advanced)
                 for marker in ("MODEL_RUN_ID", "probe-scales", "W&B", "baseline"):
                     self.assertIn(marker, advanced)
-                for marker in ("pair.json", "download-result.json", "RUNPOD_RESULT_DOWNLOAD_WORKERS"):
+                for marker in (
+                    "pair.json",
+                    "download-result.json",
+                    "RUNPOD_RESULT_DOWNLOAD_WORKERS",
+                ):
                     self.assertIn(marker, current)
                 self.assertTrue(re.search(r"三台 pod|3 pods|three pods", plain(current)))
-                self.assertTrue(re.search(r"六個(?:子)?模型|(?:6|six) (?:independent |child )?models", plain(current)))
+                self.assertTrue(
+                    re.search(
+                        r"六個(?:子)?模型|(?:6|six) (?:independent |child )?models", plain(current)
+                    )
+                )
                 self.assertIn("--seed 42 --seed 43 --seed 44", current)
 
     def test_protocol_uses_same_public_pair_workflow_in_both_languages(self):
@@ -210,7 +258,10 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                 "train --experiment a-signal64 --seed 42 --seed 43 --seed 44",
             ):
                 self.assertIn(command, language)
-            self.assertNotRegex(language, r"(?:train|baseline) --experiment [ab]-(?:alpha-point64|absolute-direction64)")
+            self.assertNotRegex(
+                language,
+                r"(?:train|baseline) --experiment [ab]-(?:alpha-point64|absolute-direction64)",
+            )
 
     def test_manual_pod_deletion_has_safe_local_monitor_cleanup_commands(self):
         for language, text in self.languages.items():
@@ -224,8 +275,13 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
             self.assertRegex(current, r"PID|process identity")
 
     def test_rejected_creation_is_not_published_as_a_remote_run(self):
-        self.assertIn("GPU 建立請求遭拒時，只保存本機建立嘗試紀錄，不發布遠端 run", self.languages["zh"])
-        self.assertIn("A rejected GPU creation request leaves only a local attempt receipt, not a remote run", self.languages["en"])
+        self.assertIn(
+            "GPU 建立請求遭拒時，只保存本機建立嘗試紀錄，不發布遠端 run", self.languages["zh"]
+        )
+        self.assertIn(
+            "A rejected GPU creation request leaves only a local attempt receipt, not a remote run",
+            self.languages["en"],
+        )
         for language, text in self.languages.items():
             section = text.split(f'<a id="train-{language}"></a>', 1)[1].split(
                 f'<a id="run-status-{language}"></a>', 1
@@ -235,9 +291,7 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
     def test_primary_preset_tables_only_recommend_current_tasks(self):
         for language, text in self.languages.items():
             current = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[0]
-            rows = "\n".join(
-                line for line in current.splitlines() if line.lstrip().startswith("|")
-            )
+            rows = "\n".join(line for line in current.splitlines() if line.lstrip().startswith("|"))
             with self.subTest(language=language):
                 for variant in CURRENT_VARIANTS:
                     for group in ("a", "b"):
@@ -245,15 +299,16 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                 for variant in HISTORICAL_VARIANTS:
                     for group in ("a", "b"):
                         preset = f"`{group}-{variant}`"
-                        self.assertFalse(preset in rows, f"Historical preset in main tables: {preset}")
+                        self.assertFalse(
+                            preset in rows, f"Historical preset in main tables: {preset}"
+                        )
 
     def test_reordered_readme_keeps_internal_links_and_unique_anchors(self):
         explicit = re.findall(r'<a id="([^"]+)"></a>', self.markdown)
         self.assertEqual(len(explicit), len(set(explicit)), "Duplicate explicit README anchor")
         headings = re.findall(r"(?m)^#{1,6}\s+(.+)$", self.markdown)
         automatic = {
-            re.sub(r"[^\w -]", "", heading.lower()).replace(" ", "-")
-            for heading in headings
+            re.sub(r"[^\w -]", "", heading.lower()).replace(" ", "-") for heading in headings
         }
         targets = set(explicit) | automatic
         links = set(re.findall(r"\]\(#([^)]+)\)", self.markdown))
@@ -279,7 +334,7 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
         ):
             for group in ("a", "b"):
                 preset = f"{group}-{suffix}"
-                config = (ROOT / "configs/experiments" / (preset.replace("-", "_") + ".yaml"))
+                config = ROOT / "configs/experiments" / (preset.replace("-", "_") + ".yaml")
                 source = config.read_text()
                 match = re.search(r"(?m)^    architecture: ([a-z0-9_]+)$", source)
                 actual = (
@@ -292,9 +347,7 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                 matching = [
                     row
                     for row in rows
-                    if re.search(rf"\b{version}\b", row)
-                    and architecture in row
-                    and suffix in row
+                    if re.search(rf"\b{version}\b", row) and architecture in row and suffix in row
                 ]
                 with self.subTest(version=version, language=language):
                     self.assertTrue(matching, f"Missing explicit {version} preset/architecture row")
@@ -318,9 +371,10 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                     self.assertTrue(matching, f"Missing version-comparison dimension: {dimension}")
                     self.assertTrue(
                         any(
-                            len([
-                                cell for cell in row.strip().strip("|").split("|") if cell.strip()
-                            ]) >= 4
+                            len(
+                                [cell for cell in row.strip().strip("|").split("|") if cell.strip()]
+                            )
+                            >= 4
                             for row in matching
                         ),
                         f"Version comparison needs entries for all three versions: {dimension}",
@@ -348,7 +402,9 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                 for pattern in exclusions[language]:
                     self.assertRegex(normalized, pattern)
                 for contract in (
-                    "direction.enabled=false", "signal-1.0", "neutral_return_threshold=0.01"
+                    "direction.enabled=false",
+                    "signal-1.0",
+                    "neutral_return_threshold=0.01",
                 ):
                     self.assertIn(contract, section)
 
@@ -367,7 +423,8 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                     self.assertIn(value, normalized)
                 self.assertRegex(
                     normalized,
-                    r"(?:省略|未指定|不指定).{0,30}--experiment.{0,70}(?:既有|active selection|configure)"
+                    r"(?:省略|未指定|不指定).{0,30}--experiment.{0,70}"
+                    r"(?:既有|active selection|configure)"
                     if language == "zh"
                     else (
                         r"omit(?:ted|ting)?[^.]{0,35}--experiment[^.]{0,90}"

@@ -25,7 +25,9 @@ def download_pair(reader, pair, *, script, resume=False, checkpoint_scope="all",
         raise ValueError(f"Paired run has not completed both final test evaluations: {states}")
     target = reader.root / "artifacts/runpod" / pair["run_id"]
     if target.exists() and not resume:
-        raise ValueError("Download target already exists; use --resume to fill or refresh known files")
+        raise ValueError(
+            "Download target already exists; use --resume to fill or refresh known files"
+        )
     target.mkdir(parents=True, exist_ok=True)
 
     def download(child):
@@ -42,7 +44,9 @@ def download_pair(reader, pair, *, script, resume=False, checkpoint_scope="all",
         outcomes = list(pool.map(download, pair["children"].values()))
     failed = [run_id for run_id, code in outcomes if code]
     if failed:
-        raise ValueError("Paired download incomplete; retry with --resume. Failed models: " + ", ".join(failed))
+        raise ValueError(
+            "Paired download incomplete; retry with --resume. Failed models: " + ", ".join(failed)
+        )
     result = {
         "schema_version": 1,
         "kind": "paired-download",
@@ -72,13 +76,19 @@ def main(argv=None):
     parser.add_argument("--download-script", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--checkpoint-scope", choices=("all", "best"), default="all")
-    parser.add_argument("--workers", type=int, default=os.environ.get("RUNPOD_RESULT_DOWNLOAD_WORKERS", "2"))
+    parser.add_argument(
+        "--workers", type=int, default=os.environ.get("RUNPOD_RESULT_DOWNLOAD_WORKERS", "2")
+    )
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     records = runpy.run_path(str(root / "scripts/runpod_runs.py"))
     download_pair(
-        records["RunRecords"](), json.loads(args.pair_json), script=args.download_script,
-        resume=args.resume, checkpoint_scope=args.checkpoint_scope, workers=args.workers,
+        records["RunRecords"](),
+        json.loads(args.pair_json),
+        script=args.download_script,
+        resume=args.resume,
+        checkpoint_scope=args.checkpoint_scope,
+        workers=args.workers,
     )
     return 0
 
