@@ -100,6 +100,8 @@ append_manifest_file "configs/baseline.json"
 append_manifest_file "configs/data_cleaning.json"
 append_manifest_file "configs/baseline_execution_compatibility.json"
 append_manifest_file "configs/research/tw_information_test.json"
+append_manifest_file "configs/features/alpha_tw_v1.json"
+append_manifest_file "configs/walk_forward/tw_quarterly_v1.json"
 append_manifest_file "src/stock_forecasting/_vendor/kronos/LICENSE"
 for relay_file in \
     cloudrun/tpex-relay/package.json \

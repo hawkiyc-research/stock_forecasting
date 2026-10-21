@@ -80,7 +80,7 @@ class ProjectNamingTests(unittest.TestCase):
             {"include": NAME, "from": "src"},
         ])
         entries = project["project"]["scripts"]
-        self.assertEqual(len(entries), 16)
+        self.assertEqual(len(entries), 17)
         for name, target in entries.items():
             self.assertTrue(name.startswith(SLUG + "-"), name)
             self.assertTrue(target.startswith(NAME + "."), target)
@@ -173,8 +173,8 @@ class ProjectNamingTests(unittest.TestCase):
         script = (ROOT / "scripts/runpod_tmux_launch.sh").read_text()
         sessions = re.findall(r"(?m)^[ \t]*SESSION_NAME=(\S+)[ \t]*$", script)
         roles = (
-            "cpu-prepare", "cpu-finalize", "cpu-research", "train", "baseline", "validation",
-            "probe-scales", "export-predictions",
+            "cpu-prepare", "cpu-finalize", "cpu-research", "cpu-features", "train", "baseline",
+            "validation", "probe-scales", "export-predictions",
         )
         self.assertEqual(sorted(sessions), sorted(SLUG + "-" + role for role in roles))
 

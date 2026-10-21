@@ -274,6 +274,9 @@ def expected_lifecycle(pod: dict[str, Any]) -> tuple[str, str] | None:
         # Research Pods carry an experiment (stage2) selection but own their own marker.
         if role == "cpu-prep" and env.get("RUNPOD_STAGE") == "stage2":
             return "stage1-mixed-finalization", "lifecycle/stage1/mixed-finalization.json"
+        # The feature build shares the research role and owns its own marker.
+        if role == "cpu-research" and env.get("RUNPOD_CPU_WORKFLOW") == "features":
+            return "research-features", "lifecycle/research/features.json"
         return kind, key
     if role in GPU_ROLES:
         if env.get("RUNPOD_SCOPED_LIFECYCLE") == "1" and role in {"gpu-train", "gpu-validation"}:

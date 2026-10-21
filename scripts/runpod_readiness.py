@@ -48,6 +48,8 @@ GUARD_LIFECYCLE_KINDS = frozenset(
         "stage1-baseline",
         # CPU research Pods never touch training, validation or dataset markers.
         "research-tw-information",
+        # The feature-library build (protocol 13.12) shares the research role.
+        "research-features",
         # Forward input packages (protocol 13.8) are prepared apart from any training dataset.
         "forward-cpu-preparation",
     }
@@ -2127,6 +2129,7 @@ def command_write_state(arguments):
         "research-tw-information": (
             volume_root / "lifecycle" / "research" / "tw-information.json"
         ),
+        "research-features": volume_root / "lifecycle" / "research" / "features.json",
         "forward-cpu-preparation": (
             volume_root / "lifecycle" / "forward" / "cpu-preparation.json"
         ),

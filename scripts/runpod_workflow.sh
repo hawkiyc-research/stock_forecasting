@@ -43,6 +43,8 @@ Usage:
   bash scripts/runpod_workflow.sh download-forward-package YYYY-MM-DD
   bash scripts/runpod_workflow.sh upload-forward-cache YYYY-MM-DD
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
+  bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
+  bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF
 }
@@ -471,6 +473,39 @@ EOF
         unset RUNPOD_CPU_PREPARE_MODE RUNPOD_FORWARD_END
         exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
         ;;
+    features)
+        # Rank labels and the feature library of the active selection's dataset
+        # (protocol 13.12); the Pod fetches no market data and needs no secrets.
+        features_max_runtime=6h
+        features_cpu_number=16
+        features_cpu_flavor=cpu3g
+        while [[ $# -gt 0 ]]; do
+            [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+            case "$1" in
+                --maxRuntime|--max-runtime) features_max_runtime="$2" ;;
+                --cpuNumber|--cpu-number) features_cpu_number="$2" ;;
+                --cpuFlavor|--cpu-flavor) features_cpu_flavor="$2" ;;
+                *)
+                    echo "Unknown features option: $1" >&2
+                    usage
+                    exit 2
+                    ;;
+            esac
+            shift 2
+        done
+        runpod_validate_cpu_number "${features_cpu_number}"
+        runpod_validate_cpu_flavor "${features_cpu_flavor}"
+        features_max_seconds="$(runpod_duration_seconds "${features_max_runtime}" --maxRuntime)"
+        export RUNPOD_CPU_WORKFLOW=features
+        export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${features_max_seconds}"
+        export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((features_max_seconds + 3600))"
+        export RUNPOD_CPU_VCPU_COUNT="${features_cpu_number}"
+        export RUNPOD_CPU_FLAVOR_ID="${features_cpu_flavor}"
+        unset RUNPOD_CPU_MAX_API_CALLS RUNPOD_CPU_PREPARE_RESERVE_SECONDS
+        unset RUNPOD_CPU_EODHD_QPS RUNPOD_CPU_TAIWAN_QPS RUNPOD_LAUNCH_SELECTION_FILE
+        unset RUNPOD_CPU_PREPARE_MODE RUNPOD_FORWARD_END
+        exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
+        ;;
     readiness)
         if [[ $# -eq 3 && "$1" == "--baseline" && "$2" == "--experiment" ]]; then
             case "$3" in
@@ -622,6 +657,9 @@ EOF
         ;;
     download-research)
         exec bash "${SCRIPT_DIR}/download_runpod_research.sh" "$@"
+        ;;
+    download-features)
+        exec bash "${SCRIPT_DIR}/download_runpod_features.sh" "$@"
         ;;
     cpu-logs)
         [[ $# -eq 0 ]] || { usage; exit 2; }

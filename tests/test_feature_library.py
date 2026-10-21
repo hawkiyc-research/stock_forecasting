@@ -232,3 +232,24 @@ def test_store_layout_values_and_cross_sectional_rank(rank_config, split, tmp_pa
         )
     finally:
         source.close()
+
+
+def test_build_features_cli_writes_one_manifest_for_every_split(rank_config, tmp_path):
+    from stock_forecasting.cli.build_features import MANIFEST_NAME, run
+
+    spec = _spec()
+    output = tmp_path / "features-output"
+    payload = run(rank_config, spec, output, workers=1)
+    manifest = json.loads((output / MANIFEST_NAME).read_text())
+    assert manifest["kind"] == "feature-library-build" and manifest["spec"]["columns"] == 183
+    assert set(manifest["splits"]) == {"train", "validation", "test"}
+    for split, entry in manifest["splits"].items():
+        assert entry["samples"] > 0
+        assert Path(entry["rank_labels"]["root"]).parent.name == "rank-labels"
+        assert Path(entry["features"]["root"]).parent.name == "features"
+        assert json.loads(
+            (Path(entry["features"]["root"]) / "features.json").read_text()
+        )["identity"]["split"] == split
+    assert payload == manifest
+    # A second run reuses both stores and rewrites only the manifest.
+    assert run(rank_config, spec, tmp_path / "again", workers=1)["splits"] == manifest["splits"]

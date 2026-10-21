@@ -41,6 +41,7 @@ stock-forecasting-verify-stage1-data = "stock_forecasting.cli.verify_stage1_data
 stock-forecasting-supervise = "stock_forecasting.runpod.supervisor:main"
 stock-forecasting-prepare-auxiliary = "stock_forecasting.cli.prepare_auxiliary_data:main"
 stock-forecasting-tw-information-test = "stock_forecasting.cli.tw_information_test:main"
+stock-forecasting-build-features = "stock_forecasting.cli.build_features:main"
 
 [tool.poetry]
 packages = [{ include = "stock_forecasting", from = "src" }]

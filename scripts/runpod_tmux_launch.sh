@@ -91,7 +91,7 @@ done
 
 if [[ $# -lt 1 || ( "$1" != "probe-scales" && "$1" != "export-signal-predictions" && $# -ne 1 \
     && ! ( "$1" == "verify-full-workflow" && $# -eq 2 && "$2" == "--regression-only" ) ) ]]; then
-    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
     exit 2
 fi
 if [[ "${LOG_ROOT}" != "${NETWORK_VOLUME_ROOT}/logs" ]]; then
@@ -144,6 +144,16 @@ case "$1" in
         JOB_TIMEOUT_GRACE_SECONDS=0
         FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/research/tw-information.json"
         FAILURE_LIFECYCLE_KIND=research-tw-information
+        ;;
+    cpu-features)
+        # CPU-only feature build: no GPU lease, model, checkpoint or training marker.
+        SESSION_NAME=stock-forecasting-cpu-features
+        JOB_SCRIPT="${SCRIPT_DIR}/runpod_cpu_features.sh"
+        JOB_ROLE=cpu-research
+        MAX_RUNTIME_SECONDS="${RUNPOD_CPU_MAX_RUNTIME_SECONDS:-28800}"
+        JOB_TIMEOUT_GRACE_SECONDS=0
+        FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/research/features.json"
+        FAILURE_LIFECYCLE_KIND=research-features
         ;;
     stage1-train)
         SESSION_NAME=stock-forecasting-train
@@ -264,7 +274,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
         exit 2
         ;;
 esac
