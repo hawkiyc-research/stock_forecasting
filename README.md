@@ -14,6 +14,7 @@
   → [CPU prepare](#cpu-zh) → [baseline](#baseline-zh) → [任務／實驗與多 Pod 訓練](#train-zh)
   → [下載結果](#download-zh)
 - [產物與推論](#artifacts-zh)、[歷史尺度表徵診斷](#probes-zh)、[台股資訊測試](#tw-information-zh)、
+  [特徵庫與 walk-forward 資料準備](#features-zh)、
   [CLI 參數速查](#cli-reference-zh)
 - [驗收與結果解讀](#acceptance-zh)、[資料與模型參考](#references-zh)
 - [歷史實驗附錄：容量、adaptive 與 V1／V2／V3](#historical-experiments-zh)
@@ -2777,6 +2778,99 @@ worker 數預設取以下兩者的較小值，最多 32：
 
 下載後存於不受 Git 追蹤的 `artifacts/diagnostics/tw-information-test/<launch-id>/`。
 
+<a id="features-zh"></a>
+
+### 特徵庫與 walk-forward 資料準備
+
+[實驗協定 §13.12](docs/experiment_protocol.md) 的資料部分：只用台股（`tw_only`）、2016 年起的
+資料組，加上每個 split 的 rank 標籤（§13.10）與固定清單的 Alpha158 型特徵庫。特徵清單在
+`configs/features/alpha_tw_v1.json`，共 183 欄：9 個 K 線形態、開高低與 VWAP（以典型價格
+(高+低+收)/3 代替）相對收盤的滯後 0–4、成交量滯後 1–4、29 個 Qlib 滾動算子 × 視窗
+5／10／20／30／60、相對大盤的 5／20／60 日報酬、20 日平均成交值在同日同市場的百分位名次，以及
+市場指標 `MARKET_IS_TPEX`。特徵只用訊號日（含）之前的還原後 OHLCV 與大盤計算，存成原始值
+（不正規化）；正規化由各 walk-forward 折以自己的訓練視窗估計。季度 walk-forward 的折在
+`configs/walk_forward/tw_quarterly_v1.json`（2023Q1–2026Q2 共 14 折、15 個交易日 embargo、
+各折最後 12 個月為 validation），由 `stock_forecasting.walk_forward.quarterly_folds` 依台股
+交易日曆產生。
+
+#### 執行步驟
+
+1. **建立 selection 並準備資料組**：與一般 CPU preparation 相同，profile 改為 `tw_only`、
+   起點 2016-01-01。資料準備腳本維持凍結，沒有任何修改；已有同一 selection 的資料組時可略過。
+
+   ```bash
+   bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --start 2016-01-01 --end 2026-06-01 --universe all
+   ```
+
+   ```bash
+   bash scripts/runpod_workflow.sh cpu prepare
+   ```
+
+   SSH 進 Pod 後執行 `bash scripts/runpod_tmux_launch.sh cpu-prepare`。
+
+2. **同步程式**：volume 上沒有任何 Pod 時才同步。
+
+   ```bash
+   bash scripts/runpod_workflow.sh sync --apply
+   ```
+
+3. **建立特徵 Pod（本機）**：使用 active selection 的資料組，不抓行情，不需要任何 secret 或
+   TPEx relay。Pod 獨占 volume。
+
+   ```bash
+   bash scripts/runpod_workflow.sh features
+   ```
+
+4. **在 Pod 內啟動**：SSH 登入後執行。
+
+   ```bash
+   cd /runpod-volume/stock_forecasting
+   bash scripts/runpod_tmux_launch.sh cpu-features
+   ```
+
+   工作依序為：核對已同步的程式、安裝 CPU 環境、執行 rank 標籤與特徵庫測試，再對 train／
+   validation／test 三個 store 建立 rank 標籤與特徵庫，最後寫入 `features-manifest.json` 並
+   發布 `ready`。完成或失敗後 Pod 自行終止；本機 guard 讀取 `lifecycle/research/features.json`
+   作為後備。查看進度：
+
+   ```bash
+   tmux -L stock-forecasting-cpu-features attach -t stock-forecasting-cpu-features
+   ```
+
+5. **下載 store（本機）**：
+
+   ```bash
+   bash scripts/runpod_workflow.sh download-features
+   ```
+
+   預設下載最新一次已結束的工作，也可指定 `launch-...` ID。每個檔案依 store manifest 的
+   SHA-256 核對，已核對的檔案重跑時略過；工作仍在執行時回傳 3，manifest 不存在時回傳 4。
+   並行傳輸數由 `RUNPOD_FEATURE_DOWNLOAD_WORKERS`（1–4，預設 2）決定。
+
+特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
+worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
+記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
+暫存陣列，橫斷面名次在全部 symbol 完成後計算，再分 bucket 寫成 Parquet；暫存陣列在 manifest
+寫入後刪除。
+
+#### 產物
+
+```text
+/runpod-volume/datasets/<dataset-request-sha256>/prepared/
+  rank-labels/<identity>/      # One split's gauss-rank labels: rank-labels.json, label-index.parquet, shards/
+  features/<identity>/         # One split's feature store: features.json (feature_names, columns, files),
+                               # feature-index.parquet, shards/bucket-XXXX/shard.parquet
+
+/runpod-volume/diagnostics/features/<launch-id>/
+  features-manifest.json       # Spec identity, every split's store roots and manifest SHA-256
+
+/runpod-volume/logs/tmux/stock-forecasting-cpu-features/<launch-id>/
+  combined.log, status.json, runner.sh
+```
+
+下載後存於不受 Git 追蹤的 `artifacts/features/<dataset-request-sha256>/{rank-labels,features}/<identity>/`；
+manifest 與 log 在 `artifacts/features/launches/<launch-id>/`。
+
 <a id="cli-reference-zh"></a>
 
 ### CLI 參數速查
@@ -2819,6 +2913,8 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `download-forward-package YYYY-MM-DD` | 必填 | 把 `cpu prepare --forward` 建立的 `/runpod-volume/forward/<結束日>/package` 逐檔核對 SHA-256 後下載到 `artifacts/forward/<結束日>/package`；本機已有相同包時只回報，不同的包不會被取代 |
 | `upload-forward-cache YYYY-MM-DD` | 必填 | 把 `forward_pipeline export-cache` 寫出的 `artifacts/forward/<結束日>/shared-cache` 逐檔核對雜湊後加入 `/runpod-volume/datasets/forward-taiwan/api-cache`；只上傳尚未存在的項目，同名但大小不同的項目讓上傳停止 |
 | `download-research [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/tw-information.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。存於 `artifacts/diagnostics/tw-information-test/<launch-id>/`；仍在執行回傳 3，報告不完整回傳 4；`-h`／`--help` 顯示說明 |
+| `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | 建立特徵庫 CPU Pod，使用 active selection 的資料組；不抓行情，不需要 secret 或 TPEx relay。`--maxRuntime D` 預設 `6h`；`--cpuNumber N` 預設 `16`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`。Pod 獨占 volume，見[特徵庫與 walk-forward 資料準備](#features-zh) |
+| `download-features [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/features.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。依 store manifest 的 SHA-256 核對後存於 `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`；仍在執行回傳 3，manifest 缺少回傳 4；`RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` 調整並行數；`-h`／`--help` 顯示說明 |
 
 時間 `D` 只接受正整數加 `m`、`h`、`d`（例如 `30m`、`12h`、`2d`），不接受 `1.5h`。
 可用的同義旗標：`--max-runtime` = `--maxRuntime`、`--gpu-id` = `--gpuId`、
@@ -2834,7 +2930,7 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 #### Pod 內工作與診斷
 
 `bash scripts/runpod_tmux_launch.sh WORKFLOW` 的一般 `WORKFLOW` 為 `cpu-prepare`、
-`cpu-finalize`、`cpu-research`、`stage1-train`、`stage1-validate`、`baseline`；這些名稱後面不接受額外參數，
+`cpu-finalize`、`cpu-research`、`cpu-features`、`stage1-train`、`stage1-validate`、`baseline`；這些名稱後面不接受額外參數，
 設定由建立 Pod 時的 selection／環境傳入。只有兩個診斷會轉交參數：`probe-scales` 使用下表，
 `export-signal-predictions` 使用再下一張表。
 
@@ -2922,6 +3018,12 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 `--symbol SYMBOL` 在多商品輸入時必填；`--as-of TIMESTAMP` 是選填的 inclusive UTC
 截止時間，未提供則使用可用資料的最新共同日期；`--output PATH` 選填保存 JSON，省略只輸出至 stdout。
 `probe-scales` 的 Python CLI 使用上述相同診斷參數；操作時使用 tmux 入口。
+
+`poetry run stock-forecasting-build-features`（由 `cpu-features` 工作呼叫，也接受 `-h`／`--help`）：
+`--experiment-config PATH` 預設 `configs/experiments/a_rank64.yaml`，只取資料路徑、視窗 128、
+horizon 與最小分組 20，可用 `FEATURE_EXPERIMENT_CONFIG` 覆寫；`--spec PATH` 預設
+`configs/features/alpha_tw_v1.json`；`--output-root PATH` 必填，須為新目錄；`--workers N` 1–32。
+依序對 train、validation、test 建立 rank 標籤與特徵庫，身分相同的既有 store 直接沿用。
 
 台股資訊測試的兩個 CLI 由 `cpu-research` 工作依序呼叫，也接受 `-h`／`--help`：
 
@@ -3732,7 +3834,8 @@ active selection，與不改 active selection 的成對操作不同。`readiness
   → [CPU preparation](#cpu-en) → [baselines](#baseline-en) → [tasks/experiments and multi-Pod training](#train-en)
   → [downloads](#download-en)
 - [Artifacts and inference](#artifacts-en), [scale diagnostics](#probes-en),
-  [Taiwan information test](#tw-information-en), [CLI reference](#cli-reference-en)
+  [Taiwan information test](#tw-information-en),
+  [feature library and walk-forward data](#features-en), [CLI reference](#cli-reference-en)
 - [Acceptance and interpretation](#acceptance-en), [model/data references](#references-en)
 - [Appendix: obsolete experiments, including V1/V2/V3](#historical-experiments-en)
 
@@ -6917,6 +7020,107 @@ through OpenMP only after the process pool has closed.
 Downloads are saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`, which Git
 does not track.
 
+<a id="features-en"></a>
+
+### Feature library and walk-forward data
+
+The data part of [experiment protocol §13.12](docs/experiment_protocol.md): a Taiwan-only
+(`tw_only`) dataset from 2016, each split's rank labels (§13.10) and a fixed-list Alpha158-style
+feature library. The list is `configs/features/alpha_tw_v1.json`, 183 columns: nine candlestick
+shapes; open, high, low and VWAP (the typical price (high+low+close)/3 stands in for VWAP)
+relative to the close at lags 0–4; volume lags 1–4; 29 Qlib rolling operators over windows
+5/10/20/30/60; benchmark-relative 5/20/60-session returns; the within-date, within-market
+percentile rank of the 20-session mean dollar volume; and the market indicator
+`MARKET_IS_TPEX`. Features use only adjusted OHLCV and benchmark bars up to and including the
+signal date and are stored raw (not normalized); each walk-forward fold normalizes them with
+its own training window. The quarterly folds live in
+`configs/walk_forward/tw_quarterly_v1.json` (2023Q1–2026Q2, 14 folds, a 15-session embargo and
+the last 12 months of each window as validation) and come from
+`stock_forecasting.walk_forward.quarterly_folds` on the Taiwan trading calendar.
+
+#### Steps
+
+1. **Create the selection and prepare the dataset**: as for any CPU preparation, with the
+   `tw_only` profile and a 2016-01-01 start. The preparation scripts stay frozen and unchanged;
+   skip this when the dataset of the same selection already exists.
+
+   ```bash
+   bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --start 2016-01-01 --end 2026-06-01 --universe all
+   ```
+
+   ```bash
+   bash scripts/runpod_workflow.sh cpu prepare
+   ```
+
+   After SSH login, run `bash scripts/runpod_tmux_launch.sh cpu-prepare`.
+
+2. **Synchronize the code**: only while no Pod uses the volume.
+
+   ```bash
+   bash scripts/runpod_workflow.sh sync --apply
+   ```
+
+3. **Create the feature Pod (local)**: it uses the active selection's dataset, fetches no market
+   data and needs no secret or TPEx relay. The Pod owns the volume.
+
+   ```bash
+   bash scripts/runpod_workflow.sh features
+   ```
+
+4. **Start inside the Pod**: after SSH login, run:
+
+   ```bash
+   cd /runpod-volume/stock_forecasting
+   bash scripts/runpod_tmux_launch.sh cpu-features
+   ```
+
+   The job checks the synchronized code, installs the CPU environment, runs the rank-label and
+   feature-library tests, builds the rank labels and the feature library of the train,
+   validation and test stores, writes `features-manifest.json` and publishes `ready`. The Pod
+   terminates itself after success or failure; the local guard reads
+   `lifecycle/research/features.json` as a fallback. To watch:
+
+   ```bash
+   tmux -L stock-forecasting-cpu-features attach -t stock-forecasting-cpu-features
+   ```
+
+5. **Download the stores (local)**:
+
+   ```bash
+   bash scripts/runpod_workflow.sh download-features
+   ```
+
+   By default this downloads the latest finished job; a `launch-...` ID selects another. Every
+   file is verified against the SHA-256 in its store manifest and verified files are kept on a
+   rerun; it exits with 3 while the job is running and with 4 when the manifest is missing.
+   `RUNPOD_FEATURE_DOWNLOAD_WORKERS` (1–4, default 2) bounds parallel transfers.
+
+Both stores are built with bounded spawn process pools: one task per bucket, at most twice the
+worker count in flight; the worker count is the smallest of `FIN_TS_RANK_LABEL_WORKERS`
+(default 8), the visible CPUs minus one, and 40% of available memory divided by one worker's
+estimated footprint. Features are first written to memory-mapped scratch arrays under `work/`,
+the cross-sectional rank is computed once every symbol is done, the buckets are then written
+as Parquet, and the scratch arrays are deleted after the manifest.
+
+#### Artifacts
+
+```text
+/runpod-volume/datasets/<dataset-request-sha256>/prepared/
+  rank-labels/<identity>/      # One split's gauss-rank labels: rank-labels.json, label-index.parquet, shards/
+  features/<identity>/         # One split's feature store: features.json (feature_names, columns, files),
+                               # feature-index.parquet, shards/bucket-XXXX/shard.parquet
+
+/runpod-volume/diagnostics/features/<launch-id>/
+  features-manifest.json       # Spec identity, every split's store roots and manifest SHA-256
+
+/runpod-volume/logs/tmux/stock-forecasting-cpu-features/<launch-id>/
+  combined.log, status.json, runner.sh
+```
+
+Downloads are saved under
+`artifacts/features/<dataset-request-sha256>/{rank-labels,features}/<identity>/`, with the
+manifest and logs under `artifacts/features/launches/<launch-id>/`; Git tracks neither.
+
 <a id="cli-reference-en"></a>
 
 ### CLI parameter reference
@@ -6960,6 +7164,8 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `download-forward-package YYYY-MM-DD` | Required | Download `/runpod-volume/forward/<end>/package`, built by `cpu prepare --forward`, to `artifacts/forward/<end>/package`, checking every file's SHA-256; an identical local package is only reported, a different one is never replaced |
 | `upload-forward-cache YYYY-MM-DD` | Required | Re-hash `artifacts/forward/<end>/shared-cache`, written by `forward_pipeline export-cache`, and add it to `/runpod-volume/datasets/forward-taiwan/api-cache`; only missing entries are uploaded, and an existing entry with a different size stops the upload |
 | `download-research [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/tw-information.json`; a `launch-...` ID selects another. Saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`; exits 3 while running and 4 when the report is incomplete; `-h`/`--help` shows help |
+| `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | Create the feature-library CPU Pod on the active selection's dataset; it fetches no market data and needs no secret or TPEx relay. `--maxRuntime D` defaults to `6h`; `--cpuNumber N` to `16`, choices 2/4/8/16/32; `--cpuFlavor F` to `cpu3g`. The Pod owns the volume; see [feature library and walk-forward data](#features-en) |
+| `download-features [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/features.json`; a `launch-...` ID selects another. Verified against the store manifests' SHA-256 and saved under `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`; exits 3 while running and 4 when the manifest is missing; `RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` bounds parallel transfers; `-h`/`--help` shows help |
 
 Durations `D` accept only a positive integer followed by `m`, `h` or `d` (e.g. `30m`,
 `12h`, `2d`), not `1.5h`. Supported aliases are `--max-runtime` = `--maxRuntime`,
@@ -6978,8 +7184,8 @@ under [Query GPU resources](#gpu-catalog-en).
 #### In-Pod workflows and diagnostics
 
 Normal `WORKFLOW` values for `bash scripts/runpod_tmux_launch.sh WORKFLOW` are
-`cpu-prepare`, `cpu-finalize`, `cpu-research`, `stage1-train`, `stage1-validate` and
-`baseline`. They take
+`cpu-prepare`, `cpu-finalize`, `cpu-research`, `cpu-features`, `stage1-train`, `stage1-validate`
+and `baseline`. They take
 no extra arguments: selection/environment values are passed when the Pod is created.
 Only two diagnostics forward options: `probe-scales` uses the table below and
 `export-signal-predictions` uses the next one.
@@ -7071,6 +7277,14 @@ both instrument and benchmark. `--symbol SYMBOL` is required for multiple target
 optional `--as-of TIMESTAMP` is an inclusive UTC cutoff, otherwise use the latest available
 common date. Optional `--output PATH` saves JSON; without it, output goes only to stdout.
 The `probe-scales` Python CLI uses the diagnostic options above; operate it through tmux.
+
+`poetry run stock-forecasting-build-features` (run by the `cpu-features` job; accepts
+`-h`/`--help`): `--experiment-config PATH` defaults to `configs/experiments/a_rank64.yaml` and
+supplies only the dataset paths, the 128-session window, the horizons and the minimum group
+size 20 (`FEATURE_EXPERIMENT_CONFIG` overrides it); `--spec PATH` defaults to
+`configs/features/alpha_tw_v1.json`; `--output-root PATH` is required and must be a new
+directory; `--workers N` is 1–32. It builds the rank labels and the feature library of train,
+validation and test in turn, reusing existing stores with the same identity.
 
 The two Taiwan information test CLIs are run in order by the `cpu-research` job and also
 accept `-h`/`--help`:
