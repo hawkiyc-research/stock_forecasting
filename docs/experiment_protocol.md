@@ -982,6 +982,8 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 只有一個 seed；§13.10 顯示模型間 0.01–0.02 的差距常在雜訊範圍內。
 - test 期間（2025-12 到 2026-05）台股的長天期排序對所有學習型模型都失效，可能是期間特性，不一定代表模型缺陷。
 
+**§13.11 結果（2026-10-21）**：H1 通過，台股短組 0.0642 [0.0271, 0.1015]；H2 未通過，Kronos 減 PatchTST −0.0022 [−0.0211, 0.0182]；H3 未通過，台股長組 0.0082 [−0.0440, 0.0637]。依第 6 點：台股 1 日有排序能力，但 Kronos 沒有勝過 PatchTST，前瞻確認時兩者一起比較；不加跑 seed 43、44；台股長天期不列為候選。選出的是第一次 validation 的 checkpoint-003680（約 0.2 epoch）。一致性檢查通過（504 項，最大差距 2.8×10⁻¹⁷）。見[排序模型試行結果報告](rank_pilot_results.md)。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -2028,6 +2030,8 @@ Interpretation limits:
 - Taiwan test has about 103 signal dates, and h-session labels overlap; the block bootstrap only partly handles the autocorrelation.
 - One seed only; §13.10 shows that 0.01–0.02 differences between models are often within noise.
 - During test (2025-12 to 2026-05), Taiwan long-horizon ranking failed for every learned model; this may be a property of the period rather than a model defect.
+
+**§13.11 result (2026-10-21)**: H1 passes, Taiwan short cell 0.0642 [0.0271, 0.1015]; H2 fails, Kronos minus PatchTST −0.0022 [−0.0211, 0.0182]; H3 fails, Taiwan long cell 0.0082 [−0.0440, 0.0637]. Under item 6: Taiwan 1-session ranking exists, but Kronos does not beat PatchTST, so the forward confirmation compares the two; seeds 43 and 44 do not run; Taiwan long horizons are not candidates. The selected checkpoint is the first validation, checkpoint-003680 (about 0.2 epoch). The consistency check passed (504 values, largest difference 2.8×10⁻¹⁷). See the [rank model pilot results report](rank_pilot_results.md).
 
 ### 14. Remote-validation boundary
 
