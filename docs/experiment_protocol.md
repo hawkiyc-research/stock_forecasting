@@ -984,6 +984,68 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 
 **§13.11 結果（2026-10-21）**：H1 通過，台股短組 0.0642 [0.0271, 0.1015]；H2 未通過，Kronos 減 PatchTST −0.0022 [−0.0211, 0.0182]；H3 未通過，台股長組 0.0082 [−0.0440, 0.0637]。依第 6 點：台股 1 日有排序能力，但 Kronos 沒有勝過 PatchTST，前瞻確認時兩者一起比較；不加跑 seed 43、44；台股長天期不列為候選。選出的是第一次 validation 的 checkpoint-003680（約 0.2 epoch）。一致性檢查通過（504 項，最大差距 2.8×10⁻¹⁷）。見[排序模型試行結果報告](rank_pilot_results.md)。
 
+#### 13.12 訓練資料範圍對照：美台混合、只用台股、拉長年份（rank baseline，2026-10-21 於資料準備與實作前寫入）
+
+背景：
+
+- **§13.11 的結果**：Kronos `a-rank64` 在第一次 validation（約 0.2 epoch）就達到最佳，市場等權 Rank IC 0.060，之後沒有再改善；validation 的 rank MSE 上升，有過擬合跡象。test 上台股 1 日 0.064 [0.027, 0.102] 通過，但沒有勝過 PatchTST（配對差 −0.002 [−0.021, 0.018]）；台股 6–14 日 0.008 [−0.044, 0.064] 未通過。Kronos 與 PatchTST 在六格的配對差都跨 0，因此資料範圍的問題可以先用 baseline 回答。台股長天期在 test 對所有學習型模型失效（validation 0.043–0.076 → test −0.037 到 0.012），均線交叉則從 0.030 升到 0.063。
+- **樣本組成**：A 組訓練樣本 471 萬筆中，US 389 萬（82.6%）、TWSE 55 萬（11.6%）、TPEX 27 萬（5.7%）。所有樣本的 loss 等權相加，約 83% 來自美股；選點分數則是台股占三分之二。
+- **兩個市場的可預測性不同**：所有模型在 validation 上，台股的 Rank IC 約 0.07–0.10，US 約 0.02–0.05。
+- **文獻**：
+  - Choi、Jiang、Zhang（Review of Asset Pricing Studies 2025，32 個市場）：各市場分開訓練的神經網路勝過以美國資料訓練的單一模型；再加入美國公司特徵所建的變數還能改善，表示市場只部分整合。
+  - Hanauer、Kalsbach（Emerging Markets Review 2023）：只用已開發市場資料估計的模型，預測新興市場報酬幾乎和新興市場模型一樣好（據第三方摘要）。
+  - Cakici、Fieberg、Metko、Zaremba（JEDC 2023，46 個市場）：機器學習的預測力隨上市家數與個股特有風險而不同。
+  - Leippold、Wang、Zhou（JFE 2022）：中國市場最重要的預測因子是流動性，和美國不同；散戶比例提高短期可預測性。
+  - Wang、Dai、Póczos、Carbonell（CVPR 2019）：來源資料和目標差異大時，可能發生負遷移。
+  - 小結：混合訓練可能有幫助也可能有害，取決於市場，必須在本專案的資料上直接比較。
+- **目前沒有直接證據顯示混合讓模型「訓練不起來」**：台股 validation Rank IC 和其他模型相當。問題是沒有勝過其他模型，以及 test 期間台股長天期失效。
+
+1. **實驗組**（rank baseline；模型與 seed 42 沿用 `configs/baseline.json`；任務、標籤、選點同 §13.10）：
+
+   | 代號 | 市場 | 訓練資料起點 | 訓練資料組 | 台股訓練樣本（約） |
+   | --- | --- | --- | --- | --- |
+   | P-A | 美台混合 | 2021-01-01 | 現有 `e385…`（§13.10 已完成，不重跑） | 82 萬 |
+   | T-A | 只用台股 | 2021-01-01 | 新建 `tw_only` 資料組 | 82 萬 |
+   | T-B | 只用台股 | 2016-01-01 | 新建 `tw_only` 資料組 | 163 萬 |
+   | P-B | 美台混合 | 2016-01-01 | 現有 `aa49…`（共用評估資料組，已準備） | 163 萬（全部約 1,060 萬） |
+
+   - 切分邊界（train 至 2025-06-01、validation 至 2025-12-01、test 至 2026-06-01）與清理規則都不變。
+   - 新資料只需兩次 CPU prepare：`tw_only` 2016 年起（同時是只用台股各組的評估資料組）與 `tw_only` 2021 年起。
+   - 選點分數依各組的市場計算：混合組是三個市場等權，只用台股組是 TWSE、TPEX 等權。這是處理的一部分。
+2. **評估樣本**：只比較台股（TWSE、TPEX）的 validation 與 test 列。所有組必須是同一批列：以（代號、訊號日）對齊後列集合相同，且原報酬差距 ≤ 10⁻⁶；不符合就停止，不計分。
+3. **指標**：
+   - 格子與 §13.11 相同：台股短（h = 1）、中（h = 2–5）、長（h = 6–14）。每日值的算法、block bootstrap（區塊 5、10、28 個交易日，重抽 1,000 次，seed 11）也相同。
+   - 主要統計量：4 個學習型 baseline（GBDT、GRU、DLinear、PatchTST）每日值的平均（以下稱「模型平均」）。各模型分別列出，只作描述。
+   - 規則訊號不需訓練，各組的預測必須完全相同，用來檢查樣本一致；不參與比較。
+4. **比較**（validation 與 test 都計算）：
+   - 混合效果：T-A − P-A。
+   - 年份效果：只用台股時 T-B − T-A；混合時 P-B − P-A。
+   - 交互作用（T-B − P-B 與 T-A − P-A 的差）只作描述。
+   - 「X 優於 Y」（對某一格）：模型平均的配對差，在 validation 與 test 的平均都大於 0，且至少一個樣本的 95% 區間下界大於 0。「X 劣於 Y」對稱定義。其餘為「無可偵測差異」。
+   - 只用短、長兩格判定；中組只作描述。
+5. **處置**（決定下一次 Kronos rank 訓練的資料，Kronos 訓練另行登記）：
+   - 市場範圍：
+     - T-A 在短或長至少一格優於 P-A，且沒有一格劣於 → 只用台股。
+     - P-A 至少一格優於 T-A，且沒有一格劣於 → 維持美台混合。
+     - 其餘（無可偵測差異或互有優劣）→ 只用台股。理由：目標市場是台股；訓練資料只有混合的約六分之一，Kronos 的訓練時間與費用大幅下降。
+   - 年份（在選定的市場範圍內比較 T-B 與 T-A，或 P-B 與 P-A）：
+     - 2016 年起優於 → 用 2016 年起。
+     - 2021 年起優於 → 用 2021 年起。
+     - 無可偵測差異 → 用 2016 年起。理由：涵蓋較多行情型態，可能有助於應付 test 期間那種型態轉換；成本仍低於目前的美台混合。
+6. **程序**：
+   1. 以 CPU prepare 建立兩個 `tw_only` 資料組。
+   2. 在 RunPod GPU 建立 T-A、T-B、P-B 三組 baseline（Pod 的可用 CPU 至少 12 顆才啟動）。
+   3. 下載各組台股列的 validation、test 預測。
+   4. 在本機計分，設定在計分前寫入 `backtest/config/data_scope.json`。結果寫成中英雙語報告。
+
+判讀限制：
+
+- validation 與 test 都已看過（test 在 §13.10、§13.11 用過）。本節是資料設計的選擇，不是確認性檢驗；最終確認仍以 2026-10-20 之後的前瞻資料為準。
+- 每組只有 seed 42；模型間的差距常小於日 Rank IC 的標準誤（0.01–0.018），所以判定要求兩個樣本方向一致。
+- baseline 的結果不一定適用於 Kronos：Kronos 已在 45 個交易所的資料上預訓練，混合資料對它的影響可能不同。
+- 混合組與只用台股組的選點分數不同（三個市場或兩個市場等權），組間差異不完全來自訓練資料。
+- 2016–2020 年的台股資料沿用相同的清理規則；更早的年份不在本節範圍。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -2032,6 +2094,68 @@ Interpretation limits:
 - During test (2025-12 to 2026-05), Taiwan long-horizon ranking failed for every learned model; this may be a property of the period rather than a model defect.
 
 **§13.11 result (2026-10-21)**: H1 passes, Taiwan short cell 0.0642 [0.0271, 0.1015]; H2 fails, Kronos minus PatchTST −0.0022 [−0.0211, 0.0182]; H3 fails, Taiwan long cell 0.0082 [−0.0440, 0.0637]. Under item 6: Taiwan 1-session ranking exists, but Kronos does not beat PatchTST, so the forward confirmation compares the two; seeds 43 and 44 do not run; Taiwan long horizons are not candidates. The selected checkpoint is the first validation, checkpoint-003680 (about 0.2 epoch). The consistency check passed (504 values, largest difference 2.8×10⁻¹⁷). See the [rank model pilot results report](rank_pilot_results.md).
+
+#### 13.12 Training-data scope: US and Taiwan pooled, Taiwan only, longer history (rank baselines; written 2026-10-21 before data preparation and implementation)
+
+Background:
+
+- **§13.11 results**: Kronos `a-rank64` peaked at the first validation (about 0.2 epoch) with a market-equal Rank IC of 0.060 and did not improve afterwards; the validation rank MSE rose, a sign of overfitting. On test, Taiwan 1 session is 0.064 [0.027, 0.102] and passes, but it does not beat PatchTST (paired difference −0.002 [−0.021, 0.018]); Taiwan 6–14 sessions is 0.008 [−0.044, 0.064] and fails. Every paired difference between Kronos and PatchTST in the six cells crosses 0, so the data-scope question can be answered with baselines first. Taiwan long horizons failed on test for every learned model (validation 0.043–0.076 → test −0.037 to 0.012), while the moving-average crossover rose from 0.030 to 0.063.
+- **Sample mix**: of the 4.71 million group A training samples, US has 3.89 million (82.6%), TWSE 0.55 million (11.6%) and TPEX 0.27 million (5.7%). Every sample's loss counts equally, so about 83% of the loss comes from US stocks, while Taiwan carries two thirds of the selection score.
+- **The two markets differ in predictability**: on validation, every model's Taiwan Rank IC is about 0.07–0.10 and its US Rank IC about 0.02–0.05.
+- **Literature**:
+  - Choi, Jiang and Zhang (Review of Asset Pricing Studies 2025, 32 markets): neural networks trained separately for each market beat one model trained on US data; adding variables built from US firm characteristics improves them further, so markets are only partly integrated.
+  - Hanauer and Kalsbach (Emerging Markets Review 2023): models estimated only on developed-market data predict emerging-market returns almost as well as an emerging-market model (per a third-party summary).
+  - Cakici, Fieberg, Metko and Zaremba (JEDC 2023, 46 markets): machine-learning predictability varies with the number of listed firms and idiosyncratic risk.
+  - Leippold, Wang and Zhou (JFE 2022): liquidity is the most important predictor in China, unlike the US; retail presence raises short-term predictability.
+  - Wang, Dai, Póczos and Carbonell (CVPR 2019): negative transfer can occur when source and target data differ greatly.
+  - In short: pooling can help or hurt depending on the markets, so it must be compared directly on this project's data.
+- **No direct evidence yet that pooling stops the model from learning**: Taiwan validation Rank IC is on par with the other models. The problems are that it does not beat them and that Taiwan long horizons fail during test.
+
+1. **Arms** (rank baselines; models and seed 42 from `configs/baseline.json`; task, labels and selection as in §13.10):
+
+   | Arm | Markets | Training start | Training dataset | Taiwan training samples (about) |
+   | --- | --- | --- | --- | --- |
+   | P-A | US and Taiwan | 2021-01-01 | existing `e385…` (completed in §13.10, not rerun) | 0.82 million |
+   | T-A | Taiwan only | 2021-01-01 | new `tw_only` dataset | 0.82 million |
+   | T-B | Taiwan only | 2016-01-01 | new `tw_only` dataset | 1.63 million |
+   | P-B | US and Taiwan | 2016-01-01 | existing `aa49…` (the shared evaluation dataset, already prepared) | 1.63 million (about 10.6 million in all) |
+
+   - Split boundaries (train to 2025-06-01, validation to 2025-12-01, test to 2026-06-01) and cleaning rules are unchanged.
+   - New data needs two CPU preparations: `tw_only` from 2016 (also the evaluation dataset of the Taiwan-only arms) and `tw_only` from 2021.
+   - Each arm's selection score uses its own markets: three markets weighted equally for pooled arms, TWSE and TPEX weighted equally for Taiwan-only arms. This is part of the treatment.
+2. **Evaluation samples**: only Taiwan (TWSE, TPEX) validation and test rows are compared. Every arm must have the same rows: aligned on (symbol, signal date), the row sets are identical and raw returns differ by at most 10⁻⁶; otherwise scoring stops.
+3. **Metrics**:
+   - The cells are those of §13.11: Taiwan short (h = 1), medium (h = 2–5) and long (h = 6–14). The daily values and the block bootstrap (blocks of 5, 10 and 28 sessions, 1,000 replicates, seed 11) are also the same.
+   - Primary statistic: the mean of the daily values of the 4 learned baselines (GBDT, GRU, DLinear, PatchTST), called the "model average". Each model is listed separately, descriptively.
+   - Rule signals need no training, so their predictions must be identical in every arm; they check sample consistency and take no part in the comparison.
+4. **Comparisons** (on both validation and test):
+   - Pooling effect: T-A − P-A.
+   - History effect: T-B − T-A for Taiwan only, P-B − P-A for pooled.
+   - The interaction (T-B − P-B minus T-A − P-A) is descriptive.
+   - "X beats Y" (for a cell): the model-average paired difference has a mean above 0 on both validation and test, and a 95% interval lower bound above 0 on at least one of them. "X loses to Y" is defined symmetrically. Everything else is "no detectable difference".
+   - Only the short and long cells decide; the medium cell is descriptive.
+5. **Disposition** (the data for the next Kronos rank training; that training is registered separately):
+   - Market scope:
+     - T-A beats P-A in at least one of short and long and loses in neither → Taiwan only.
+     - P-A beats T-A in at least one cell and loses in neither → keep US and Taiwan pooled.
+     - Otherwise (no detectable difference, or mixed) → Taiwan only. Reason: Taiwan is the target market, and with about one sixth of the pooled data Kronos training time and cost fall sharply.
+   - History (T-B against T-A, or P-B against P-A, within the chosen market scope):
+     - 2016 start beats → start in 2016.
+     - 2021 start beats → start in 2021.
+     - No detectable difference → start in 2016. Reason: it covers more market regimes, which may help with regime shifts like the one during test; the cost stays below the current pooled training.
+6. **Procedure**:
+   1. Build the two `tw_only` datasets with CPU preparation.
+   2. Build the T-A, T-B and P-B baselines on RunPod GPU (launched only when the Pod has at least 12 usable CPUs).
+   3. Download each arm's Taiwan validation and test predictions.
+   4. Score locally, with settings written to `backtest/config/data_scope.json` before scoring. Results are written as a bilingual report.
+
+Interpretation limits:
+
+- Validation and test have both been seen (test was used in §13.10 and §13.11). This section chooses a data design and is not a confirmatory test; final confirmation still uses data after 2026-10-20.
+- One seed per arm; differences between models are often below the standard error of the daily Rank IC (0.01–0.018), so a decision requires the same direction on both samples.
+- Baseline results may not carry over to Kronos: Kronos was pretrained on data from 45 exchanges, and pooling may affect it differently.
+- Pooled and Taiwan-only arms use different selection scores (three or two markets weighted equally), so differences between arms do not come from training data alone.
+- Taiwan data for 2016–2020 uses the same cleaning rules; earlier years are outside this section.
 
 ### 14. Remote-validation boundary
 
