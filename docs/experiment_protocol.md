@@ -984,67 +984,91 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 
 **§13.11 結果（2026-10-21）**：H1 通過，台股短組 0.0642 [0.0271, 0.1015]；H2 未通過，Kronos 減 PatchTST −0.0022 [−0.0211, 0.0182]；H3 未通過，台股長組 0.0082 [−0.0440, 0.0637]。依第 6 點：台股 1 日有排序能力，但 Kronos 沒有勝過 PatchTST，前瞻確認時兩者一起比較；不加跑 seed 43、44；台股長天期不列為候選。選出的是第一次 validation 的 checkpoint-003680（約 0.2 epoch）。一致性檢查通過（504 項，最大差距 2.8×10⁻¹⁷）。見[排序模型試行結果報告](rank_pilot_results.md)。
 
-#### 13.12 訓練資料範圍對照：美台混合、只用台股、拉長年份（rank baseline，2026-10-21 於資料準備與實作前寫入）
+#### 13.12 台股主線的訓練資料與特徵庫（2026-10-22 於資料準備與實作前改寫；取代 `78c257c` 的草稿）
 
 背景：
 
-- **§13.11 的結果**：Kronos `a-rank64` 在第一次 validation（約 0.2 epoch）就達到最佳，市場等權 Rank IC 0.060，之後沒有再改善；validation 的 rank MSE 上升，有過擬合跡象。test 上台股 1 日 0.064 [0.027, 0.102] 通過，但沒有勝過 PatchTST（配對差 −0.002 [−0.021, 0.018]）；台股 6–14 日 0.008 [−0.044, 0.064] 未通過。Kronos 與 PatchTST 在六格的配對差都跨 0，因此資料範圍的問題可以先用 baseline 回答。台股長天期在 test 對所有學習型模型失效（validation 0.043–0.076 → test −0.037 到 0.012），均線交叉則從 0.030 升到 0.063。
-- **樣本組成**：A 組訓練樣本 471 萬筆中，US 389 萬（82.6%）、TWSE 55 萬（11.6%）、TPEX 27 萬（5.7%）。所有樣本的 loss 等權相加，約 83% 來自美股；選點分數則是台股占三分之二。
-- **兩個市場的可預測性不同**：所有模型在 validation 上，台股的 Rank IC 約 0.07–0.10，US 約 0.02–0.05。
-- **文獻**：
-  - Choi、Jiang、Zhang（Review of Asset Pricing Studies 2025，32 個市場）：各市場分開訓練的神經網路勝過以美國資料訓練的單一模型；再加入美國公司特徵所建的變數還能改善，表示市場只部分整合。
-  - Hanauer、Kalsbach（Emerging Markets Review 2023）：只用已開發市場資料估計的模型，預測新興市場報酬幾乎和新興市場模型一樣好（據第三方摘要）。
-  - Cakici、Fieberg、Metko、Zaremba（JEDC 2023，46 個市場）：機器學習的預測力隨上市家數與個股特有風險而不同。
-  - Leippold、Wang、Zhou（JFE 2022）：中國市場最重要的預測因子是流動性，和美國不同；散戶比例提高短期可預測性。
-  - Wang、Dai、Póczos、Carbonell（CVPR 2019）：來源資料和目標差異大時，可能發生負遷移。
-  - 小結：混合訓練可能有幫助也可能有害，取決於市場，必須在本專案的資料上直接比較。
-- **目前沒有直接證據顯示混合讓模型「訓練不起來」**：台股 validation Rank IC 和其他模型相當。問題是沒有勝過其他模型，以及 test 期間台股長天期失效。
+- **§13.11 的結果**：Kronos `a-rank64` 在第一次 validation（約 0.2 epoch）就達到最佳，市場等權 Rank IC 0.060，之後沒有再改善。test 上台股 1 日 0.064 [0.027, 0.102] 通過，但沒有勝過 PatchTST（配對差 −0.002 [−0.021, 0.018]）；台股 6–14 日 0.008 [−0.044, 0.064] 未通過。Kronos 與 PatchTST 在六格的配對差都跨 0。台股長天期在 test 對所有學習型模型失效（validation 0.043–0.076 → test −0.037 到 0.012），均線交叉則從 0.030 升到 0.063。
+- **文獻對「混合訓練 vs 只用本地市場」沒有一致結論，取決於市場大小與模型類型**：Jiang、Kelly、Xiu（JF 2023，26 國日頻 K 線圖 CNN）發現美國訓練的模型直接套用平均勝過本地重訓（Sharpe 0.69 vs 0.29），但增益集中在股票數少於約 300 檔的小市場，600–3,000 檔的市場增益小或為負；Choi、Jiang、Zhang（RAPS 2025，含台灣的月頻公司特徵）發現各市場分開訓練較好；Cakici、Zaremba（JBF 2026，45 國）發現兩者相當；Hellum、Pedersen、Rønn-Nielsen（2023）發現單一全球模型較好。台股清理後每日約 TWSE 600 檔、TPEX 290 檔，屬於「美股資料幫助有限」的那一端。
+- **本專案的證據**：Kronos 的 loss 約 83% 來自美股，台股 validation Rank IC 仍與其他模型相當；混合不是目前的瓶頸，但也沒有證據顯示它有幫助。
+- **決定（2026-10-22）**：主線改為只用台股、2016 年起，並以 walk-forward 重訓取代一次訓練。原草稿的四組對照（混合／只用台股 × 2021／2016）不再執行：它回答的是資料工程問題，而目標市場是台股，只用台股可把訓練資料縮到混合的約六分之一。美股移出主線。
 
-1. **實驗組**（rank baseline；模型與 seed 42 沿用 `configs/baseline.json`；任務、標籤、選點同 §13.10）：
-
-   | 代號 | 市場 | 訓練資料起點 | 訓練資料組 | 台股訓練樣本（約） |
-   | --- | --- | --- | --- | --- |
-   | P-A | 美台混合 | 2021-01-01 | 現有 `e385…`（§13.10 已完成，不重跑） | 82 萬 |
-   | T-A | 只用台股 | 2021-01-01 | 新建 `tw_only` 資料組 | 82 萬 |
-   | T-B | 只用台股 | 2016-01-01 | 新建 `tw_only` 資料組 | 163 萬 |
-   | P-B | 美台混合 | 2016-01-01 | 現有 `aa49…`（共用評估資料組，已準備） | 163 萬（全部約 1,060 萬） |
-
-   - 切分邊界（train 至 2025-06-01、validation 至 2025-12-01、test 至 2026-06-01）與清理規則都不變。
-   - 新資料只需兩次 CPU prepare：`tw_only` 2016 年起（同時是只用台股各組的評估資料組）與 `tw_only` 2021 年起。
-   - 選點分數依各組的市場計算：混合組是三個市場等權，只用台股組是 TWSE、TPEX 等權。這是處理的一部分。
-2. **評估樣本**：只比較台股（TWSE、TPEX）的 validation 與 test 列。所有組必須是同一批列：以（代號、訊號日）對齊後列集合相同，且原報酬差距 ≤ 10⁻⁶；不符合就停止，不計分。
-3. **指標**：
-   - 格子與 §13.11 相同：台股短（h = 1）、中（h = 2–5）、長（h = 6–14）。每日值的算法、block bootstrap（區塊 5、10、28 個交易日，重抽 1,000 次，seed 11）也相同。
-   - 主要統計量：4 個學習型 baseline（GBDT、GRU、DLinear、PatchTST）每日值的平均（以下稱「模型平均」）。各模型分別列出，只作描述。
-   - 規則訊號不需訓練，各組的預測必須完全相同，用來檢查樣本一致；不參與比較。
-4. **比較**（validation 與 test 都計算）：
-   - 混合效果：T-A − P-A。
-   - 年份效果：只用台股時 T-B − T-A；混合時 P-B − P-A。
-   - 交互作用（T-B − P-B 與 T-A − P-A 的差）只作描述。
-   - 「X 優於 Y」（對某一格）：模型平均的配對差，在 validation 與 test 的平均都大於 0，且至少一個樣本的 95% 區間下界大於 0。「X 劣於 Y」對稱定義。其餘為「無可偵測差異」。
-   - 只用短、長兩格判定；中組只作描述。
-5. **處置**（決定下一次 Kronos rank 訓練的資料，Kronos 訓練另行登記）：
-   - 市場範圍：
-     - T-A 在短或長至少一格優於 P-A，且沒有一格劣於 → 只用台股。
-     - P-A 至少一格優於 T-A，且沒有一格劣於 → 維持美台混合。
-     - 其餘（無可偵測差異或互有優劣）→ 只用台股。理由：目標市場是台股；訓練資料只有混合的約六分之一，Kronos 的訓練時間與費用大幅下降。
-   - 年份（在選定的市場範圍內比較 T-B 與 T-A，或 P-B 與 P-A）：
-     - 2016 年起優於 → 用 2016 年起。
-     - 2021 年起優於 → 用 2021 年起。
-     - 無可偵測差異 → 用 2016 年起。理由：涵蓋較多行情型態，可能有助於應付 test 期間那種型態轉換；成本仍低於目前的美台混合。
-6. **程序**：
-   1. 以 CPU prepare 建立兩個 `tw_only` 資料組。
-   2. 在 RunPod GPU 建立 T-A、T-B、P-B 三組 baseline（Pod 的可用 CPU 至少 12 顆才啟動）。
-   3. 下載各組台股列的 validation、test 預測。
-   4. 在本機計分，設定在計分前寫入 `backtest/config/data_scope.json`。結果寫成中英雙語報告。
+1. **資料組**：
+   - Profile `tw_only`（`twse_official` + `tpex_official`），日期契約 `[2016-01-01, 2026-06-01)`，以既有的 `configure` 與 `cpu-prepare` 建立；資料準備腳本維持凍結，不修改。
+   - 清理規則與現有資料組相同。儲存仍依固定切分（train 至 2025-06-01、validation 至 2025-12-01、test 至 2026-06-01）分三個 bar store；本計畫的建模不再使用這個切分（見第 4 點），三個 store 都套用與 validation／test 相同的清理後樣本規則。
+   - 控制面新增實驗群組字母 `t`（`tw_only`，2016-01-01 至 2026-06-01）；既有 `a`／`b` 代表美台混合 2021／2016 起，不混用。
+   - 預期規模：台股樣本約 163 萬筆（2016 至 2025-05）；評估期每日約 TWSE 600 檔、TPEX 290 檔。
+2. **標籤**：與 §13.10 相同：t0 收盤產生訊號、t1 開盤進場、第 h 日收盤（h = 1…14）的相對大盤調整後對數報酬；rank 標籤為同一訊號日、同一市場內的 gauss-rank，少於 20 檔的分組不給標籤。分組只依訊號日與市場，不依切分，因此三個 store 的標籤定義一致。
+3. **特徵庫（Alpha158 型，手寫，不用 LLM 生成）**：
+   - 清單在任何模型訓練前寫入 `configs/features/alpha_tw_v1.json`，之後不改；要改就是新版本、新識別碼。
+   - 內容：沿用 Qlib Alpha158 的算子與視窗家族（K 線形態 9 個；開高低與 VWAP 相對收盤的滯後 0–4；成交量滯後；ROC、MA、STD、BETA、RSQR、RESI、MAX、MIN、QTLU、QTLD、RANK、RSV、IMAX、IMIN、IMXD、CORR、CORD、CNTP、CNTN、CNTD、SUMP、SUMN、SUMD、VMA、VSTD、WVMA、VSUMP、VSUMN、VSUMD × 視窗 5、10、20、30、60），加上台股補充：相對大盤的 5／20／60 日報酬、20 日平均成交值在同日同市場的名次、市場別（TWSE／TPEX）。總數約 170 個。
+   - 只用還原後 OHLCV 與大盤計算，只用訊號日（含）之前的資料。正規化在每個 walk-forward 折內以訓練視窗估計 robust z-score，裁剪至 ±3，缺值補 0；不得用折外資料。
+   - 儲存方式與 rank 標籤相同：每個 store 一份 Parquet，放在 `features/<識別碼>/`，識別碼由 bar store manifest、特徵清單與特徵程式的雜湊組成。GBDT 與 DL 共用同一份。
+4. **Walk-forward**：
+   - 折：以日曆季為單位，第一折 2023-Q1（2023-01-02 起），最後一折 2026-Q2（至 2026-06-01 前有完整標籤的訊號日），共 14 折。
+   - 第 q 折的訓練視窗為 `[2016-01-01, q 起日 − 15 個交易日)`（15 = 最長 horizon 14 加 1，避免標籤與預測期重疊）；視窗最後 12 個月為該折的 validation（早停與選點），其餘為 train。視窗起點固定（擴展視窗）。每折從頭訓練，不沿用前一折的權重。
+   - 每折只用該折視窗內的資料做特徵正規化、早停與選點；該季的預測只來自該折。
+   - 評估期分三段報告：P1 = 2023-01-02 至 2025-05-30（從未被任何模型評估過）、P2 = 2025-06-02 至 2026-05（§13.10、§13.11 已看過的 validation 與 test 期間）、P3 = 2026-06-01 之後（前瞻，另行登記）。
+5. **程序**：
+   1. 在 RunPod CPU 以 `configure --profile tw_only --start 2016-01-01 --end 2026-06-01` 建 selection，再 `cpu-prepare`（開 Pod 前先徵詢使用者）。
+   2. 以新的 CPU 工作（經 `runpod_tmux_launch.sh` 的 research 家族）建立三個 store 的 rank 標籤與特徵庫，下載到本機 `artifacts/`。
+   3. 之後的模型與回測依 §13.13。
 
 判讀限制：
 
-- validation 與 test 都已看過（test 在 §13.10、§13.11 用過）。本節是資料設計的選擇，不是確認性檢驗；最終確認仍以 2026-10-20 之後的前瞻資料為準。
-- 每組只有 seed 42；模型間的差距常小於日 Rank IC 的標準誤（0.01–0.018），所以判定要求兩個樣本方向一致。
-- baseline 的結果不一定適用於 Kronos：Kronos 已在 45 個交易所的資料上預訓練，混合資料對它的影響可能不同。
-- 混合組與只用台股組的選點分數不同（三個市場或兩個市場等權），組間差異不完全來自訓練資料。
-- 2016–2020 年的台股資料沿用相同的清理規則；更早的年份不在本節範圍。
+- 只用台股會失去跨市場的樣本量；若 §13.13 的 DL 在台股上不勝過 LightGBM，不能據此推論混合訓練也不會。
+- 特徵庫是手工固定清單，未做因子篩選；篩選會引入另一層選擇偏誤，本計畫不做。
+- 台股 2016–2020 的清理規則與現有資料相同，但官方來源可能缺少期間內下市的標的（存活者偏誤，同 §13.4）。
+
+#### 13.13 台股橫斷面排序 pipeline：特徵 LightGBM 基線、跨股票 DL、消融與 Top-k dropout 回測（2026-10-22 於實作前寫入）
+
+背景：目標是一個可作為交易策略基準的台股日頻排序模型，並以業界常用的方式驗證：同一組特徵的 GBDT 基線、walk-forward 重訓、Rank IC／ICIR、含成本的 Top-k dropout 組合。依據：Qlib Alpha360 公開基準上跨股票 DL（HIST 0.067、IGMTF 0.061、GATs 0.060）勝過 LightGBM 0.050，純 Transformer 最差 0.033；MASTER（AAAI 2024）報告 Rank IC 0.076 對 XGBoost 0.050，但第三方重現只有 0.030，可重現性風險要靠消融與多 seed 控制；QuantBench 發現 IC 類損失最好、3 個月滾動重訓最好、不重訓最差；Forecast Collapse（arXiv 2608.14106）指出時序基礎模型的目標都是逐序列，加入橫斷面相關項使 IC 大幅提高；Kronos 論文的台股附錄顯示通用時序基礎模型 zero-shot 的台股 Rank IC 約 0。LLM 迴圈挖 alpha 因成本排除；Kronos 不再是 backbone（§13.11）。
+
+1. **模型**（資料、標籤、特徵、walk-forward 皆依 §13.12）：
+   - **B0 `t-lgbm-alpha`（基線，必須先建）**：LightGBM，每個 horizon 一個回歸模型，目標為 gauss-rank 標籤，輸入為特徵庫。超參數在訓練前固定：`num_leaves` 31、`learning_rate` 0.05、`feature_fraction` 0.8、`bagging_fraction` 0.8、`min_data_in_leaf` 200、以該折 validation 的 horizon 等權 Rank IC 早停（50 輪）。seed 42、43、44，報個別與平均集成。若 RunPod CPU 無法安裝 `lightgbm`，改用 scikit-learn `HistGradientBoostingRegressor` 對應參數，並在報告註明。
+   - **D0 `t-xs-scratch`（主模型）**：跨股票 transformer。股票內編碼器（128 個交易日的 OHLCV 視窗，patch transformer）與特徵庫向量側輸入 → 同一訊號日、同一市場的全部股票為一個 batch（沿用 `date_market_sampler`）→ 股票間 attention（1–2 層）→ 市場狀態門控（由該日該市場的橫斷面彙總特徵產生）→ 14 個 horizon 的排序分數。損失 = gauss-rank 標籤的均方誤差 + λ ×（1 − 當日橫斷面 Pearson 相關），λ = 1，訓練前固定。模型維度 128、層數 2 + 2，參數量約 1–3M。seed 42、43、44。
+   - **D1 可抽換編碼器**（只在 D0 完成後做，每個是對 D0 的單因子更動）：契約為輸入 `(B, L, F)` 原始視窗、輸出 `(B, D_enc)`；正規化在 adapter 內部；凍結模式必須把 embedding 依 (symbol, date) 快取成 Parquet，walk-forward 只重訓跨股票模組。順序：`t-xs-kronos-small`（凍結）→ `t-xs-kronos-base-lora`（只在前者有效時）→ `t-xs-chronos2-small`（凍結，Apache-2.0）。TimesFM 2.5 只在預算剩餘時做。
+   - **消融**（對 D0 的單因子更動，seed 42）：A1 關閉股票間 attention；A2 λ = 0（只用均方誤差）；A3 不用特徵庫側輸入；A4 關閉市場狀態門控。
+   - 新的 DL 訓練入口不經過 §13.10 的 baseline 套件契約；它的前置檢查改為確認 B0 的 walk-forward manifest 存在。
+2. **指標**：
+   - 每個（市場、horizon、訊號日）的 Spearman Rank IC，以原報酬計算（同 §13.11）。
+   - 格子：台股短（h = 1）、台股持有（h = 5–10，對應數天到兩週的持有方式）、台股長（h = 11–14）；台股 = TWSE 與 TPEX 等權。另報各市場、各 horizon。
+   - 每格的每日值平均為 Rank IC；每日值的平均除以標準差為 Rank ICIR；另報每日值為正的比例。
+   - 95% 區間：circular moving-block bootstrap，1,000 次、seed 11；區塊長度短 5、持有 20、長 28 個交易日。配對比較在同一訊號日相減後以相同方式計算。
+   - 主要判定期間為 P1 ∪ P2（2023-01-02 至 2026-05，約 830 個訊號日）；P1、P2 分別報告。
+3. **Top-k dropout 回測**（本機 `backtest/`，設定在計分前寫入 `backtest/config/topk_dropout.json`）：
+   - 市場分開：TWSE k = 50、每日換出 5 檔；TPEX k = 30、每日換出 3 檔。每日依前一日收盤的排序分數，在 t+1 開盤賣出持有中排名最後的 n 檔、買入未持有中排名最前的 n 檔；逐部位開盤到開盤記帳（同 §13.5）。
+   - 使用的 horizon 分數：h ∈ {1, 5, 10} 中，以 P1 的 TWSE 淨 IR 最高者；選定後固定用於 P2 與前瞻。
+   - 成本沿用 `backtest/config/stage1.json` 的主要情境（手續費折扣 0.6、滑價 1 倍、保守週轉）；另報折扣 1.0／0.28 與滑價 0／2 倍。
+   - 報告：年化淨超額（相對同市場等權全體）、IR、週轉率、最大回撤；區間為月區塊 bootstrap，1,000 次、seed 11。
+4. **判定**（事先固定；B0、D0 均為三 seed 平均集成）：
+   - **H-A（DL 勝過基線）**：D0 − B0 的配對 Rank IC 差，在台股短格與台股持有格的 95% 區間下界都大於 0，判定期間 P1 ∪ P2。
+   - **H-B（可交易）**：TWSE Top-k dropout 的年化淨超額，主要成本情境下 95% 區間下界大於 0，且 D0 的 IR 不低於 B0。
+   - **H-C（前瞻確認）**：2026-06-01 之後的資料，以既有前瞻管線另行登記判準。
+   - **預訓練編碼器**：D1 各模型對 D0 的配對差，在台股短格或持有格的區間下界大於 0 才算有效；其餘為無效。
+   - **消融**只作描述，用來判斷 D0 的增益來自哪個部件；不設門檻。
+5. **處置**：
+   - H-A 兩格都未通過：B0 成為策略基準（它本身仍須通過 H-B 才算可交易）；DL 只作研究，不投入更多 GPU。
+   - H-A 至少一格通過：D0 為候選模型，進入 D1 與 H-B。
+   - H-B 未通過：排序能力存在但不可交易，回到策略層（換倉頻率、持有天期、成本）而非模型層；H-C 不執行。
+   - H-B 通過：登記 H-C，以 P3 確認。
+6. **程序與順序**（GPU 放最後）：
+   1. §13.12 的資料組、標籤與特徵庫（CPU）。
+   2. B0 walk-forward（RunPod CPU 或本機，worker 數有上限）。
+   3. D0 三 seed（RunPod GPU，RTX 4090 級；14 折 × 3 seed，估計 10–15 小時、約 5–10 美元；開 Pod 前徵詢使用者）。
+   4. 消融 A1–A4（seed 42，估計 8–10 小時）。
+   5. D1 編碼器（凍結模式先算 embedding 快取，之後每折只訓練跨股票模組）。
+   6. Top-k dropout 回測（本機）。
+   7. H-C 登記與前瞻確認。
+   - 每個模型的逐筆 walk-forward 預測保存為 Parquet（P1 ∪ P2 全部訊號日），供本機計分與回測；結果寫成中英雙語報告。
+
+判讀限制：
+
+- P2 已在 §13.10、§13.11 看過，P1 是本計畫第一次評估，但資料準備規則與模型設計都是在看過 P2 的彙總結果後決定的；真正的確認只有 P3。
+- 消融與 D1 只有 seed 42；§13.10 顯示模型間 0.01–0.02 的差距常在雜訊範圍內。
+- 第三方重現 MASTER 只得到原文不到一半的 Rank IC；本計畫的 D0 是依該架構思路自行實作，不保證達到原文數字。
+- TPEX 流動性低，台股 ML 選股的 alpha 常受可投資性限制（Chang、Chiu，SSRN 2026）；回測未模擬成交量上限、整股、最低手續費與股利稅。
+- 若 `lightgbm` 無法安裝而改用 scikit-learn，基線名稱仍為 B0，但與 Qlib 公開基準的可比性下降。
 
 ### 14. 遠端驗證邊界
 
@@ -2095,67 +2119,91 @@ Interpretation limits:
 
 **§13.11 result (2026-10-21)**: H1 passes, Taiwan short cell 0.0642 [0.0271, 0.1015]; H2 fails, Kronos minus PatchTST −0.0022 [−0.0211, 0.0182]; H3 fails, Taiwan long cell 0.0082 [−0.0440, 0.0637]. Under item 6: Taiwan 1-session ranking exists, but Kronos does not beat PatchTST, so the forward confirmation compares the two; seeds 43 and 44 do not run; Taiwan long horizons are not candidates. The selected checkpoint is the first validation, checkpoint-003680 (about 0.2 epoch). The consistency check passed (504 values, largest difference 2.8×10⁻¹⁷). See the [rank model pilot results report](rank_pilot_results.md).
 
-#### 13.12 Training-data scope: US and Taiwan pooled, Taiwan only, longer history (rank baselines; written 2026-10-21 before data preparation and implementation)
+#### 13.12 Training data and feature library for the Taiwan main line (rewritten 2026-10-22 before data preparation and implementation; replaces the `78c257c` draft)
 
 Background:
 
-- **§13.11 results**: Kronos `a-rank64` peaked at the first validation (about 0.2 epoch) with a market-equal Rank IC of 0.060 and did not improve afterwards; the validation rank MSE rose, a sign of overfitting. On test, Taiwan 1 session is 0.064 [0.027, 0.102] and passes, but it does not beat PatchTST (paired difference −0.002 [−0.021, 0.018]); Taiwan 6–14 sessions is 0.008 [−0.044, 0.064] and fails. Every paired difference between Kronos and PatchTST in the six cells crosses 0, so the data-scope question can be answered with baselines first. Taiwan long horizons failed on test for every learned model (validation 0.043–0.076 → test −0.037 to 0.012), while the moving-average crossover rose from 0.030 to 0.063.
-- **Sample mix**: of the 4.71 million group A training samples, US has 3.89 million (82.6%), TWSE 0.55 million (11.6%) and TPEX 0.27 million (5.7%). Every sample's loss counts equally, so about 83% of the loss comes from US stocks, while Taiwan carries two thirds of the selection score.
-- **The two markets differ in predictability**: on validation, every model's Taiwan Rank IC is about 0.07–0.10 and its US Rank IC about 0.02–0.05.
-- **Literature**:
-  - Choi, Jiang and Zhang (Review of Asset Pricing Studies 2025, 32 markets): neural networks trained separately for each market beat one model trained on US data; adding variables built from US firm characteristics improves them further, so markets are only partly integrated.
-  - Hanauer and Kalsbach (Emerging Markets Review 2023): models estimated only on developed-market data predict emerging-market returns almost as well as an emerging-market model (per a third-party summary).
-  - Cakici, Fieberg, Metko and Zaremba (JEDC 2023, 46 markets): machine-learning predictability varies with the number of listed firms and idiosyncratic risk.
-  - Leippold, Wang and Zhou (JFE 2022): liquidity is the most important predictor in China, unlike the US; retail presence raises short-term predictability.
-  - Wang, Dai, Póczos and Carbonell (CVPR 2019): negative transfer can occur when source and target data differ greatly.
-  - In short: pooling can help or hurt depending on the markets, so it must be compared directly on this project's data.
-- **No direct evidence yet that pooling stops the model from learning**: Taiwan validation Rank IC is on par with the other models. The problems are that it does not beat them and that Taiwan long horizons fail during test.
+- **§13.11 results**: Kronos `a-rank64` peaked at the first validation (about 0.2 epoch) with a market-equal Rank IC of 0.060 and did not improve afterwards. On test, Taiwan 1 session is 0.064 [0.027, 0.102] and passes, but it does not beat PatchTST (paired difference −0.002 [−0.021, 0.018]); Taiwan 6–14 sessions is 0.008 [−0.044, 0.064] and fails. Every paired difference between Kronos and PatchTST in the six cells crosses 0. Taiwan long horizons failed on test for every learned model (validation 0.043–0.076 → test −0.037 to 0.012), while the moving-average crossover rose from 0.030 to 0.063.
+- **The literature does not settle pooled versus local training; it depends on market size and model family**: Jiang, Kelly and Xiu (JF 2023; daily chart CNNs in 26 markets) find that a US-trained model applied directly beats local retraining on average (Sharpe 0.69 vs 0.29), but the gains concentrate in markets with fewer than about 300 stocks, while markets with 600–3,000 stocks gain little or lose; Choi, Jiang and Zhang (RAPS 2025; monthly firm characteristics, Taiwan included) find market-specific training better; Cakici and Zaremba (JBF 2026; 45 markets) find the two comparable; Hellum, Pedersen and Rønn-Nielsen (2023) find a single global model better. Taiwan's cleaned universe has about 600 TWSE and 290 TPEX stocks per day, the end of the range where US data help little.
+- **This project's evidence**: about 83% of Kronos's loss came from US stocks, yet its Taiwan validation Rank IC was on par with the other models; pooling is not the current bottleneck, and nothing shows it helps.
+- **Decision (2026-10-22)**: the main line becomes Taiwan only from 2016, and walk-forward retraining replaces single training. The four arms of the earlier draft (pooled / Taiwan only × 2021 / 2016) do not run: they answer a data-engineering question, the target market is Taiwan, and Taiwan only cuts the training data to about one sixth of the pooled set. The US market leaves the main line.
 
-1. **Arms** (rank baselines; models and seed 42 from `configs/baseline.json`; task, labels and selection as in §13.10):
-
-   | Arm | Markets | Training start | Training dataset | Taiwan training samples (about) |
-   | --- | --- | --- | --- | --- |
-   | P-A | US and Taiwan | 2021-01-01 | existing `e385…` (completed in §13.10, not rerun) | 0.82 million |
-   | T-A | Taiwan only | 2021-01-01 | new `tw_only` dataset | 0.82 million |
-   | T-B | Taiwan only | 2016-01-01 | new `tw_only` dataset | 1.63 million |
-   | P-B | US and Taiwan | 2016-01-01 | existing `aa49…` (the shared evaluation dataset, already prepared) | 1.63 million (about 10.6 million in all) |
-
-   - Split boundaries (train to 2025-06-01, validation to 2025-12-01, test to 2026-06-01) and cleaning rules are unchanged.
-   - New data needs two CPU preparations: `tw_only` from 2016 (also the evaluation dataset of the Taiwan-only arms) and `tw_only` from 2021.
-   - Each arm's selection score uses its own markets: three markets weighted equally for pooled arms, TWSE and TPEX weighted equally for Taiwan-only arms. This is part of the treatment.
-2. **Evaluation samples**: only Taiwan (TWSE, TPEX) validation and test rows are compared. Every arm must have the same rows: aligned on (symbol, signal date), the row sets are identical and raw returns differ by at most 10⁻⁶; otherwise scoring stops.
-3. **Metrics**:
-   - The cells are those of §13.11: Taiwan short (h = 1), medium (h = 2–5) and long (h = 6–14). The daily values and the block bootstrap (blocks of 5, 10 and 28 sessions, 1,000 replicates, seed 11) are also the same.
-   - Primary statistic: the mean of the daily values of the 4 learned baselines (GBDT, GRU, DLinear, PatchTST), called the "model average". Each model is listed separately, descriptively.
-   - Rule signals need no training, so their predictions must be identical in every arm; they check sample consistency and take no part in the comparison.
-4. **Comparisons** (on both validation and test):
-   - Pooling effect: T-A − P-A.
-   - History effect: T-B − T-A for Taiwan only, P-B − P-A for pooled.
-   - The interaction (T-B − P-B minus T-A − P-A) is descriptive.
-   - "X beats Y" (for a cell): the model-average paired difference has a mean above 0 on both validation and test, and a 95% interval lower bound above 0 on at least one of them. "X loses to Y" is defined symmetrically. Everything else is "no detectable difference".
-   - Only the short and long cells decide; the medium cell is descriptive.
-5. **Disposition** (the data for the next Kronos rank training; that training is registered separately):
-   - Market scope:
-     - T-A beats P-A in at least one of short and long and loses in neither → Taiwan only.
-     - P-A beats T-A in at least one cell and loses in neither → keep US and Taiwan pooled.
-     - Otherwise (no detectable difference, or mixed) → Taiwan only. Reason: Taiwan is the target market, and with about one sixth of the pooled data Kronos training time and cost fall sharply.
-   - History (T-B against T-A, or P-B against P-A, within the chosen market scope):
-     - 2016 start beats → start in 2016.
-     - 2021 start beats → start in 2021.
-     - No detectable difference → start in 2016. Reason: it covers more market regimes, which may help with regime shifts like the one during test; the cost stays below the current pooled training.
-6. **Procedure**:
-   1. Build the two `tw_only` datasets with CPU preparation.
-   2. Build the T-A, T-B and P-B baselines on RunPod GPU (launched only when the Pod has at least 12 usable CPUs).
-   3. Download each arm's Taiwan validation and test predictions.
-   4. Score locally, with settings written to `backtest/config/data_scope.json` before scoring. Results are written as a bilingual report.
+1. **Dataset**:
+   - Profile `tw_only` (`twse_official` + `tpex_official`), date contract `[2016-01-01, 2026-06-01)`, built with the existing `configure` and `cpu-prepare`; the data-preparation scripts stay frozen and unedited.
+   - Cleaning rules are those of the existing datasets. Storage still follows the fixed split (train to 2025-06-01, validation to 2025-12-01, test to 2026-06-01) as three bar stores; this plan's modelling no longer uses that split (item 4), and all three stores apply the cleaned sample rule used for validation and test.
+   - The control plane gains the experiment group letter `t` (`tw_only`, 2016-01-01 to 2026-06-01); the existing `a`/`b` mean US and Taiwan pooled from 2021/2016 and are not reused.
+   - Expected size: about 1.63 million Taiwan samples (2016 to 2025-05); about 600 TWSE and 290 TPEX stocks per evaluation day.
+2. **Labels**: as in §13.10: the benchmark-relative adjusted log return from the t1 open to the close of session h (h = 1…14) for a signal at the t0 close; rank labels are the gauss-rank within the same signal date and market, with groups under 20 stocks left unlabelled. Grouping depends only on the signal date and market, not on the split, so the label definition is identical across the three stores.
+3. **Feature library (Alpha158-style, hand-written, no LLM generation)**:
+   - The list is written to `configs/features/alpha_tw_v1.json` before any model trains and is not changed afterwards; a change is a new version with a new identity.
+   - Content: the operator and window families of Qlib's Alpha158 (9 candlestick shapes; open, high, low and VWAP relative to the close at lags 0–4; volume lags; ROC, MA, STD, BETA, RSQR, RESI, MAX, MIN, QTLU, QTLD, RANK, RSV, IMAX, IMIN, IMXD, CORR, CORD, CNTP, CNTN, CNTD, SUMP, SUMN, SUMD, VMA, VSTD, WVMA, VSUMP, VSUMN and VSUMD over windows 5, 10, 20, 30 and 60), plus Taiwan additions: benchmark-relative 5/20/60-session returns, the within-date, within-market rank of 20-session mean dollar volume, and the market indicator (TWSE/TPEX). About 170 features in all.
+   - Computed only from adjusted OHLCV and the benchmark, using data up to and including the signal date. Normalization is a robust z-score estimated on each walk-forward fold's training window, clipped to ±3, with missing values set to 0; no data outside the fold may be used.
+   - Stored like the rank labels: one Parquet store per bar store under `features/<identity>/`, where the identity hashes the bar-store manifest, the feature list and the feature code. GBDT and DL share the same store.
+4. **Walk-forward**:
+   - Folds are calendar quarters: the first is 2023-Q1 (from 2023-01-02) and the last 2026-Q2 (signal dates with complete labels before 2026-06-01), 14 folds in all.
+   - Fold q trains on `[2016-01-01, start of q − 15 sessions)` (15 = the longest horizon, 14, plus 1, so labels never overlap the prediction period); the last 12 months of that window are the fold's validation (early stopping and checkpoint selection) and the rest is train. The window start is fixed (expanding window). Every fold trains from scratch, without the previous fold's weights.
+   - Feature normalization, early stopping and selection use only data inside the fold's window; the quarter's predictions come only from that fold.
+   - Evaluation periods are reported in three parts: P1 = 2023-01-02 to 2025-05-30 (never evaluated by any model), P2 = 2025-06-02 to 2026-05 (the validation and test periods already seen in §13.10 and §13.11) and P3 = after 2026-06-01 (forward, registered separately).
+5. **Procedure**:
+   1. On RunPod CPU, create the selection with `configure --profile tw_only --start 2016-01-01 --end 2026-06-01`, then run `cpu-prepare` (ask the user before creating the Pod).
+   2. Build the rank labels and the feature library for the three stores with a new CPU job (the research family of `runpod_tmux_launch.sh`) and download them to the local `artifacts/`.
+   3. Models and backtests follow §13.13.
 
 Interpretation limits:
 
-- Validation and test have both been seen (test was used in §13.10 and §13.11). This section chooses a data design and is not a confirmatory test; final confirmation still uses data after 2026-10-20.
-- One seed per arm; differences between models are often below the standard error of the daily Rank IC (0.01–0.018), so a decision requires the same direction on both samples.
-- Baseline results may not carry over to Kronos: Kronos was pretrained on data from 45 exchanges, and pooling may affect it differently.
-- Pooled and Taiwan-only arms use different selection scores (three or two markets weighted equally), so differences between arms do not come from training data alone.
-- Taiwan data for 2016–2020 uses the same cleaning rules; earlier years are outside this section.
+- Taiwan only gives up the cross-market sample size; if the §13.13 DL model does not beat LightGBM on Taiwan, that does not show pooled training would fail too.
+- The feature library is a fixed hand-written list with no factor screening; screening would add another layer of selection bias and is out of scope.
+- Taiwan data for 2016–2020 use the same cleaning rules, but the official sources may lack stocks delisted during the period (survivorship bias, as in §13.4).
+
+#### 13.13 Taiwan cross-sectional ranking pipeline: feature LightGBM baseline, cross-stock DL, ablations and top-k dropout backtest (written 2026-10-22 before implementation)
+
+Background: the goal is a Taiwan daily ranking model that can serve as the basis of a trading strategy, validated the way practitioners do: a GBDT baseline on the same features, walk-forward retraining, Rank IC and ICIR, and a top-k dropout portfolio with costs. Evidence: on the public Qlib Alpha360 benchmark, cross-stock DL (HIST 0.067, IGMTF 0.061, GATs 0.060) beats LightGBM 0.050 and the plain Transformer is worst at 0.033; MASTER (AAAI 2024) reports Rank IC 0.076 against XGBoost 0.050, but a third-party reproduction reached only 0.030, so the reproducibility risk is controlled with ablations and multiple seeds; QuantBench finds IC-type losses best and 3-month rolling retraining best, with no retraining worst; Forecast Collapse (arXiv 2608.14106) shows that time-series foundation models optimize per-series objectives and that a cross-sectional correlation term raises IC substantially; the Taiwan appendix of the Kronos paper shows generic time-series foundation models at about 0 zero-shot Rank IC on Taiwan. LLM-in-the-loop alpha mining is excluded on cost; Kronos is no longer the backbone (§13.11).
+
+1. **Models** (data, labels, features and walk-forward as in §13.12):
+   - **B0 `t-lgbm-alpha` (baseline, built first)**: LightGBM, one regressor per horizon, target the gauss-rank label, inputs the feature library. Hyperparameters fixed before training: `num_leaves` 31, `learning_rate` 0.05, `feature_fraction` 0.8, `bagging_fraction` 0.8, `min_data_in_leaf` 200, early stopping (50 rounds) on the fold validation's horizon-equal Rank IC. Seeds 42, 43 and 44, reported individually and as the mean ensemble. If `lightgbm` cannot be installed on RunPod CPU, scikit-learn's `HistGradientBoostingRegressor` with matching parameters is used and the report says so.
+   - **D0 `t-xs-scratch` (main model)**: a cross-stock transformer. An intra-stock encoder (patch transformer over the 128-session OHLCV window) with the feature-library vector as a side input → all stocks of one signal date and market as one batch (the existing `date_market_sampler`) → inter-stock attention (1–2 layers) → market-state gating (from that date's and market's cross-sectional feature summary) → ranking scores for 14 horizons. Loss = mean squared error on the gauss-rank labels + λ × (1 − the date's cross-sectional Pearson correlation), λ = 1, fixed before training. Model width 128, 2 + 2 layers, about 1–3M parameters. Seeds 42, 43 and 44.
+   - **D1 pluggable encoders** (only after D0 is done; each is a single-factor change to D0): the contract is raw window `(B, L, F)` in, `(B, D_enc)` out; normalization lives inside each adapter; frozen encoders must cache embeddings per (symbol, date) as Parquet, so walk-forward refits train only the cross-stock module. Order: `t-xs-kronos-small` (frozen) → `t-xs-kronos-base-lora` (only if the former is effective) → `t-xs-chronos2-small` (frozen, Apache-2.0). TimesFM 2.5 only if budget remains.
+   - **Ablations** (single-factor changes to D0, seed 42): A1 inter-stock attention off; A2 λ = 0 (mean squared error only); A3 no feature side input; A4 market-state gating off.
+   - The new DL training entry does not go through the §13.10 baseline-suite contract; its preflight instead checks that B0's walk-forward manifest exists.
+2. **Metrics**:
+   - The Spearman Rank IC per (market, horizon, signal date), computed on raw returns (as in §13.11).
+   - Cells: Taiwan short (h = 1), Taiwan holding (h = 5–10, matching holding periods of days to two weeks) and Taiwan long (h = 11–14); Taiwan weights TWSE and TPEX equally. Each market and horizon is also reported.
+   - A cell's Rank IC is the mean of its daily values; Rank ICIR is that mean divided by the standard deviation of the daily values; the share of positive days is also reported.
+   - 95% intervals: circular moving-block bootstrap, 1,000 replicates, seed 11; block length 5 sessions for short, 20 for holding and 28 for long. Paired comparisons subtract on the same signal dates and use the same method.
+   - The primary decision period is P1 ∪ P2 (2023-01-02 to 2026-05, about 830 signal dates); P1 and P2 are also reported separately.
+3. **Top-k dropout backtest** (local `backtest/`, settings written to `backtest/config/topk_dropout.json` before scoring):
+   - Markets separately: TWSE k = 50 with 5 replaced per day; TPEX k = 30 with 3 replaced per day. Each day, by the previous close's ranking score, the n lowest-ranked holdings are sold and the n highest-ranked non-holdings bought at the t+1 open; per-position open-to-open accounting (as in §13.5).
+   - The horizon score used: the h in {1, 5, 10} with the highest TWSE net IR on P1; once chosen it is fixed for P2 and the forward period.
+   - Costs follow the primary scenario of `backtest/config/stage1.json` (commission discount 0.6, slippage ×1, conservative turnover); discounts 1.0 and 0.28 and slippage ×0 and ×2 are also reported.
+   - Reported: annualized net excess (over the same market's equal-weight universe), IR, turnover and maximum drawdown; intervals from a monthly-block bootstrap, 1,000 replicates, seed 11.
+4. **Decisions** (fixed beforehand; B0 and D0 are three-seed mean ensembles):
+   - **H-A (DL beats the baseline)**: the paired Rank IC difference D0 − B0 has a 95% interval lower bound above 0 in both the Taiwan short and the Taiwan holding cells, over P1 ∪ P2.
+   - **H-B (tradeable)**: the TWSE top-k dropout annualized net excess has a 95% interval lower bound above 0 under the primary cost scenario, and D0's IR is not below B0's.
+   - **H-C (forward confirmation)**: data after 2026-06-01 through the existing forward pipeline, with criteria registered separately.
+   - **Pretrained encoders**: a D1 model counts as effective only if its paired difference against D0 has an interval lower bound above 0 in the Taiwan short or holding cell; otherwise it is ineffective.
+   - **Ablations** are descriptive, to attribute D0's gain to its parts; no thresholds.
+5. **Disposition**:
+   - H-A fails in both cells: B0 becomes the strategy baseline (it must still pass H-B to count as tradeable); DL stays research and gets no more GPU.
+   - H-A passes in at least one cell: D0 is the candidate model and proceeds to D1 and H-B.
+   - H-B fails: ranking skill exists but is not tradeable; work returns to the strategy layer (rotation frequency, holding period, costs), not the model; H-C does not run.
+   - H-B passes: H-C is registered and confirmed on P3.
+6. **Procedure and order** (GPU last):
+   1. The §13.12 dataset, labels and feature library (CPU).
+   2. B0 walk-forward (RunPod CPU or local, with a bounded number of workers).
+   3. D0 with three seeds (RunPod GPU, RTX 4090 class; 14 folds × 3 seeds, estimated 10–15 hours and about 5–10 USD; ask the user before creating the Pod).
+   4. Ablations A1–A4 (seed 42, estimated 8–10 hours).
+   5. D1 encoders (frozen modes first build the embedding cache, then each fold trains only the cross-stock module).
+   6. Top-k dropout backtest (local).
+   7. H-C registration and forward confirmation.
+   - Every model's per-sample walk-forward predictions are stored as Parquet (all signal dates of P1 ∪ P2) for local scoring and backtests; results are written as bilingual reports.
+
+Interpretation limits:
+
+- P2 was seen in §13.10 and §13.11, and P1 is evaluated for the first time here, but the data rules and model design were decided after seeing P2's aggregate results; only P3 is a true confirmation.
+- Ablations and D1 use seed 42 only; §13.10 shows that 0.01–0.02 differences between models are often within noise.
+- A third-party reproduction of MASTER reached less than half the paper's Rank IC; D0 is an independent implementation of that design and is not guaranteed to reach the paper's numbers.
+- TPEX liquidity is low, and machine-learning stock selection alpha in Taiwan is often limited by investability (Chang and Chiu, SSRN 2026); the backtest does not model volume caps, round lots, minimum commissions or dividend taxes.
+- If `lightgbm` cannot be installed and scikit-learn is used instead, the baseline is still B0, but comparability with the public Qlib benchmark falls.
 
 ### 14. Remote-validation boundary
 
