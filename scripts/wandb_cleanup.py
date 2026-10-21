@@ -80,6 +80,9 @@ def list_inventory(api, entity: str, project: str) -> dict:
         )
     collections = []
     for artifact_type in api.artifact_types(project=path):
+        # W&B refuses to delete its own run history/events sequences; they go with the runs.
+        if artifact_type.name.startswith("wandb-"):
+            continue
         for collection in artifact_type.collections():
             versions = 0
             with_versions = getattr(collection, "artifacts", None)
@@ -128,6 +131,8 @@ def delete_inventory(api, inventory: dict, *, apply: bool) -> int:
             failures += 1
             print(f"  FAILED run {run['id']}: {type(error).__name__}: {error}", file=sys.stderr)
     for artifact_type in api.artifact_types(project=path):
+        if artifact_type.name.startswith("wandb-"):
+            continue
         for collection in artifact_type.collections():
             if not any(c["name"] == collection.name and c["type"] == artifact_type.name
                        for c in collections):
