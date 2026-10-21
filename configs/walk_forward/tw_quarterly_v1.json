@@ -1,0 +1,16 @@
+{
+  "schema": "walk-forward-schedule-v1",
+  "name": "tw_quarterly_v1",
+  "description": "Quarterly expanding-window walk-forward for the Taiwan main line (experiment protocol 13.12 item 4).",
+  "calendar": "XTAI",
+  "train_start": "2016-01-01",
+  "data_end": "2026-06-01",
+  "first_quarter": "2023Q1",
+  "last_quarter": "2026Q2",
+  "embargo_sessions": 15,
+  "validation_months": 12,
+  "periods": {
+    "P1": ["2023-01-01", "2025-06-01"],
+    "P2": ["2025-06-01", "2026-06-01"]
+  }
+}

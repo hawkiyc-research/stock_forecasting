@@ -1,0 +1,23 @@
+{
+  "schema": "alpha-tw-feature-library-v1",
+  "name": "alpha_tw_v1",
+  "description": "Hand-written Alpha158-style price/volume features plus Taiwan additions (experiment protocol 13.12 item 3). Fixed before any model trained on it; a change is a new version.",
+  "epsilon": 1e-12,
+  "vwap_proxy": "typical_price_(high+low+close)/3",
+  "kbar": ["KMID", "KLEN", "KMID2", "KUP", "KUP2", "KLOW", "KLOW2", "KSFT", "KSFT2"],
+  "price": {"fields": ["OPEN", "HIGH", "LOW", "VWAP"], "lags": [0, 1, 2, 3, 4]},
+  "volume": {"lags": [1, 2, 3, 4]},
+  "rolling": {
+    "operators": [
+      "ROC", "MA", "STD", "BETA", "RSQR", "RESI", "MAX", "MIN", "QTLU", "QTLD", "RANK", "RSV",
+      "IMAX", "IMIN", "IMXD", "CORR", "CORD", "CNTP", "CNTN", "CNTD", "SUMP", "SUMN", "SUMD",
+      "VMA", "VSTD", "WVMA", "VSUMP", "VSUMN", "VSUMD"
+    ],
+    "windows": [5, 10, 20, 30, 60]
+  },
+  "taiwan": {
+    "relative_return_windows": [5, 20, 60],
+    "dollar_volume_rank_window": 20,
+    "market_indicator": "TPEX"
+  }
+}
