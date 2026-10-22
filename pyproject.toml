@@ -22,6 +22,8 @@ dependencies = [
     "scikit-learn>=1.6,<2.0",
     # B0 walk-forward baseline (protocol 13.13); sklearn's HistGradientBoosting is the fallback.
     "lightgbm>=4.5,<5.0",
+    # D1 frozen Chronos-2 encoder (protocol 13.13); Apache-2.0 weights autogluon/chronos-2-small.
+    "chronos-forecasting>=2.0,<3.0",
     "requests>=2.32,<3.0",
     "tqdm>=4.67,<5.0",
 ]
@@ -45,6 +47,7 @@ stock-forecasting-prepare-auxiliary = "stock_forecasting.cli.prepare_auxiliary_d
 stock-forecasting-tw-information-test = "stock_forecasting.cli.tw_information_test:main"
 stock-forecasting-build-features = "stock_forecasting.cli.build_features:main"
 stock-forecasting-walk-forward-lgbm = "stock_forecasting.cli.walk_forward_lgbm:main"
+stock-forecasting-train-cross-stock = "stock_forecasting.cli.train_cross_stock:main"
 
 [tool.poetry]
 packages = [{ include = "stock_forecasting", from = "src" }]

@@ -18,6 +18,13 @@
   摘要（block bootstrap 區間）；`runpod_workflow.sh lgbm`／`cpu-lgbm`／
   `download-lgbm` 為對應的 Pod、tmux 與下載入口，lifecycle 標記
   `lifecycle/research/lgbm.json`。
+- 新增 §13.13 的 cross-stock transformer：`models/cross_stock.py`（patch 編碼器、inter-stock
+  attention、market-state gating、MSE＋橫斷面相關 loss）、`cross_stock_training.py`
+  （同日同市場 batch 的 walk-forward 訓練、B0 同格式輸出、D − B0 配對 bootstrap 與 H-A 判定）、
+  `data/xs_cache.py`（每個 split 的視窗／特徵／標籤 memmap 快取）、`encoders.py`（凍結
+  Kronos-small 與 Chronos-2-small 轉接器與 embedding 快取）；`runpod_workflow.sh xs-train`／
+  `xs-train` tmux／`download-xs` 為 GPU Pod 入口，lifecycle 標記
+  `lifecycle/research/xs-train.json`。
 
 ### v0.2.2 2026-09-21
 
@@ -98,6 +105,14 @@
   Rank IC and the cell summary with block-bootstrap intervals; `runpod_workflow.sh lgbm`,
   `cpu-lgbm` and `download-lgbm` are the Pod, tmux and download entries, with the
   lifecycle marker `lifecycle/research/lgbm.json`.
+- Protocol §13.13 cross-stock transformer: `models/cross_stock.py` (patch encoder, inter-stock
+  attention, market-state gating, MSE + cross-sectional correlation loss),
+  `cross_stock_training.py` (walk-forward training on date/market batches, B0-compatible
+  outputs, the D − B0 paired bootstrap and the H-A decision), `data/xs_cache.py` (per-split
+  window/feature/label memory maps) and `encoders.py` (frozen Kronos-small and Chronos-2-small
+  adapters with embedding caches); `runpod_workflow.sh xs-train`, the `xs-train` tmux workflow
+  and `download-xs` are the GPU Pod entries, with the lifecycle marker
+  `lifecycle/research/xs-train.json`.
 
 ### v0.2.2 2026-09-21
 

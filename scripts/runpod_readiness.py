@@ -52,6 +52,8 @@ GUARD_LIFECYCLE_KINDS = frozenset(
         "research-features",
         # The LightGBM walk-forward baseline (protocol 13.13) shares it as well.
         "research-lgbm",
+        # Cross-stock GPU experiments (protocol 13.13) use the gpu-train role.
+        "research-xs-train",
         # Forward input packages (protocol 13.8) are prepared apart from any training dataset.
         "forward-cpu-preparation",
     }
@@ -2133,6 +2135,7 @@ def command_write_state(arguments):
         ),
         "research-features": volume_root / "lifecycle" / "research" / "features.json",
         "research-lgbm": volume_root / "lifecycle" / "research" / "lgbm.json",
+        "research-xs-train": volume_root / "lifecycle" / "research" / "xs-train.json",
         "forward-cpu-preparation": (
             volume_root / "lifecycle" / "forward" / "cpu-preparation.json"
         ),

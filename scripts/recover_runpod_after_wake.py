@@ -281,6 +281,9 @@ def expected_lifecycle(pod: dict[str, Any]) -> tuple[str, str] | None:
             return "research-lgbm", "lifecycle/research/lgbm.json"
         return kind, key
     if role in GPU_ROLES:
+        # Cross-stock experiments share the gpu-train role but own a research marker.
+        if role == "gpu-train" and env.get("RUNPOD_GPU_WORKFLOW") == "xs":
+            return "research-xs-train", "lifecycle/research/xs-train.json"
         if env.get("RUNPOD_SCOPED_LIFECYCLE") == "1" and role in {"gpu-train", "gpu-validation"}:
             run_id = env.get("WANDB_RUN_ID", "")
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", run_id) or "--" in run_id:

@@ -91,7 +91,7 @@ done
 
 if [[ $# -lt 1 || ( "$1" != "probe-scales" && "$1" != "export-signal-predictions" && $# -ne 1 \
     && ! ( "$1" == "verify-full-workflow" && $# -eq 2 && "$2" == "--regression-only" ) ) ]]; then
-    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|xs-train|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
     exit 2
 fi
 if [[ "${LOG_ROOT}" != "${NETWORK_VOLUME_ROOT}/logs" ]]; then
@@ -164,6 +164,18 @@ case "$1" in
         JOB_TIMEOUT_GRACE_SECONDS=0
         FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/research/lgbm.json"
         FAILURE_LIFECYCLE_KIND=research-lgbm
+        ;;
+    xs-train)
+        # GPU cross-stock experiments (protocol 13.13): the gpu-train role and lease, but a
+        # research marker and no W&B run, checkpoint or training marker.
+        SESSION_NAME=stock-forecasting-xs-train
+        JOB_SCRIPT="${SCRIPT_DIR}/runpod_gpu_xs.sh"
+        JOB_ROLE=gpu-train
+        MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-86400}"
+        JOB_TIMEOUT_GRACE_SECONDS=300
+        FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/research/xs-train.json"
+        FAILURE_LIFECYCLE_KIND=research-xs-train
+        RUN_DIRECTORY_ID="xs-${RUNPOD_LAUNCH_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
         ;;
     stage1-train)
         SESSION_NAME=stock-forecasting-train
@@ -284,7 +296,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|xs-train|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
         exit 2
         ;;
 esac

@@ -47,6 +47,8 @@ Usage:
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
   bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
+  bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID]
+  bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
   bash scripts/runpod_workflow.sh volume-weights inventory|delete [OPTIONS]
   bash scripts/runpod_workflow.sh cpu-logs
 EOF
@@ -543,6 +545,49 @@ EOF
         unset RUNPOD_CPU_PREPARE_MODE RUNPOD_FORWARD_END
         exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
         ;;
+    xs-train)
+        # Cross-stock transformer experiments on a GPU Pod (protocol 13.13 D0/A1-A4/D1).
+        xs_experiment=t-xs-scratch
+        xs_seeds=()
+        xs_max_runtime=24h
+        xs_gpu_id="NVIDIA GeForce RTX 5090"
+        while [[ $# -gt 0 ]]; do
+            [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+            case "$1" in
+                --experiment) xs_experiment="$2" ;;
+                --seed) xs_seeds+=("$2") ;;
+                --maxRuntime|--max-runtime) xs_max_runtime="$2" ;;
+                --gpuId|--gpu-id) xs_gpu_id="$2" ;;
+                *)
+                    echo "Unknown xs-train option: $1" >&2
+                    usage
+                    exit 2
+                    ;;
+            esac
+            shift 2
+        done
+        if [[ ! "${xs_experiment}" =~ ^t-xs-[a-z0-9-]+$ ]]; then
+            echo "--experiment must name a t-xs-* experiment" >&2
+            exit 2
+        fi
+        if [[ ${#xs_seeds[@]} -eq 0 ]]; then
+            xs_seeds=(42 43 44)
+        fi
+        for xs_seed in "${xs_seeds[@]}"; do
+            if [[ ! "${xs_seed}" =~ ^[0-9]+$ ]]; then
+                echo "--seed requires a non-negative integer" >&2
+                exit 2
+            fi
+        done
+        runpod_validate_gpu_id "${xs_gpu_id}"
+        xs_max_seconds="$(runpod_duration_seconds "${xs_max_runtime}" --maxRuntime)"
+        export RUNPOD_CLI_MAX_RUNTIME_SECONDS="${xs_max_seconds}"
+        export RUNPOD_CLI_HARD_LIMIT_SECONDS="$((xs_max_seconds + 3600))"
+        export RUNPOD_CLI_GPU_ID="${xs_gpu_id}"
+        export RUNPOD_XS_EXPERIMENT="${xs_experiment}"
+        export RUNPOD_XS_SEEDS="${xs_seeds[*]}"
+        exec env RUNPOD_GPU_WORKFLOW=xs bash "${SCRIPT_DIR}/create_runpod_pod.sh"
+        ;;
     readiness)
         if [[ $# -eq 3 && "$1" == "--baseline" && "$2" == "--experiment" ]]; then
             case "$3" in
@@ -700,6 +745,9 @@ EOF
         ;;
     download-lgbm)
         exec bash "${SCRIPT_DIR}/download_runpod_lgbm.sh" "$@"
+        ;;
+    download-xs)
+        exec bash "${SCRIPT_DIR}/download_runpod_xs.sh" "$@"
         ;;
     volume-weights)
         exec bash "${SCRIPT_DIR}/runpod_volume_weights.sh" "$@"

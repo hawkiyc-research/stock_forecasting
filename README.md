@@ -2889,6 +2889,51 @@ worker 數預設取以下兩者的較小值，最多 32：
    `predictions.parquet`、`targets.parquet`、`daily_rank_ic.parquet`、`fits.parquet` 與 log）；
    工作仍在執行回傳 3，manifest 不存在回傳 4。
 
+9. **建立 cross-stock GPU Pod（本機）**：協定 §13.13 的 D0 `t-xs-scratch`、消融 A1–A4 與
+   D1 凍結編碼器，一個實驗一台 Pod；需要同一 volume 上已完成的 B0（配對 H-A 判定用）。
+
+   ```bash
+   bash scripts/runpod_workflow.sh xs-train --experiment t-xs-scratch
+   ```
+
+   `--experiment` 可選 `t-xs-scratch`（D0）、`t-xs-a1-no-cross`、`t-xs-a2-mse-only`、
+   `t-xs-a3-no-features`、`t-xs-a4-no-gating`（A1–A4，建議各加 `--seed 42`）、
+   `t-xs-kronos-small`、`t-xs-chronos2-small`（D1，凍結編碼器）；`--seed N` 可重複，預設
+   42／43／44；`--maxRuntime` 預設 `24h`；`--gpuId` 預設 RTX 5090。
+
+10. **在 Pod 內啟動**：SSH 登入後執行：
+
+    ```bash
+    cd /runpod-volume/stock_forecasting
+    bash scripts/runpod_tmux_launch.sh xs-train
+    ```
+
+    工作先跑 cross-stock 測試，為每個 split 建一次 cross-stock 快取（128 根調整後 OHLCV
+    視窗、183 欄特徵、gauss-rank 標籤、原始 alpha 目標，memmap，有界 spawn pool 建立，之後
+    所有 fold／seed／消融共用），D1 實驗另外以凍結編碼器把每個樣本 embedding 一次並快取
+    （`xs-cache/<identity>/embeddings/<encoder>/`，含 (symbol, cutoff) 索引）。模型：intra-stock
+    patch transformer（patch 8、d 128、2 層）＋特徵側輸入 → 同日同市場所有股票為一個 batch →
+    inter-stock attention（2 層）→ market-state gating → 14 個 horizon 分數；loss = MSE（gauss-rank
+    標籤）＋ λ(1 − 當日橫斷面 Pearson 相關)，λ = 1。訓練參數在實作前固定：AdamW lr 5e-4、
+    weight decay 1e-4、最多 20 epoch、以 fold validation 的每日 Rank IC 早停（patience 4）、
+    gradient clip 1.0、CUDA 上 bf16 autocast；整個樣本表放進 GPU 記憶體（放不下時留在 pinned
+    host memory 逐 batch 搬），因此不使用 DataLoader worker。輸出與 B0 同格式，另加
+    `paired_vs_baseline`（D − B0 的配對 Rank IC 差與 block bootstrap 區間）與 H-A 判定，寫到
+    `/runpod-volume/diagnostics/xs/<launch-id>/`，發布 `lifecycle/research/xs-train.json` 後 Pod
+    自行終止。進度：
+
+    ```bash
+    tmux -L stock-forecasting-xs-train attach -t stock-forecasting-xs-train
+    ```
+
+11. **下載結果（本機）**：
+
+    ```bash
+    bash scripts/runpod_workflow.sh download-xs
+    ```
+
+    存於 `artifacts/xs/<launch-id>/`；`results.json` 的 `decision` 即 H-A 結論。
+
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
 worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
 記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
@@ -2959,6 +3004,8 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `download-features [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/features.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。依 store manifest 的 SHA-256 核對後存於 `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`；仍在執行回傳 3，manifest 缺少回傳 4；`RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` 調整並行數；`-h`／`--help` 顯示說明 |
 | `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | 建立 B0 LightGBM walk-forward 基線的 CPU Pod（協定 §13.13），使用 active selection 已建好的特徵庫與 rank 標籤；不抓行情，不需 secret。`--maxRuntime D` 預設 `24h`（上限，工作結束 Pod 即終止）；`--cpuNumber N` 預設 `16`；`--cpuFlavor F` 預設 `cpu3g`。Pod 內以 `runpod_tmux_launch.sh cpu-lgbm` 啟動；`FIN_TS_LGBM_WORKERS` 可設訓練 process 上限 |
 | `download-lgbm [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/lgbm.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。依 manifest 的 SHA-256 核對後存於 `artifacts/lgbm/<launch-id>/`；仍在執行回傳 3，manifest 缺少回傳 4；`-h`／`--help` 顯示說明 |
+| `xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime D] [--gpuId ID]` | 建立 cross-stock transformer 實驗的 GPU Pod（協定 §13.13 D0／A1–A4／D1），使用 active selection 的資料與已建好的特徵庫、rank 標籤與 B0 結果。`--experiment` 預設 `t-xs-scratch`，可選 `t-xs-a1-no-cross`、`t-xs-a2-mse-only`、`t-xs-a3-no-features`、`t-xs-a4-no-gating`、`t-xs-kronos-small`、`t-xs-chronos2-small`；`--seed` 可重複，預設 42／43／44；`--maxRuntime` 預設 `24h`；`--gpuId` 預設 `NVIDIA GeForce RTX 5090`。Pod 內以 `runpod_tmux_launch.sh xs-train` 啟動 |
+| `download-xs [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/xs-train.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。依 manifest 的 SHA-256 核對後存於 `artifacts/xs/<launch-id>/`；仍在執行回傳 3，manifest 缺少回傳 4；`-h`／`--help` 顯示說明 |
 | `volume-weights inventory [--output JSON]` | 列出 volume 上 `savedModel/` 的 checkpoint 權重（`adapter.safetensors`、`optimizer.pt`、`scheduler.pt`）、`baselines/` 的模型檔（`.pkl`、`.pt`）與 `diagnostics/*-predictions/` 的逐筆預測匯出，依 run／baseline 顯示大小，並把確切 key 寫入 `artifacts/audit/volume-weight-inventory-<時間>.json`；紀錄檔（metrics、manifest、leaderboard、評估陣列、報告）只列為保留 |
 | `volume-weights delete --inventory JSON --category weights\|exports [--apply] [--workers N]` | 只刪除該 inventory 中一個類別的 key；不加 `--apply` 只計數。每個物件一次 `s3 rm`，wrapper 只在 `RUNPOD_S3_ALLOW_DELETE=1` 且 key 符合權重或匯出樣式時放行，資料組、紀錄與預訓練模型快取永遠不會被刪 |
 
@@ -7187,6 +7234,55 @@ the last 12 months of each window as validation) and come from
    `fits.parquet` and the logs); exits 3 while the job is running and 4 when the manifest is
    missing.
 
+9. **Create the cross-stock GPU Pod (local)**: D0 `t-xs-scratch`, the ablations A1–A4 and the
+   D1 frozen encoders of protocol §13.13, one experiment per Pod; the finished B0 on the same
+   volume is required for the paired H-A decision.
+
+   ```bash
+   bash scripts/runpod_workflow.sh xs-train --experiment t-xs-scratch
+   ```
+
+   `--experiment` accepts `t-xs-scratch` (D0), `t-xs-a1-no-cross`, `t-xs-a2-mse-only`,
+   `t-xs-a3-no-features`, `t-xs-a4-no-gating` (A1–A4, each with `--seed 42`),
+   `t-xs-kronos-small` and `t-xs-chronos2-small` (D1, frozen encoders); `--seed N` repeats and
+   defaults to 42/43/44; `--maxRuntime` defaults to `24h`; `--gpuId` defaults to the RTX 5090.
+
+10. **Start inside the Pod**: after SSH login, run:
+
+    ```bash
+    cd /runpod-volume/stock_forecasting
+    bash scripts/runpod_tmux_launch.sh xs-train
+    ```
+
+    The job runs the cross-stock tests, builds each split's cross-stock cache once (the 128
+    adjusted OHLCV bars, the 183 feature columns, the gauss-rank labels and the raw alpha targets
+    as memory maps, built by a bounded spawn pool and shared by every fold, seed and ablation),
+    and for D1 experiments embeds every sample once with the frozen encoder and caches it under
+    `xs-cache/<identity>/embeddings/<encoder>/` with a (symbol, cutoff) index. Model: intra-stock
+    patch transformer (patch 8, width 128, 2 layers) plus the feature side input → all stocks of
+    one date and market as one batch → inter-stock attention (2 layers) → market-state gating →
+    14 horizon scores; loss = MSE on the gauss-rank labels + λ(1 − the date's cross-sectional
+    Pearson correlation), λ = 1. Training parameters fixed before training: AdamW lr 5e-4, weight
+    decay 1e-4, at most 20 epochs, early stopping on the fold validation's daily Rank IC
+    (patience 4), gradient clip 1.0, bf16 autocast on CUDA; the whole sample table lives in GPU
+    memory (or pinned host memory gathered per batch when it does not fit), so no DataLoader
+    workers are involved. Outputs match B0's files, plus `paired_vs_baseline` (the D − B0 paired
+    Rank IC difference with block-bootstrap intervals) and the H-A decision, under
+    `/runpod-volume/diagnostics/xs/<launch-id>/`; the Pod publishes
+    `lifecycle/research/xs-train.json` and terminates itself. To watch:
+
+    ```bash
+    tmux -L stock-forecasting-xs-train attach -t stock-forecasting-xs-train
+    ```
+
+11. **Download the results (local)**:
+
+    ```bash
+    bash scripts/runpod_workflow.sh download-xs
+    ```
+
+    Saved under `artifacts/xs/<launch-id>/`; `decision` in `results.json` is the H-A verdict.
+
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the
 worker count in flight; the worker count is the smallest of `FIN_TS_RANK_LABEL_WORKERS`
 (default 8), the visible CPUs minus one, and 40% of available memory divided by one worker's
@@ -7260,6 +7356,8 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `download-features [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/features.json`; a `launch-...` ID selects another. Verified against the store manifests' SHA-256 and saved under `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`; exits 3 while running and 4 when the manifest is missing; `RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` bounds parallel transfers; `-h`/`--help` shows help |
 | `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | Create the CPU Pod of the B0 LightGBM walk-forward baseline (protocol §13.13) on the active selection's built feature library and rank labels; fetches no market data and needs no secret. `--maxRuntime D` defaults to `24h` (an upper bound; the Pod ends with the job); `--cpuNumber N` defaults to `16`; `--cpuFlavor F` defaults to `cpu3g`. Start it inside the Pod with `runpod_tmux_launch.sh cpu-lgbm`; `FIN_TS_LGBM_WORKERS` caps the training processes |
 | `download-lgbm [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/lgbm.json`; a `launch-...` ID selects another. Verified against the manifest's SHA-256 and saved under `artifacts/lgbm/<launch-id>/`; exits 3 while running and 4 when the manifest is missing; `-h`/`--help` shows help |
+| `xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime D] [--gpuId ID]` | Create the GPU Pod of one cross-stock transformer experiment (protocol §13.13 D0/A1–A4/D1) on the active selection's dataset, built feature library, rank labels and B0 results. `--experiment` defaults to `t-xs-scratch`; also `t-xs-a1-no-cross`, `t-xs-a2-mse-only`, `t-xs-a3-no-features`, `t-xs-a4-no-gating`, `t-xs-kronos-small`, `t-xs-chronos2-small`; `--seed` repeats and defaults to 42/43/44; `--maxRuntime` defaults to `24h`; `--gpuId` defaults to `NVIDIA GeForce RTX 5090`. Start it inside the Pod with `runpod_tmux_launch.sh xs-train` |
+| `download-xs [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/xs-train.json`; a `launch-...` ID selects another. Verified against the manifest's SHA-256 and saved under `artifacts/xs/<launch-id>/`; exits 3 while running and 4 when the manifest is missing; `-h`/`--help` shows help |
 | `volume-weights inventory [--output JSON]` | List the checkpoint weights under `savedModel/` (`adapter.safetensors`, `optimizer.pt`, `scheduler.pt`), the baseline model files under `baselines/` (`.pkl`, `.pt`) and the per-sample prediction exports under `diagnostics/*-predictions/` with sizes per run or baseline, and write their exact keys to `artifacts/audit/volume-weight-inventory-<time>.json`; records (metrics, manifests, leaderboards, evaluation arrays, reports) are listed only as kept |
 | `volume-weights delete --inventory JSON --category weights\|exports [--apply] [--workers N]` | Delete only one category of that inventory; without `--apply` it only counts. One `s3 rm` per object; the wrapper allows it only with `RUNPOD_S3_ALLOW_DELETE=1` and a key matching the weight or export patterns, so datasets, records and pretrained model caches can never be deleted |
 

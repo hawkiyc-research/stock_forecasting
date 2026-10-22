@@ -1062,6 +1062,21 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
    7. H-C 登記與前瞻確認。
    - 每個模型的逐筆 walk-forward 預測保存為 Parquet（P1 ∪ P2 全部訊號日），供本機計分與回測；結果寫成中英雙語報告。
 
+7. **實作登記（2026-10-23，訓練前固定，未看任何 D0 結果）**：
+   - D0 訓練參數：AdamW lr 5e-4、weight decay 1e-4、最多 20 epoch、以 fold validation 的
+     每日 Rank IC（14 個 horizon 等權、兩市場等權）早停 patience 4、gradient clip 1.0、
+     CUDA 上 bf16 autocast；每個 batch 為同一 signal date 與市場的全部股票；特徵側輸入在
+     batch 內做橫斷面 z-score（裁剪 ±5）；視窗正規化為相對最後收盤的 log 價格與相對中位數的
+     log 成交量。編碼器 patch 8、d 128、2 層；inter-stock attention 2 層、4 heads、ff 256、
+     dropout 0.1。
+   - D1 編碼器：`t-xs-kronos-small` 使用 `NeoQuasar/Kronos-small` + `Kronos-Tokenizer-base`
+     的最後一個位置 hidden state；`t-xs-chronos2-small` 使用 `autogluon/chronos-2-small`
+     （28M，Apache-2.0）的 `embed` 輸出對 variates 與 patches 取平均，五個 OHLCV 通道作為同一
+     序列的 variates。兩者都凍結，embedding 依 (symbol, cutoff) 快取一次。
+   - 配對比較：D − B0 以共同 signal date 的 cell 序列相減，circular moving-block bootstrap
+     （1,000 次、seed 11、block 5／20／28）；H-A 以 P1 ∪ P2 的 short 與 holding cell 判定。
+   - 執行入口：`runpod_workflow.sh xs-train --experiment <name>`，每個實驗一台 GPU Pod。
+
 判讀限制：
 
 - P2 已在 §13.10、§13.11 看過，P1 是本計畫第一次評估，但資料準備規則與模型設計都是在看過 P2 的彙總結果後決定的；真正的確認只有 P3。
@@ -2196,6 +2211,24 @@ Background: the goal is a Taiwan daily ranking model that can serve as the basis
    6. Top-k dropout backtest (local).
    7. H-C registration and forward confirmation.
    - Every model's per-sample walk-forward predictions are stored as Parquet (all signal dates of P1 ∪ P2) for local scoring and backtests; results are written as bilingual reports.
+
+7. **Implementation registration (2026-10-23, fixed before training, no D0 result seen)**:
+   - D0 training parameters: AdamW lr 5e-4, weight decay 1e-4, at most 20 epochs, early stopping
+     on the fold validation's daily Rank IC (14 horizons and both markets weighted equally) with
+     patience 4, gradient clip 1.0, bf16 autocast on CUDA; one batch is every stock of one signal
+     date and market; the feature side input is cross-sectionally z-scored within the batch
+     (clipped to ±5); windows are normalized as log prices relative to the last close and log
+     volume relative to the window median. Encoder patch 8, width 128, 2 layers; inter-stock
+     attention 2 layers, 4 heads, feed-forward 256, dropout 0.1.
+   - D1 encoders: `t-xs-kronos-small` uses the last-position hidden state of
+     `NeoQuasar/Kronos-small` + `Kronos-Tokenizer-base`; `t-xs-chronos2-small` averages the
+     `embed` output of `autogluon/chronos-2-small` (28M, Apache-2.0) over variates and patches,
+     with the five OHLCV channels as the variates of one series. Both are frozen and their
+     embeddings are cached once per (symbol, cutoff).
+   - Paired comparison: D − B0 subtracts the cell series on common signal dates; circular
+     moving-block bootstrap (1,000 replicates, seed 11, blocks 5/20/28); H-A is decided on the
+     short and holding cells over P1 ∪ P2.
+   - Entry point: `runpod_workflow.sh xs-train --experiment <name>`, one GPU Pod per experiment.
 
 Interpretation limits:
 
