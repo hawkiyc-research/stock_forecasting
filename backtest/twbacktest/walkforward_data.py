@@ -1,0 +1,127 @@
+"""Walk-forward predictions and raw Taiwan prices as backtest inputs (protocol 13.13 item 3).
+
+The B0/D0 jobs export one row per (symbol, signal date) with a score per horizon. Prices come
+from the dataset's raw ``market.parquet``; open-to-open moves are built per symbol from its own
+session sequence, the way the evaluation arrays did for the earlier stages.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from twbacktest.data import MARKETS, SplitIndex
+from twbacktest.positions import Links, Moves, links
+
+SCORE_COLUMNS = [f"h{h:02d}" for h in range(1, 15)]
+INDEX_SYMBOLS = {"TWSE": "TAIEX.TW", "TPEX": "TPEX.TWO"}
+
+
+def load_predictions(path: Path, model: str) -> pd.DataFrame:
+    """Rows of one model (seed or ensemble) sorted by signal date, market and symbol."""
+    frame = pd.read_parquet(path)
+    if "model" in frame.columns:
+        frame = frame[frame["model"] == model]
+    if frame.empty:
+        raise ValueError(f"{path} has no rows for model {model!r}")
+    columns = ["symbol", "market", "signal_date", *[c for c in SCORE_COLUMNS if c in frame]]
+    frame = frame[columns].copy()
+    frame["signal_date"] = pd.to_datetime(frame["signal_date"]).dt.normalize()
+    frame = frame[frame["market"].isin(MARKETS)]
+    frame = frame.drop_duplicates(["symbol", "signal_date"], keep="first")
+    return frame.sort_values(["signal_date", "market", "symbol"], kind="stable").reset_index(
+        drop=True
+    )
+
+
+def load_prices(path: Path) -> pd.DataFrame:
+    """Adjusted open/close per (symbol, date), plus asset type and market."""
+    columns = ["timestamp", "symbol", "asset_type", "open", "close", "adjusted_close", "market"]
+    frame = pd.read_parquet(path, columns=columns)
+    frame = frame[frame["market"].isin(MARKETS)].copy()
+    frame["date"] = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_localize(None).dt.normalize()
+    factor = frame["adjusted_close"] / frame["close"]
+    frame["adj_open"] = frame["open"] * factor
+    frame["adj_close"] = frame["adjusted_close"]
+    frame = frame[["symbol", "date", "asset_type", "market", "adj_open", "adj_close"]]
+    frame = frame.sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
+    grouped = frame.groupby("symbol", sort=False)
+    # Per-symbol session sequence: the next two opens and the close two sessions ahead.
+    frame["open_1"] = grouped["adj_open"].shift(-1)
+    frame["open_2"] = grouped["adj_open"].shift(-2)
+    frame["close_2"] = grouped["adj_close"].shift(-2)
+    return frame
+
+
+@dataclass(frozen=True)
+class WalkForwardInputs:
+    index: SplitIndex
+    scores: np.ndarray  # [rows, horizons]
+    horizons: list[int]
+    link: Links
+    move: Moves
+    dates: pd.DatetimeIndex
+
+
+def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForwardInputs:
+    """Join predictions with the price moves that follow each signal date."""
+    stocks = prices[prices["asset_type"] != "index"]
+    merged = predictions.merge(
+        stocks[
+            ["symbol", "date", "asset_type", "adj_open", "adj_close", "open_1", "open_2", "close_2"]
+        ],
+        left_on=["symbol", "signal_date"],
+        right_on=["symbol", "date"],
+        how="left",
+        validate="one_to_one",
+    )
+    indexes = prices[prices["asset_type"] == "index"]
+    bench_frames = []
+    for market, symbol in INDEX_SYMBOLS.items():
+        rows = indexes[indexes["symbol"] == symbol][["date", "open_1", "open_2"]].copy()
+        rows["market"] = market
+        bench_frames.append(
+            rows.rename(columns={"open_1": "bench_open_1", "open_2": "bench_open_2"})
+        )
+    bench = pd.concat(bench_frames, ignore_index=True)
+    merged = merged.merge(
+        bench,
+        left_on=["market", "signal_date"],
+        right_on=["market", "date"],
+        how="left",
+        suffixes=("", "_bench"),
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        growth = np.log(merged["open_2"].to_numpy() / merged["open_1"].to_numpy())
+        fallback = np.log(merged["close_2"].to_numpy() / merged["open_1"].to_numpy())
+        gap = np.log(merged["open_1"].to_numpy() / merged["adj_close"].to_numpy())
+        index_growth = np.log(merged["bench_open_2"].to_numpy() / merged["bench_open_1"].to_numpy())
+    dates = pd.DatetimeIndex(sorted(merged["signal_date"].unique()))
+    date_codes = dates.get_indexer(merged["signal_date"]).astype(np.int32)
+    symbols, symbol_codes = np.unique(merged["symbol"].to_numpy(), return_inverse=True)
+    market_codes = np.where(merged["market"].to_numpy() == MARKETS[0], 0, 1).astype(np.int8)
+    is_etf = merged["asset_type"].fillna("stock").to_numpy() == "etf"
+    index = SplitIndex(
+        split="walk_forward",
+        rows=np.arange(len(merged), dtype=np.int64),
+        date_codes=date_codes,
+        dates=tuple(day.strftime("%Y-%m-%d") for day in dates),
+        market_codes=market_codes,
+        is_etf=is_etf,
+        symbol_codes=symbol_codes.astype(np.int64),
+        symbol_names=tuple(str(s) for s in symbols),
+    )
+    horizons = [int(c[1:]) for c in SCORE_COLUMNS if c in merged.columns]
+    scores = merged[[f"h{h:02d}" for h in horizons]].to_numpy(dtype=np.float64)
+    move = Moves(
+        growth=growth.astype(np.float64),
+        fallback=fallback.astype(np.float64),
+        gap=gap.astype(np.float64),
+        index_growth=index_growth.astype(np.float64),
+    )
+    return WalkForwardInputs(
+        index=index, scores=scores, horizons=horizons, link=links(index), move=move, dates=dates
+    )

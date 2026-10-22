@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "name": "topk-dropout-tw-walk-forward",
+  "description": "Pre-registered top-k dropout backtest of walk-forward ranking scores (experiment protocol section 13.13 item 3): daily rotation, next-open execution, per-position open-to-open accounting.",
+  "markets": {
+    "TWSE": {"codes": ["TWSE"], "k": 50, "drop": 5},
+    "TPEX": {"codes": ["TPEX"], "k": 30, "drop": 3}
+  },
+  "score_horizons": [1, 5, 10],
+  "versions": ["long_only", "hedged"],
+  "price_limit": {"open_gap": 0.095},
+  "costs": {
+    "commission_rate": 0.001425,
+    "transaction_tax": {"stock": 0.003, "etf": 0.001},
+    "day_trade_tax": {"stock": 0.0015, "etf": 0.001},
+    "slippage_per_side": {"TWSE": 0.001, "TPEX": 0.002},
+    "discounts": [1.0, 0.6, 0.28],
+    "slippage_multipliers": [0, 1, 2],
+    "turnover_modes": ["positions"],
+    "primary": {"discount": 0.6, "slippage_multiplier": 1, "turnover": "positions"}
+  },
+  "annualization_days": 252,
+  "bootstrap": {"replicates": 1000, "seed": 11, "block": 21},
+  "periods": {
+    "P1": ["2023-01-02", "2025-06-01"],
+    "P2": ["2025-06-01", "2026-06-01"]
+  },
+  "selection": {"market": "TWSE", "period": "P1", "version": "long_only", "metric": "net_excess_ir"},
+  "decision": {
+    "hypothesis": "H-B",
+    "market": "TWSE",
+    "period": "P1+P2",
+    "version": "long_only",
+    "lower_bound_above": 0.0
+  }
+}

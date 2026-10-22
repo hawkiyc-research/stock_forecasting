@@ -211,6 +211,36 @@ Spearman Rank IC。每個模型在各市場、各 horizon 的平均值，必須�
 輸出目錄包含 `report.json`（一致性檢查、使用的匯出與判定）、`daily.csv`（每日 Rank IC）、
 `cells.csv`、`pairs.csv`、`per_horizon.csv`，以及中英雙語 `summary.md`。
 
+### Top-k dropout 回測（§13.13）
+
+依照 `docs/experiment_protocol.md` §13.13 第 3 項的事先登記規則，以 `config/topk_dropout.json`
+回測 walk-forward 排序分數（B0 LightGBM 或 D0／D1 cross-stock 模型，由 `download-lgbm`／
+`download-xs` 下載的 `predictions.parquet`）：每個交易日依前一收盤的排序，賣出持股中排名最低的
+n 檔、買進未持有中排名最高的股票，下一交易日開盤成交，資金分成 K 個位置並逐部位以開盤到開盤
+記帳（沿用第一階段 1b 引擎）。TWSE K = 50、每日換 5 檔；TPEX K = 30、每日換 3 檔。score
+horizon 在 {1, 5, 10} 中選 TWSE P1 淨超額 IR 最高者，之後固定用於 P2 與 P1+P2；成本情境與
+第一階段相同（主情境折扣 0.6、滑價 ×1），區間為月份 block（21 個交易日）的 circular block
+bootstrap 1,000 次（seed 11）。價格來自資料集的 raw `market.parquet`（以 S3 wrapper 下載到
+`artifacts/datasets/<dataset>/raw/`）。
+
+```bash
+uv run python -m twbacktest.topk_dropout --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| 選項 | 說明 | 預設值 |
+| --- | --- | --- |
+| `--predictions` | walk-forward 預測檔 | 必填 |
+| `--model` | 預測檔內的模型名稱（例如 `t-lgbm-alpha`、`t-xs-scratch`） | 必填 |
+| `--prices` | raw `market.parquet` | 必填 |
+| `--compare-predictions`、`--compare-model` | 第二個模型（例如 B0），H-B 的「IR 不低於 baseline」用 | 無 |
+| `--config` | 回測設定檔 | `config/topk_dropout.json` |
+| `--output-root` | 本次輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/topk-dropout-<UTC 時間>-<隨機碼>` |
+
+輸出目錄包含 `report.json`（選定 horizon、H-B 判定）、`grid.csv`（所有市場、horizon、期間、成本情境與
+版本的指標）、`daily_series.csv`（主情境下每個 horizon 的每日淨報酬與等權基準）與 `summary.md`
+（中英雙語摘要）。H-B：TWSE P1+P2 主情境年化淨超額的 95% 區間下界大於 0，且（有比較對象時）
+IR 不低於 baseline。
+
 ## English
 
 ### Purpose
@@ -446,3 +476,36 @@ Kronos and every baseline, and the H1–H3 decisions on test.
 The output directory contains `report.json` (consistency check, exports used and decisions),
 `daily.csv` (daily Rank IC), `cells.csv`, `pairs.csv`, `per_horizon.csv` and a bilingual
 `summary.md`.
+
+### Top-k dropout backtest (§13.13)
+
+Following the pre-registered rules of `docs/experiment_protocol.md` §13.13 item 3,
+`config/topk_dropout.json` backtests walk-forward ranking scores (the B0 LightGBM or a D0/D1
+cross-stock model, i.e. the `predictions.parquet` downloaded by `download-lgbm` / `download-xs`):
+every session, by the previous close's ranking, the n lowest-ranked holdings are sold and the
+highest-ranked non-holdings bought at the next open; capital sits in K slots with per-position
+open-to-open accounting (the stage 1b engine). TWSE K = 50 with 5 replaced per day; TPEX K = 30
+with 3. The score horizon is the one in {1, 5, 10} with the highest TWSE P1 net excess IR and is
+then fixed for P2 and P1+P2; cost scenarios match stage 1 (primary: discount 0.6, slippage ×1);
+intervals come from a monthly-block (21 sessions) circular block bootstrap with 1,000 replicates
+(seed 11). Prices are the dataset's raw `market.parquet` (downloaded through the S3 wrapper to
+`artifacts/datasets/<dataset>/raw/`).
+
+```bash
+uv run python -m twbacktest.topk_dropout --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--predictions` | Walk-forward prediction file | required |
+| `--model` | Model name inside the file (e.g. `t-lgbm-alpha`, `t-xs-scratch`) | required |
+| `--prices` | Raw `market.parquet` | required |
+| `--compare-predictions`, `--compare-model` | A second model (e.g. B0) for H-B's "IR not below the baseline" clause | none |
+| `--config` | Backtest configuration | `config/topk_dropout.json` |
+| `--output-root` | Output directory for this run; must not exist | `artifacts/diagnostics/backtest/topk-dropout-<UTC time>-<random>` |
+
+The output directory holds `report.json` (selected horizon and the H-B verdict), `grid.csv`
+(every market, horizon, period, cost scenario and version), `daily_series.csv` (daily net returns
+and the equal-weight benchmark per horizon under the primary costs) and `summary.md` (bilingual).
+H-B: the 95% interval lower bound of the TWSE P1+P2 annualized net excess under the primary
+scenario is above 0 and, when a comparison model is given, the IR is not below the baseline's.

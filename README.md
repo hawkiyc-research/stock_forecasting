@@ -2934,6 +2934,14 @@ worker 數預設取以下兩者的較小值，最多 32：
 
     存於 `artifacts/xs/<launch-id>/`；`results.json` 的 `decision` 即 H-A 結論。
 
+12. **Top-k dropout 回測（本機，H-B）**：在 `backtest/` 以 uv 執行，輸入為下載的
+    `predictions.parquet` 與資料集的 raw `market.parquet`；設定與判定規則見
+    [backtest/README.md](backtest/README.md)。
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.topk_dropout --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
 worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
 記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
@@ -7282,6 +7290,14 @@ the last 12 months of each window as validation) and come from
     ```
 
     Saved under `artifacts/xs/<launch-id>/`; `decision` in `results.json` is the H-A verdict.
+
+12. **Top-k dropout backtest (local, H-B)**: run with uv in `backtest/` on a downloaded
+    `predictions.parquet` and the dataset's raw `market.parquet`; settings and the decision rule
+    are in [backtest/README.md](backtest/README.md).
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.topk_dropout --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
 
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the
 worker count in flight; the worker count is the smallest of `FIN_TS_RANK_LABEL_WORKERS`
