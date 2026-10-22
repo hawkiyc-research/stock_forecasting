@@ -1,0 +1,19 @@
+{
+  "data_content_identity": {
+    "bar_store_materialization_digest": "e3376cabeb2a8111be03c6d543f17afb8cb7cf15579e5efd4cd27a8d418ccee5",
+    "provider_materialization_digests": {
+      "eodhd_us": "c1dd0fa79e541c36501719afc971608b15a198b3daf7ce6dcb06e7726c31e8a3",
+      "massive_us": "010d8bc06662458703d6507a411c9d5041826b94a4a19a97ef409ca198428e2d",
+      "tpex_official": "635a0f37c956d820692a21d68c46c0d566ecb1e9cc508a8c6f7245189715469f",
+      "twse_official": "ead462d11fbbac1ac1e31e6c669167937eb3dcc19e70b221d11abdead17f052e"
+    },
+    "raw_materialization_digest": "bda958e436455c2c051e621525df495f684767ff7c133dc9b3124d97c6e22578",
+    "schema_version": "data-content-identity-v2"
+  },
+  "data_pipeline_digest": "14cc0cfc5560725e6ced40391501dfdf0aa26483420031fca3e93d08d7151e55",
+  "kind": "data-content-identity-snapshot",
+  "note": "Digests of the selected provider, raw-dataset and bar-store definitions (stock_forecasting.data.content_identity). They have been identical since v0.1.0; tests/test_full_workflow_control_plane.py fails when they drift, and a new dataset revision must accompany any intentional change.",
+  "recorded_at": "2026-10-22",
+  "schema_version": 1,
+  "snapshot_tag": "v0.1.0"
+}

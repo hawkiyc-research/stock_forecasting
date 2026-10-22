@@ -236,16 +236,25 @@ class FullWorkflowControlPlaneTests(unittest.TestCase):
                 READINESS["_guard_lifecycle_state"]({**marker, key: value}, **kwargs)
 
     def test_preparation_semantics_unchanged_since_architecture_snapshot(self):
+        # Dataset identity is the content-only AST digest of the selected provider,
+        # raw-dataset and bar-store definitions, not the bytes of their modules.
+        # Execution changes around those definitions (worker pools, logging,
+        # budgets) are allowed; a digest drift means every existing dataset,
+        # provider checkpoint and bar store would stop matching the code.
+        content = runpy.run_path(str(ROOT / "src/stock_forecasting/data/content_identity.py"))
+        snapshot = json.loads(
+            (ROOT / "configs/data_content_identity_snapshot.json").read_text(encoding="utf-8")
+        )
+        identity = content["code_content_identity"]()
+        self.assertEqual(identity, snapshot["data_content_identity"])
+        self.assertEqual(
+            content["content_identity_digest"](identity), snapshot["data_pipeline_digest"]
+        )
+        self.assertEqual(snapshot["snapshot_tag"], "v0.1.0")
         if subprocess.run(
             ["git", "rev-parse", "--verify", "v0.1.0"], cwd=ROOT, capture_output=True
         ).returncode:
             self.skipTest("Source-only RunPod deployments intentionally omit Git metadata")
-        content = runpy.run_path(str(ROOT / "src/stock_forecasting/data/content_identity.py"))
-        paths = [*content["semantic_source_paths"](), "src/stock_forecasting/dataset_identity.py"]
-        changed = subprocess.check_output(
-            ["git", "diff", "v0.1.0", "--name-only", "--", *paths], cwd=ROOT, text=True
-        )
-        self.assertEqual(changed, "")
         for path in ("scripts/runpod_cpu_prepare.sh", "scripts/runpod_cpu_finalize.sh"):
             original = subprocess.check_output(
                 ["git", "show", f"v0.1.0:{path}"], cwd=ROOT, text=True

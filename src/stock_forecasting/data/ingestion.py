@@ -13,11 +13,14 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from multiprocessing import get_context
+from multiprocessing.pool import AsyncResult
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from stock_forecasting.data.adjustments import apply_cumulative_adjustments
 from stock_forecasting.data.benchmarks import (
     US_BENCHMARK,
     is_allowlisted_us_equity_etf,
@@ -68,8 +71,30 @@ from stock_forecasting.dataset_profiles import (
     runtime_providers,
     selected_datasets,
 )
+from stock_forecasting.runtime_resources import (
+    detect_available_memory,
+    detect_visible_cpu_count,
+)
 
 RAW_DATASET_ASSEMBLY_POLICY = "complete_provider_checkpoint_concat_v1"
+
+# Taiwan sessions are fetched by I/O threads, but applying ten years of corporate
+# actions to every session is CPU-bound pandas work that the GIL serializes. Those
+# adjustments run in bounded spawn processes sized by this plan.
+MATERIALIZATION_WORKERS_ENV = "FIN_TS_MATERIALIZATION_WORKERS"
+MATERIALIZATION_WORKER_MEMORY_BYTES = 384 * 1024**2
+MATERIALIZATION_MEMORY_FRACTION = 0.4
+MATERIALIZATION_PROCESS_BACKEND = "process_pool_spawn"
+MATERIALIZATION_INLINE_BACKEND = "inline"
+# One session adjusts in seconds; a stuck worker must not hang the acquisition.
+MATERIALIZATION_TASK_TIMEOUT_SECONDS = 600.0
+_MATERIALIZATION_NATIVE_THREAD_ENVIRONMENT = (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "PYARROW_NUM_THREADS",
+)
 
 
 def _canonical_raw_batch(frame: pd.DataFrame) -> pd.DataFrame:
@@ -117,6 +142,164 @@ def _ordered_thread_map[InputT, ResultT](
         for future in pending:
             future.cancel()
         executor.shutdown(wait=True, cancel_futures=True)
+
+
+def _ordered_process_map[InputT, PayloadT, ResultT](
+    function: Callable[[PayloadT], ResultT],
+    items: Iterable[InputT],
+    *,
+    payload: Callable[[InputT], PayloadT],
+    max_workers: int,
+    initializer: Callable[..., None] | None = None,
+    initargs: tuple[Any, ...] = (),
+    contextualize: Callable[[InputT, Exception], Exception] | None = None,
+) -> Generator[tuple[InputT, ResultT], None, None]:
+    """Yield ``(item, result)`` pairs in submission order from bounded spawn workers.
+
+    The parent keeps every item and ships only ``payload(item)`` to a worker, so
+    request records and metadata never cross the process boundary. At most
+    ``2 * max_workers`` tasks are pending, which gives back-pressure to the
+    producer. Worker failures are raised in the parent, optionally wrapped by
+    ``contextualize`` so callers can attach provider/item context.
+    """
+
+    if max_workers < 1:
+        raise ValueError("max_workers must be positive")
+    iterator = iter(items)
+    pending: deque[tuple[InputT, AsyncResult[ResultT]]] = deque()
+    # multiprocessing.Pool, like the rank-label and feature builders, instead of
+    # ProcessPoolExecutor: the latter probes a sysconf value some sandboxes forbid.
+    with get_context("spawn").Pool(
+        processes=max_workers,
+        initializer=initializer,
+        initargs=initargs,
+    ) as pool:
+
+        def submit_next() -> bool:
+            try:
+                item = next(iterator)
+            except StopIteration:
+                return False
+            pending.append((item, pool.apply_async(function, (payload(item),))))
+            return True
+
+        for _ in range(max_workers * 2):
+            if not submit_next():
+                break
+        while pending:
+            item, handle = pending.popleft()
+            try:
+                result = handle.get(timeout=MATERIALIZATION_TASK_TIMEOUT_SECONDS)
+            except Exception as error:
+                if contextualize is None:
+                    raise
+                raise contextualize(item, error) from error
+            submit_next()
+            yield item, result
+        # Leaving the block terminates the pool, which also cancels pending work on errors.
+
+
+def _materialization_worker_count(
+    *,
+    requested: int,
+    tasks: int,
+    concurrent_pools: int,
+) -> tuple[int, dict[str, Any]]:
+    """Bound adjustment processes by the request, visible CPUs, memory and task count.
+
+    ``requested`` is the per-provider share of ``--workers``. The environment
+    variable named by ``MATERIALIZATION_WORKERS_ENV`` caps it (``1`` forces the
+    inline path, which local sandboxes without process pools rely on). CPU and
+    memory budgets are divided by ``concurrent_pools`` because every Taiwan
+    provider loop plans its own pool while the others are running.
+    """
+
+    if requested < 1 or concurrent_pools < 1:
+        raise ValueError("requested workers and concurrent pools must be positive")
+    override = os.environ.get(MATERIALIZATION_WORKERS_ENV)
+    limit = requested
+    if override is not None:
+        limit = int(override)
+        if limit < 1:
+            raise ValueError(f"{MATERIALIZATION_WORKERS_ENV} must be positive")
+    plan: dict[str, Any] = {
+        "requested": requested,
+        "override": limit if override is not None else None,
+        "tasks": tasks,
+        "concurrent_pools": concurrent_pools,
+        "per_worker_bytes": MATERIALIZATION_WORKER_MEMORY_BYTES,
+    }
+    if limit == 1 or tasks <= 1:
+        plan.update({"count": 1, "backend": MATERIALIZATION_INLINE_BACKEND})
+        return 1, plan
+    memory_budget = (
+        int(detect_available_memory().available_bytes * MATERIALIZATION_MEMORY_FRACTION)
+        // concurrent_pools
+    )
+    cpu_limit = max(1, detect_visible_cpu_count() // concurrent_pools)
+    count = max(
+        1,
+        min(
+            limit,
+            cpu_limit,
+            max(1, memory_budget // MATERIALIZATION_WORKER_MEMORY_BYTES),
+            tasks,
+        ),
+    )
+    plan.update(
+        {
+            "count": count,
+            "cpu_limit": cpu_limit,
+            "memory_budget_bytes": memory_budget,
+            "backend": (
+                MATERIALIZATION_PROCESS_BACKEND if count > 1 else MATERIALIZATION_INLINE_BACKEND
+            ),
+        }
+    )
+    return count, plan
+
+
+_TAIWAN_ADJUSTMENT_STATE: dict[str, Any] = {}
+
+
+def _initialize_taiwan_adjustment_worker(
+    action_frame: pd.DataFrame,
+    adjustment_source: str,
+) -> None:
+    """Hold one provider's action table per spawned worker instead of per session."""
+
+    for name in _MATERIALIZATION_NATIVE_THREAD_ENVIRONMENT:
+        os.environ[name] = "1"
+    _TAIWAN_ADJUSTMENT_STATE["action_frame"] = action_frame
+    _TAIWAN_ADJUSTMENT_STATE["adjustment_source"] = adjustment_source
+
+
+def _adjust_taiwan_session_in_worker(frame: pd.DataFrame) -> pd.DataFrame:
+    return _adjust_taiwan_session(
+        frame,
+        action_frame=_TAIWAN_ADJUSTMENT_STATE["action_frame"],
+        adjustment_source=_TAIWAN_ADJUSTMENT_STATE["adjustment_source"],
+    )
+
+
+def _adjust_taiwan_session(
+    frame: pd.DataFrame,
+    *,
+    action_frame: pd.DataFrame,
+    adjustment_source: str,
+) -> pd.DataFrame:
+    """Apply durable action factors to one fetched session.
+
+    This is the adjustment half of ``_TaiwanMarketProvider.fetch_adjusted_date``
+    and must stay equivalent to it: the inline path still calls that method, and
+    the parity test compares both outputs.
+    """
+
+    if frame.empty:
+        return frame
+    adjusted = apply_cumulative_adjustments(frame, action_frame)
+    adjusted["adjustment_source"] = adjustment_source
+    return adjusted
 
 
 @dataclass(frozen=True)
@@ -1247,6 +1430,9 @@ def ingest_daily_ohlcv(
     progress.start(request_budget)
     provider_workers = max(1, options.workers // len(active_providers))
     stats = {provider: _ProviderStats() for provider in active_providers}
+    # Execution-only: how this attempt adjusted Taiwan sessions. Reused provider
+    # checkpoints did no materialization, so they have no entry.
+    taiwan_adjustment_plans: dict[str, dict[str, Any]] = {}
     parts_root = options.manifest_root / f".provider-parts-{uuid.uuid4().hex}"
     parts_root.mkdir(parents=True, exist_ok=False)
     runners: dict[str, Callable[[], _ProviderArtifacts]] = {}
@@ -1446,6 +1632,38 @@ def ingest_daily_ohlcv(
                             ),
                         )
 
+                    def fetch_taiwan_session(trading_date: str) -> tuple[str, Any]:
+                        # Network, cache replay and the time budget stay in this thread;
+                        # only the parsed session frame goes to an adjustment worker.
+                        return trading_date, _provider_data_call(
+                            provider=provider_name,
+                            operation="daily_quotes",
+                            item=trading_date,
+                            function=lambda: provider.fetch_date(
+                                date=trading_date,
+                                dataset_profile=options.profile,
+                            ),
+                        )
+
+                    def adjustment_error(
+                        session: tuple[str, Any],
+                        error: Exception,
+                    ) -> Exception:
+                        return _ProviderDataContractError(
+                            provider=provider_name,
+                            operation="daily_adjustment",
+                            item=session[0],
+                            error=error,
+                        )
+
+                    def consume_session(fetched: Any, adjusted: pd.DataFrame) -> None:
+                        request_budget.check_time()
+                        log_part.append(fetched.requests)
+                        provider_stats.dropped_source_rows += int(
+                            fetched.metadata.get("dropped_rows", 0)
+                        )
+                        sink_part.write(adjusted)
+
                     def fetch_taiwan_month(month: str) -> Any:
                         return _provider_data_call(
                             provider=provider_name,
@@ -1490,21 +1708,51 @@ def ingest_daily_ohlcv(
                     scheduled_dates = sorted(provider_trading_dates)
                     provider_stats.taiwan_trading_dates = len(scheduled_dates)
                     provider_stats.estimated_calls += len(scheduled_dates)
-                    with closing(
-                        _ordered_thread_map(
-                            fetch_taiwan_date,
-                            scheduled_dates,
-                            max_workers=min(provider_workers, len(scheduled_dates)),
-                            thread_name_prefix=f"{provider_name}-date",
-                        )
-                    ) as fetched_dates:
-                        for fetched, adjusted in fetched_dates:
-                            request_budget.check_time()
-                            log_part.append(fetched.requests)
-                            provider_stats.dropped_source_rows += int(
-                                fetched.metadata.get("dropped_rows", 0)
+                    fetch_workers = min(provider_workers, len(scheduled_dates))
+                    adjustment_workers, adjustment_plan = _materialization_worker_count(
+                        requested=provider_workers,
+                        tasks=len(scheduled_dates),
+                        concurrent_pools=len(taiwan_provider_classes),
+                    )
+                    taiwan_adjustment_plans[provider_name] = adjustment_plan
+                    if adjustment_workers == 1:
+                        with closing(
+                            _ordered_thread_map(
+                                fetch_taiwan_date,
+                                scheduled_dates,
+                                max_workers=fetch_workers,
+                                thread_name_prefix=f"{provider_name}-date",
                             )
-                            sink_part.write(adjusted)
+                        ) as fetched_dates:
+                            for fetched, adjusted in fetched_dates:
+                                consume_session(fetched, adjusted)
+                    else:
+                        with (
+                            closing(
+                                _ordered_thread_map(
+                                    fetch_taiwan_session,
+                                    scheduled_dates,
+                                    max_workers=fetch_workers,
+                                    thread_name_prefix=f"{provider_name}-date",
+                                )
+                            ) as fetched_sessions,
+                            closing(
+                                _ordered_process_map(
+                                    _adjust_taiwan_session_in_worker,
+                                    fetched_sessions,
+                                    payload=lambda session: session[1].frame,
+                                    max_workers=adjustment_workers,
+                                    initializer=_initialize_taiwan_adjustment_worker,
+                                    initargs=(
+                                        action_fetch.frame,
+                                        provider.action_adjustment_source,
+                                    ),
+                                    contextualize=adjustment_error,
+                                )
+                            ) as adjusted_sessions,
+                        ):
+                            for (_trading_date, fetched), adjusted in adjusted_sessions:
+                                consume_session(fetched, adjusted)
 
                 return lambda: _execute_provider_loop(
                     provider=provider_name,
@@ -1696,6 +1944,7 @@ def ingest_daily_ohlcv(
             ),
             "read_only_cache_fallback_namespaces": len(cache_fallback_roots),
             "taiwan_trading_dates_by_provider": taiwan_trading_date_counts,
+            "taiwan_adjustment_workers_by_provider": dict(sorted(taiwan_adjustment_plans.items())),
             "execution_workers": options.workers,
             "include_delisted": options.include_delisted,
             "symbol_limit": options.symbol_limit,

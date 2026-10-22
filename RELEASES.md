@@ -2,6 +2,17 @@
 
 ## 中文
 
+### 未發布 2026-10-22
+
+- 台灣行情取得：除權息調整改在有界 spawn process pool 執行（每個 provider 一個
+  pool，worker 數受 `--workers`、可見 CPU、可用記憶體與交易日數限制，
+  `FIN_TS_MATERIALIZATION_WORKERS` 可設上限），抓取、快取重播與時間預算仍留在
+  執行緒；產出與原本逐日路徑 byte-identical，資料內容識別碼（content identity）
+  不變，既有資料集、provider checkpoint 與 bar store 全部沿用。
+- 架構快照檢查改為比對 `configs/data_content_identity_snapshot.json` 記錄的
+  語意 digest，而不是凍結整個模組的位元組；凍結的 CPU prepare／finalize 腳本
+  檢查不變。
+
 ### v0.2.2 2026-09-21
 
 - Baseline 直接供應連續 tensor，保留動態 training sampling 與完整 lazy evaluation；
@@ -63,6 +74,18 @@
 資料不納入 Git，須以 run ID、checkpoint 與各自 manifest 追溯。
 
 ## English
+
+### Unreleased 2026-10-22
+
+- Taiwan acquisition applies corporate-action adjustments in a bounded spawn process
+  pool (one pool per provider; workers limited by `--workers`, visible CPUs, available
+  memory and the session count, capped by `FIN_TS_MATERIALIZATION_WORKERS`), while
+  fetching, cache replay and the time budget stay in threads. Output is byte-identical
+  to the former per-session path and the data content identity is unchanged, so every
+  existing dataset, provider checkpoint and bar store remains valid.
+- The architecture-snapshot check now compares the semantic digests recorded in
+  `configs/data_content_identity_snapshot.json` instead of freezing whole module
+  bytes; the frozen CPU prepare/finalize script checks are unchanged.
 
 ### v0.2.2 2026-09-21
 

@@ -2990,7 +2990,7 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 | `--max-api-calls N` | 此低階 CLI 預設 `100000`；只限制 EODHD 單次取得資料的 network attempts，含 retry |
 | `--eodhd-qps Q`、`--taiwan-qps Q` | 預設 `16`、`0.5`；每個 provider 的請求節流 |
 | `--max-backoff-seconds S` | `RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS`，否則 `60`；注意此處單位為秒，不是 workflow 的 `1m` |
-| `--workers N` | `FIN_TS_CPU_WORKERS`，未設定時低階預設 `1`；正式 CPU workflow 會按硬體資源配置，不以此 fallback 作正式並行設定 |
+| `--workers N` | `FIN_TS_CPU_WORKERS`，未設定時低階預設 `1`；正式 CPU workflow 會按硬體資源配置，不以此 fallback 作正式並行設定。台灣各 provider 以 `N` 除以 provider 數的執行緒抓取／重播快取，並以同樣數量上限的 spawn process pool 套用除權息調整（每日一個 task、最多兩倍 pending），再依可見 CPU、可用記憶體的 40%（每個 worker 估 384 MiB）與交易日數下調；`FIN_TS_MATERIALIZATION_WORKERS` 可再設上限，`1` 代表改在抓取執行緒內逐日調整。下載 manifest 的 `api_policy.taiwan_adjustment_workers_by_provider` 記錄實際配置 |
 | `--acquisition-deadline-epoch-seconds T`、`--preparation-reserve-seconds S` | 預設無值；Unix 絕對截止時間與保留給資料準備的秒數，由 workflow 配置 |
 | `--exclude-delisted` | 預設包含下市股；此旗標排除 EODHD 下市商品 |
 
@@ -7250,7 +7250,7 @@ All four Python CLIs accept `-h`/`--help`, still within the existing cloud envir
 | `--max-api-calls N` | This low-level CLI defaults to `100000`; limits EODHD network attempts per acquisition, including retries |
 | `--eodhd-qps Q`, `--taiwan-qps Q` | `16`, `0.5`; provider request throttles |
 | `--max-backoff-seconds S` | `RUNPOD_PROVIDER_MAX_BACKOFF_SECONDS`, otherwise `60`; seconds, unlike workflow `1m` |
-| `--workers N` | `FIN_TS_CPU_WORKERS`, otherwise the low-level fallback `1`; production CPU workflows configure hardware-aware concurrency rather than using this fallback as the production setting |
+| `--workers N` | `FIN_TS_CPU_WORKERS`, otherwise the low-level fallback `1`; production CPU workflows configure hardware-aware concurrency rather than using this fallback as the production setting. Each Taiwan provider fetches or replays cached sessions with `N` divided by the provider count threads and applies corporate-action adjustments in a spawn process pool of at most the same size (one task per session, at most twice that pending), further bounded by visible CPUs, 40% of available memory at 384 MiB per worker, and the session count; `FIN_TS_MATERIALIZATION_WORKERS` caps it, and `1` adjusts inline in the fetch threads. The download manifest records the plan under `api_policy.taiwan_adjustment_workers_by_provider` |
 | `--acquisition-deadline-epoch-seconds T`, `--preparation-reserve-seconds S` | Unset by default; absolute Unix deadline and reserved preparation seconds, configured by the workflow |
 | `--exclude-delisted` | Delisted instruments are included by default; this flag excludes EODHD delisted instruments |
 
