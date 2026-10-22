@@ -29,7 +29,11 @@ def readiness_inputs(
     request: pytest.FixtureRequest,
     tmp_path: Path,
     market_frame: pd.DataFrame,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Any]:
+    # The fixture frame and provider list describe the pooled US/Taiwan profile; a Pod whose
+    # environment selects another profile (tw_only) must not change what this test builds.
+    monkeypatch.setenv("FIN_TS_DATASET_PROFILE", "us_tw_eodhd")
     config_path = tmp_path / "experiment.yaml"
     config_path.write_text(
         (ROOT / "configs" / f"{request.param}_kronos_base_lora.yaml")
