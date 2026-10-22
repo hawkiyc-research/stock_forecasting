@@ -1,0 +1,135 @@
+"""Train the B0 ``t-lgbm-alpha`` walk-forward baseline (protocol 13.13) on a RunPod CPU Pod.
+
+Reads the selected dataset's ready feature and rank-label stores (built by ``cpu-features``),
+trains one LightGBM regressor per fold, horizon and seed with early stopping on the fold
+validation's daily Rank IC, and writes per-sample predictions, raw targets, daily Rank IC
+series, the cell summary and a manifest under ``--output-root``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from stock_forecasting.data.feature_library import DEFAULT_SPEC_PATH, feature_names, load_spec
+from stock_forecasting.walk_forward import DEFAULT_SCHEDULE_PATH, load_schedule
+from stock_forecasting.walk_forward_lgbm import (
+    DEFAULT_EARLY_STOPPING,
+    DEFAULT_MAX_ROUNDS,
+    DEFAULT_SEEDS,
+    MAX_WORKERS,
+    assemble_table,
+    build_folds,
+    locate_stores,
+    run_walk_forward,
+    write_manifest,
+)
+
+DEFAULT_EXPERIMENT_CONFIG = Path("configs/experiments/a_rank64.yaml")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument(
+        "--experiment-config",
+        type=Path,
+        default=Path(os.environ.get("FEATURE_EXPERIMENT_CONFIG", str(DEFAULT_EXPERIMENT_CONFIG))),
+        help="Experiment YAML that names the dataset paths, window, horizons and group size.",
+    )
+    parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC_PATH)
+    parser.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE_PATH)
+    parser.add_argument("--output-root", type=Path, required=True, help="New directory.")
+    parser.add_argument("--scratch", type=Path, help="Fold matrices (default: output root).")
+    parser.add_argument("--workers", type=int, help=f"Training processes, 1-{MAX_WORKERS}.")
+    parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS))
+    parser.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
+    parser.add_argument("--early-stopping", type=int, default=DEFAULT_EARLY_STOPPING)
+    parser.add_argument("--folds", type=int, nargs="*", help="Fold indexes to run (smoke).")
+    parser.add_argument("--horizons", type=int, nargs="*", help="Horizons to run (smoke).")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    from stock_forecasting.config import ExperimentConfig
+    from stock_forecasting.data.sample_universe import validated_split_roots
+
+    args = build_parser().parse_args(argv)
+    if args.workers is not None and not 1 <= args.workers <= MAX_WORKERS:
+        raise SystemExit(f"--workers must be 1-{MAX_WORKERS}")
+    if args.max_rounds < 1 or args.early_stopping < 1:
+        raise SystemExit("--max-rounds and --early-stopping must be positive")
+    if len(set(args.seeds)) != len(args.seeds) or any(seed < 0 for seed in args.seeds):
+        raise SystemExit("--seeds must be distinct non-negative integers")
+    if args.output_root.exists() and any(args.output_root.iterdir()):
+        raise SystemExit(f"--output-root must be a new or empty directory: {args.output_root}")
+    config = ExperimentConfig.from_yaml(args.experiment_config)
+    spec = load_spec(args.spec)
+    schedule = load_schedule(args.schedule)
+    roots = validated_split_roots(config)
+    stores = [
+        locate_stores(config, spec, split, roots[split])
+        for split in ("train", "validation", "test")
+    ]
+    folds = build_folds(schedule)
+    if args.folds:
+        wanted = set(args.folds)
+        folds = [fold for fold in folds if fold.index in wanted]
+        if not folds:
+            raise SystemExit("--folds selected no fold of the schedule")
+    horizons = [int(h) for h in config.data.alpha_horizons]
+    if args.horizons:
+        missing = sorted(set(args.horizons) - set(horizons))
+        if missing:
+            raise SystemExit(f"--horizons outside the configured horizons: {missing}")
+        horizons = [h for h in horizons if h in set(args.horizons)]
+    workers = args.workers or 1
+    table = assemble_table(config, spec, roots, workers=max(1, min(workers, 8)))
+    results = run_walk_forward(
+        table,
+        feature_columns=feature_names(spec),
+        horizons=horizons,
+        folds=folds,
+        schedule=schedule,
+        output_root=args.output_root,
+        seeds=tuple(args.seeds),
+        workers=args.workers,
+        max_rounds=args.max_rounds,
+        early_stopping=args.early_stopping,
+        min_group_size=int(config.model.rank_min_group_size),
+        scratch=args.scratch,
+    )
+    write_manifest(
+        args.output_root,
+        config_path=args.experiment_config,
+        spec=spec,
+        schedule_path=args.schedule,
+        stores=stores,
+        results=results,
+    )
+    print(
+        json.dumps(
+            {
+                "output_root": str(args.output_root),
+                "backend": results["backend"],
+                "folds": len(folds),
+                "horizons": horizons,
+                "seeds": list(args.seeds),
+                "fits": results["fits"],
+                "cells": [
+                    cell
+                    for cell in results["cells"]
+                    if cell["model"] == results["model"] and cell["period"] == "P1+P2"
+                ],
+                "seconds": round(results["seconds"], 1),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -26,9 +26,9 @@ PROJECT_ROOT="${PROJECT_ROOT:-${RUNPOD_VOLUME_MOUNT_PATH}/stock_forecasting}"
 # feature library of the selected dataset; neither prepares or finalizes a dataset.
 RUNPOD_CPU_WORKFLOW="${RUNPOD_CPU_WORKFLOW:-prepare}"
 case "${RUNPOD_CPU_WORKFLOW}" in
-    prepare|research|features) ;;
+    prepare|research|features|lgbm) ;;
     *)
-        echo "RUNPOD_CPU_WORKFLOW must be prepare, research or features" >&2
+        echo "RUNPOD_CPU_WORKFLOW must be prepare, research, features or lgbm" >&2
         exit 2
         ;;
 esac
@@ -59,6 +59,8 @@ if [[ "${RUNPOD_CPU_WORKFLOW}" == "research" ]]; then
     RUNPOD_POD_NAME="${RUNPOD_CPU_RESEARCH_POD_NAME:-stock-forecasting-cpu-research}"
 elif [[ "${RUNPOD_CPU_WORKFLOW}" == "features" ]]; then
     RUNPOD_POD_NAME="${RUNPOD_CPU_FEATURES_POD_NAME:-stock-forecasting-cpu-features}"
+elif [[ "${RUNPOD_CPU_WORKFLOW}" == "lgbm" ]]; then
+    RUNPOD_POD_NAME="${RUNPOD_CPU_LGBM_POD_NAME:-stock-forecasting-cpu-lgbm}"
 elif [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" ]]; then
     RUNPOD_POD_NAME="${RUNPOD_CPU_FORWARD_POD_NAME:-stock-forecasting-cpu-prepare-forward}"
 fi
@@ -101,6 +103,12 @@ elif [[ "${RUNPOD_CPU_WORKFLOW}" == "features" ]]; then
     RUNPOD_CPU_TMUX_WORKFLOW=cpu-features
     RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/research/features.json
     RUNPOD_CPU_POD_LABEL="CPU features"
+elif [[ "${RUNPOD_CPU_WORKFLOW}" == "lgbm" ]]; then
+    # The LightGBM walk-forward baseline (protocol 13.13): same role, its own marker.
+    RUNPOD_CPU_ROLE=cpu-research
+    RUNPOD_CPU_TMUX_WORKFLOW=cpu-lgbm
+    RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/research/lgbm.json
+    RUNPOD_CPU_POD_LABEL="CPU LightGBM baseline"
 elif [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" ]]; then
     RUNPOD_CPU_GUARD_LIFECYCLE_KEY=lifecycle/forward/cpu-preparation.json
     RUNPOD_CPU_POD_LABEL="CPU forward preparation"
@@ -267,13 +275,14 @@ if [[ -n "${STAGE1_SYMBOL_LIMIT}" && ! "${STAGE1_SYMBOL_LIMIT}" =~ ^[1-9][0-9]*$
     exit 2
 fi
 # Forward mode fetches only TWSE/TPEx, so it has no EODHD budget or rate; the feature
-# build fetches nothing at all.
-if [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" || "${RUNPOD_CPU_WORKFLOW}" == "features" ]]; then
+# build and the LightGBM baseline fetch nothing at all.
+if [[ "${RUNPOD_CPU_PREPARE_MODE}" == "forward" || "${RUNPOD_CPU_WORKFLOW}" == "features" \
+    || "${RUNPOD_CPU_WORKFLOW}" == "lgbm" ]]; then
     RUNPOD_CPU_MAX_API_CALLS=""
     RUNPOD_CPU_EODHD_QPS=""
     RUNPOD_CPU_PREPARE_RESERVE_SECONDS=""
 fi
-if [[ "${RUNPOD_CPU_WORKFLOW}" == "features" ]]; then
+if [[ "${RUNPOD_CPU_WORKFLOW}" == "features" || "${RUNPOD_CPU_WORKFLOW}" == "lgbm" ]]; then
     RUNPOD_CPU_TAIWAN_QPS=""
 elif [[ ( "${RUNPOD_CPU_WORKFLOW}" == "prepare" && "${RUNPOD_CPU_PREPARE_MODE}" == "dataset" \
         && ! "${RUNPOD_CPU_MAX_API_CALLS}" =~ ^[1-9][0-9]*$ ) \

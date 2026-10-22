@@ -247,6 +247,7 @@ summarize_marker lifecycle/stage1/baseline.json baseline
 summarize_marker lifecycle/stage1/validation.json validation
 summarize_marker lifecycle/research/tw-information.json research
 summarize_marker lifecycle/research/features.json features
+summarize_marker lifecycle/research/lgbm.json lgbm
 summarize_marker lifecycle/forward/cpu-preparation.json forward
 printf '\nRun-scoped training and validation workflows:\n'
 python3 "${SCRIPT_DIR}/runpod_runs.py" status

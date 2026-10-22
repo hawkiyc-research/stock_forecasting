@@ -12,6 +12,12 @@
 - 架構快照檢查改為比對 `configs/data_content_identity_snapshot.json` 記錄的
   語意 digest，而不是凍結整個模組的位元組；凍結的 CPU prepare／finalize 腳本
   檢查不變。
+- 新增協定 §13.13 的 B0 `t-lgbm-alpha`：`stock-forecasting-walk-forward-lgbm` 在
+  季度 walk-forward 的每個 fold、horizon、seed 訓練 LightGBM（以 fold validation
+  的每日 Rank IC 早停），輸出逐筆預測、原始 alpha 目標、每日 Rank IC 與 cell
+  摘要（block bootstrap 區間）；`runpod_workflow.sh lgbm`／`cpu-lgbm`／
+  `download-lgbm` 為對應的 Pod、tmux 與下載入口，lifecycle 標記
+  `lifecycle/research/lgbm.json`。
 
 ### v0.2.2 2026-09-21
 
@@ -86,6 +92,12 @@
 - The architecture-snapshot check now compares the semantic digests recorded in
   `configs/data_content_identity_snapshot.json` instead of freezing whole module
   bytes; the frozen CPU prepare/finalize script checks are unchanged.
+- Protocol §13.13 B0 `t-lgbm-alpha`: `stock-forecasting-walk-forward-lgbm` trains one
+  LightGBM per quarterly walk-forward fold, horizon and seed (early stopping on the fold
+  validation's daily Rank IC) and writes per-sample predictions, raw alpha targets, daily
+  Rank IC and the cell summary with block-bootstrap intervals; `runpod_workflow.sh lgbm`,
+  `cpu-lgbm` and `download-lgbm` are the Pod, tmux and download entries, with the
+  lifecycle marker `lifecycle/research/lgbm.json`.
 
 ### v0.2.2 2026-09-21
 

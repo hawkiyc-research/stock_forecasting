@@ -277,6 +277,8 @@ def expected_lifecycle(pod: dict[str, Any]) -> tuple[str, str] | None:
         # The feature build shares the research role and owns its own marker.
         if role == "cpu-research" and env.get("RUNPOD_CPU_WORKFLOW") == "features":
             return "research-features", "lifecycle/research/features.json"
+        if role == "cpu-research" and env.get("RUNPOD_CPU_WORKFLOW") == "lgbm":
+            return "research-lgbm", "lifecycle/research/lgbm.json"
         return kind, key
     if role in GPU_ROLES:
         if env.get("RUNPOD_SCOPED_LIFECYCLE") == "1" and role in {"gpu-train", "gpu-validation"}:

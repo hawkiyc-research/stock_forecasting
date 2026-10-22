@@ -2847,6 +2847,48 @@ worker 數預設取以下兩者的較小值，最多 32：
    SHA-256 核對，已核對的檔案重跑時略過；工作仍在執行時回傳 3，manifest 不存在時回傳 4。
    並行傳輸數由 `RUNPOD_FEATURE_DOWNLOAD_WORKERS`（1–4，預設 2）決定。
 
+6. **建立 LightGBM 基線 Pod（本機）**：協定 §13.13 的 B0 `t-lgbm-alpha`，使用上一步建好的
+   特徵庫與 rank 標籤；不抓行情、不需 secret。store 不需要先下載到本機。
+
+   ```bash
+   bash scripts/runpod_workflow.sh lgbm
+   ```
+
+7. **在 Pod 內啟動**：SSH 登入後執行：
+
+   ```bash
+   cd /runpod-volume/stock_forecasting
+   bash scripts/runpod_tmux_launch.sh cpu-lgbm
+   ```
+
+   工作先跑 walk-forward 測試，再依 `configs/walk_forward/tw_quarterly_v1.json` 的季度 fold，
+   對每個 fold、每個 horizon、每個 seed（42／43／44）各訓練一個 LightGBM 迴歸器（目標為
+   gauss-rank 標籤；`num_leaves` 31、`learning_rate` 0.05、`feature_fraction` 與
+   `bagging_fraction` 0.8、`min_data_in_leaf` 200、最多 1000 輪，以 fold validation 的每日
+   Rank IC 早停 50 輪）。逐筆預測（各 seed 與三 seed 平均 ensemble）、原始 alpha 目標、每日
+   Rank IC、cell 摘要（short h=1、holding h=5–10、long h=11–14；P1、P2、P1∪P2；含 1,000 次
+   circular moving-block bootstrap 的 95% 區間）與 manifest 寫到
+   `/runpod-volume/diagnostics/lgbm/<launch-id>/`，發布 `lifecycle/research/lgbm.json` 後 Pod
+   自行終止。訓練在有界的 spawn process pool 進行：worker 數取 `FIN_TS_LGBM_WORKERS`、可見
+   CPU 除以 4、可用記憶體 40%（每 worker 估 2 GiB）與工作數的最小值，每個 worker 的 LightGBM
+   執行緒數為 CPU 數除以 worker 數；每個 worker 以 memory map 讀取 fold 矩陣，不重複複製整個
+   訓練集。若 LightGBM 無法安裝，改用 scikit-learn 的 `HistGradientBoostingRegressor`，
+   `results.json` 的 `backend` 會註明。進度：
+
+   ```bash
+   tmux -L stock-forecasting-cpu-lgbm attach -t stock-forecasting-cpu-lgbm
+   ```
+
+8. **下載結果（本機）**：
+
+   ```bash
+   bash scripts/runpod_workflow.sh download-lgbm
+   ```
+
+   依 manifest 的 SHA-256 核對後存於 `artifacts/lgbm/<launch-id>/`（`results.json`、
+   `predictions.parquet`、`targets.parquet`、`daily_rank_ic.parquet`、`fits.parquet` 與 log）；
+   工作仍在執行回傳 3，manifest 不存在回傳 4。
+
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
 worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
 記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
@@ -2915,6 +2957,8 @@ workflow。`bash scripts/runpod_workflow.sh --help`（或 `-h`、`help`）列出
 | `download-research [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/tw-information.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。存於 `artifacts/diagnostics/tw-information-test/<launch-id>/`；仍在執行回傳 3，報告不完整回傳 4；`-h`／`--help` 顯示說明 |
 | `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | 建立特徵庫 CPU Pod，使用 active selection 的資料組；不抓行情，不需要 secret 或 TPEx relay。`--maxRuntime D` 預設 `6h`；`--cpuNumber N` 預設 `16`，可選 2／4／8／16／32；`--cpuFlavor F` 預設 `cpu3g`。Pod 獨占 volume，見[特徵庫與 walk-forward 資料準備](#features-zh) |
 | `download-features [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/features.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。依 store manifest 的 SHA-256 核對後存於 `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`；仍在執行回傳 3，manifest 缺少回傳 4；`RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` 調整並行數；`-h`／`--help` 顯示說明 |
+| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | 建立 B0 LightGBM walk-forward 基線的 CPU Pod（協定 §13.13），使用 active selection 已建好的特徵庫與 rank 標籤；不抓行情，不需 secret。`--maxRuntime D` 預設 `24h`（上限，工作結束 Pod 即終止）；`--cpuNumber N` 預設 `16`；`--cpuFlavor F` 預設 `cpu3g`。Pod 內以 `runpod_tmux_launch.sh cpu-lgbm` 啟動；`FIN_TS_LGBM_WORKERS` 可設訓練 process 上限 |
+| `download-lgbm [LAUNCH_ID]` | 省略 ID 時，下載 `lifecycle/research/lgbm.json` 記錄的最新一次已結束工作；也可指定 `launch-...` ID。依 manifest 的 SHA-256 核對後存於 `artifacts/lgbm/<launch-id>/`；仍在執行回傳 3，manifest 缺少回傳 4；`-h`／`--help` 顯示說明 |
 | `volume-weights inventory [--output JSON]` | 列出 volume 上 `savedModel/` 的 checkpoint 權重（`adapter.safetensors`、`optimizer.pt`、`scheduler.pt`）、`baselines/` 的模型檔（`.pkl`、`.pt`）與 `diagnostics/*-predictions/` 的逐筆預測匯出，依 run／baseline 顯示大小，並把確切 key 寫入 `artifacts/audit/volume-weight-inventory-<時間>.json`；紀錄檔（metrics、manifest、leaderboard、評估陣列、報告）只列為保留 |
 | `volume-weights delete --inventory JSON --category weights\|exports [--apply] [--workers N]` | 只刪除該 inventory 中一個類別的 key；不加 `--apply` 只計數。每個物件一次 `s3 rm`，wrapper 只在 `RUNPOD_S3_ALLOW_DELETE=1` 且 key 符合權重或匯出樣式時放行，資料組、紀錄與預訓練模型快取永遠不會被刪 |
 
@@ -7097,6 +7141,52 @@ the last 12 months of each window as validation) and come from
    rerun; it exits with 3 while the job is running and with 4 when the manifest is missing.
    `RUNPOD_FEATURE_DOWNLOAD_WORKERS` (1–4, default 2) bounds parallel transfers.
 
+6. **Create the LightGBM baseline Pod (local)**: B0 `t-lgbm-alpha` of protocol §13.13 on the
+   feature library and rank labels built in the previous step; fetches no market data and needs
+   no secret. The stores do not have to be downloaded first.
+
+   ```bash
+   bash scripts/runpod_workflow.sh lgbm
+   ```
+
+7. **Start inside the Pod**: after SSH login, run:
+
+   ```bash
+   cd /runpod-volume/stock_forecasting
+   bash scripts/runpod_tmux_launch.sh cpu-lgbm
+   ```
+
+   The job runs the walk-forward tests, then trains one LightGBM regressor per quarterly fold
+   of `configs/walk_forward/tw_quarterly_v1.json`, horizon and seed (42, 43, 44) on the
+   gauss-rank label (`num_leaves` 31, `learning_rate` 0.05, `feature_fraction` and
+   `bagging_fraction` 0.8, `min_data_in_leaf` 200, at most 1000 rounds, early stopping after
+   50 rounds on the fold validation's daily Rank IC). Per-sample predictions (each seed and the
+   three-seed mean ensemble), raw alpha targets, daily Rank IC, the cell summary (short h=1,
+   holding h=5–10, long h=11–14; P1, P2 and P1∪P2; 95% intervals from 1,000 circular
+   moving-block bootstrap replicates) and a manifest are written to
+   `/runpod-volume/diagnostics/lgbm/<launch-id>/`; the Pod publishes
+   `lifecycle/research/lgbm.json` and terminates itself. Training runs in a bounded spawn
+   process pool: the worker count is the smallest of `FIN_TS_LGBM_WORKERS`, visible CPUs
+   divided by 4, 40% of available memory at 2 GiB per worker, and the task count; each
+   worker uses CPUs divided by workers LightGBM threads and memory-maps its fold matrices
+   instead of copying the training set. If LightGBM cannot be installed, scikit-learn's
+   `HistGradientBoostingRegressor` is used and `results.json` records the `backend`. To watch:
+
+   ```bash
+   tmux -L stock-forecasting-cpu-lgbm attach -t stock-forecasting-cpu-lgbm
+   ```
+
+8. **Download the results (local)**:
+
+   ```bash
+   bash scripts/runpod_workflow.sh download-lgbm
+   ```
+
+   Verified against the manifest's SHA-256 and saved under `artifacts/lgbm/<launch-id>/`
+   (`results.json`, `predictions.parquet`, `targets.parquet`, `daily_rank_ic.parquet`,
+   `fits.parquet` and the logs); exits 3 while the job is running and 4 when the manifest is
+   missing.
+
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the
 worker count in flight; the worker count is the smallest of `FIN_TS_RANK_LABEL_WORKERS`
 (default 8), the visible CPUs minus one, and 40% of available memory divided by one worker's
@@ -7168,6 +7258,8 @@ Append the commands below to `bash scripts/runpod_workflow.sh`. They do not run 
 | `download-research [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/tw-information.json`; a `launch-...` ID selects another. Saved under `artifacts/diagnostics/tw-information-test/<launch-id>/`; exits 3 while running and 4 when the report is incomplete; `-h`/`--help` shows help |
 | `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | Create the feature-library CPU Pod on the active selection's dataset; it fetches no market data and needs no secret or TPEx relay. `--maxRuntime D` defaults to `6h`; `--cpuNumber N` to `16`, choices 2/4/8/16/32; `--cpuFlavor F` to `cpu3g`. The Pod owns the volume; see [feature library and walk-forward data](#features-en) |
 | `download-features [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/features.json`; a `launch-...` ID selects another. Verified against the store manifests' SHA-256 and saved under `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`; exits 3 while running and 4 when the manifest is missing; `RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` bounds parallel transfers; `-h`/`--help` shows help |
+| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | Create the CPU Pod of the B0 LightGBM walk-forward baseline (protocol §13.13) on the active selection's built feature library and rank labels; fetches no market data and needs no secret. `--maxRuntime D` defaults to `24h` (an upper bound; the Pod ends with the job); `--cpuNumber N` defaults to `16`; `--cpuFlavor F` defaults to `cpu3g`. Start it inside the Pod with `runpod_tmux_launch.sh cpu-lgbm`; `FIN_TS_LGBM_WORKERS` caps the training processes |
+| `download-lgbm [LAUNCH_ID]` | Without an ID, download the latest finished job recorded in `lifecycle/research/lgbm.json`; a `launch-...` ID selects another. Verified against the manifest's SHA-256 and saved under `artifacts/lgbm/<launch-id>/`; exits 3 while running and 4 when the manifest is missing; `-h`/`--help` shows help |
 | `volume-weights inventory [--output JSON]` | List the checkpoint weights under `savedModel/` (`adapter.safetensors`, `optimizer.pt`, `scheduler.pt`), the baseline model files under `baselines/` (`.pkl`, `.pt`) and the per-sample prediction exports under `diagnostics/*-predictions/` with sizes per run or baseline, and write their exact keys to `artifacts/audit/volume-weight-inventory-<time>.json`; records (metrics, manifests, leaderboards, evaluation arrays, reports) are listed only as kept |
 | `volume-weights delete --inventory JSON --category weights\|exports [--apply] [--workers N]` | Delete only one category of that inventory; without `--apply` it only counts. One `s3 rm` per object; the wrapper allows it only with `RUNPOD_S3_ALLOW_DELETE=1` and a key matching the weight or export patterns, so datasets, records and pretrained model caches can never be deleted |
 

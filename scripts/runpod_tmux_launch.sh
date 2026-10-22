@@ -91,7 +91,7 @@ done
 
 if [[ $# -lt 1 || ( "$1" != "probe-scales" && "$1" != "export-signal-predictions" && $# -ne 1 \
     && ! ( "$1" == "verify-full-workflow" && $# -eq 2 && "$2" == "--regression-only" ) ) ]]; then
-    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
     exit 2
 fi
 if [[ "${LOG_ROOT}" != "${NETWORK_VOLUME_ROOT}/logs" ]]; then
@@ -154,6 +154,16 @@ case "$1" in
         JOB_TIMEOUT_GRACE_SECONDS=0
         FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/research/features.json"
         FAILURE_LIFECYCLE_KIND=research-features
+        ;;
+    cpu-lgbm)
+        # CPU-only LightGBM walk-forward baseline (protocol 13.13); no GPU lease or model.
+        SESSION_NAME=stock-forecasting-cpu-lgbm
+        JOB_SCRIPT="${SCRIPT_DIR}/runpod_cpu_lgbm.sh"
+        JOB_ROLE=cpu-research
+        MAX_RUNTIME_SECONDS="${RUNPOD_CPU_MAX_RUNTIME_SECONDS:-86400}"
+        JOB_TIMEOUT_GRACE_SECONDS=0
+        FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/research/lgbm.json"
+        FAILURE_LIFECYCLE_KIND=research-lgbm
         ;;
     stage1-train)
         SESSION_NAME=stock-forecasting-train
@@ -274,7 +284,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
         exit 2
         ;;
 esac

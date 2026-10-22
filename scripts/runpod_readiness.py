@@ -50,6 +50,8 @@ GUARD_LIFECYCLE_KINDS = frozenset(
         "research-tw-information",
         # The feature-library build (protocol 13.12) shares the research role.
         "research-features",
+        # The LightGBM walk-forward baseline (protocol 13.13) shares it as well.
+        "research-lgbm",
         # Forward input packages (protocol 13.8) are prepared apart from any training dataset.
         "forward-cpu-preparation",
     }
@@ -2130,6 +2132,7 @@ def command_write_state(arguments):
             volume_root / "lifecycle" / "research" / "tw-information.json"
         ),
         "research-features": volume_root / "lifecycle" / "research" / "features.json",
+        "research-lgbm": volume_root / "lifecycle" / "research" / "lgbm.json",
         "forward-cpu-preparation": (
             volume_root / "lifecycle" / "forward" / "cpu-preparation.json"
         ),

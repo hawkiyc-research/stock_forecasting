@@ -20,6 +20,8 @@ dependencies = [
     "filelock>=3.24.2,<4.0",
     "pyarrow>=19,<24",
     "scikit-learn>=1.6,<2.0",
+    # B0 walk-forward baseline (protocol 13.13); sklearn's HistGradientBoosting is the fallback.
+    "lightgbm>=4.5,<5.0",
     "requests>=2.32,<3.0",
     "tqdm>=4.67,<5.0",
 ]
@@ -42,6 +44,7 @@ stock-forecasting-supervise = "stock_forecasting.runpod.supervisor:main"
 stock-forecasting-prepare-auxiliary = "stock_forecasting.cli.prepare_auxiliary_data:main"
 stock-forecasting-tw-information-test = "stock_forecasting.cli.tw_information_test:main"
 stock-forecasting-build-features = "stock_forecasting.cli.build_features:main"
+stock-forecasting-walk-forward-lgbm = "stock_forecasting.cli.walk_forward_lgbm:main"
 
 [tool.poetry]
 packages = [{ include = "stock_forecasting", from = "src" }]
