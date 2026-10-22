@@ -603,11 +603,83 @@ def _write_fold_work(
 
 
 def _cleanup_work(work: Path) -> None:
+    if not work.is_dir():
+        return
     for path in work.glob("*.npy"):
         path.unlink(missing_ok=True)
     with os.scandir(work) as entries:
         if not any(True for _ in entries):
             work.rmdir()
+
+
+def _partial_name(fold_index: int) -> str:
+    return f"fold-{fold_index:02d}.npz"
+
+
+def _save_partial(
+    partial_root: Path,
+    fold_index: int,
+    fold_scores: dict[tuple[int, int], np.ndarray],
+    fold_records: list[dict[str, Any]],
+) -> None:
+    """Persist one finished fold (every horizon and seed) so a restart can reuse it."""
+    arrays = {f"h{h:02d}_seed{seed}": values for (h, seed), values in fold_scores.items()}
+    pending = partial_root / (_partial_name(fold_index) + ".pending")
+    with pending.open("wb") as stream:
+        np.savez(stream, records=json.dumps(fold_records), **arrays)
+        stream.flush()
+        os.fsync(stream.fileno())
+    pending.replace(partial_root / _partial_name(fold_index))
+
+
+def _load_partials(
+    resume_root: Path | None,
+    partial_root: Path,
+    folds: list[Fold],
+    horizons: list[int],
+    seeds: tuple[int, ...],
+) -> dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]]:
+    """Finished folds of an earlier run that cover every horizon and seed asked for now."""
+    if resume_root is None:
+        return {}
+    source = Path(resume_root) / "partial"
+    resumed = {}
+    for fold in folds:
+        path = source / _partial_name(fold.index)
+        if not path.is_file():
+            continue
+        with np.load(path, allow_pickle=False) as payload:
+            keys = {f"h{h:02d}_seed{seed}" for h in horizons for seed in seeds}
+            if not keys <= set(payload.files):
+                continue
+            fold_scores = {
+                (h, seed): np.asarray(payload[f"h{h:02d}_seed{seed}"], dtype=np.float32)
+                for h in horizons
+                for seed in seeds
+            }
+            fold_records = json.loads(str(payload["records"]))
+        resumed[fold.index] = (fold_scores, fold_records)
+        if path.resolve() != (partial_root / path.name).resolve():
+            (partial_root / path.name).write_bytes(path.read_bytes())
+    return resumed
+
+
+def _resumed_fold_info(
+    table: pd.DataFrame, horizons: list[int], fold: Fold, fold_records: list[dict[str, Any]]
+) -> dict:
+    train, valid, predict = fold_masks(pd.DatetimeIndex(table["signal_date"]), fold)
+    labelled = ~table[[rank_column(h) for h in horizons]].isna().any(axis=1).to_numpy()
+    predict_index = np.flatnonzero(predict)
+    expected = {int(r["predict_rows"]) for r in fold_records}
+    if expected and expected != {len(predict_index)}:
+        raise ValueError(f"Fold {fold.name}: resumed predictions do not match this table")
+    return {
+        "train_rows": int((train & labelled).sum()),
+        "validation_rows": int((valid & labelled).sum()),
+        "predict_rows": len(predict_index),
+        "predict_index": predict_index,
+        "resumed": True,
+    }
 
 
 def run_walk_forward(
@@ -624,18 +696,38 @@ def run_walk_forward(
     early_stopping: int = DEFAULT_EARLY_STOPPING,
     min_group_size: int,
     scratch: Path | None = None,
+    resume_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Train every fold, write predictions, targets, daily Rank IC and the cell summary."""
+    """Train every fold, write predictions, targets, daily Rank IC and the cell summary.
+
+    Each finished fold is written to ``output_root/partial/`` at once; ``resume_root`` names an
+    earlier output root whose partial folds are reused (a Pod restart costs at most one fold).
+    """
     started = time.monotonic()
     backend = backend_name()
     count, plan = worker_plan(workers, len(folds) * len(horizons))
     chunks = max(1, min(count, len(horizons)))
     horizon_chunks = [list(chunk) for chunk in np.array_split(np.arange(len(horizons)), chunks)]
     work_root = (scratch or output_root) / "work"
+    partial_root = output_root / "partial"
+    partial_root.mkdir(parents=True, exist_ok=True)
+    records, scores = [], {}
+    resumed = _load_partials(resume_root, partial_root, folds, horizons, seeds)
+    for fold_index, (fold_scores, fold_records) in resumed.items():
+        scores[fold_index] = fold_scores
+        records.extend(fold_records)
     tasks, fold_info = [], {}
+    pending_chunks: dict[int, int] = {}
     for fold in folds:
+        if fold.index in resumed:
+            fold_info[fold.index] = _resumed_fold_info(
+                table, horizons, fold, resumed[fold.index][1]
+            )
+            print(json.dumps({"fold": fold.index, "resumed": True}), flush=True)
+            continue
         work = work_root / f"fold-{fold.index:02d}"
         fold_info[fold.index] = _write_fold_work(table, feature_columns, horizons, fold, work)
+        pending_chunks[fold.index] = len(horizon_chunks)
         for positions in horizon_chunks:
             tasks.append(
                 {
@@ -651,22 +743,31 @@ def run_walk_forward(
                     "feature_names": feature_columns,
                 }
             )
-    records, scores = [], {}
-    for result in _bounded_map(run_fold_task, tasks, count):
+    fold_records: dict[int, list[dict[str, Any]]] = {}
+    for result in _bounded_map(run_fold_task, tasks, count) if tasks else ():
         records.extend(result["records"])
+        fold_records.setdefault(result["fold"], []).extend(result["records"])
         scores.setdefault(result["fold"], {}).update(result["predictions"])
+        pending_chunks[result["fold"]] -= 1
+        if pending_chunks[result["fold"]] == 0:
+            _save_partial(
+                partial_root, result["fold"], scores[result["fold"]], fold_records[result["fold"]]
+            )
+            _cleanup_work(work_root / f"fold-{result['fold']:02d}")
         print(
             json.dumps(
                 {
                     "fold": result["fold"],
                     "completed_fits": len(result["records"]),
+                    "fold_done": pending_chunks[result["fold"]] == 0,
                     "seconds": round(time.monotonic() - started, 1),
                 }
             ),
             flush=True,
         )
     for fold in folds:
-        _cleanup_work(work_root / f"fold-{fold.index:02d}")
+        if fold.index not in resumed:
+            _cleanup_work(work_root / f"fold-{fold.index:02d}")
     # Predictions: one row per (sample, model) where model is each seed and the mean ensemble.
     keys = ["symbol", "market", "signal_date", "split", "ordinal"]
     prediction_frames, target_frames = [], []

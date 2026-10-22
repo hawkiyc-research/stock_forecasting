@@ -148,6 +148,9 @@ printf '[%s] walk-forward tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '[%s] LightGBM walk-forward baseline: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}"
 mkdir -p "${LGBM_SCRATCH_ROOT}"
+# A container restart loses the job but not the volume: reuse the newest earlier launch's
+# finished folds of this dataset (the trainer verifies they match before using them).
+RESUME_ROOT="$(ls -d "${NETWORK_VOLUME_ROOT}/diagnostics/lgbm"/launch-*/partial 2>/dev/null | sort | tail -1 | xargs -r dirname)"
 LGBM_ARGUMENTS=(
     --experiment-config "${FEATURE_EXPERIMENT_CONFIG}"
     --spec "${FEATURE_SPEC}"
@@ -155,6 +158,10 @@ LGBM_ARGUMENTS=(
     --output-root "${OUTPUT_ROOT}"
     --scratch "${LGBM_SCRATCH_ROOT}"
 )
+if [[ -n "${RESUME_ROOT}" && -d "${RESUME_ROOT}" ]]; then
+    printf 'Resuming finished folds from %s\n' "${RESUME_ROOT}"
+    LGBM_ARGUMENTS+=(--resume-root "${RESUME_ROOT}")
+fi
 if [[ -n "${FIN_TS_LGBM_WORKERS:-}" ]]; then
     LGBM_ARGUMENTS+=(--workers "${FIN_TS_LGBM_WORKERS}")
 fi

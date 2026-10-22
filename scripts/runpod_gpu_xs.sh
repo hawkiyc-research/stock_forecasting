@@ -178,6 +178,9 @@ fi
 printf '[%s] cross-stock experiment %s seeds %s: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${XS_EXPERIMENT}" "${XS_SEEDS}" "${DATA_ROOT}"
 mkdir -p "${HF_HOME}"
+# A container restart loses the job but not the volume: reuse the newest earlier launch's
+# finished folds of this dataset (the trainer verifies they match before using them).
+RESUME_ROOT="$(ls -d "${NETWORK_VOLUME_ROOT}/diagnostics/xs"/launch-*/partial 2>/dev/null | sort | tail -1 | xargs -r dirname)"
 read -r -a XS_SEED_LIST <<< "${XS_SEEDS}"
 XS_ARGUMENTS=(
     --experiment-config "${FEATURE_EXPERIMENT_CONFIG}"
@@ -188,6 +191,10 @@ XS_ARGUMENTS=(
     --output-root "${OUTPUT_ROOT}"
     --baseline-root "${BASELINE_ROOT}"
 )
+if [[ -n "${RESUME_ROOT}" && -d "${RESUME_ROOT}" ]]; then
+    printf 'Resuming finished folds from %s\n' "${RESUME_ROOT}"
+    XS_ARGUMENTS+=(--resume-root "${RESUME_ROOT}")
+fi
 if [[ -n "${FIN_TS_XS_CACHE_WORKERS:-}" ]]; then
     XS_ARGUMENTS+=(--workers "${FIN_TS_XS_CACHE_WORKERS}")
 fi

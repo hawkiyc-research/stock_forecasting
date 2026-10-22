@@ -9,6 +9,7 @@ baseline, so the scorer, the backtest and the paired comparison read both alike.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -473,8 +474,14 @@ def run_cross_stock(
     baseline_daily: pd.DataFrame | None = None,
     max_groups_per_epoch: int | None = None,
     headroom_bytes: int = 4 * 1024**3,
+    resume_root: Path | None = None,
 ) -> dict[str, Any]:
+    """Train every fold and seed; each finished (fold, seed) is written to ``output_root/partial``
+    immediately and reused from ``resume_root`` after a restart."""
     started = time.monotonic()
+    partial_root = output_root / "partial"
+    partial_root.mkdir(parents=True, exist_ok=True)
+    resumed = _load_xs_partials(resume_root, partial_root, experiment, folds, seeds)
     params = {**TRAINING_PARAMS, **(params or {})}
     config, lambda_corr = make_config(experiment, table)
     index = build_group_index(table)
@@ -484,6 +491,14 @@ def run_cross_stock(
     records, scores = [], {}
     for plan in plans:
         for seed in seeds:
+            if (plan.fold.index, seed) in resumed:
+                rows, values, record = resumed[(plan.fold.index, seed)]
+                scores[(plan.fold.index, seed)] = (rows, values)
+                records.append(record)
+                print(
+                    json.dumps({"fold": plan.fold.index, "seed": seed, "resumed": True}), flush=True
+                )
+                continue
             rows, values, record = train_fold(
                 table,
                 index,
@@ -497,6 +512,7 @@ def run_cross_stock(
             )
             scores[(plan.fold.index, seed)] = (rows, values)
             records.append(record)
+            _save_xs_partial(partial_root, experiment, plan.fold.index, seed, rows, values, record)
             print(
                 json.dumps(
                     {
@@ -603,6 +619,57 @@ def run_cross_stock(
     }
     atomic_write_json(output_root / "results.json", results)
     return results
+
+
+def _xs_partial_name(fold_index: int, seed: int) -> str:
+    return f"fold-{fold_index:02d}-seed-{seed}.npz"
+
+
+def _save_xs_partial(
+    partial_root: Path,
+    experiment: str,
+    fold_index: int,
+    seed: int,
+    rows: np.ndarray,
+    values: np.ndarray,
+    record: dict[str, Any],
+) -> None:
+    pending = partial_root / (_xs_partial_name(fold_index, seed) + ".pending")
+    with pending.open("wb") as stream:
+        np.savez(stream, rows=rows, values=values, record=json.dumps(record), experiment=experiment)
+        stream.flush()
+        os.fsync(stream.fileno())
+    pending.replace(partial_root / _xs_partial_name(fold_index, seed))
+
+
+def _load_xs_partials(
+    resume_root: Path | None,
+    partial_root: Path,
+    experiment: str,
+    folds: list[Fold],
+    seeds: tuple[int, ...],
+) -> dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]]:
+    """Finished (fold, seed) pairs of an earlier run of the same experiment."""
+    if resume_root is None:
+        return {}
+    source = Path(resume_root) / "partial"
+    resumed = {}
+    for fold in folds:
+        for seed in seeds:
+            path = source / _xs_partial_name(fold.index, seed)
+            if not path.is_file():
+                continue
+            with np.load(path, allow_pickle=False) as payload:
+                if str(payload["experiment"]) != experiment:
+                    continue
+                resumed[(fold.index, seed)] = (
+                    np.asarray(payload["rows"], dtype=np.int64),
+                    np.asarray(payload["values"], dtype=np.float32),
+                    json.loads(str(payload["record"])),
+                )
+            if path.resolve() != (partial_root / path.name).resolve():
+                (partial_root / path.name).write_bytes(path.read_bytes())
+    return resumed
 
 
 def write_xs_manifest(

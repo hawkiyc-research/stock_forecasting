@@ -189,9 +189,7 @@ def test_walk_forward_run_writes_b0_compatible_outputs_and_pairs(tmp_path: Path)
     )
     predictions = pd.read_parquet(output / "predictions.parquet")
     targets = pd.read_parquet(output / "targets.parquet")
-    assert set(predictions["model"]) == {
-        "t-xs-scratch", "t-xs-scratch-seed1", "t-xs-scratch-seed2"
-    }
+    assert set(predictions["model"]) == {"t-xs-scratch", "t-xs-scratch-seed1", "t-xs-scratch-seed2"}
     assert len(predictions) == 3 * len(targets)
     assert results["fits"]["count"] == len(folds) * 2
     assert results["device"]["device"] == "cpu"
@@ -229,3 +227,46 @@ def test_paired_comparison_and_decision_logic() -> None:
     decision = decide_h_a(pairs)
     assert decision["passed_both_cells"] and decision["passed_any_cell"]
     assert not decide_h_a([])["passed_any_cell"]
+
+
+def test_finished_fold_seeds_are_written_and_resumed(tmp_path: Path) -> None:
+    sessions = _sessions()
+    table = table_from_caches({"train": _cache("train", sessions, 5, 12)})
+    folds = quarterly_folds(sessions, SCHEDULE)
+    shared = dict(
+        experiment="t-xs-a1-no-cross",
+        folds=folds,
+        schedule=SCHEDULE,
+        seeds=(1,),
+        min_group_size=5,
+        device="cpu",
+        max_groups_per_epoch=20,
+    )
+    first = tmp_path / "first"
+    run_cross_stock(table, output_root=first, params={"max_epochs": 2, "patience": 2}, **shared)
+    assert sorted(p.name for p in (first / "partial").glob("*.npz")) == [
+        "fold-00-seed-1.npz",
+        "fold-01-seed-1.npz",
+    ]
+    second = tmp_path / "second"
+    results = run_cross_stock(
+        table,
+        output_root=second,
+        params={"max_epochs": 1, "patience": 1},
+        resume_root=first,
+        **shared,
+    )
+    pd.testing.assert_frame_equal(
+        pd.read_parquet(second / "predictions.parquet"),
+        pd.read_parquet(first / "predictions.parquet"),
+    )
+    assert results["fits"]["count"] == len(folds)
+    # Partials of another experiment are ignored.
+    other = run_cross_stock(
+        table,
+        output_root=tmp_path / "other",
+        params={"max_epochs": 1, "patience": 1},
+        resume_root=first,
+        **{**shared, "experiment": "t-xs-a4-no-gating"},
+    )
+    assert other["fits"]["mean_epochs"] == 1.0

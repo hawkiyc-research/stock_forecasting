@@ -42,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--schedule", type=Path, default=DEFAULT_SCHEDULE_PATH)
     parser.add_argument("--output-root", type=Path, required=True, help="New directory.")
     parser.add_argument("--scratch", type=Path, help="Fold matrices (default: output root).")
+    parser.add_argument(
+        "--resume-root", type=Path, help="Earlier output root whose partial folds are reused."
+    )
     parser.add_argument("--workers", type=int, help=f"Training processes, 1-{MAX_WORKERS}.")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS))
     parser.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
@@ -99,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         early_stopping=args.early_stopping,
         min_group_size=int(config.model.rank_min_group_size),
         scratch=args.scratch,
+        resume_root=args.resume_root,
     )
     write_manifest(
         args.output_root,

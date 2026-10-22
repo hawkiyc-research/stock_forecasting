@@ -209,3 +209,39 @@ def test_walk_forward_end_to_end_with_lightgbm(tmp_path: Path, monkeypatch) -> N
     fits = pd.read_parquet(tmp_path / "lightgbm" / "fits.parquet")
     assert (fits["best_iteration"] >= 1).all()
     assert results["worker_plan"]["count"] == 1
+
+
+def test_partial_folds_are_written_and_resumed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(module, "backend_name", lambda: "sklearn_hist_gradient_boosting")
+    monkeypatch.setenv(WORKERS_ENV, "1")
+    table = _table(symbols_per_market=20)
+    folds = quarterly_folds(_sessions(), SCHEDULE)
+    shared = dict(
+        feature_columns=[f"f{i}" for i in range(6)],
+        horizons=HORIZONS,
+        folds=folds,
+        schedule=SCHEDULE,
+        seeds=(1,),
+        workers=1,
+        early_stopping=3,
+        min_group_size=10,
+    )
+    first = tmp_path / "first"
+    run_walk_forward(table, output_root=first, max_rounds=20, **shared)
+    assert sorted(p.name for p in (first / "partial").glob("*.npz")) == [
+        "fold-00.npz",
+        "fold-01.npz",
+    ]
+    second = tmp_path / "second"
+    # Fewer rounds would change a fresh fit; identical predictions prove the folds were reused.
+    results = run_walk_forward(table, output_root=second, max_rounds=2, resume_root=first, **shared)
+    pd.testing.assert_frame_equal(
+        pd.read_parquet(second / "predictions.parquet"),
+        pd.read_parquet(first / "predictions.parquet"),
+    )
+    assert results["fits"]["count"] == len(folds) * len(HORIZONS)
+    assert all(info.get("resumed") for info in results["fold_rows"].values())
+    assert sorted(p.name for p in (second / "partial").glob("*.npz")) == [
+        "fold-00.npz",
+        "fold-01.npz",
+    ]

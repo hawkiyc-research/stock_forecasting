@@ -58,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-groups-per-epoch", type=int, help="Smoke runs only.")
     parser.add_argument("--embedding-batch-size", type=int, default=512)
     parser.add_argument(
+        "--resume-root", type=Path, help="Earlier output root whose finished folds are reused."
+    )
+    parser.add_argument(
         "--offline-encoders",
         action="store_true",
         help="Verify encoder weights in the local Hugging Face cache instead of downloading.",
@@ -167,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         params=params,
         baseline_daily=baseline_daily,
         max_groups_per_epoch=args.max_groups_per_epoch,
+        resume_root=args.resume_root,
     )
     write_xs_manifest(
         args.output_root,
