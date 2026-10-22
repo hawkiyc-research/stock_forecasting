@@ -150,7 +150,13 @@ printf '[%s] LightGBM walk-forward baseline: %s\n' \
 mkdir -p "${LGBM_SCRATCH_ROOT}"
 # A container restart loses the job but not the volume: reuse the newest earlier launch's
 # finished folds of this dataset (the trainer verifies they match before using them).
-RESUME_ROOT="$(ls -d "${NETWORK_VOLUME_ROOT}/diagnostics/lgbm"/launch-*/partial 2>/dev/null | sort | tail -1 | xargs -r dirname)"
+RESUME_ROOT=""
+for resume_candidate in "${NETWORK_VOLUME_ROOT}/diagnostics/lgbm"/launch-*/partial; do
+    # The glob stays literal when nothing matches; only real directories qualify.
+    if [[ -d "${resume_candidate}" ]]; then
+        RESUME_ROOT="$(dirname "${resume_candidate}")"
+    fi
+done
 LGBM_ARGUMENTS=(
     --experiment-config "${FEATURE_EXPERIMENT_CONFIG}"
     --spec "${FEATURE_SPEC}"

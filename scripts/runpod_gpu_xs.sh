@@ -180,7 +180,13 @@ printf '[%s] cross-stock experiment %s seeds %s: %s\n' \
 mkdir -p "${HF_HOME}"
 # A container restart loses the job but not the volume: reuse the newest earlier launch's
 # finished folds of this dataset (the trainer verifies they match before using them).
-RESUME_ROOT="$(ls -d "${NETWORK_VOLUME_ROOT}/diagnostics/xs"/launch-*/partial 2>/dev/null | sort | tail -1 | xargs -r dirname)"
+RESUME_ROOT=""
+for resume_candidate in "${NETWORK_VOLUME_ROOT}/diagnostics/xs"/launch-*/partial; do
+    # The glob stays literal when nothing matches; only real directories qualify.
+    if [[ -d "${resume_candidate}" ]]; then
+        RESUME_ROOT="$(dirname "${resume_candidate}")"
+    fi
+done
 read -r -a XS_SEED_LIST <<< "${XS_SEEDS}"
 XS_ARGUMENTS=(
     --experiment-config "${FEATURE_EXPERIMENT_CONFIG}"
