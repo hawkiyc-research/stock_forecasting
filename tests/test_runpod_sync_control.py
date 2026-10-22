@@ -88,9 +88,10 @@ class RunPodSyncControlTests(unittest.TestCase):
                 ROOT / name, self.project / name,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "node_modules"),
             )
+        (self.project / "docs").mkdir()
         for name in (
             "README.md", "pyproject.toml", "LICENSE", "MODEL_LICENSE",
-            "THIRD_PARTY_NOTICES.md", "RELEASES.md",
+            "THIRD_PARTY_NOTICES.md", "RELEASES.md", "docs/experiment_protocol.md",
         ):
             shutil.copy2(ROOT / name, self.project / name)
         (self.project / "scripts/runpodctl_project.sh").write_text(
