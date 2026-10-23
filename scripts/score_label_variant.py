@@ -126,7 +126,8 @@ def main() -> int:
         print(key, "paired", {k: round(v, 4) if isinstance(v, float) else v
                               for k, v in report["paired"][key].items()},
               "residual",
-              {k: round(v, 4) for k, v in report["residual_cells"].get(key, {}).items()})
+              {k: round(v, 4) if isinstance(v, float) else v
+               for k, v in report["residual_cells"].get(key, {}).items()})
     print("written", output)
     return 0
 
