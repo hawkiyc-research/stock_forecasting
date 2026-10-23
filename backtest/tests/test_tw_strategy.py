@@ -88,7 +88,11 @@ def _config(tmp_path: Path, **overrides) -> Path:
     config["markets"]["TWSE"]["min_dollar_volume"] = 1_000_000
     config["markets"]["TPEX"]["min_dollar_volume"] = 1_000_000
     config["grid"] = {"score_horizons": [5, 10], "k": [5], "buffer_multiples": [2]}
-    config["capital"]["sensitivity_twd"] = [2_000_000]
+    config["capital"]["scenarios"] = [
+        {"name": "2M-lots", "twd": 2_000_000, "odd_lots": False},
+        {"name": "2M-odd", "twd": 2_000_000, "odd_lots": True},
+        {"name": "5B", "twd": 5_000_000_000, "odd_lots": False},
+    ]
     config["bootstrap"]["replicates"] = 50
     config["periods"] = {"P1": ["2023-01-02", "2025-06-01"], "P2": ["2025-06-01", "2026-06-01"]}
     config.update(overrides)
@@ -135,6 +139,25 @@ def test_band_entry_cap_and_lot_feasibility():
     )
     assert result.lot_blocked == 1
     assert 0 not in set(symbols[result.path.buy[0][result.path.buy[0] >= 0]])
+    # Odd lots: the expensive stock is bought anyway and flagged; the sale carries the flag.
+    result = tw_strategy.simulate_band(
+        ranked, k=4, buffer=2, max_buys=4, symbols=symbols, link=link, move=move, limit=0.095,
+        lot_cost=lot_cost, slot_capital=100.0, odd_lots=True,
+    )
+    assert result.lot_blocked == 0 and result.odd_lot_buys == 1
+    bought = result.path.buy[0][result.path.buy[0] >= 0]
+    assert result.odd_buy[bought].sum() == 1
+    assert np.isfinite(result.buy_value[bought]).all()
+    assert result.odd_sell.sum() == 1  # closed at the end of the simulation
+    # Participation cap: a slot of 25 may not exceed 5% of a 100 daily dollar volume (= 5).
+    volume = np.where(symbols == 1, 100.0, 1e9)
+    result = tw_strategy.simulate_band(
+        ranked, k=4, buffer=2, max_buys=4, symbols=symbols, link=link, move=move, limit=0.095,
+        lot_cost=np.full(symbols.size, 1.0), slot_capital=100.0, dollar_volume=volume,
+        participation_cap=0.05,
+    )
+    assert result.liquidity_blocked == 1
+    assert 1 not in set(symbols[result.path.buy[0][result.path.buy[0] >= 0]])
 
 
 def test_hedged_overlay_is_flat_when_stocks_track_the_future_and_calls_on_a_spike():
@@ -215,8 +238,34 @@ def test_end_to_end_run_writes_outputs_and_decisions(tmp_path):
                    & (grid["market"] == "TWSE")]
     assert {"net_return_annual", "net_cagr", "sharpe", "max_drawdown", "index_excess_annual",
             "lot_blocked_share", "margin_calls"} <= set(primary.columns)
-    lots = primary[primary["capital"] == "2000000"] if primary["capital"].dtype == object \
-        else primary[primary["capital"] == 2000000]
+    lots = primary[primary["capital"] == "2M-lots"]
     assert (lots["lot_blocked"] > 0).all()  # the 900-dollar names cost more than a slot
+    odd = primary[primary["capital"] == "2M-odd"]
+    assert (odd["lot_blocked"] == 0).all() and (odd["odd_lot_buys"] > 0).all()
+    big = primary[primary["capital"] == "5B"]
+    assert (big["liquidity_blocked"] > 0).all()  # 1B slots exceed 5% of the daily volume
+    assert {"capital_twd", "odd_lots", "liquidity_blocked_share", "odd_lot_share"} <= set(
+        primary.columns)
     reference = grid[grid["version"] == "tx_long_reference"]
     assert reference["rolls"].ge(1).all()
+
+
+def test_rate_adjustments_add_minimum_commission_and_odd_lot_slippage():
+    from twbacktest.costs import Scenario
+    config = json.loads(tw_strategy.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    result = tw_strategy.BandResult(
+        path=None, lot_blocked=0, liquidity_blocked=0, odd_lot_buys=1, buy_attempts=2,
+        buy_value=np.array([200_000.0, 5_000.0, np.nan]),
+        sell_value=np.array([np.nan, 5_000.0, 1e6]),
+        odd_buy=np.array([False, True, False]), odd_sell=np.array([False, True, False]),
+    )
+    scenario = Scenario(0.6, 1.0, "positions")
+    capital = tw_strategy.CapitalScenario("10M-odd", 1e7, True)
+    buy, sell = tw_strategy.rate_adjustments(result, scenario, config, capital=capital)
+    commission = 0.001425 * 0.6
+    assert buy[0] == pytest.approx(max(20 / 200_000 - commission, 0.0))  # below the floor
+    assert buy[1] == pytest.approx(max(1 / 5_000 - commission, 0.0) + 0.001)  # odd lot
+    assert buy[2] == 0.0 and sell[0] == 0.0
+    assert sell[2] == pytest.approx(max(20 / 1e6 - commission, 0.0))
+    fractional = tw_strategy.CapitalScenario("fractional", None, False)
+    assert tw_strategy.rate_adjustments(result, scenario, config, capital=fractional)[0].sum() == 0

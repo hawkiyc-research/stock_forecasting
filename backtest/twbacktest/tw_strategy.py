@@ -122,10 +122,29 @@ def smooth_by_symbol(
 
 
 @dataclass(frozen=True)
+class CapitalScenario:
+    """How a slot's cash turns into shares: fractional (no limits), or a capital amount."""
+
+    name: str
+    twd: float | None  # None = fractional slots
+    odd_lots: bool  # a slot below one board lot buys odd lots instead of skipping the stock
+
+    @property
+    def fractional(self) -> bool:
+        return self.twd is None
+
+
+@dataclass(frozen=True)
 class BandResult:
     path: positions.Path
     lot_blocked: int  # candidate buys skipped because one board lot cost more than the slot
+    liquidity_blocked: int  # candidate buys skipped by the volume participation cap
+    odd_lot_buys: int  # buys executed as odd lots
     buy_attempts: int
+    buy_value: np.ndarray  # slot value at the buy, per row (NaN when the row was not bought)
+    sell_value: np.ndarray  # slot value at the sale, per row (NaN when the row was not sold)
+    odd_buy: np.ndarray  # row bought as odd lots
+    odd_sell: np.ndarray  # row sold from an odd-lot position
 
 
 def simulate_band(
@@ -140,14 +159,20 @@ def simulate_band(
     limit: float,
     lot_cost: np.ndarray | None = None,
     slot_capital: float | None = None,
+    odd_lots: bool = False,
+    dollar_volume: np.ndarray | None = None,
+    participation_cap: float | None = None,
 ) -> BandResult:
-    """The hold-buffer rule of positions.simulate with a daily entry cap and lot feasibility.
+    """The hold-buffer rule of positions.simulate with a daily entry cap and capital limits.
 
     ``ranked`` holds each signal date's rankable rows from best to worst (rows outside the
     universe are unranked and therefore sold). A slot keeps its stock while the rank stays
     within buffer x k; empty slots are filled best-first, at most ``max_buys`` per session.
     With ``lot_cost`` (price of one board lot at the execution open) and ``slot_capital``,
-    a candidate whose lot costs more than the slot's current value is skipped and counted.
+    a candidate whose lot costs more than the slot's current value is skipped and counted,
+    unless ``odd_lots`` lets the slot buy odd lots (flagged for their own costs). With
+    ``dollar_volume`` and ``participation_cap``, a candidate whose slot value exceeds the cap
+    times its recent daily dollar volume is skipped and counted (a large-capital limit).
     """
     intervals = len(ranked) - 1
     if intervals < 1:
@@ -165,9 +190,22 @@ def simulate_band(
     slot = np.full(k, -1, dtype=np.int64)
     entry = np.zeros(k, dtype=np.int64)
     waiting = np.zeros(k, dtype=bool)
-    value = np.full(k, (slot_capital or 0.0) / k)  # gross slot value, for lot feasibility
+    value = np.full(k, (slot_capital or 0.0) / k)  # gross slot value, for capital limits
+    odd_slot = np.zeros(k, dtype=bool)
+    rows_total = symbols.size
+    buy_value = np.full(rows_total, np.nan)
+    sell_value = np.full(rows_total, np.nan)
+    odd_buy = np.zeros(rows_total, dtype=bool)
+    odd_sell = np.zeros(rows_total, dtype=bool)
     periods: list[int] = []
     blocked_buys = blocked_sells = missing_exits = lot_blocked = buy_attempts = 0
+    liquidity_blocked = odd_lot_buys = 0
+
+    def close_position(s: int, row: int) -> None:
+        sell_value[row] = value[s]
+        odd_sell[row] = odd_slot[s]
+        odd_slot[s] = False
+
     for j in range(intervals):
         sold = set()
         for s in range(k):
@@ -180,6 +218,7 @@ def simulate_band(
             sell_open[j, s] = row
             sold.add(int(symbols[row]))
             periods.append(j - int(entry[s]))
+            close_position(s, row)
             slot[s] = -1
         taken = {int(symbols[row]) for row in slot if row >= 0} | sold
         candidates = (row for row in ranked[j] if int(symbols[row]) not in taken)
@@ -187,16 +226,26 @@ def simulate_band(
         for s in range(k):
             if slot[s] >= 0 or waiting[s] or buys >= max_buys:
                 continue
+            odd = False
             while True:
                 row = next(candidates, None)
                 if row is None:
                     break
                 buy_attempts += 1
+                if slot_capital is not None and dollar_volume is not None \
+                        and participation_cap is not None:
+                    volume = dollar_volume[row]
+                    if not np.isfinite(volume) or value[s] > participation_cap * volume:
+                        liquidity_blocked += 1
+                        continue
                 if lot_cost is not None and slot_capital is not None:
                     cost = lot_cost[row]
                     if not np.isfinite(cost) or cost > value[s]:
-                        lot_blocked += 1
-                        continue
+                        if odd_lots and np.isfinite(cost) and cost > 0:
+                            odd = True
+                        else:
+                            lot_blocked += 1
+                            continue
                 break
             if row is None:
                 break
@@ -207,6 +256,10 @@ def simulate_band(
             slot[s] = row
             entry[s] = j
             buys += 1
+            buy_value[row] = value[s]
+            odd_buy[row] = odd
+            odd_slot[s] = odd
+            odd_lot_buys += int(odd)
         waiting[:] = False
         for s in range(k):
             row = slot[s]
@@ -222,10 +275,16 @@ def simulate_band(
                 sell_close[j, s] = row
                 missing_exits += 1
                 periods.append(j - int(entry[s]) + 1)
+                value[s] *= math.exp(growth[j, s])
+                close_position(s, row)
                 slot[s] = -1
                 waiting[s] = True
+                continue
             value[s] *= math.exp(growth[j, s])
-    periods.extend(intervals - int(entry[s]) for s in range(k) if slot[s] >= 0)
+    for s in range(k):
+        if slot[s] >= 0:
+            periods.append(intervals - int(entry[s]))
+            close_position(s, int(slot[s]))
     path = positions.Path(
         buy=buy,
         sell_open=sell_open,
@@ -238,7 +297,53 @@ def simulate_band(
         blocked_sells=blocked_sells,
         missing_exits=missing_exits,
     )
-    return BandResult(path=path, lot_blocked=lot_blocked, buy_attempts=buy_attempts)
+    return BandResult(
+        path=path, lot_blocked=lot_blocked, liquidity_blocked=liquidity_blocked,
+        odd_lot_buys=odd_lot_buys, buy_attempts=buy_attempts, buy_value=buy_value,
+        sell_value=sell_value, odd_buy=odd_buy, odd_sell=odd_sell,
+    )
+
+
+def capital_scenarios(config: dict[str, Any]) -> list[CapitalScenario]:
+    """The fractional primary plus every configured capital scenario."""
+    out = [CapitalScenario(FRACTIONAL, None, False)]
+    for item in config["capital"].get("scenarios", []):
+        out.append(CapitalScenario(str(item["name"]), float(item["twd"]), bool(item["odd_lots"])))
+    return out
+
+
+def rate_adjustments(
+    result: BandResult,
+    scenario: Scenario,
+    config: dict[str, Any],
+    *,
+    capital: CapitalScenario,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-row additions to the buy and sell cost rates for one capital scenario.
+
+    A minimum commission per trade (NT$20, or the odd-lot minimum) tops up the discounted
+    commission on small trades, and odd-lot trades pay extra slippage on both sides.
+    """
+    rows = result.buy_value.size
+    buy_extra, sell_extra = np.zeros(rows), np.zeros(rows)
+    if capital.fractional:
+        return buy_extra, sell_extra
+    settings = config["capital"]
+    commission = float(config["costs"]["commission_rate"]) * scenario.discount
+    minimum = float(settings["min_commission_twd"])
+    odd = settings.get("odd_lot", {})
+    odd_minimum = float(odd.get("min_commission_twd", minimum))
+    odd_slippage = float(odd.get("extra_slippage", 0.0)) * scenario.slippage_multiplier
+    for value, flags, extra in (
+        (result.buy_value, result.odd_buy, buy_extra),
+        (result.sell_value, result.odd_sell, sell_extra),
+    ):
+        traded = np.isfinite(value) & (value > 0)
+        floor = np.where(flags, odd_minimum, minimum)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            top_up = np.where(traded, np.maximum(floor / value - commission, 0.0), 0.0)
+        extra += np.nan_to_num(top_up) + np.where(flags & traded, odd_slippage, 0.0)
+    return buy_extra, sell_extra
 
 
 # --------------------------------------------------------------------------- futures overlay
@@ -489,7 +594,7 @@ def evaluate_task(
     h: int,
     k: int,
     buffer: int,
-    capital: str | float,
+    capital: CapitalScenario,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every scenario, version and period of one (model, market, h, k, m, capital) path."""
     inputs = market_inputs.inputs
@@ -504,7 +609,7 @@ def evaluate_task(
         max_gap=int(signal["max_gap_sessions"]),
     )
     ranked = engine.rankings(smoothed, market_inputs.groups)
-    fractional = capital == FRACTIONAL
+    fractional = capital.fractional
     result = simulate_band(
         ranked,
         k=k,
@@ -515,7 +620,10 @@ def evaluate_task(
         move=inputs.move,
         limit=float(config["price_limit"]["open_gap"]),
         lot_cost=None if fractional else market_inputs.lot_cost,
-        slot_capital=None if fractional else float(capital),
+        slot_capital=None if fractional else capital.twd,
+        odd_lots=capital.odd_lots,
+        dollar_volume=None if fractional else inputs.dollar_volume,
+        participation_cap=None if fractional else config["capital"].get("participation_cap"),
     )
     path = result.path
     free = np.zeros(inputs.index.count)
@@ -524,18 +632,25 @@ def evaluate_task(
     futures = market_inputs.futures
     overlay_config = config["futures"]
     market_rows = np.flatnonzero(np.isin(inputs.index.market_codes, market_inputs.codes))
+    attempts = result.buy_attempts or 1
     shared = {
         "model": label, "market": market_inputs.market, "h": h, "k": k, "buffer": buffer,
-        "capital": capital if fractional else int(capital),
+        "capital": capital.name,
+        "capital_twd": capital.twd,
+        "odd_lots": capital.odd_lots,
         "lot_blocked": result.lot_blocked,
-        "lot_blocked_share": (
-            result.lot_blocked / result.buy_attempts if result.buy_attempts else 0.0
-        ),
+        "lot_blocked_share": result.lot_blocked / attempts,
+        "liquidity_blocked": result.liquidity_blocked,
+        "liquidity_blocked_share": result.liquidity_blocked / attempts,
+        "odd_lot_buys": result.odd_lot_buys,
+        "odd_lot_share": result.odd_lot_buys / attempts,
         "futures_missing_intervals": futures.missing,
         **positions.path_statistics(path),
     }
     rows, series = [], {}
-    for scenario, (buy_rate, sell_rate) in market_inputs.rates.items():
+    for scenario, (base_buy_rate, base_sell_rate) in market_inputs.rates.items():
+        buy_extra, sell_extra = rate_adjustments(result, scenario, config, capital=capital)
+        buy_rate, sell_rate = base_buy_rate + buy_extra, base_sell_rate + sell_extra
         net = positions.replay(path, buy_rate, sell_rate)
         buy_mean, sell_mean = _mean_rate((buy_rate, sell_rate), market_rows)
         hedged = hedged_overlay(
@@ -727,8 +842,9 @@ def _initialize(markets: dict[str, MarketInputs], config: dict[str, Any]) -> Non
     _SHARED["config"] = config
 
 
-def _run_task(task: tuple[str, str, int, int, int, str | float]) -> list[dict[str, Any]]:
-    label, market, h, k, buffer, capital = task
+def _run_task(task: tuple[str, str, int, int, int, str]) -> list[dict[str, Any]]:
+    label, market, h, k, buffer, capital_name = task
+    capital = next(c for c in capital_scenarios(_SHARED["config"]) if c.name == capital_name)
     rows, _ = evaluate_task(
         _SHARED["markets"][(label, market)], _SHARED["config"],
         label=label, h=h, k=k, buffer=buffer, capital=capital,
@@ -740,14 +856,13 @@ def run_grid(
     markets: dict[tuple[str, str], MarketInputs], config: dict[str, Any], *, workers: int
 ) -> pd.DataFrame:
     grid = config["grid"]
-    capitals: list[str | float] = [FRACTIONAL, *config["capital"]["sensitivity_twd"]]
     tasks = [
-        (label, market, int(h), int(k), int(m), capital)
+        (label, market, int(h), int(k), int(m), capital.name)
         for (label, market) in markets
         for h in grid["score_horizons"]
         for k in grid["k"]
         for m in grid["buffer_multiples"]
-        for capital in capitals
+        for capital in capital_scenarios(config)
     ]
     rows: list[dict[str, Any]] = []
     if workers <= 1:
@@ -808,6 +923,36 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame) -> str:
         "| Net excess (annual) | 95% CI | IR | Excess vs index | Turnover | Margin calls |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     )
+    capital_rows = []
+    for model, chosen in report["selection"].items():
+        if chosen.get("h") is None:
+            continue
+        base = grid[
+            (grid["model"] == model) & (grid["market"] == "TWSE") & (grid["version"] == "long_only")
+            & (grid["period"] == "P1+P2") & (grid["h"] == chosen["h"]) & (grid["k"] == chosen["k"])
+            & (grid["buffer"] == chosen["buffer"]) & (grid["discount"] == 0.6)
+            & (grid["slippage_multiplier"] == 1)
+        ]
+        for row in base.itertuples():
+            capital_rows.append(
+                f"| {row.model} | {row.capital} | {runner.percent(row.net_return_annual)} | "
+                f"{runner.number(row.sharpe)} | {runner.percent(row.net_excess_annual)} | "
+                f"{runner.percent(row.index_excess_annual)} | "
+                f"{runner.percent(row.lot_blocked_share)} | "
+                f"{runner.percent(row.liquidity_blocked_share)} | "
+                f"{runner.percent(row.odd_lot_share)} | "
+                f"{runner.percent(row.turnover)} |"
+            )
+    capital_header_zh = (
+        "| 模型 | 資本情境 | 年化淨報酬 | Sharpe | 年化淨超額 | 對指數超額 "
+        "| 整張不足被擋 | 參與率被擋 | 零股買進比例 | 換手 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    )
+    capital_header_en = (
+        "| Model | Capital scenario | Net return (annual) | Sharpe | Net excess (annual) "
+        "| Excess vs index | Lot-blocked | Participation-blocked | Odd-lot buys | Turnover |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    )
     selection_zh = "；".join(
         f"{model}：h = {c.get('h')}、K = {c.get('k')}、m = {c.get('buffer')}"
         for model, c in report["selection"].items()
@@ -831,10 +976,13 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame) -> str:
         f"選定參數（TWSE P1 多頭版淨超額 IR 最高）：{selection_zh}。", "",
         f"判定：{decisions_zh}。前瞻候選模型：{report['forward_candidate'] or '無'}。", "",
         *header_zh, *rows_zh, "",
+        "### 資本情境（TWSE 多頭版，P1+P2，主要成本）", "", *capital_header_zh, *capital_rows, "",
         "## English", "",
         f"Selected parameters (highest TWSE P1 long-only net excess IR): {selection_en}.", "",
         f"Decisions: {decisions_en}. Forward candidate: {report['forward_candidate'] or 'none'}.",
         "", *header_en, *rows_en, "",
+        "### Capital scenarios (TWSE long-only, P1+P2, primary costs)", "",
+        *capital_header_en, *capital_rows, "",
     ]
     return "\n".join(lines)
 
@@ -866,7 +1014,7 @@ def run(
                 inputs, market, config, front, _index_close(price_frame, spec["index"])
             )
     tasks = len(markets) * len(config["grid"]["score_horizons"]) * len(config["grid"]["k"]) * len(
-        config["grid"]["buffer_multiples"]) * (1 + len(config["capital"]["sensitivity_twd"]))
+        config["grid"]["buffer_multiples"]) * len(capital_scenarios(config))
     workers = workers or runner.default_workers(tasks)
     grid = run_grid(markets, config, workers=workers)
     selection = {label: select_parameters(grid, config, label) for label in models}
@@ -883,7 +1031,7 @@ def run(
             market_inputs = markets[(label, market)]
             _, series = evaluate_task(
                 market_inputs, config, label=label, h=chosen["h"], k=chosen["k"],
-                buffer=chosen["buffer"], capital=FRACTIONAL,
+                buffer=chosen["buffer"], capital=CapitalScenario(FRACTIONAL, None, False),
             )
             dates = market_inputs.inputs.dates[1:]
             for version, (net, gross, base) in series.items():
