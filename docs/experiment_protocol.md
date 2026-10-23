@@ -1087,6 +1087,8 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 
 **§13.13 B0 結果（2026-10-23）**：B0 `t-lgbm-alpha`（`launch-20261022T234922Z-22048038`，14 折 × 14 horizon × 3 seed = 588 個模型）在 P1 ∪ P2 的 Rank IC：短格 0.1178 [0.1091, 0.1266]、持有格 0.0859 [0.0650, 0.1061]、長格 0.0834 [0.0541, 0.1129]；P2 單獨看持有格 0.0343 [−0.0004, 0.0726]、長格 0.0107 [−0.0372, 0.0600]。第 3 項的 Top-k dropout 套用於 B0：選定 h = 10，TWSE P1 ∪ P2 主情境年化淨超額 −6.3% [−19.0%, +7.1%]、IR −0.58，H-B 未通過。依第 5 點：B0 為策略基準但不算可交易，H-C 對 B0 不執行，策略層的改動須另行登記。D0（H-A）照第 6 項第 3 步執行，結果另記。見 [B0 基線與回測結果報告](lgbm_baseline_results.md)。
 
+**§13.13 D0 結果（2026-10-23）**：D0 `t-xs-scratch`（`launch-20261023T015746Z-224647797`，14 折 × 3 seed = 42 個 fit，RTX PRO 4500，4.8 小時）在 P1 ∪ P2 的 Rank IC：短格 0.1221 [0.1129, 0.1311]、持有格 0.0921 [0.0739, 0.1096]、長格 0.0893 [0.0664, 0.1121]；三個 seed 短格 0.1185／0.1181／0.1209。D0 − B0 配對差：短格 +0.0043 [+0.0015, +0.0071]（通過）、持有格 +0.0062 [−0.0012, +0.0136]（未通過），**H-A 一格通過**，依第 5 點 D0 為候選模型，進入消融與 D1。D0 的 Top-k dropout（第 3 項）：選定 h = 10，TWSE P1 ∪ P2 年化淨超額 −7.3% [−17.9%, +3.5%]、IR −0.79（低於 B0 的 −0.58），**H-B 未通過**。GPU 使用率僅 13–17%（同日分組取數為瓶頸）；該 Pod 沒有時脈監測紀錄。消融 A1–A4 與 D1 的結果另記。
+
 #### 13.14 台股策略層：成本感知的多頭 band 組合與台指期疊加（2026-10-23 於實作與計分前寫入）
 
 背景：§13.13 的 B0 與 D0 都有排序能力（P1 ∪ P2 短格 Rank IC 0.118／0.122），但登記的 Top-k dropout（每日換 5 檔於 50 檔）在台股成本下 H-B 未通過：每日換手約 10% 的成本拖累約 17%／年，高於 P1 的毛超額；P2 的 h = 5–14 Rank IC 降到 0.02–0.05，h = 1 仍有 0.11。依 §13.13 第 5 點回到策略層。本節登記業界慣用的成本緩解做法在台股的版本：買進／持有門檻（Novy-Marx 與 Velikov 2016 的最有效單一方法）、訊號平滑、換手上限、流動性宇宙、成本感知（Jensen、Kelly、Malamud、Pedersen 2024），以及用台指期（期交稅十萬分之二）取代現股做 beta 對沖與閒置現金的市場曝險。台指期不進任何模型訓練，只在回測層使用；資料來自期交所每日行情下載（官方），不用第三方 API。
@@ -2272,6 +2274,8 @@ Interpretation limits:
 - If `lightgbm` cannot be installed and scikit-learn is used instead, the baseline is still B0, but comparability with the public Qlib benchmark falls.
 
 **§13.13 B0 result (2026-10-23)**: B0 `t-lgbm-alpha` (`launch-20261022T234922Z-22048038`, 14 folds × 14 horizons × 3 seeds = 588 models) on P1 ∪ P2: short cell 0.1178 [0.1091, 0.1266], holding cell 0.0859 [0.0650, 0.1061], long cell 0.0834 [0.0541, 0.1129]; P2 alone: holding 0.0343 [−0.0004, 0.0726], long 0.0107 [−0.0372, 0.0600]. The item 3 top-k dropout applied to B0 selects h = 10; TWSE P1 ∪ P2 annualized net excess under the primary costs is −6.3% [−19.0%, +7.1%] with IR −0.58, so H-B fails. Under item 5: B0 is the strategy baseline but not tradeable, H-C does not run for B0, and strategy-layer changes need their own registration. D0 (H-A) runs as step 3 of item 6 and is recorded separately. See the [B0 baseline and backtest results report](lgbm_baseline_results.md).
+
+**§13.13 D0 result (2026-10-23)**: D0 `t-xs-scratch` (`launch-20261023T015746Z-224647797`, 14 folds × 3 seeds = 42 fits, RTX PRO 4500, 4.8 hours) on P1 ∪ P2: short cell 0.1221 [0.1129, 0.1311], holding 0.0921 [0.0739, 0.1096], long 0.0893 [0.0664, 0.1121]; seeds 0.1185 / 0.1181 / 0.1209 in the short cell. Paired D0 − B0: short +0.0043 [+0.0015, +0.0071] (passes), holding +0.0062 [−0.0012, +0.0136] (fails), so **H-A passes in one cell** and under item 5 D0 is the candidate model and proceeds to the ablations and D1. D0's top-k dropout (item 3) selects h = 10; TWSE P1 ∪ P2 annualized net excess −7.3% [−17.9%, +3.5%], IR −0.79 (below B0's −0.58), so **H-B fails**. GPU utilization was only 13–17% (the per-date grouping is the bottleneck); that Pod has no clock-monitor record. Ablations A1–A4 and D1 are recorded separately.
 
 #### 13.14 Taiwan strategy layer: cost-aware long-only band portfolio with a TAIEX futures overlay (written 2026-10-23 before implementation and scoring)
 
