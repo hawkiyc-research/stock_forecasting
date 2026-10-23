@@ -207,7 +207,12 @@ def continuous_front_month(futures: pd.DataFrame, commodity: str) -> pd.DataFram
     the position is already in the next month (rolled at that open). ``adjusted_open`` chains
     the opens across rolls by ratio so that log differences are the return of a position
     that is always in the front month; ``roll`` marks the sessions whose open starts a new
-    contract. ``settlement`` is the daily mark of the contract held after that open.
+    contract. ``settlement`` is the daily mark of the contract held after that open, and
+    ``settlement_growth`` is the log return of the position between consecutive daily
+    settlements (on a roll session: the old contract from its previous settlement to that
+    open, then the new contract from that open to its settlement). TAIFEX computes the
+    daily settlement price from trades just before 13:30, so it is the futures mark that
+    lines up with the stock market's close.
     """
     rows = futures[(futures["contract"] == commodity) & (futures["session"] == "regular")
                    & futures["expiry"].str.fullmatch(r"\d{6}")].copy()
@@ -219,6 +224,7 @@ def continuous_front_month(futures: pd.DataFrame, commodity: str) -> pd.DataFram
     rows = rows[rows["open"].notna() & (rows["open"] > 0)]
     # The expiring contract still trades on its last day (closed at that open on a roll).
     rows_by_key = rows.set_index(["date", "expiry"])["open"]
+    settle_by_key = rows.set_index(["date", "expiry"])["settlement"]
     rows = rows[rows["date"] < rows["last_day"]]
     front = rows.loc[rows.groupby("date")["expiry"].idxmin()].sort_values("date")
     front = front.reset_index(drop=True)
@@ -242,9 +248,32 @@ def continuous_front_month(futures: pd.DataFrame, commodity: str) -> pd.DataFram
     adjusted = np.exp(np.nancumsum(np.nan_to_num(front["front_growth"].to_numpy(), nan=0.0)))
     front["adjusted_open"] = adjusted * float(front["open"].iloc[0])
     front["roll"] = roll
+    settlement_growth = [float("nan")]
+    dates = front["date"].tolist()
+    expiries = front["expiry"].tolist()
+    for i in range(1, len(front)):
+        previous_settle = settle_by_key.get((dates[i - 1], expiries[i - 1]), float("nan"))
+        if roll[i]:
+            old_open = rows_by_key.get((dates[i], expiries[i - 1]), float("nan"))
+            new_open = float(front["open"].iloc[i])
+            new_settle = float(front["settlement"].iloc[i])
+            values = (previous_settle, old_open, new_open, new_settle)
+            if all(np.isfinite(v) and v > 0 for v in values):
+                settlement_growth.append(
+                    float(np.log(old_open / previous_settle) + np.log(new_settle / new_open))
+                )
+            else:
+                settlement_growth.append(float("nan"))
+        else:
+            settle = float(front["settlement"].iloc[i])
+            ok = np.isfinite(previous_settle) and previous_settle > 0 and settle > 0
+            settlement_growth.append(
+                float(np.log(settle / previous_settle)) if ok else float("nan")
+            )
+    front["settlement_growth"] = settlement_growth
     return front[["date", "expiry", "open", "high", "low", "close", "settlement", "volume",
-                  "open_interest", "front_growth", "adjusted_open", "roll"]].reset_index(
-        drop=True)
+                  "open_interest", "front_growth", "adjusted_open", "settlement_growth",
+                  "roll"]].reset_index(drop=True)
 
 
 def parse_futures(content: bytes) -> pd.DataFrame:

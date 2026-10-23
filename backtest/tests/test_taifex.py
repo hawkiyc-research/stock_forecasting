@@ -137,6 +137,12 @@ def test_continuous_front_month_rolls_on_the_third_wednesday():
     assert series["adjusted_open"].iloc[3] == pytest.approx(
         21000 * np.exp(np.nansum(growth)))
     assert series["settlement"].tolist() == [21010, 21210, 21510, 21610]
+    settle = series["settlement_growth"].to_numpy()
+    assert np.isnan(settle[0])
+    assert settle[1] == pytest.approx(np.log(21210 / 21010))
+    # Roll session: June from its 21210 settlement to its 21400 open, then July 21500 -> 21510.
+    assert settle[2] == pytest.approx(np.log(21400 / 21210) + np.log(21510 / 21500))
+    assert settle[3] == pytest.approx(np.log(21610 / 21510))
 
 
 def test_download_contract_names_and_manifest(tmp_path, monkeypatch):

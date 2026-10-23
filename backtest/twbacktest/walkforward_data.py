@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from twbacktest.data import MARKETS, SplitIndex
 from twbacktest.positions import Links, Moves, links
@@ -37,18 +38,42 @@ def load_predictions(path: Path, model: str) -> pd.DataFrame:
     )
 
 
-def load_prices(path: Path) -> pd.DataFrame:
-    """Adjusted open/close per (symbol, date), plus asset type and market."""
+LIQUIDITY_LOOKBACK = 20
+
+
+def load_prices(path: Path, *, liquidity_lookback: int = LIQUIDITY_LOOKBACK) -> pd.DataFrame:
+    """Adjusted open/close per (symbol, date), plus asset type, market and liquidity.
+
+    ``raw_close`` and ``raw_open_1`` (the unadjusted close and next-session open) serve the
+    price filter and board-lot feasibility; ``dollar_volume`` is the rolling median of
+    close x volume over the last ``liquidity_lookback`` sessions up to the row's date (NaN
+    when the file has no volume column).
+    """
     columns = ["timestamp", "symbol", "asset_type", "open", "close", "adjusted_close", "market"]
-    frame = pd.read_parquet(path, columns=columns)
+    has_volume = "volume" in pq.ParquetFile(path).schema_arrow.names
+    frame = pd.read_parquet(path, columns=columns + (["volume"] if has_volume else []))
     frame = frame[frame["market"].isin(MARKETS)].copy()
     frame["date"] = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_localize(None).dt.normalize()
     factor = frame["adjusted_close"] / frame["close"]
     frame["adj_open"] = frame["open"] * factor
     frame["adj_close"] = frame["adjusted_close"]
-    frame = frame[["symbol", "date", "asset_type", "market", "adj_open", "adj_close"]]
+    frame["raw_close"] = frame["close"]
+    frame["raw_open"] = frame["open"]
+    frame["traded_value"] = frame["close"] * frame["volume"] if has_volume else np.nan
+    frame = frame[
+        [
+            "symbol", "date", "asset_type", "market", "adj_open", "adj_close", "raw_close",
+            "raw_open", "traded_value",
+        ]
+    ]
     frame = frame.sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
     grouped = frame.groupby("symbol", sort=False)
+    frame["raw_open_1"] = grouped["raw_open"].shift(-1)
+    frame["dollar_volume"] = grouped["traded_value"].transform(
+        lambda s: s.rolling(liquidity_lookback, min_periods=max(1, liquidity_lookback // 2))
+        .median()
+    )
+    frame = frame.drop(columns=["raw_open", "traded_value"])
     # Per-symbol session sequence: the next two opens and the close two sessions ahead.
     frame["open_1"] = grouped["adj_open"].shift(-1)
     frame["open_2"] = grouped["adj_open"].shift(-2)
@@ -67,6 +92,9 @@ class WalkForwardInputs:
     link: Links
     move: Moves
     dates: pd.DatetimeIndex
+    raw_close: np.ndarray | None = None  # unadjusted close on the signal date
+    raw_open_1: np.ndarray | None = None  # unadjusted open at the execution that follows
+    dollar_volume: np.ndarray | None = None  # rolling median close x volume up to the date
 
 
 def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForwardInputs:
@@ -74,7 +102,10 @@ def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForward
     stocks = prices[prices["asset_type"] != "index"]
     merged = predictions.merge(
         stocks[
-            ["symbol", "date", "asset_type", "adj_open", "adj_close", "open_1", "open_2", "close_2"]
+            [
+                "symbol", "date", "asset_type", "adj_open", "adj_close", "open_1", "open_2",
+                "close_2", "raw_close", "raw_open_1", "dollar_volume",
+            ]
         ],
         left_on=["symbol", "signal_date"],
         right_on=["symbol", "date"],
@@ -126,7 +157,15 @@ def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForward
         index_growth=index_growth.astype(np.float64),
     )
     return WalkForwardInputs(
-        index=index, scores=scores, horizons=horizons, link=links(index), move=move, dates=dates
+        index=index,
+        scores=scores,
+        horizons=horizons,
+        link=links(index),
+        move=move,
+        dates=dates,
+        raw_close=merged["raw_close"].to_numpy(dtype=np.float64),
+        raw_open_1=merged["raw_open_1"].to_numpy(dtype=np.float64),
+        dollar_volume=merged["dollar_volume"].to_numpy(dtype=np.float64),
     )
 
 
