@@ -19,6 +19,8 @@ RUNPOD_PYTHON_BIN="${RUNPOD_PYTHON_BIN:-/usr/local/bin/python}"
 RUNPOD_ROLE="${RUNPOD_ROLE:-cpu-research}"
 FEATURE_SPEC="configs/features/alpha_tw_v1.json"
 FEATURE_EXPERIMENT_CONFIG="${FEATURE_EXPERIMENT_CONFIG:-configs/experiments/a_rank64.yaml}"
+# Protocol 13.16: an optional residualized label spec under configs/labels/.
+LABEL_VARIANT="${RUNPOD_LABEL_VARIANT:-}"
 LAUNCH_ID="${RUNPOD_LAUNCH_ID:-launch-$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}${RANDOM}}"
 FEATURES_LOG="${RUNPOD_TMUX_LOG_FILE:-${LOG_ROOT}/cpu-features/${LAUNCH_ID}/combined.log}"
 CODE_MARKER="${LIFECYCLE_ROOT}/stage1/code.json"
@@ -50,6 +52,10 @@ if [[ ! "${FEATURE_EXPERIMENT_CONFIG}" =~ ^configs/experiments/[a-z0-9_]+\.yaml$
     echo "FEATURE_EXPERIMENT_CONFIG must name a file under configs/experiments/" >&2
     exit 2
 fi
+if [[ -n "${LABEL_VARIANT}" && ! "${LABEL_VARIANT}" =~ ^configs/labels/[a-z0-9_]+\.json$ ]]; then
+    echo "RUNPOD_LABEL_VARIANT must name a file under configs/labels/" >&2
+    exit 2
+fi
 for path_name in \
     PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT POETRY_BIN FEATURES_LOG \
     CODE_MARKER FEATURES_MARKER OUTPUT_ROOT; do
@@ -67,7 +73,7 @@ if [[ ! -x "${RUNPOD_PYTHON_BIN}" ]]; then
     echo "RunPod image Python is unavailable: ${RUNPOD_PYTHON_BIN}" >&2
     exit 127
 fi
-for relative in "${FEATURE_SPEC}" "${FEATURE_EXPERIMENT_CONFIG}"; do
+for relative in "${FEATURE_SPEC}" "${FEATURE_EXPERIMENT_CONFIG}" ${LABEL_VARIANT:+"${LABEL_VARIANT}"}; do
     if [[ ! -f "${PROJECT_ROOT}/${relative}" || -L "${PROJECT_ROOT}/${relative}" ]]; then
         echo "Required config is missing or is a symlink: ${relative}" >&2
         exit 2
@@ -141,14 +147,21 @@ export PYTHONUNBUFFERED=1
 
 printf '[%s] feature tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${POETRY_BIN}" run pytest -q \
-    tests/test_rank_labels.py tests/test_feature_library.py tests/test_walk_forward.py
+    tests/test_rank_labels.py tests/test_residual_labels.py tests/test_feature_library.py \
+    tests/test_walk_forward.py
 
 printf '[%s] rank labels and feature library: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}"
-"${POETRY_BIN}" run stock-forecasting-build-features \
-    --experiment-config "${FEATURE_EXPERIMENT_CONFIG}" \
-    --spec "${FEATURE_SPEC}" \
+FEATURE_ARGUMENTS=(
+    --experiment-config "${FEATURE_EXPERIMENT_CONFIG}"
+    --spec "${FEATURE_SPEC}"
     --output-root "${OUTPUT_ROOT}"
+)
+if [[ -n "${LABEL_VARIANT}" ]]; then
+    printf 'Residualized label variant: %s\n' "${LABEL_VARIANT}"
+    FEATURE_ARGUMENTS+=(--label-variant "${LABEL_VARIANT}")
+fi
+"${POETRY_BIN}" run stock-forecasting-build-features "${FEATURE_ARGUMENTS[@]}"
 
 write_features_state ready
 FEATURES_SUCCEEDED=1

@@ -8,6 +8,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/runpod_cli.sh
 source "${SCRIPT_DIR}/lib/runpod_cli.sh"
 
+# A protocol 13.16 label variant must be a committed spec under configs/labels/; the Pod
+# reads RUNPOD_LABEL_VARIANT and builds or trains on that residualized label store.
+runpod_export_label_variant() {
+    local variant="$1"
+    if [[ -z "${variant}" ]]; then
+        unset RUNPOD_LABEL_VARIANT
+        return 0
+    fi
+    if [[ ! "${variant}" =~ ^configs/labels/[a-z0-9_]+\.json$ ]]; then
+        echo "--labelVariant must name a file under configs/labels/" >&2
+        exit 2
+    fi
+    if [[ ! -f "${SCRIPT_DIR}/../${variant}" ]]; then
+        echo "--labelVariant spec is missing: ${variant}" >&2
+        exit 2
+    fi
+    export RUNPOD_LABEL_VARIANT="${variant}"
+}
+
 usage() {
     cat >&2 <<'EOF'
 Usage:
@@ -43,9 +62,9 @@ Usage:
   bash scripts/runpod_workflow.sh download-forward-package YYYY-MM-DD
   bash scripts/runpod_workflow.sh upload-forward-cache YYYY-MM-DD
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
+  bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json]
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
+  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
   bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID]
   bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
@@ -484,12 +503,14 @@ EOF
         features_max_runtime=6h
         features_cpu_number=16
         features_cpu_flavor=cpu3g
+        features_label_variant=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
                 --maxRuntime|--max-runtime) features_max_runtime="$2" ;;
                 --cpuNumber|--cpu-number) features_cpu_number="$2" ;;
                 --cpuFlavor|--cpu-flavor) features_cpu_flavor="$2" ;;
+                --labelVariant|--label-variant) features_label_variant="$2" ;;
                 *)
                     echo "Unknown features option: $1" >&2
                     usage
@@ -501,6 +522,7 @@ EOF
         runpod_validate_cpu_number "${features_cpu_number}"
         runpod_validate_cpu_flavor "${features_cpu_flavor}"
         features_max_seconds="$(runpod_duration_seconds "${features_max_runtime}" --maxRuntime)"
+        runpod_export_label_variant "${features_label_variant}"
         export RUNPOD_CPU_WORKFLOW=features
         export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${features_max_seconds}"
         export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((features_max_seconds + 3600))"
@@ -518,12 +540,14 @@ EOF
         lgbm_max_runtime=24h
         lgbm_cpu_number=16
         lgbm_cpu_flavor=cpu3g
+        lgbm_label_variant=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
                 --maxRuntime|--max-runtime) lgbm_max_runtime="$2" ;;
                 --cpuNumber|--cpu-number) lgbm_cpu_number="$2" ;;
                 --cpuFlavor|--cpu-flavor) lgbm_cpu_flavor="$2" ;;
+                --labelVariant|--label-variant) lgbm_label_variant="$2" ;;
                 *)
                     echo "Unknown lgbm option: $1" >&2
                     usage
@@ -535,6 +559,7 @@ EOF
         runpod_validate_cpu_number "${lgbm_cpu_number}"
         runpod_validate_cpu_flavor "${lgbm_cpu_flavor}"
         lgbm_max_seconds="$(runpod_duration_seconds "${lgbm_max_runtime}" --maxRuntime)"
+        runpod_export_label_variant "${lgbm_label_variant}"
         export RUNPOD_CPU_WORKFLOW=lgbm
         export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${lgbm_max_seconds}"
         export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((lgbm_max_seconds + 3600))"

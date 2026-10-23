@@ -13,6 +13,7 @@ import json
 import math
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,6 +86,10 @@ def score_column(h: int) -> str:
     return f"h{h:02d}"
 
 
+def residual_column(h: int) -> str:
+    return f"residual_h{h:02d}"
+
+
 # --------------------------------------------------------------------------------------
 # Store readers
 # --------------------------------------------------------------------------------------
@@ -150,14 +155,23 @@ class SplitStores:
     label_identity: dict
 
 
-def locate_stores(config, spec: dict, split: str, root) -> SplitStores:
+def locate_stores(
+    config, spec: dict, split: str, root, *, label_variant: dict | None = None
+) -> SplitStores:
     """Resolve the split's ready feature and rank-label stores without building anything."""
     from stock_forecasting.data.sample_universe import open_clean_dataset
 
     source = open_clean_dataset(config, split, validated_root=root)
     try:
         features, feature_id = feature_root(source, spec)
-        labels, label_id = label_root(source, config.model.rank_min_group_size)
+        if label_variant is None:
+            labels, label_id = label_root(source, config.model.rank_min_group_size)
+        else:
+            from stock_forecasting.data.residual_labels import residual_label_root
+
+            labels, label_id = residual_label_root(
+                source, config.model.rank_min_group_size, label_variant
+            )
         for store, name in ((features, "features.json"), (labels, "rank-labels.json")):
             manifest = store / name
             if not manifest.is_file() or json.loads(manifest.read_text()).get("state") != "ready":
@@ -177,11 +191,17 @@ def locate_stores(config, spec: dict, split: str, root) -> SplitStores:
         source.close()
 
 
-def load_split_table(config, spec: dict, split: str, root, *, workers: int) -> pd.DataFrame:
-    """Features, gauss-rank labels and raw alpha targets of one split, one row per sample."""
+def load_split_table(
+    config, spec: dict, split: str, root, *, workers: int, label_variant: dict | None = None
+) -> pd.DataFrame:
+    """Features, gauss-rank labels and raw alpha targets of one split, one row per sample.
+
+    With ``label_variant`` the residualized store supplies the ranks and, as extra columns, the
+    residual targets the models are scored against in protocol 13.16.
+    """
     from stock_forecasting.data.sample_universe import open_clean_dataset
 
-    stores = locate_stores(config, spec, split, root)
+    stores = locate_stores(config, spec, split, root, label_variant=label_variant)
     source = open_clean_dataset(config, split, validated_root=root)
     try:
         horizons = list(source.horizons)
@@ -207,12 +227,19 @@ def load_split_table(config, spec: dict, split: str, root, *, workers: int) -> p
     for position, h in enumerate(horizons):
         table[rank_column(h)] = labels[rank_column(h)].to_numpy(dtype=np.float32)
         table[alpha_column(h)] = targets[:, position].astype(np.float32)
+        if residual_column(h) in labels.columns:
+            table[residual_column(h)] = labels[residual_column(h)].to_numpy(dtype=np.float32)
     return table
 
 
-def assemble_table(config, spec: dict, roots: dict, *, workers: int) -> pd.DataFrame:
+def assemble_table(
+    config, spec: dict, roots: dict, *, workers: int, label_variant: dict | None = None
+) -> pd.DataFrame:
     frames = [
-        load_split_table(config, spec, split, roots[split], workers=workers) for split in SPLITS
+        load_split_table(
+            config, spec, split, roots[split], workers=workers, label_variant=label_variant
+        )
+        for split in SPLITS
     ]
     table = pd.concat(frames, ignore_index=True)
     return table.sort_values(["signal_date", "market", "symbol"], kind="stable").reset_index(
@@ -267,21 +294,30 @@ def average_ranks(values: np.ndarray, groups: np.ndarray) -> np.ndarray:
 
 
 def daily_rank_ic(
-    scores: pd.DataFrame, targets: pd.DataFrame, *, horizons: list[int], minimum: int
+    scores: pd.DataFrame,
+    targets: pd.DataFrame,
+    *,
+    horizons: list[int],
+    minimum: int,
+    target: Callable[[int], str] = alpha_column,
 ) -> pd.DataFrame:
-    """Spearman Rank IC per (model, market, h, date) between scores and raw alpha returns."""
+    """Spearman Rank IC per (model, market, h, date) between scores and the target columns.
+
+    ``target`` names the realized column per horizon: the raw alpha return by default, or the
+    residual target of protocol 13.16.
+    """
     keys = ["signal_date", "market"]
     records = []
-    realized = targets[["symbol", *keys, *[alpha_column(h) for h in horizons]]]
+    realized = targets[["symbol", *keys, *[target(h) for h in horizons]]]
     for model, group in scores.groupby("model", sort=True):
         merged = group.merge(realized, on=["symbol", *keys], how="inner", validate="one_to_one")
         for h in horizons:
-            frame = merged[[*keys, score_column(h), alpha_column(h)]].dropna()
+            frame = merged[[*keys, score_column(h), target(h)]].dropna()
             counts = frame.groupby(keys, sort=True).size()
-            ranked = frame.groupby(keys, sort=True)[[score_column(h), alpha_column(h)]].rank()
+            ranked = frame.groupby(keys, sort=True)[[score_column(h), target(h)]].rank()
             ranked[keys] = frame[keys]
 
-            def correlation(block, score=score_column(h), target=alpha_column(h)):
+            def correlation(block, score=score_column(h), target=target(h)):
                 return block[score].corr(block[target])
 
             ic = ranked.groupby(keys, sort=True).apply(correlation, include_groups=False)
@@ -621,12 +657,21 @@ def _save_partial(
     fold_index: int,
     fold_scores: dict[tuple[int, int], np.ndarray],
     fold_records: list[dict[str, Any]],
+    label_variant: str | None = None,
 ) -> None:
-    """Persist one finished fold (every horizon and seed) so a restart can reuse it."""
+    """Persist one finished fold (every horizon and seed) so a restart can reuse it.
+
+    The label variant is stored so a resume never mixes folds trained on different labels.
+    """
     arrays = {f"h{h:02d}_seed{seed}": values for (h, seed), values in fold_scores.items()}
     pending = partial_root / (_partial_name(fold_index) + ".pending")
     with pending.open("wb") as stream:
-        np.savez(stream, records=json.dumps(fold_records), **arrays)
+        np.savez(
+            stream,
+            records=json.dumps(fold_records),
+            label_variant=np.array(label_variant or ""),
+            **arrays,
+        )
         stream.flush()
         os.fsync(stream.fileno())
     pending.replace(partial_root / _partial_name(fold_index))
@@ -638,8 +683,13 @@ def _load_partials(
     folds: list[Fold],
     horizons: list[int],
     seeds: tuple[int, ...],
+    label_variant: str | None = None,
 ) -> dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]]:
-    """Finished folds of an earlier run that cover every horizon and seed asked for now."""
+    """Finished folds of an earlier run that cover every horizon and seed asked for now.
+
+    Folds saved under another label variant (or by the standard labels when a variant is
+    asked for) are ignored.
+    """
     if resume_root is None:
         return {}
     source = Path(resume_root) / "partial"
@@ -651,6 +701,9 @@ def _load_partials(
         with np.load(path, allow_pickle=False) as payload:
             keys = {f"h{h:02d}_seed{seed}" for h in horizons for seed in seeds}
             if not keys <= set(payload.files):
+                continue
+            stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
+            if stored != (label_variant or ""):
                 continue
             fold_scores = {
                 (h, seed): np.asarray(payload[f"h{h:02d}_seed{seed}"], dtype=np.float32)
@@ -697,6 +750,8 @@ def run_walk_forward(
     min_group_size: int,
     scratch: Path | None = None,
     resume_root: Path | None = None,
+    model_name: str = MODEL_NAME,
+    label_variant: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold, write predictions, targets, daily Rank IC and the cell summary.
 
@@ -712,7 +767,7 @@ def run_walk_forward(
     partial_root = output_root / "partial"
     partial_root.mkdir(parents=True, exist_ok=True)
     records, scores = [], {}
-    resumed = _load_partials(resume_root, partial_root, folds, horizons, seeds)
+    resumed = _load_partials(resume_root, partial_root, folds, horizons, seeds, label_variant)
     for fold_index, (fold_scores, fold_records) in resumed.items():
         scores[fold_index] = fold_scores
         records.extend(fold_records)
@@ -751,7 +806,11 @@ def run_walk_forward(
         pending_chunks[result["fold"]] -= 1
         if pending_chunks[result["fold"]] == 0:
             _save_partial(
-                partial_root, result["fold"], scores[result["fold"]], fold_records[result["fold"]]
+                partial_root,
+                result["fold"],
+                scores[result["fold"]],
+                fold_records[result["fold"]],
+                label_variant,
             )
             _cleanup_work(work_root / f"fold-{result['fold']:02d}")
         print(
@@ -779,16 +838,18 @@ def run_walk_forward(
         for h in horizons:
             targets[alpha_column(h)] = table.iloc[index][alpha_column(h)].to_numpy()
             targets[rank_column(h)] = table.iloc[index][rank_column(h)].to_numpy()
+            if residual_column(h) in table.columns:
+                targets[residual_column(h)] = table.iloc[index][residual_column(h)].to_numpy()
         target_frames.append(targets)
         per_seed = []
         for seed in seeds:
             frame = base.copy()
-            frame["model"] = f"{MODEL_NAME}-seed{seed}"
+            frame["model"] = f"{model_name}-seed{seed}"
             for h in horizons:
                 frame[score_column(h)] = scores[fold.index][(h, seed)]
             per_seed.append(frame)
         ensemble = base.copy()
-        ensemble["model"] = MODEL_NAME
+        ensemble["model"] = model_name
         for h in horizons:
             ensemble[score_column(h)] = np.mean(
                 [scores[fold.index][(h, seed)] for seed in seeds], axis=0
@@ -801,10 +862,21 @@ def run_walk_forward(
     targets["fold"] = assign_folds(dates, folds).to_numpy()
     daily = daily_rank_ic(predictions, targets, horizons=horizons, minimum=min_group_size)
     cells = summarize_cells(daily, schedule)
+    has_residual = all(residual_column(h) in targets.columns for h in horizons)
+    daily_residual = (
+        daily_rank_ic(
+            predictions, targets, horizons=horizons, minimum=min_group_size, target=residual_column
+        )
+        if has_residual
+        else pd.DataFrame()
+    )
+    cells_residual = summarize_cells(daily_residual, schedule) if has_residual else []
     output_root.mkdir(parents=True, exist_ok=True)
     predictions.to_parquet(output_root / "predictions.parquet", index=False)
     targets.to_parquet(output_root / "targets.parquet", index=False)
     daily.to_parquet(output_root / "daily_rank_ic.parquet", index=False)
+    if has_residual:
+        daily_residual.to_parquet(output_root / "daily_rank_ic_residual.parquet", index=False)
     fits = pd.DataFrame(records)
     fits.to_parquet(output_root / "fits.parquet", index=False)
     per_horizon = (
@@ -814,7 +886,8 @@ def run_walk_forward(
     )
     results = {
         "schema_version": SCHEMA_VERSION,
-        "model": MODEL_NAME,
+        "model": model_name,
+        "label_variant": label_variant,
         "backend": backend,
         "generated_at": datetime.now(UTC).isoformat(),
         "params": {**LGBM_PARAMS, "max_rounds": max_rounds, "early_stopping": early_stopping},
@@ -828,6 +901,15 @@ def run_walk_forward(
         "worker_plan": plan,
         "cells": cells,
         "per_market_horizon": per_horizon.to_dict(orient="records"),
+        "cells_residual": cells_residual,
+        "per_market_horizon_residual": (
+            daily_residual.groupby(["model", "market", "h"])["ic"]
+            .agg(["mean", "std", "count"])
+            .reset_index()
+            .to_dict(orient="records")
+            if has_residual and not daily_residual.empty
+            else []
+        ),
         "fits": {
             "count": len(fits),
             "mean_best_iteration": float(fits["best_iteration"].mean()) if len(fits) else None,
@@ -854,6 +936,7 @@ def write_manifest(
     schedule_path: Path,
     stores: list[SplitStores],
     results: dict[str, Any],
+    label_variant: dict | None = None,
 ) -> dict[str, Any]:
     files = {
         name: {
@@ -871,7 +954,8 @@ def write_manifest(
     payload = {
         "schema_version": SCHEMA_VERSION,
         "kind": "walk-forward-lgbm",
-        "model": MODEL_NAME,
+        "model": results["model"],
+        "label_variant": label_variant,
         "generated_at": datetime.now(UTC).isoformat(),
         "experiment_config": str(config_path),
         "schedule": str(schedule_path),

@@ -20,6 +20,7 @@ from stock_forecasting.walk_forward_lgbm import (
     DEFAULT_MAX_ROUNDS,
     DEFAULT_SEEDS,
     MAX_WORKERS,
+    MODEL_NAME,
     assemble_table,
     build_folds,
     locate_stores,
@@ -51,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--early-stopping", type=int, default=DEFAULT_EARLY_STOPPING)
     parser.add_argument("--folds", type=int, nargs="*", help="Fold indexes to run (smoke).")
     parser.add_argument("--horizons", type=int, nargs="*", help="Horizons to run (smoke).")
+    parser.add_argument(
+        "--label-variant",
+        type=Path,
+        help="Residualized label spec (protocol 13.16): train on that store's ranks.",
+    )
     return parser
 
 
@@ -69,10 +75,15 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"--output-root must be a new or empty directory: {args.output_root}")
     config = ExperimentConfig.from_yaml(args.experiment_config)
     spec = load_spec(args.spec)
+    label_variant = None
+    if args.label_variant is not None:
+        from stock_forecasting.data.residual_labels import load_label_spec
+
+        label_variant = load_label_spec(args.label_variant)
     schedule = load_schedule(args.schedule)
     roots = validated_split_roots(config)
     stores = [
-        locate_stores(config, spec, split, roots[split])
+        locate_stores(config, spec, split, roots[split], label_variant=label_variant)
         for split in ("train", "validation", "test")
     ]
     folds = build_folds(schedule)
@@ -88,7 +99,11 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"--horizons outside the configured horizons: {missing}")
         horizons = [h for h in horizons if h in set(args.horizons)]
     workers = args.workers or 1
-    table = assemble_table(config, spec, roots, workers=max(1, min(workers, 8)))
+    table = assemble_table(
+        config, spec, roots, workers=max(1, min(workers, 8)), label_variant=label_variant
+    )
+    variant_name = label_variant["name"] if label_variant else None
+    model_name = f"{MODEL_NAME}-{variant_name}" if variant_name else MODEL_NAME
     results = run_walk_forward(
         table,
         feature_columns=feature_names(spec),
@@ -103,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         min_group_size=int(config.model.rank_min_group_size),
         scratch=args.scratch,
         resume_root=args.resume_root,
+        model_name=model_name,
+        label_variant=variant_name,
     )
     write_manifest(
         args.output_root,
@@ -111,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
         schedule_path=args.schedule,
         stores=stores,
         results=results,
+        label_variant=(
+            {"spec": str(args.label_variant), "name": variant_name} if variant_name else None
+        ),
     )
     print(
         json.dumps(

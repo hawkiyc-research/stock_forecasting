@@ -25,6 +25,13 @@ from stock_forecasting.data.feature_library import (
 )
 from stock_forecasting.data.manifest import atomic_write_json, sha256_file
 from stock_forecasting.data.rank_labels import ensure_rank_labels
+from stock_forecasting.data.residual_labels import (
+    ensure_residual_labels,
+    load_label_spec,
+)
+from stock_forecasting.data.residual_labels import (
+    spec_identity as label_spec_identity,
+)
 from stock_forecasting.data.sample_universe import open_clean_dataset, validated_split_roots
 
 DEFAULT_EXPERIMENT_CONFIG = Path("configs/experiments/a_rank64.yaml")
@@ -44,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC_PATH)
     parser.add_argument("--output-root", type=Path, required=True, help="New directory.")
     parser.add_argument("--workers", type=int, help=f"Process workers, 1-{MAX_WORKERS}.")
+    parser.add_argument(
+        "--label-variant",
+        type=Path,
+        help="Residualized label spec (protocol 13.16), built beside the standard store.",
+    )
     return parser
 
 
@@ -58,8 +70,19 @@ def _volume_relative(path: Path) -> str | None:
         return None
 
 
-def run(config, spec: dict, output_root: Path, *, workers: int | None = None) -> dict:
-    """Build both stores for every split and write the manifest; idempotent per identity."""
+def run(
+    config,
+    spec: dict,
+    output_root: Path,
+    *,
+    workers: int | None = None,
+    label_variant: dict | None = None,
+) -> dict:
+    """Build both stores for every split and write the manifest; idempotent per identity.
+
+    With ``label_variant`` the residualized label store of that spec is built as well; the
+    standard rank-label store stays the reference the models were registered on.
+    """
     started = time.monotonic()
     roots = validated_split_roots(config)
     splits = {}
@@ -83,6 +106,16 @@ def run(config, spec: dict, output_root: Path, *, workers: int | None = None) ->
                     "manifest_sha256": sha256_file(features / "features.json"),
                 },
             }
+            if label_variant is not None:
+                residual = ensure_residual_labels(
+                    source, config.model.rank_min_group_size, label_variant, workers=workers
+                )
+                splits[split]["residual_labels"] = {
+                    "root": str(residual),
+                    "volume_relative": _volume_relative(residual),
+                    "manifest_sha256": sha256_file(residual / "rank-labels.json"),
+                    "variant": label_variant["name"],
+                }
         finally:
             source.close()
     payload = {
@@ -95,6 +128,7 @@ def run(config, spec: dict, output_root: Path, *, workers: int | None = None) ->
         "h_start": int(config.data.h_start),
         "rank_min_group_size": int(config.model.rank_min_group_size),
         "spec": {**spec_identity(spec), "columns": len(feature_names(spec))},
+        "label_variant": label_spec_identity(label_variant) if label_variant else None,
         "splits": splits,
         "workers": workers,
         "seconds": time.monotonic() - started,
@@ -114,7 +148,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"--output-root must be a new or empty directory: {args.output_root}")
     config = ExperimentConfig.from_yaml(args.experiment_config)
     spec = load_spec(args.spec)
-    payload = run(config, spec, args.output_root, workers=args.workers)
+    label_variant = load_label_spec(args.label_variant) if args.label_variant else None
+    payload = run(
+        config, spec, args.output_root, workers=args.workers, label_variant=label_variant
+    )
     print(
         json.dumps(
             {

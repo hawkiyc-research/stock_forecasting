@@ -1,0 +1,14 @@
+{
+  "schema": "cross-sectional-gauss-rank-residual-v1",
+  "name": "residual_v1b",
+  "description": "Protocol 13.16 variant B (sensitivity): as variant A but the size proxy is the log of the signal date's raw close times the issued common shares of the company reference snapshot (2026-10-22); names missing from the snapshot fall back to the log median dollar volume. Share counts are a snapshot, so companies with past stock dividends or capital reductions are biased.",
+  "size_proxy": "log_market_cap_snapshot",
+  "fallback_size_proxy": "log_dollar_volume_median",
+  "dollar_volume_window": 20,
+  "industry": {
+    "reference": "configs/reference/tw_company_reference_20261022.csv",
+    "unknown_class": "UNK",
+    "min_names_per_class": 2,
+    "min_group_for_industry": 30
+  }
+}

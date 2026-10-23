@@ -19,6 +19,8 @@ RUNPOD_PYTHON_BIN="${RUNPOD_PYTHON_BIN:-/usr/local/bin/python}"
 RUNPOD_ROLE="${RUNPOD_ROLE:-cpu-research}"
 FEATURE_SPEC="configs/features/alpha_tw_v1.json"
 FEATURE_EXPERIMENT_CONFIG="${FEATURE_EXPERIMENT_CONFIG:-configs/experiments/a_rank64.yaml}"
+# Protocol 13.16: an optional residualized label spec under configs/labels/.
+LABEL_VARIANT="${RUNPOD_LABEL_VARIANT:-}"
 LAUNCH_ID="${RUNPOD_LAUNCH_ID:-launch-$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}${RANDOM}}"
 FEATURES_LOG="${RUNPOD_TMUX_LOG_FILE:-${LOG_ROOT}/cpu-lgbm/${LAUNCH_ID}/combined.log}"
 CODE_MARKER="${LIFECYCLE_ROOT}/stage1/code.json"
@@ -52,6 +54,10 @@ if [[ ! "${FEATURE_EXPERIMENT_CONFIG}" =~ ^configs/experiments/[a-z0-9_]+\.yaml$
     echo "FEATURE_EXPERIMENT_CONFIG must name a file under configs/experiments/" >&2
     exit 2
 fi
+if [[ -n "${LABEL_VARIANT}" && ! "${LABEL_VARIANT}" =~ ^configs/labels/[a-z0-9_]+\.json$ ]]; then
+    echo "RUNPOD_LABEL_VARIANT must name a file under configs/labels/" >&2
+    exit 2
+fi
 for path_name in \
     PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT POETRY_BIN FEATURES_LOG \
     CODE_MARKER FEATURES_MARKER OUTPUT_ROOT LGBM_SCRATCH_ROOT; do
@@ -69,7 +75,8 @@ if [[ ! -x "${RUNPOD_PYTHON_BIN}" ]]; then
     echo "RunPod image Python is unavailable: ${RUNPOD_PYTHON_BIN}" >&2
     exit 127
 fi
-for relative in "${FEATURE_SPEC}" "${FEATURE_EXPERIMENT_CONFIG}" "${WALK_FORWARD_SCHEDULE}"; do
+for relative in "${FEATURE_SPEC}" "${FEATURE_EXPERIMENT_CONFIG}" "${WALK_FORWARD_SCHEDULE}" \
+    ${LABEL_VARIANT:+"${LABEL_VARIANT}"}; do
     if [[ ! -f "${PROJECT_ROOT}/${relative}" || -L "${PROJECT_ROOT}/${relative}" ]]; then
         echo "Required config is missing or is a symlink: ${relative}" >&2
         exit 2
@@ -170,6 +177,11 @@ if [[ -n "${RESUME_ROOT}" && -d "${RESUME_ROOT}" ]]; then
 fi
 if [[ -n "${FIN_TS_LGBM_WORKERS:-}" ]]; then
     LGBM_ARGUMENTS+=(--workers "${FIN_TS_LGBM_WORKERS}")
+fi
+if [[ -n "${LABEL_VARIANT}" ]]; then
+    # The trainer only resumes partial folds saved under the same label variant.
+    printf 'Residualized label variant: %s\n' "${LABEL_VARIANT}"
+    LGBM_ARGUMENTS+=(--label-variant "${LABEL_VARIANT}")
 fi
 "${POETRY_BIN}" run stock-forecasting-walk-forward-lgbm "${LGBM_ARGUMENTS[@]}"
 rm -rf "${LGBM_SCRATCH_ROOT}"

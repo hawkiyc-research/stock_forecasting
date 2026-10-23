@@ -102,6 +102,11 @@ append_manifest_file "configs/baseline_execution_compatibility.json"
 append_manifest_file "configs/research/tw_information_test.json"
 append_manifest_file "configs/features/alpha_tw_v1.json"
 append_manifest_file "configs/walk_forward/tw_quarterly_v1.json"
+# Protocol 13.16 residualized label specs and the official company reference snapshot.
+append_manifest_file "configs/labels/residual_v1a.json"
+append_manifest_file "configs/labels/residual_v1b.json"
+append_manifest_file "configs/reference/tw_company_reference_20261022.csv"
+append_manifest_file "configs/reference/tw_company_reference_20261022.json"
 # The control-plane test compares the code's content identity with this snapshot.
 append_manifest_file "configs/data_content_identity_snapshot.json"
 # The documentation consistency tests read the protocol on the Pod.
