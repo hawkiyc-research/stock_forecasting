@@ -1,0 +1,24 @@
+{
+  "sources": {
+    "TWSE": "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+    "TPEX": "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"
+  },
+  "snapshot_dates": [
+    "2026-10-22"
+  ],
+  "records": {
+    "TWSE": 1097,
+    "TPEX": 894,
+    "rows": 1991
+  },
+  "columns": [
+    "symbol",
+    "market",
+    "industry_code",
+    "issued_shares",
+    "par_value_twd",
+    "snapshot_date"
+  ],
+  "sha256": "5fc4d49cdb91fde963600536d27c8a3c47524a1a4b3aa9cea32926d5a0e6e451",
+  "fetched_at": "2026-10-23T09:00:52.952593+00:00"
+}
