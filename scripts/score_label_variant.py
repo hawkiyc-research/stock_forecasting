@@ -101,6 +101,14 @@ def main() -> int:
                 mean, low, high = bootstrap(series.to_numpy()[mask], BLOCKS[cell])
                 report["residual_cells"][f"{cell}/{period}"] = {"rank_ic": mean, "low": low,
                                                                 "high": high}
+        else:
+            # Older downloads lack the residual daily file; results.json carries the same cells.
+            for row in _c_results.get("cells_residual", []):
+                if row["model"] == c_model and row["cell"] == cell:
+                    report["residual_cells"][f"{cell}/{row['period']}"] = {
+                        "rank_ic": row["rank_ic"], "low": row["ci95_low"], "high": row["ci95_high"],
+                        "source": "results.json",
+                    }
     cond_i = report["residual_cells"].get("holding/P2", {}).get("low", math.nan)
     cond_ii = report["paired"]["short/P1+P2"]["low"]
     report["H-F"] = {

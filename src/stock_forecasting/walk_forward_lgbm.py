@@ -938,18 +938,21 @@ def write_manifest(
     results: dict[str, Any],
     label_variant: dict | None = None,
 ) -> dict[str, Any]:
+    names = [
+        "results.json",
+        "predictions.parquet",
+        "targets.parquet",
+        "daily_rank_ic.parquet",
+        "fits.parquet",
+    ]
+    if (output_root / "daily_rank_ic_residual.parquet").is_file():
+        names.append("daily_rank_ic_residual.parquet")  # label variants (protocol 13.16)
     files = {
         name: {
             "sha256": sha256_file(output_root / name),
             "bytes": (output_root / name).stat().st_size,
         }
-        for name in (
-            "results.json",
-            "predictions.parquet",
-            "targets.parquet",
-            "daily_rank_ic.parquet",
-            "fits.parquet",
-        )
+        for name in names
     }
     payload = {
         "schema_version": SCHEMA_VERSION,
