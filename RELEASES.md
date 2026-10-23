@@ -32,6 +32,12 @@
   `download-lgbm`／`download-xs` 的 `predictions.parquet` 與資料集的 raw `market.parquet`。
 - B0 結果與回測判定記錄於 `docs/lgbm_baseline_results.md`：P1 ∪ P2 短格 Rank IC 0.118
   [0.109, 0.127]；Top-k dropout H-B 未通過（TWSE 年化淨超額 −6.3% [−19.0%, +7.1%]）。
+- 新增 §13.14 的台股策略層 `twbacktest.tw_strategy`（`backtest/config/tw_strategy.json`：流動性宇宙、
+  EMA 平滑、買進／持有門檻加每日換入上限、整張可行性敏感度、台指期對沖／現金替代／多頭參考與
+  保證金會計）；`twbacktest.taifex download-contract` 從期交所官方下載單一契約（如 TX）並建連續近月
+  序列（第三個星期三開盤換月、結算價 mark）。結果記錄於 `docs/strategy_layer_results.md`：換手降到
+  每日 2%，但 H-D 與 H-D-hedged 都未通過（P2 訊號失效）。
+- 本機 guard 現在也會為 `research-xs-train` 的 GPU Pod 啟動 GPU 時脈監測。
 
 ### v0.2.2 2026-09-21
 
@@ -129,6 +135,14 @@
 - B0 results and backtest verdicts are recorded in `docs/lgbm_baseline_results.md`: P1 ∪ P2
   short-cell Rank IC 0.118 [0.109, 0.127]; the top-k dropout H-B fails (TWSE annualized net
   excess −6.3% [−19.0%, +7.1%]).
+- Protocol §13.14 Taiwan strategy layer `twbacktest.tw_strategy` (`backtest/config/tw_strategy.json`:
+  liquidity universe, EMA smoothing, buy/hold band with a daily entry cap, board-lot feasibility
+  sensitivity, TAIEX futures hedged / cash-equitized / long-reference legs with margin
+  accounting); `twbacktest.taifex download-contract` fetches one contract (e.g. TX) from the
+  official TAIFEX download and builds the continuous front month (third-Wednesday open roll,
+  settlement mark). Results in `docs/strategy_layer_results.md`: turnover falls to 2% a day,
+  but H-D and H-D-hedged both fail (the P2 signal failure).
+- The local guard now starts the GPU clock monitor for `research-xs-train` GPU Pods too.
 
 ### v0.2.2 2026-09-21
 

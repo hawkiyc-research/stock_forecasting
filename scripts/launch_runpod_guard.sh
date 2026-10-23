@@ -214,8 +214,10 @@ raise SystemExit(0 if payload.get("state") == "armed" and payload.get("pod_id") 
         fi
         # Telemetry is optional and independent: failures must never disarm the
         # billing/lifecycle guard or trigger its emergency Pod-deletion path.
+        # GPU kinds only: the research-xs-train GPU Pods were missed before 2026-10-23, so a
+        # long under-clocking episode (seen on an RTX PRO 6000 Pod) went unnoticed.
         case "${LIFECYCLE_KIND}" in
-            stage1-training|stage1-validation|stage1-baseline)
+            stage1-training|stage1-validation|stage1-baseline|research-xs-train)
                 if ! python3 "${SCRIPT_DIR}/runpod_gpu_monitor.py" start \
                     --pod-id "${POD_ID}" --run-id "${RUNPOD_GUARD_RUN_ID}" \
                     --guard-pid "${GUARD_PID}" --guard-log "${LOG_FILE}" \

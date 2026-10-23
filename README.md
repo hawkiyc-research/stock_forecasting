@@ -2949,6 +2949,15 @@ worker 數預設取以下兩者的較小值，最多 32：
     cd backtest && uv run python -m twbacktest.holding_walkforward --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
     ```
 
+13. **台股策略層（本機，H-D）**：§13.14 的成本感知 band 組合與台指期疊加。先用期交所官方
+    資料建 TX 近月連續序列，再對 B0 與 D0 的預測計分；設定與判定規則見
+    [backtest/README.md](backtest/README.md)，結果見 [docs/strategy_layer_results.md](docs/strategy_layer_results.md)。
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.taifex download-contract --commodity TX --start 2022-12-01 --end-exclusive 2026-07-01 --root ../artifacts/diagnostics/taifex-tx
+    cd backtest && uv run python -m twbacktest.tw_strategy --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
 worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
 記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
@@ -7312,6 +7321,17 @@ the last 12 months of each window as validation) and come from
 
     ```bash
     cd backtest && uv run python -m twbacktest.holding_walkforward --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
+13. **Taiwan strategy layer (local, H-D)**: the §13.14 cost-aware band portfolio with the TAIEX
+    futures overlay. Build the continuous TX front month from TAIFEX's official data first,
+    then score the B0 and D0 predictions; settings and the decision rules are in
+    [backtest/README.md](backtest/README.md), results in
+    [docs/strategy_layer_results.md](docs/strategy_layer_results.md).
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.taifex download-contract --commodity TX --start 2022-12-01 --end-exclusive 2026-07-01 --root ../artifacts/diagnostics/taifex-tx
+    cd backtest && uv run python -m twbacktest.tw_strategy --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
     ```
 
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the
