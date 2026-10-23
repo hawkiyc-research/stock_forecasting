@@ -258,6 +258,36 @@ uv run python -m twbacktest.holding_walkforward --predictions ../artifacts/lgbm/
 `report.json`（選定的 h、K 及其 P2、P1+P2 指標）、`grid.csv`（所有市場、期間、h、K、成本情境與
 版本）與 `summary.md`（中英雙語摘要）。B0 的結果見 `docs/lgbm_baseline_results.md`。
 
+### 台股策略層：band 組合與台指期疊加（§13.14）
+
+`twbacktest.tw_strategy` 依照 `docs/experiment_protocol.md` §13.14 的事先登記規則，以
+`config/tw_strategy.json` 把 walk-forward 排序分數建成成本感知的多頭組合：流動性宇宙（20 日成交金額
+中位數門檻、收盤價 ≥ 10 元、排除 ETF）、市場內百分位名次做每檔 EMA 平滑（半衰期 3 日）、買進／持有門檻
+（進前 K 名買、掉出前 m × K 名賣）加每日換入上限 ⌈K／10⌉，沿用第一階段 1b 的逐部位開盤到開盤引擎；
+另以資本 1,000 萬與 3,000 萬元做整張可行性敏感度。台指期疊加用期交所官方每日行情的 TX 近月連續序列
+（`twbacktest.taifex download-contract`，第三個星期三開盤換月、每日以結算價 mark）：對沖版（放空
+TX、15% 保證金準備、追繳與回補）、現金替代版（閒置現金持有 TX 多頭）與 TX 多頭參考。參數格子
+h ∈ {5, 10} × K ∈ {30, 50} × m ∈ {2, 3} 以 TWSE P1 多頭版淨超額 IR 選定；H-D 與 H-D-hedged 在
+P1+P2 判定。報告欄位固定同時列出淨超額與絕對報酬（年化淨報酬、CAGR、Sharpe、最大回撤、對報酬指數超額）。
+
+```bash
+uv run python -m twbacktest.taifex download-contract --commodity TX --start 2022-12-01 --end-exclusive 2026-07-01 --root ../artifacts/diagnostics/taifex-tx
+uv run python -m twbacktest.tw_strategy --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| 選項 | 說明 | 預設值 |
+| --- | --- | --- |
+| `--predictions`、`--model` | 成對重複：預測檔與其中的模型名稱，每個模型分別選參數與判定 | 必填 |
+| `--prices` | raw `market.parquet`（需含 `volume`） | 必填 |
+| `--artifacts-root` | 台指期資料根目錄的上層（`futures.root` 相對於此） | `../artifacts` |
+| `--workers` | spawn process pool 大小（`BACKTEST_WORKERS` 亦可） | 依 CPU 與記憶體 |
+| `--config` | 回測設定檔 | `config/tw_strategy.json` |
+| `--output-root` | 本次輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/tw-strategy-<UTC 時間>-<隨機碼>` |
+
+輸出目錄包含 `report.json`（各模型選定參數、H-D／H-D-hedged 判定、前瞻候選）、`grid.csv`（所有模型、
+市場、h、K、m、資本、版本、成本情境與期間）、`daily_series.csv`（選定參數在主情境下的每日序列）與
+`summary.md`（中英雙語摘要）。B0 與 D0 的結果見 `docs/strategy_layer_results.md`。
+
 ## English
 
 ### Purpose
@@ -548,3 +578,41 @@ The options match top-k dropout without `--compare-*` (`--config` defaults to
 `report.json` (the selected h and K with their P2 and P1+P2 metrics), `grid.csv` (every market,
 period, h, K, cost scenario and version) and `summary.md` (bilingual). B0's result is in
 `docs/lgbm_baseline_results.md`.
+
+### Taiwan strategy layer: band portfolio with a TAIEX futures overlay (§13.14)
+
+Following the pre-registered rules of `docs/experiment_protocol.md` §13.14, `twbacktest.tw_strategy`
+turns walk-forward ranking scores into a cost-aware long-only portfolio with
+`config/tw_strategy.json`: a liquidity universe (20-session median dollar-volume threshold,
+close ≥ NT$10, no ETFs), within-market percentile ranks smoothed per symbol by an EMA (3-session
+half-life), a buy/hold band (buy into the top K, sell when out of the top m × K) with a daily
+entry cap of ⌈K/10⌉, on the stage 1b per-position open-to-open engine; board-lot feasibility is
+reported at NT$10 million and NT$30 million of capital. The TAIEX futures overlay uses the
+continuous TX front month built from TAIFEX's official daily data
+(`twbacktest.taifex download-contract`, rolled at the third Wednesday's open and marked at the
+daily settlement): a hedged version (short TX with a 15% margin reserve, calls and
+reinvestment), a cash-equitized version (idle cash long TX) and a TX-long reference. The grid
+h ∈ {5, 10} × K ∈ {30, 50} × m ∈ {2, 3} is selected on the TWSE P1 long-only net excess IR; H-D
+and H-D-hedged are judged on P1+P2. The report columns always pair the net excess with absolute
+returns (annualized net return, CAGR, Sharpe, maximum drawdown, excess over the total-return
+index).
+
+```bash
+uv run python -m twbacktest.taifex download-contract --commodity TX --start 2022-12-01 --end-exclusive 2026-07-01 --root ../artifacts/diagnostics/taifex-tx
+uv run python -m twbacktest.tw_strategy --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--predictions`, `--model` | Repeated pairs: a prediction file and the model name inside it; each model is selected and judged separately | required |
+| `--prices` | Raw `market.parquet` (with `volume`) | required |
+| `--artifacts-root` | Parent of the futures data root (`futures.root` is relative to it) | `../artifacts` |
+| `--workers` | Spawn process pool size (`BACKTEST_WORKERS` also works) | sized from CPUs and memory |
+| `--config` | Backtest configuration | `config/tw_strategy.json` |
+| `--output-root` | Output directory for this run; must not exist | `artifacts/diagnostics/backtest/tw-strategy-<UTC time>-<random>` |
+
+The output directory holds `report.json` (each model's selected parameters, the H-D / H-D-hedged
+verdicts and the forward candidate), `grid.csv` (every model, market, h, K, m, capital, version,
+cost scenario and period), `daily_series.csv` (the selected parameters' daily series under the
+primary costs) and `summary.md` (bilingual). The B0 and D0 results are in
+`docs/strategy_layer_results.md`.
