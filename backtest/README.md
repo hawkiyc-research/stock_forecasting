@@ -241,6 +241,23 @@ uv run python -m twbacktest.topk_dropout --predictions ../artifacts/lgbm/<launch
 （中英雙語摘要）。H-B：TWSE P1+P2 主情境年化淨超額的 95% 區間下界大於 0，且（有比較對象時）
 IR 不低於 baseline。
 
+### 持有對齊的 walk-forward 回測（次要分析）
+
+`twbacktest.holding_walkforward` 以 `config/holding_walkforward.json` 把 walk-forward 排序分數依標籤的
+持有方式回測：前 K 名（10／20／50）在次一交易日開盤買進、h（1／2／3／5／10）個交易日後收盤賣出，
+h 個起始 sleeve 輪流進場，沿用第一階段引擎與成本情境（h = 1 課當沖稅；主情境折扣 0.6、滑價 ×1、
+保守換手）；市場分 TWSE、TPEX 與 TW（兩市場合併）。這不是 §13.13 事先登記的判定，只回答「排序優勢
+在完全對齊標籤的持有方式下是否大於成本」；h、K 的選擇（TWSE P1 淨超額 IR 最高）屬事後分析。
+
+```bash
+uv run python -m twbacktest.holding_walkforward --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+選項與 Top-k dropout 相同，但沒有 `--compare-*`（`--config` 預設 `config/holding_walkforward.json`，
+輸出目錄預設 `artifacts/diagnostics/backtest/holding-wf-<UTC 時間>-<隨機碼>`）。輸出目錄包含
+`report.json`（選定的 h、K 及其 P2、P1+P2 指標）、`grid.csv`（所有市場、期間、h、K、成本情境與
+版本）與 `summary.md`（中英雙語摘要）。B0 的結果見 `docs/lgbm_baseline_results.md`。
+
 ## English
 
 ### Purpose
@@ -509,3 +526,25 @@ The output directory holds `report.json` (selected horizon and the H-B verdict),
 and the equal-weight benchmark per horizon under the primary costs) and `summary.md` (bilingual).
 H-B: the 95% interval lower bound of the TWSE P1+P2 annualized net excess under the primary
 scenario is above 0 and, when a comparison model is given, the IR is not below the baseline's.
+
+### Holding-aligned walk-forward backtest (secondary analysis)
+
+`twbacktest.holding_walkforward` backtests walk-forward ranking scores the way the label is
+defined, using `config/holding_walkforward.json`: the top K (10/20/50) is bought at the next
+session's open and sold at the close h (1/2/3/5/10) sessions later, with h start sleeves taking
+turns, the stage 1 engine and cost scenarios (h = 1 pays the day-trade tax; primary scenario
+discount 0.6, slippage ×1, conservative turnover); markets are TWSE, TPEX and TW (both
+combined). It is not a pre-registered decision of §13.13: it only answers whether the ranking
+edge exceeds costs when the holding exactly matches the label, and the choice of h and K
+(highest TWSE P1 net excess IR) is post hoc.
+
+```bash
+uv run python -m twbacktest.holding_walkforward --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+The options match top-k dropout without `--compare-*` (`--config` defaults to
+`config/holding_walkforward.json`; the output directory defaults to
+`artifacts/diagnostics/backtest/holding-wf-<UTC time>-<random>`). The output directory holds
+`report.json` (the selected h and K with their P2 and P1+P2 metrics), `grid.csv` (every market,
+period, h, K, cost scenario and version) and `summary.md` (bilingual). B0's result is in
+`docs/lgbm_baseline_results.md`.

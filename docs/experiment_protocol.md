@@ -1085,6 +1085,8 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - TPEX 流動性低，台股 ML 選股的 alpha 常受可投資性限制（Chang、Chiu，SSRN 2026）；回測未模擬成交量上限、整股、最低手續費與股利稅。
 - 若 `lightgbm` 無法安裝而改用 scikit-learn，基線名稱仍為 B0，但與 Qlib 公開基準的可比性下降。
 
+**§13.13 B0 結果（2026-10-23）**：B0 `t-lgbm-alpha`（`launch-20261022T234922Z-22048038`，14 折 × 14 horizon × 3 seed = 588 個模型）在 P1 ∪ P2 的 Rank IC：短格 0.1178 [0.1091, 0.1266]、持有格 0.0859 [0.0650, 0.1061]、長格 0.0834 [0.0541, 0.1129]；P2 單獨看持有格 0.0343 [−0.0004, 0.0726]、長格 0.0107 [−0.0372, 0.0600]。第 3 項的 Top-k dropout 套用於 B0：選定 h = 10，TWSE P1 ∪ P2 主情境年化淨超額 −6.3% [−19.0%, +7.1%]、IR −0.58，H-B 未通過。依第 5 點：B0 為策略基準但不算可交易，H-C 對 B0 不執行，策略層的改動須另行登記。D0（H-A）照第 6 項第 3 步執行，結果另記。見 [B0 基線與回測結果報告](lgbm_baseline_results.md)。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -2237,6 +2239,8 @@ Interpretation limits:
 - A third-party reproduction of MASTER reached less than half the paper's Rank IC; D0 is an independent implementation of that design and is not guaranteed to reach the paper's numbers.
 - TPEX liquidity is low, and machine-learning stock selection alpha in Taiwan is often limited by investability (Chang and Chiu, SSRN 2026); the backtest does not model volume caps, round lots, minimum commissions or dividend taxes.
 - If `lightgbm` cannot be installed and scikit-learn is used instead, the baseline is still B0, but comparability with the public Qlib benchmark falls.
+
+**§13.13 B0 result (2026-10-23)**: B0 `t-lgbm-alpha` (`launch-20261022T234922Z-22048038`, 14 folds × 14 horizons × 3 seeds = 588 models) on P1 ∪ P2: short cell 0.1178 [0.1091, 0.1266], holding cell 0.0859 [0.0650, 0.1061], long cell 0.0834 [0.0541, 0.1129]; P2 alone: holding 0.0343 [−0.0004, 0.0726], long 0.0107 [−0.0372, 0.0600]. The item 3 top-k dropout applied to B0 selects h = 10; TWSE P1 ∪ P2 annualized net excess under the primary costs is −6.3% [−19.0%, +7.1%] with IR −0.58, so H-B fails. Under item 5: B0 is the strategy baseline but not tradeable, H-C does not run for B0, and strategy-layer changes need their own registration. D0 (H-A) runs as step 3 of item 6 and is recorded separately. See the [B0 baseline and backtest results report](lgbm_baseline_results.md).
 
 ### 14. Remote-validation boundary
 

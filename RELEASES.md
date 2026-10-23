@@ -25,6 +25,13 @@
   Kronos-small 與 Chronos-2-small 轉接器與 embedding 快取）；`runpod_workflow.sh xs-train`／
   `xs-train` tmux／`download-xs` 為 GPU Pod 入口，lifecycle 標記
   `lifecycle/research/xs-train.json`。
+- 新增 §13.13 第 3 項的 Top-k dropout 回測 `twbacktest.topk_dropout`
+  （`backtest/config/topk_dropout.json`：TWSE K = 50 每日換 5 檔、TPEX 30／3，horizon 依
+  TWSE P1 淨超額 IR 選定，H-B 判定）與次要分析 `twbacktest.holding_walkforward`
+  （`backtest/config/holding_walkforward.json`：依標籤方式持有的前 K 名回測）；兩者都讀
+  `download-lgbm`／`download-xs` 的 `predictions.parquet` 與資料集的 raw `market.parquet`。
+- B0 結果與回測判定記錄於 `docs/lgbm_baseline_results.md`：P1 ∪ P2 短格 Rank IC 0.118
+  [0.109, 0.127]；Top-k dropout H-B 未通過（TWSE 年化淨超額 −6.3% [−19.0%, +7.1%]）。
 
 ### v0.2.2 2026-09-21
 
@@ -113,6 +120,15 @@
   adapters with embedding caches); `runpod_workflow.sh xs-train`, the `xs-train` tmux workflow
   and `download-xs` are the GPU Pod entries, with the lifecycle marker
   `lifecycle/research/xs-train.json`.
+- Protocol §13.13 item 3 top-k dropout backtest `twbacktest.topk_dropout`
+  (`backtest/config/topk_dropout.json`: TWSE K = 50 with 5 replaced per day, TPEX 30/3, the
+  horizon chosen by TWSE P1 net excess IR, the H-B decision) and the secondary analysis
+  `twbacktest.holding_walkforward` (`backtest/config/holding_walkforward.json`: top-K held
+  the way the label is defined); both read the `predictions.parquet` of `download-lgbm` /
+  `download-xs` and the dataset's raw `market.parquet`.
+- B0 results and backtest verdicts are recorded in `docs/lgbm_baseline_results.md`: P1 ∪ P2
+  short-cell Rank IC 0.118 [0.109, 0.127]; the top-k dropout H-B fails (TWSE annualized net
+  excess −6.3% [−19.0%, +7.1%]).
 
 ### v0.2.2 2026-09-21
 

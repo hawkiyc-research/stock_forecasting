@@ -2942,6 +2942,13 @@ worker 數預設取以下兩者的較小值，最多 32：
     cd backtest && uv run python -m twbacktest.topk_dropout --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
     ```
 
+    次要分析：`twbacktest.holding_walkforward` 以標籤的持有方式（次一開盤買進、h 日後收盤賣出）
+    回測同一份預測，不是事先登記的判定。
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.holding_walkforward --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
 worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
 記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
@@ -7297,6 +7304,14 @@ the last 12 months of each window as validation) and come from
 
     ```bash
     cd backtest && uv run python -m twbacktest.topk_dropout --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
+    Secondary analysis: `twbacktest.holding_walkforward` backtests the same predictions the way
+    the label is defined (buy at the next open, sell at the close h sessions later); it is not a
+    pre-registered decision.
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.holding_walkforward --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
     ```
 
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the
