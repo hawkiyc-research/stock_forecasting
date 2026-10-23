@@ -276,6 +276,35 @@ def continuous_front_month(futures: pd.DataFrame, commodity: str) -> pd.DataFram
                   "roll"]].reset_index(drop=True)
 
 
+def stock_futures_sessions(futures: pd.DataFrame, listing: pd.DataFrame) -> pd.DataFrame:
+    """Per (date, symbol): the tradable near-month stock-futures contract and its prices.
+
+    Regular-session rows of monthly expiries only; a contract is the near month up to the
+    session before its third Wednesday (the next month is used on the expiry day). The
+    standard contract (the listing's largest share count per symbol) is preferred, and a
+    symbol priced on a smaller contract is flagged. ``open`` is NaN when the contract had no
+    trade at the open, which the day-trade backtest treats as not tradable that session.
+    """
+    regular = futures[(futures["session"] == "regular") & futures["expiry"].str.fullmatch(r"\d{6}")]
+    rows = regular[regular["contract"].isin(set(listing["code"]))].copy()
+    if rows.empty:
+        raise ValueError("No stock-futures rows for the listed contracts")
+    rows["last_day"] = [
+        third_wednesday(int(e[:4]), int(e[4:])).isoformat() for e in rows["expiry"]
+    ]
+    rows = rows[rows["date"] < rows["last_day"]]
+    near = rows.loc[rows.groupby(["date", "contract"])["expiry"].idxmin()]
+    near = near.merge(listing[["code", "symbol", "shares"]], left_on="contract", right_on="code")
+    largest = listing.groupby("symbol")["shares"].max().rename("standard_shares")
+    near = near.merge(largest, left_on="symbol", right_index=True)
+    near["is_standard"] = near["shares"] == near["standard_shares"]
+    # One row per (date, symbol): the standard contract when it has a row, else the small one.
+    near = near.sort_values(["date", "symbol", "is_standard"], ascending=[True, True, False])
+    near = near.drop_duplicates(["date", "symbol"], keep="first")
+    return near[["date", "symbol", "contract", "expiry", "shares", "is_standard", "open",
+                 "settlement", "volume", "open_interest"]].reset_index(drop=True)
+
+
 def parse_futures(content: bytes) -> pd.DataFrame:
     """Daily rows of every futures contract; rows end with a comma, so no index column."""
     text = content.decode("cp950")

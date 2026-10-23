@@ -162,3 +162,25 @@ def test_download_contract_names_and_manifest(tmp_path, monkeypatch):
     assert set(frame["contract"]) == {"TX"}
     with pytest.raises(ValueError):
         taifex.download_contract(tmp_path, "all", "2025-06-01", "2025-07-15", pause=0)
+
+
+def test_stock_futures_sessions_prefers_the_standard_contract_and_rolls():
+    # CDF (2,000 shares) and QFF (100 shares) are both 2330.TW; 2025-06-18 is the June expiry.
+    rows = [
+        ("2025/06/17", "CDF", "202506", 100, "一般"), ("2025/06/17", "CDF", "202507", 5, "一般"),
+        ("2025/06/17", "QFF", "202506", 50, "一般"),
+        ("2025/06/18", "CDF", "202506", 100, "一般"), ("2025/06/18", "CDF", "202507", 7, "一般"),
+        ("2025/06/19", "QFF", "202507", 9, "一般"),  # only the small contract traded
+        ("2025/06/17", "OZF", "202506", 3, "一般"), ("2025/06/17", "OZF", "202506", 3, "盤後"),
+    ]
+    futures = taifex.parse_futures(_csv(rows))
+    table = taifex.stock_futures_sessions(futures, taifex.parse_underlyings(_listing()))
+    table = table.set_index(["date", "symbol"])
+    assert table.loc[("2025-06-17", "2330.TW"), "contract"] == "CDF"
+    assert table.loc[("2025-06-17", "2330.TW"), "expiry"] == "202506"
+    assert bool(table.loc[("2025-06-17", "2330.TW"), "is_standard"])
+    assert table.loc[("2025-06-18", "2330.TW"), "expiry"] == "202507"  # rolled on expiry day
+    assert table.loc[("2025-06-19", "2330.TW"), "contract"] == "QFF"
+    assert not bool(table.loc[("2025-06-19", "2330.TW"), "is_standard"])
+    assert table.loc[("2025-06-17", "6488.TWO"), "volume"] == 3  # regular session only
+    assert len(table) == 4
