@@ -1173,6 +1173,8 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 殘差目標上的 Rank IC 不等於可交易：多頭組合仍承受市值與產業因子報酬，§13.14 的判定才算可交易性。
 - P2 已經看過；H-F 是在看過失效之後才設計的修補，真正的確認是 P3。
 
+**§13.16 變體 A 結果（2026-10-23）**：B0 在 `residual_v1a` 標籤上重訓（`launch-20261023T103805Z-2637116736`，588 個模型，`t-lgbm-alpha-residual_v1a`）。對殘差目標：短格 P1 ∪ P2 0.1008 [0.0954, 0.1061]（ICIR 1.19）、持有格 P2 **0.0646 [0.0457, 0.0856]**（條件 (i) 通過）、長格 P2 0.0549 [0.0324, 0.0763]。對原始 alpha 目標：短格 P1 ∪ P2 0.1175，與舊 B0 的配對差 −0.0002 [−0.0013, +0.0009]（條件 (ii) 通過）；持有格 P2 0.0434 [0.0103, 0.0794]，對舊 B0 的配對差 +0.0090 [+0.0055, +0.0125]；長格 P2 0.0239 [−0.0216, 0.0692]（舊 B0 0.0107）。**H-F 通過。** 殘差化沒有傷到 h = 1，P2 的多日排序對殘差目標回到 0.05–0.06 且區間不跨 0；對原始 alpha 的改善較小（持有格 +0.009），因為多頭實現報酬仍含市值與產業因子。依第 7 點：D0 在新標籤上重訓，§13.14、§13.15 以新模型重跑。變體 B 另記。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -2413,6 +2415,8 @@ Interpretation limits:
 - Residualization removes linear size and industry exposure; non-linear and other style exposures (momentum, volatility) remain in the target.
 - Rank IC on the residual target is not tradeability: a long-only book still bears size and industry factor returns, and only the §13.14 decisions measure tradeability.
 - P2 has been seen; H-F is a repair designed after observing the failure, and P3 is the true confirmation.
+
+**§13.16 variant A result (2026-10-23)**: B0 retrained on the `residual_v1a` labels (`launch-20261023T103805Z-2637116736`, 588 models, `t-lgbm-alpha-residual_v1a`). Against the residual target: short P1 ∪ P2 0.1008 [0.0954, 0.1061] (ICIR 1.19), holding P2 **0.0646 [0.0457, 0.0856]** (condition (i) passes), long P2 0.0549 [0.0324, 0.0763]. Against the raw alpha target: short P1 ∪ P2 0.1175, paired difference to the old B0 −0.0002 [−0.0013, +0.0009] (condition (ii) passes); holding P2 0.0434 [0.0103, 0.0794], paired difference +0.0090 [+0.0055, +0.0125]; long P2 0.0239 [−0.0216, 0.0692] (old B0 0.0107). **H-F passes.** Residualization did not hurt h = 1, and the P2 multi-session ranking against the residual target returns to 0.05–0.06 with intervals above 0; the improvement against raw alpha is smaller (holding +0.009) because a long book still earns the size and industry factor returns. Under item 7: D0 is retrained on the new labels and §13.14 / §13.15 are rerun with the new models. Variant B is recorded separately.
 
 ### 14. Remote-validation boundary
 
