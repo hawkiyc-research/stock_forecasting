@@ -1087,6 +1087,35 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 
 **§13.13 B0 結果（2026-10-23）**：B0 `t-lgbm-alpha`（`launch-20261022T234922Z-22048038`，14 折 × 14 horizon × 3 seed = 588 個模型）在 P1 ∪ P2 的 Rank IC：短格 0.1178 [0.1091, 0.1266]、持有格 0.0859 [0.0650, 0.1061]、長格 0.0834 [0.0541, 0.1129]；P2 單獨看持有格 0.0343 [−0.0004, 0.0726]、長格 0.0107 [−0.0372, 0.0600]。第 3 項的 Top-k dropout 套用於 B0：選定 h = 10，TWSE P1 ∪ P2 主情境年化淨超額 −6.3% [−19.0%, +7.1%]、IR −0.58，H-B 未通過。依第 5 點：B0 為策略基準但不算可交易，H-C 對 B0 不執行，策略層的改動須另行登記。D0（H-A）照第 6 項第 3 步執行，結果另記。見 [B0 基線與回測結果報告](lgbm_baseline_results.md)。
 
+#### 13.14 台股策略層：成本感知的多頭 band 組合與台指期疊加（2026-10-23 於實作與計分前寫入）
+
+背景：§13.13 的 B0 與 D0 都有排序能力（P1 ∪ P2 短格 Rank IC 0.118／0.122），但登記的 Top-k dropout（每日換 5 檔於 50 檔）在台股成本下 H-B 未通過：每日換手約 10% 的成本拖累約 17%／年，高於 P1 的毛超額；P2 的 h = 5–14 Rank IC 降到 0.02–0.05，h = 1 仍有 0.11。依 §13.13 第 5 點回到策略層。本節登記業界慣用的成本緩解做法在台股的版本：買進／持有門檻（Novy-Marx 與 Velikov 2016 的最有效單一方法）、訊號平滑、換手上限、流動性宇宙、成本感知（Jensen、Kelly、Malamud、Pedersen 2024），以及用台指期（期交稅十萬分之二）取代現股做 beta 對沖與閒置現金的市場曝險。台指期不進任何模型訓練，只在回測層使用；資料來自期交所每日行情下載（官方），不用第三方 API。
+
+1. **輸入**：B0 `t-lgbm-alpha` 與 D0 `t-xs-scratch` 的 walk-forward 預測（三 seed 集成；D1 若有效則加入）；資料集 raw `market.parquet`（未調整開收盤價與成交量、調整後收盤價）；期交所 TX 每日行情 2022-12 至 2026-06（`twbacktest.taifex download-contract`），連續近月序列在到期月第三個星期三的開盤換月，開盤價以比率串接。
+2. **宇宙**：只含股票（排除 ETF 與指數）；市場分開，TWSE 為判定市場，TPEX 只作描述。流動性門檻：訊號日前 20 個交易日的成交金額（收盤價 × 成交量）中位數 TWSE ≥ 新台幣 3,000 萬、TPEX ≥ 1,000 萬，且收盤價 ≥ 10 元；門檻在訓練前固定，不選。
+3. **訊號**：使用單一 horizon 的集成分數（h 在第 6 項的格子中選）；每日先在市場內轉成百分位名次，再對每檔做 EMA 平滑，半衰期 3 個交易日（固定），中斷超過 5 個交易日即重設。
+4. **組合規則（band）**：進前 K 名才買、掉出前 M 名才賣（M = m × K）；每日依前一收盤的平滑分數檢查，於次一開盤成交；每日新買不超過 ⌈K／10⌉ 檔；資金分成 K 個等權位置，逐部位開盤到開盤記帳（§13.5 的引擎，`positions.simulate` 的 buffer 規則加上每日換入上限）；漲停開盤不買、跌停開盤不賣（同 §13.13）。主要分析為分數位置（相當於大資金或可用零股）；另以資本 1,000 萬與 3,000 萬元做整張可行性敏感度：位置金額買不到一張（1,000 股）的股票留在現金並計數；最低手續費 20 元在這兩個資本下占比低於 0.01%，只報不模擬。
+5. **成本**：現股沿用 `backtest/config/stage1.json` 的主要情境（手續費 0.1425% × 折扣 0.6、證交稅 0.3%、滑價 TWSE 0.1%／TPEX 0.2%），另報折扣 1.0／0.28 與滑價 0／2 倍。台指期每邊：期交稅 0.002% 契約金額、手續費每口 50 元、滑價 1 點（200 元），換月日兩邊各一次。
+6. **台指期疊加**（都用 TX 近月連續序列，部位每日在開盤依前一日持股市值調整）：
+   - **對沖版**：放空名目金額 = β × 持股市值，β = 1（固定）；保證金準備金 = 名目金額的 15%（原始保證金約 5% 加上 10% 的逐日結算緩衝），從總資本扣除，現股只用剩餘資本；準備金低於名目金額 10% 時，於次一開盤按比例賣出現股補足並計一次追繳。對沖版的基準為 0。
+   - **現金替代版**：多頭組合中未投入股票的現金（空位、被擋的買單、整張不足）持有等額的 TX 多頭，保證金自該現金撥出。基準同多頭版。
+   - **TX 多頭參考**：只持有近月 TX 多頭（含換月成本），對照 TAIEX 價格指數，用來報告基差與換月的拖累。
+7. **選擇與判定**：
+   - 格子：h ∈ {5, 10}、K ∈ {30, 50}、m ∈ {2, 3}，共 8 組；對每個模型以 TWSE P1 主要情境的多頭版淨超額（相對同市場流動性宇宙等權）IR 最高者為該模型的選定參數，選定後固定用於 P2、P1 ∪ P2 與前瞻。
+   - **H-D（策略層可交易）**：選定參數的 TWSE 多頭版，P1 ∪ P2 主要情境年化淨超額（相對等權宇宙）的 95% 區間下界大於 0（月區塊 bootstrap，1,000 次、seed 11）。B0 與 D0 分別判定。
+   - **H-D-hedged**：同參數的對沖版，P1 ∪ P2 年化淨報酬（絕對）的 95% 區間下界大於 0。
+   - 前瞻候選模型：通過 H-D 者之中 TWSE P1 ∪ P2 淨超額 IR 較高的模型；兩者都未通過則沒有候選。
+8. **報告（固定欄位）**：除了淨超額與區間、IR，一律同時列出年化淨報酬、CAGR、Sharpe、最大回撤、換手、成本拖累、對 TAIEX 價格指數的超額與對等權宇宙的超額，以及整張可行性下被擋的買單比例與追繳次數。
+9. **處置**：H-D 通過 → 以候選模型登記 H-C（2026-06-01 之後的 P3）；H-D 未通過 → 多頭現股持有在台股成本下無法把排序能力變成報酬，下一個候選是股票期貨標的內的多空（§13.9 的可取性）或 h = 1 的當沖路線，兩者都要另行登記。
+10. **程序**：設定檔 `backtest/config/tw_strategy.json` 在計分前寫入並 commit；先以合成資料的測試驗證 band、換手上限、整張可行性、對沖與保證金會計（含追繳）；再對 B0、D0 計分；結果寫成中英雙語報告。
+
+判讀限制：
+
+- 8 組參數在 P1 選一組，P1 本身帶有選擇偏誤；P1 ∪ P2 的判定含 P1，真正的確認仍是 P3。
+- 流動性門檻與 β = 1 是事前固定的合理值，不是最佳化結果；單一 β 忽略個股 beta 的差異。
+- 保證金模型是簡化版（固定比例的準備金與追繳規則），未用期交所逐日公告的保證金表；未模擬期貨的流動性與盤後時段。
+- 未模擬成交量參與率對大資金的限制、股利稅與借券；整張可行性只在兩個資本水準下報告。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -2241,6 +2270,35 @@ Interpretation limits:
 - If `lightgbm` cannot be installed and scikit-learn is used instead, the baseline is still B0, but comparability with the public Qlib benchmark falls.
 
 **§13.13 B0 result (2026-10-23)**: B0 `t-lgbm-alpha` (`launch-20261022T234922Z-22048038`, 14 folds × 14 horizons × 3 seeds = 588 models) on P1 ∪ P2: short cell 0.1178 [0.1091, 0.1266], holding cell 0.0859 [0.0650, 0.1061], long cell 0.0834 [0.0541, 0.1129]; P2 alone: holding 0.0343 [−0.0004, 0.0726], long 0.0107 [−0.0372, 0.0600]. The item 3 top-k dropout applied to B0 selects h = 10; TWSE P1 ∪ P2 annualized net excess under the primary costs is −6.3% [−19.0%, +7.1%] with IR −0.58, so H-B fails. Under item 5: B0 is the strategy baseline but not tradeable, H-C does not run for B0, and strategy-layer changes need their own registration. D0 (H-A) runs as step 3 of item 6 and is recorded separately. See the [B0 baseline and backtest results report](lgbm_baseline_results.md).
+
+#### 13.14 Taiwan strategy layer: cost-aware long-only band portfolio with a TAIEX futures overlay (written 2026-10-23 before implementation and scoring)
+
+Background: both B0 and D0 of §13.13 rank (P1 ∪ P2 short-cell Rank IC 0.118 / 0.122), but the registered top-k dropout (5 of 50 replaced daily) fails H-B under Taiwan costs: about 10% daily turnover costs about 17% per year, more than the P1 gross excess; in P2 the h = 5–14 Rank IC falls to 0.02–0.05 while h = 1 keeps 0.11. Under §13.13 item 5 the work returns to the strategy layer. This section registers the Taiwan version of the industry's cost-mitigation practice: a buy/hold band (the single most effective method in Novy-Marx and Velikov 2016), signal smoothing, a turnover cap, a liquidity universe, cost awareness (Jensen, Kelly, Malamud and Pedersen 2024), and TAIEX futures (transaction tax 0.002%) instead of stocks for the beta hedge and for the market exposure of idle cash. The futures enter no model training; they are used only in the backtest layer, with data from TAIFEX's official daily download rather than a third-party API.
+
+1. **Inputs**: walk-forward predictions of B0 `t-lgbm-alpha` and D0 `t-xs-scratch` (three-seed ensembles; D1 added if effective); the dataset's raw `market.parquet` (unadjusted open/close and volume, adjusted close); TAIFEX TX daily rows 2022-12 to 2026-06 (`twbacktest.taifex download-contract`), with a continuous front month that rolls at the open of the expiry month's third Wednesday and chains opens by ratio.
+2. **Universe**: stocks only (no ETFs or indices); markets separately, TWSE decides and TPEX is descriptive. Liquidity filter: the median dollar volume (close × volume) over the 20 sessions before the signal date ≥ NT$30 million (TWSE) / NT$10 million (TPEX), and close ≥ NT$10; fixed before training, not selected.
+3. **Signal**: one horizon's ensemble score (h chosen from the item 7 grid); converted to a within-market percentile rank each day, then EMA-smoothed per symbol with a 3-session half-life (fixed), reset after a gap of more than 5 sessions.
+4. **Portfolio rule (band)**: buy only when entering the top K, sell only when falling out of the top M (M = m × K); checked every session on the previous close's smoothed score and executed at the next open; at most ⌈K/10⌉ new buys per session; capital in K equal slots with per-position open-to-open accounting (the §13.5 engine: the buffer rule of `positions.simulate` plus the daily entry cap); limit-up opens are not bought and limit-down opens not sold (as in §13.13). The primary analysis uses fractional slots (large capital or odd lots); a board-lot feasibility sensitivity at NT$10 million and NT$30 million of capital leaves a slot in cash, and counts it, when it cannot buy one lot (1,000 shares); the NT$20 minimum commission is below 0.01% at both capital levels and is reported, not simulated.
+5. **Costs**: stocks as in the primary scenario of `backtest/config/stage1.json` (commission 0.1425% × 0.6 discount, transaction tax 0.3%, slippage TWSE 0.1% / TPEX 0.2%), with discounts 1.0 / 0.28 and slippage ×0 / ×2 also reported. TX per side: 0.002% transaction tax on contract value, NT$50 commission per contract, 1 tick (NT$200) slippage; a roll pays both sides once.
+6. **TAIEX futures overlay** (all on the continuous front-month TX series, position adjusted at each open to the previous session's stock value):
+   - **Hedged**: short notional = β × stock value, β = 1 (fixed); a margin reserve of 15% of the notional (about 5% initial margin plus a 10% mark-to-market buffer) is taken from total capital, and stocks use the rest; when the reserve falls below 10% of the notional it is replenished at the next open by selling stocks pro rata and one margin call is counted. The hedged benchmark is 0.
+   - **Cash-equitized**: cash not invested in stocks (empty slots, blocked buys, lot shortfalls) holds an equal long TX notional, with margin taken from that cash. Same benchmark as long-only.
+   - **TX long reference**: holding only the front-month TX long (with roll costs) against the TAIEX price index, to report the basis and roll drag.
+7. **Selection and decisions**:
+   - Grid: h ∈ {5, 10}, K ∈ {30, 50}, m ∈ {2, 3}, 8 combinations; for each model the selected parameters are those with the highest long-only TWSE P1 net excess IR (over the equal-weight liquid universe of the same market) under the primary costs, then fixed for P2, P1 ∪ P2 and the forward period.
+   - **H-D (tradeable strategy layer)**: the selected TWSE long-only portfolio's P1 ∪ P2 annualized net excess over the equal-weight universe has a 95% interval lower bound above 0 under the primary costs (monthly-block bootstrap, 1,000 replicates, seed 11). B0 and D0 are judged separately.
+   - **H-D-hedged**: the hedged version with the same parameters has a P1 ∪ P2 annualized net (absolute) return with a 95% lower bound above 0.
+   - Forward candidate: among the models passing H-D, the one with the higher TWSE P1 ∪ P2 net excess IR; none if both fail.
+8. **Report (fixed columns)**: besides net excess with its interval and IR, always list annualized net return, CAGR, Sharpe, maximum drawdown, turnover, cost drag, excess over the TAIEX price index and over the equal-weight universe, the share of buys blocked by board-lot feasibility and the number of margin calls.
+9. **Disposition**: H-D passes → register H-C (P3 after 2026-06-01) with the candidate model; H-D fails → long-only stock holding cannot turn the ranking skill into returns under Taiwan costs, and the next candidates are a long-short inside the stock-futures universe (§13.9 capturability) or an h = 1 day-trade route, each needing its own registration.
+10. **Procedure**: `backtest/config/tw_strategy.json` is written and committed before scoring; synthetic-data tests first verify the band, the entry cap, lot feasibility, the hedge and the margin accounting (including calls); then B0 and D0 are scored and written up as a bilingual report.
+
+Interpretation limits:
+
+- One of 8 parameter sets is selected on P1, so P1 carries selection bias; the P1 ∪ P2 decision includes P1, and P3 remains the true confirmation.
+- The liquidity thresholds and β = 1 are fixed reasonable values, not optimized; a single β ignores stock-level beta differences.
+- The margin model is simplified (a fixed reserve ratio and call rule) and does not use TAIFEX's daily margin tables; futures liquidity and the after-hours session are not modelled.
+- Volume participation limits for large capital, dividend taxes and securities lending are not modelled; lot feasibility is reported at two capital levels only.
 
 ### 14. Remote-validation boundary
 
