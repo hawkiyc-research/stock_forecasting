@@ -1147,6 +1147,28 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 保證金以最高級距一律計算，實際逐檔級距較低；未模擬盤中追繳。
 - q 在 P1 選擇，P1 ∪ P2 判定含 P1；P3 才是確認。
 
+#### 13.16 殘差化標籤與多 horizon 融合：多日排序在風格集中期的穩定性（2026-10-23 於實作前寫入）
+
+背景：§13.13 的 B0 與 D0 在 P1 的 Rank IC 由 h = 1 的 0.13 緩降到 h = 10 的 0.11，但在 P2（2025-06 起，TAIEX 一年漲一倍、等權宇宙只漲三成的大型股集中行情）h = 5–14 掉到 0.02–0.05，h = 1 仍有 0.11；§13.14 的多頭策略與股票期貨宇宙內的 h = 10 都因此失效。文獻與業界的對應做法（策略層報告與本節登記前的討論）：因子半衰期與再平衡匹配（Flint、Vermaak）、快慢訊號分權（Gârleanu、Pedersen 2013）、多尺度訊號融合（Han、Zhou、Zhu 2016；Jiang、Kelly、Xiu 2023）、以及把報酬對市場、市值、產業取殘差當標籤讓模型只學相對表現（風險模型中性化的標準做法）。現行標籤只去掉市場方向，沒有去掉市值與產業暴露。本節登記：換標籤、不換模型，先用最便宜的 B0 驗證。
+
+1. **資料**：訓練資料、特徵庫、walk-forward 切法與 §13.12、§13.13 完全相同。新增一個公司參考表 `configs/reference/tw_company_reference_20261022.csv`，來自證交所 OpenAPI `opendata/t187ap03_L`（上市）與櫃買 OpenAPI `mopsfin_t187ap03_O`（上櫃）2026-10-22 的快照：股票代號、市場、產業別兩碼、已發行普通股數。覆蓋 2026-05 仍在交易的標的 99.2%（上櫃）與 99.8%（上市），全部樣本（含已下市）90% 與 93%。
+2. **殘差化標籤**（新的標籤庫 schema `cross-sectional-gauss-rank-residual-v1`，identity 含殘差化規格與參考表 digest；原標籤庫不變）：每個 (訊號日, 市場) 群組內，對每個 horizon 的原始 alpha 目標（已相對市場指數）做橫斷面最小平方回歸，解釋變數為截距、市值代理、產業虛擬變數；殘差再做 gauss-rank。群組內樣本不足 `min_group_size` 或某產業只有一檔時，該產業併入「其他」。
+   - **變體 A（主要）**：市值代理 = 訊號日前 20 個交易日成交金額中位數的對數（逐日可得、無前視）；產業 = 參考表兩碼產業別，缺值為「未知」一類。
+   - **變體 B（敏感度）**：市值代理 = log（訊號日原始收盤價 × 參考表已發行股數）；參考表缺值的列改用變體 A 的代理。股數為快照，歷史上有股票股利或減資的公司會有偏差，報告中註明。
+3. **模型**：B0 `t-lgbm-alpha` 的設定、超參數、seed 不變，分別在變體 A、B 的標籤上重訓（RunPod CPU）；標籤為新的 `--label-variant`，特徵庫沿用。D0 與 D1 只在 B0 通過第 5 項後才在新標籤上重訓（D1 的 embedding 快取與標籤無關，不重算）。
+4. **指標**：每個（市場、horizon、訊號日）的 Spearman Rank IC，同時對兩個目標計算：（a）**殘差目標**（模型所預測的量，衡量排序能力）；（b）**原始 alpha 目標**（多頭組合實際賺到的量，衡量可用性）。cell、期間、bootstrap 與 §13.13 相同。另報新舊 B0 在相同訊號日的配對差。
+5. **判定（H-F，殘差化穩住多日排序）**：變體 A 的 B0，（i）P2 持有格（h = 5–10）對殘差目標的 Rank IC 95% 區間下界 > 0，且（ii）P1 ∪ P2 短格對原始 alpha 目標的 Rank IC 不低於舊 B0 減 0.01（配對差區間下界 > −0.01）。兩者都成立才通過。變體 B 只作描述，除非變體 A 未通過而變體 B 通過（則以變體 B 為主，並在報告中註明這是第二次機會）。
+6. **多 horizon 融合**（策略層，描述性）：`tw_strategy` 的訊號改為 h = 1–14 分數的衰減加權平均（權重 ∝ exp(−h／τ)，τ ∈ {3, 7} 為新的格子維度，與單一 h 並列），其餘規則同 §13.14；對新標籤的 B0 與舊 B0 都跑。只作描述，不改 §13.14 的 H-D 判定規則。
+7. **處置**：H-F 通過 → D0 在新標籤上重訓（三 seed），之後消融與 D1 在新標籤上一併決定；§13.14 與 §13.15 以新模型重跑，判定沿用各節規則。H-F 未通過 → 多日排序在風格集中期的失效不是標籤暴露造成的，多日 horizon 退出主線，模型只作為 h = 1 快訊號使用（§13.15）。
+8. **程序**：參考表以腳本從官方 OpenAPI 抓取並 commit（含快照日期與 sha256）；標籤變體規格 `configs/labels/residual_v1.json` 在實作前寫入；先以合成資料測試回歸殘差、產業合併與 identity；再在 RunPod CPU 建標籤庫、訓 B0 變體 A、B；結果寫成中英雙語報告。
+
+判讀限制：
+
+- 產業與股數是 2026-10-22 的快照；已下市的 7–10% 樣本沒有產業（歸入未知）與股數（用變體 A 代理），有存活者偏誤。
+- 殘差化移除的是線性的市值與產業暴露；非線性或其他風格（動能、波動）暴露仍在目標裡。
+- 殘差目標上的 Rank IC 不等於可交易：多頭組合仍承受市值與產業因子報酬，§13.14 的判定才算可交易性。
+- P2 已經看過；H-F 是在看過失效之後才設計的修補，真正的確認是 P3。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -2361,6 +2383,28 @@ Interpretation limits:
 - The settlement price is the official mark; the actual cover trades around 13:30 and may deviate from it.
 - Margin uses the highest tier for every name while actual per-name tiers are lower; intraday margin calls are not modelled.
 - q is chosen on P1 and the P1 ∪ P2 decision includes P1; P3 is the confirmation.
+
+#### 13.16 Residualized labels and multi-horizon blending: stability of multi-session ranking in concentrated-style periods (written 2026-10-23 before implementation)
+
+Background: in P1 the Rank IC of B0 and D0 (§13.13) eases from 0.13 at h = 1 to 0.11 at h = 10, but in P2 (from 2025-06, a mega-cap rally in which TAIEX doubled in a year while the equal-weight universe rose a third) h = 5–14 fall to 0.02–0.05 while h = 1 keeps 0.11; the §13.14 long-only strategy and h = 10 inside the stock-futures universe fail for that reason. The literature and industry practice (strategy-layer report and the discussion preceding this registration): factor half-lives matched to rebalancing (Flint and Vermaak), fast and slow signals weighted by decay (Gârleanu and Pedersen 2013), multi-scale signal blending (Han, Zhou and Zhu 2016; Jiang, Kelly and Xiu 2023), and residualizing returns against market, size and industry so the model learns relative performance (the standard risk-model neutralization). The current label removes the market direction only, not size and industry exposure. This section registers a label change without a model change, verified first on the cheapest model, B0.
+
+1. **Data**: training data, feature library and walk-forward split exactly as in §13.12 and §13.13. One new company reference table `configs/reference/tw_company_reference_20261022.csv` from the TWSE OpenAPI `opendata/t187ap03_L` (listed) and the TPEX OpenAPI `mopsfin_t187ap03_O` (OTC), snapshot of 2026-10-22: symbol, market, two-digit industry code, issued common shares. It covers 99.2% (TPEX) and 99.8% (TWSE) of the names still trading in 2026-05, and 90% / 93% of all samples including delisted names.
+2. **Residualized labels** (new label-store schema `cross-sectional-gauss-rank-residual-v1`, identity including the residualization spec and the reference table digest; the existing store is untouched): within each (signal date, market) group, each horizon's raw alpha target (already relative to the market index) is regressed cross-sectionally on an intercept, a size proxy and industry dummies, and the residual is gauss-ranked. Industries with a single name in a group, or groups below `min_group_size`, are merged into "other".
+   - **Variant A (primary)**: size proxy = log of the median dollar volume over the 20 sessions before the signal date (available daily, no look-ahead); industry = the reference table's two-digit code, missing values as an "unknown" class.
+   - **Variant B (sensitivity)**: size proxy = log(raw close on the signal date × issued shares from the reference table); rows missing from the table use variant A's proxy. Share counts are a snapshot, so companies with past stock dividends or capital reductions are biased; the report says so.
+3. **Models**: B0 `t-lgbm-alpha` with unchanged settings, hyperparameters and seeds, retrained on variant A and variant B labels (RunPod CPU) through a new `--label-variant`; the feature library is reused. D0 and D1 are retrained on the new labels only after B0 passes item 5 (D1's embedding cache does not depend on labels and is not recomputed).
+4. **Metrics**: Spearman Rank IC per (market, horizon, signal date) against two targets: (a) the **residual target** (what the model predicts; ranking skill) and (b) the **raw alpha target** (what a long-only book earns; usability). Cells, periods and bootstrap as in §13.13. The paired difference between the new and the old B0 on common signal dates is also reported.
+5. **Decision (H-F, residualization stabilizes multi-session ranking)**: variant A's B0 must have (i) a P2 holding-cell (h = 5–10) Rank IC against the residual target with a 95% lower bound > 0, and (ii) a P1 ∪ P2 short-cell Rank IC against the raw alpha target not below the old B0 minus 0.01 (paired-difference lower bound > −0.01). Both are required. Variant B is descriptive unless variant A fails and variant B passes, in which case variant B becomes primary and the report flags it as a second chance.
+6. **Multi-horizon blending** (strategy layer, descriptive): the `tw_strategy` signal becomes a decay-weighted mean of the h = 1–14 scores (weights ∝ exp(−h/τ), τ ∈ {3, 7} as a new grid dimension beside the single h), other rules as in §13.14; run for the new-label B0 and the old B0. Descriptive only; the §13.14 H-D rule is unchanged.
+7. **Disposition**: H-F passes → D0 is retrained on the new labels (three seeds), then the ablations and D1 are decided on the new labels; §13.14 and §13.15 are rerun with the new models under their own rules. H-F fails → the multi-session failure in concentrated-style periods is not caused by label exposure, multi-session horizons leave the main line, and the models serve only as h = 1 fast signals (§13.15).
+8. **Procedure**: the reference table is fetched from the official OpenAPIs by a script and committed (with snapshot date and sha256); the label-variant spec `configs/labels/residual_v1.json` is written before implementation; synthetic-data tests first cover the regression residuals, industry merging and the identity; then the label stores are built and B0 variants A and B trained on RunPod CPU; results are written up bilingually.
+
+Interpretation limits:
+
+- Industry and share counts are a 2026-10-22 snapshot; the 7–10% of samples that are delisted have no industry (unknown class) or shares (variant A proxy), a survivorship bias.
+- Residualization removes linear size and industry exposure; non-linear and other style exposures (momentum, volatility) remain in the target.
+- Rank IC on the residual target is not tradeability: a long-only book still bears size and industry factor returns, and only the §13.14 decisions measure tradeability.
+- P2 has been seen; H-F is a repair designed after observing the failure, and P3 is the true confirmation.
 
 ### 14. Remote-validation boundary
 
