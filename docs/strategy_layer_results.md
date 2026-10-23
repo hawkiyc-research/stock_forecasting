@@ -151,6 +151,33 @@ BACKTEST_WORKERS=4 uv run python -m twbacktest.tw_strategy --predictions ../arti
 | 台指期資料（不受 Git 追蹤） | `artifacts/diagnostics/taifex-tx/`（`download-TX.json` 與 47 個 raw CSV） |
 | 輸出（不受 Git 追蹤） | `artifacts/diagnostics/backtest/tw-strategy-capital-20261023T080816Z/`（`report.json`、`grid.csv`、`daily_series.csv`、`summary.md`；資本情境版，取代較早只有兩個資本水準的 `tw-strategy-b0-d0-20261023T074716Z/`） |
 
+### 7. 附錄：股票期貨宇宙診斷（描述性）
+
+`twbacktest.futures_universe` 以期交所全契約日資料（2022-12 至 2026-06，每日約 243 檔有股票期貨的標的，近月 20 日平均成交量 ≥ 100 口為「流動」）切出三個區段，計算標籤定義的持有報酬（次一開盤買進、h 日後收盤賣出，未扣成本）。TWSE，P1 ∪ P2：
+
+| 模型 | 區段 | 平均檔數 | h | Rank IC [95%] | P2 Rank IC | 前十分位／批 | 後十分位／批 | 宇宙平均／批 | 前減後／批 [95%] |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | 全部 | 615 | 1 | 0.126 [0.116, 0.136] | 0.110 | +0.04% | −0.41% | −0.19% | +0.45% [+0.38%, +0.53%] |
+| B0 | 有股票期貨 | 180 | 1 | 0.117 [0.105, 0.128] | 0.091 | +0.06% | −0.34% | −0.14% | +0.40% [+0.31%, +0.49%] |
+| B0 | 期貨流動 | 111 | 1 | 0.110 [0.097, 0.122] | 0.089 | +0.07% | −0.36% | −0.16% | +0.43% [+0.33%, +0.54%] |
+| D0 | 全部 | 615 | 1 | 0.128 [0.117, 0.138] | 0.106 | +0.04% | −0.45% | −0.19% | +0.49% [+0.41%, +0.56%] |
+| D0 | 有股票期貨 | 180 | 1 | 0.115 [0.102, 0.127] | 0.084 | +0.05% | −0.36% | −0.14% | +0.41% [+0.33%, +0.49%] |
+| D0 | 期貨流動 | 111 | 1 | 0.104 [0.092, 0.117] | 0.079 | +0.05% | −0.39% | −0.16% | +0.45% [+0.34%, +0.55%] |
+| B0 | 全部 | 615 | 10 | 0.084 [0.054, 0.112] | 0.024 | +0.91% | +0.71% | +0.62% | +0.20% [−0.65%, +0.99%] |
+| B0 | 有股票期貨 | 180 | 10 | 0.059 [0.021, 0.094] | −0.029 | +1.06% | +1.20% | +0.85% | −0.14% [−1.20%, +0.81%] |
+| B0 | 期貨流動 | 111 | 10 | 0.062 [0.027, 0.096] | −0.018 | +1.23% | +1.35% | +1.02% | −0.12% [−1.30%, +0.92%] |
+| D0 | 全部 | 615 | 10 | 0.082 [0.057, 0.105] | 0.034 | +0.85% | +0.34% | +0.62% | +0.50% [−0.09%, +1.11%] |
+| D0 | 有股票期貨 | 180 | 10 | 0.047 [0.016, 0.075] | −0.017 | +0.83% | +1.09% | +0.85% | −0.26% [−1.04%, +0.47%] |
+| D0 | 期貨流動 | 111 | 10 | 0.048 [0.020, 0.076] | −0.005 | +0.90% | +1.13% | +1.02% | −0.24% [−1.07%, +0.50%] |
+
+讀法：
+
+- h = 1 的排序能力在股票期貨宇宙內保留八到九成（Rank IC 0.10–0.12 對全宇宙 0.13），P2 仍有 0.08–0.09。
+- h = 1 的毛價差幾乎全部來自空方：後十分位次日盤中（開盤到收盤）平均 −0.34% 到 −0.45%，前十分位只有 +0.04% 到 +0.07%，宇宙平均 −0.14% 到 −0.19%（台股盤中報酬長期為負、隔夜為正）。只做多前十分位沒有東西可賺；可做空的工具才吃得到這個訊號。
+- h = 10 在期貨宇宙內 P2 轉負（Rank IC −0.02 到 −0.03，後十分位 10 日報酬反而高於前十分位），與 §3 的多日失效一致；多日多空在期貨宇宙內沒有訊號可用。
+- 期貨宇宙以 2026-10 的標的清單對應契約代碼，期間內下市的契約（38 個三碼代碼）無法對應，有存活者偏誤；每日流動檔數約 105–125。
+- 輸出：`artifacts/diagnostics/backtest/futures-universe-b0-d0-20261023T081723Z/`（`grid.csv` 含 TPEX 與兩市場合併）。
+
 ## English
 
 ### 1. Purpose and conclusions
@@ -301,3 +328,31 @@ BACKTEST_WORKERS=4 uv run python -m twbacktest.tw_strategy --predictions ../arti
 | Configuration | `backtest/config/tw_strategy.json` |
 | TAIEX futures data (not tracked by Git) | `artifacts/diagnostics/taifex-tx/` (`download-TX.json` and 47 raw CSV files) |
 | Output (not tracked by Git) | `artifacts/diagnostics/backtest/tw-strategy-capital-20261023T080816Z/` (`report.json`, `grid.csv`, `daily_series.csv`, `summary.md`; the capital-scenario run, superseding the earlier two-level `tw-strategy-b0-d0-20261023T074716Z/`) |
+
+### 7. Appendix: stock-futures universe diagnostic (descriptive)
+
+`twbacktest.futures_universe` uses the official TAIFEX daily data of every contract (2022-12 to 2026-06, about 243 underlyings with stock futures per session; "liquid" = near-month 20-session mean volume ≥ 100 contracts) to split three segments and computes the label return (buy at the next open, sell at the close h sessions later, before costs). TWSE, P1 ∪ P2:
+
+| Model | Segment | Mean names | h | Rank IC [95%] | P2 Rank IC | Top decile / batch | Bottom decile / batch | Universe mean / batch | Top minus bottom / batch [95%] |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | all | 615 | 1 | 0.126 [0.116, 0.136] | 0.110 | +0.04% | −0.41% | −0.19% | +0.45% [+0.38%, +0.53%] |
+| B0 | futures listed | 180 | 1 | 0.117 [0.105, 0.128] | 0.091 | +0.06% | −0.34% | −0.14% | +0.40% [+0.31%, +0.49%] |
+| B0 | futures liquid | 111 | 1 | 0.110 [0.097, 0.122] | 0.089 | +0.07% | −0.36% | −0.16% | +0.43% [+0.33%, +0.54%] |
+| D0 | all | 615 | 1 | 0.128 [0.117, 0.138] | 0.106 | +0.04% | −0.45% | −0.19% | +0.49% [+0.41%, +0.56%] |
+| D0 | futures listed | 180 | 1 | 0.115 [0.102, 0.127] | 0.084 | +0.05% | −0.36% | −0.14% | +0.41% [+0.33%, +0.49%] |
+| D0 | futures liquid | 111 | 1 | 0.104 [0.092, 0.117] | 0.079 | +0.05% | −0.39% | −0.16% | +0.45% [+0.34%, +0.55%] |
+| B0 | all | 615 | 10 | 0.084 [0.054, 0.112] | 0.024 | +0.91% | +0.71% | +0.62% | +0.20% [−0.65%, +0.99%] |
+| B0 | futures listed | 180 | 10 | 0.059 [0.021, 0.094] | −0.029 | +1.06% | +1.20% | +0.85% | −0.14% [−1.20%, +0.81%] |
+| B0 | futures liquid | 111 | 10 | 0.062 [0.027, 0.096] | −0.018 | +1.23% | +1.35% | +1.02% | −0.12% [−1.30%, +0.92%] |
+| D0 | all | 615 | 10 | 0.082 [0.057, 0.105] | 0.034 | +0.85% | +0.34% | +0.62% | +0.50% [−0.09%, +1.11%] |
+| D0 | futures listed | 180 | 10 | 0.047 [0.016, 0.075] | −0.017 | +0.83% | +1.09% | +0.85% | −0.26% [−1.04%, +0.47%] |
+| D0 | futures liquid | 111 | 10 | 0.048 [0.020, 0.076] | −0.005 | +0.90% | +1.13% | +1.02% | −0.24% [−1.07%, +0.50%] |
+
+Reading:
+
+- The h = 1 ranking keeps 80–90% of its skill inside the stock-futures universe (Rank IC 0.10–0.12 against 0.13 for the whole market) and still has 0.08–0.09 in P2.
+- The h = 1 gross spread comes almost entirely from the short side: the bottom decile's next-session intraday return (open to close) averages −0.34% to −0.45%, the top decile only +0.04% to +0.07%, the universe −0.14% to −0.19% (Taiwan's intraday return is persistently negative and the overnight return positive). A long-only top decile has nothing to earn; only a shortable instrument reaches this signal.
+- h = 10 turns negative in P2 inside the futures universe (Rank IC −0.02 to −0.03, the bottom decile's 10-session return above the top decile's), consistent with the multi-session failure in §3; a multi-session long-short in the futures universe has no signal to use.
+- The futures universe maps contract codes through the 2026-10 underlying list, so contracts delisted during the period (38 three-letter codes) cannot be mapped (survivorship bias); the liquid segment has about 105–125 names per session.
+- Output: `artifacts/diagnostics/backtest/futures-universe-b0-d0-20261023T081723Z/` (`grid.csv` includes TPEX and both markets combined).
+
