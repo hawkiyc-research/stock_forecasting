@@ -449,7 +449,8 @@ if [[ "${RUNPOD_TEST_MODE:-0}" != "1" ]]; then
         echo "RunPod checkpoint preflight helpers are unavailable" >&2
         exit 127
     fi
-    if [[ "${RUNPOD_GPU_WORKFLOW}" == baseline ]]; then
+    if [[ "${RUNPOD_GPU_WORKFLOW}" == baseline || "${RUNPOD_GPU_WORKFLOW}" == xs ]]; then
+        # Cross-stock experiments run one at a time on the volume, like baseline builds.
         python3 "${SCRIPT_DIR}/runpod_concurrency.py" admit --mode exclusive
         verify_no_active_gpu_workflow
     else
