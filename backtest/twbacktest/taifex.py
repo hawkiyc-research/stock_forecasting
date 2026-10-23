@@ -1,10 +1,12 @@
-"""TAIFEX stock-futures eligibility for the capturability analysis (protocol section 13.9).
+"""TAIFEX daily futures data: stock-futures eligibility (protocol section 13.9) and the
+continuous front-month index futures series used by the strategy layer (section 13.14).
 
 Two public sources are used: the daily futures trading data (download form, one week per
-request, Big5 CSV) and the current stock futures underlying list (HTML). A stock futures
-contract code is the list's product prefix plus "F" (prefix CD -> contract CDF, stock
-2330); small contracts (100 shares) have their own prefix. TAIFEX is an external public
-service, so requests are sequential and paced, and every response is kept on disk.
+request for every contract or four weeks for a single contract, Big5 CSV) and the current
+stock futures underlying list (HTML). A stock futures contract code is the list's product
+prefix plus "F" (prefix CD -> contract CDF, stock 2330); small contracts (100 shares) have
+their own prefix. TAIFEX is an external public service, so requests are sequential and paced,
+and every response is kept on disk.
 """
 
 from __future__ import annotations
@@ -22,14 +24,17 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 DOWNLOAD_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
 LIST_URL = "https://www.taifex.com.tw/cht/2/stockLists"
 USER_AGENT = "Mozilla/5.0 (stock-forecasting capturability analysis)"
 TIMEOUT_SECONDS = 120
-# A month in one response is cut off mid-transfer; a week is about 1 MB.
+# A month of every contract in one response is cut off mid-transfer; a week is about 1 MB.
 CHUNK_DAYS = 7
+# One contract's rows are small enough for four weeks per request.
+CONTRACT_CHUNK_DAYS = 28
 ATTEMPTS = 3
 STANDARD_SHARES = 2000
 FUTURES_COLUMNS = {
@@ -37,8 +42,11 @@ FUTURES_COLUMNS = {
     "契約": "contract",
     "到期月份(週別)": "expiry",
     "開盤價": "open",
+    "最高價": "high",
+    "最低價": "low",
     "收盤價": "close",
     "成交量": "volume",
+    "結算價": "settlement",
     "未沖銷契約數": "open_interest",
     "交易時段": "session",
 }
@@ -93,12 +101,19 @@ def _write_once(path: Path, content: bytes) -> None:
     temporary.replace(path)
 
 
-def _fetch_range(root: Path, first: date, last: date, *, pause: float) -> dict[str, str]:
+def _raw_name(commodity: str, first: date, last: date) -> str:
+    prefix = "futures" if commodity == "all" else f"futures-{commodity}"
+    return f"{prefix}-{first:%Y%m%d}-{last:%Y%m%d}.csv"
+
+
+def _fetch_range(
+    root: Path, first: date, last: date, *, pause: float, commodity: str = "all"
+) -> dict[str, str]:
     """Download one inclusive date range unless it is on disk; returns its file digest."""
-    path = root / "raw" / f"futures-{first:%Y%m%d}-{last:%Y%m%d}.csv"
+    path = root / "raw" / _raw_name(commodity, first, last)
     if not path.is_file():
         content = _post({
-            "down_type": "1", "commodity_id": "all", "commodity_id2": "",
+            "down_type": "1", "commodity_id": commodity, "commodity_id2": "",
             "queryStartDate": f"{first:%Y/%m/%d}", "queryEndDate": f"{last:%Y/%m/%d}",
         })
         parse_futures(content)  # refuse to keep an error page; holidays return the header only
@@ -136,6 +151,102 @@ def download(root: Path, start: str, end_exclusive: str, *, pause: float) -> dic
     return manifest
 
 
+def download_contract(
+    root: Path, commodity: str, start: str, end_exclusive: str, *, pause: float
+) -> dict[str, Any]:
+    """Fetch one contract's daily rows (e.g. TX) in four-week chunks; existing files are kept."""
+    if commodity == "all" or not re.fullmatch(r"[A-Z0-9]{2,3}", commodity):
+        raise ValueError("download_contract needs one TAIFEX commodity code such as TX")
+    files = {}
+    for first, last in chunk_ranges(start, end_exclusive, CONTRACT_CHUNK_DAYS):
+        chunk = root / "raw" / _raw_name(commodity, first, last)
+        if chunk.is_file():
+            files[chunk.name] = hashlib.sha256(chunk.read_bytes()).hexdigest()
+            continue
+        try:
+            files.update(_fetch_range(root, first, last, pause=pause, commodity=commodity))
+        except (TransferError, ValueError):
+            for week_first, week_last in chunk_ranges(
+                first.isoformat(), (last + timedelta(days=1)).isoformat(), CHUNK_DAYS
+            ):
+                files.update(_fetch_range(root, week_first, week_last, pause=pause,
+                                          commodity=commodity))
+    manifest = {"source": DOWNLOAD_URL, "commodity": commodity, "start": start,
+                "end_exclusive": end_exclusive, "files": files,
+                "downloaded_at": datetime.now(UTC).isoformat()}
+    (root / f"download-{commodity}.json").write_text(json.dumps(manifest, indent=1) + "\n")
+    return manifest
+
+
+def load_contract(root: Path, commodity: str) -> pd.DataFrame:
+    """Rows of one downloaded contract, after checking every file against its digest."""
+    manifest = json.loads((root / f"download-{commodity}.json").read_text())
+    frames = []
+    for name, digest in sorted(manifest["files"].items()):
+        path = root / "raw" / name
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"TAIFEX file changed after download: {path}")
+        frames.append(parse_futures(path.read_bytes()))
+    if not frames:
+        raise ValueError(f"TAIFEX download of {commodity} is empty")
+    frame = pd.concat(frames, ignore_index=True)
+    return frame[frame["contract"] == commodity].reset_index(drop=True)
+
+
+def third_wednesday(year: int, month: int) -> date:
+    """Last trading day of a TAIFEX monthly contract: the third Wednesday of its month."""
+    first = date(year, month, 1)
+    return first + timedelta(days=(2 - first.weekday()) % 7 + 14)
+
+
+def continuous_front_month(futures: pd.DataFrame, commodity: str) -> pd.DataFrame:
+    """One row per session: the front monthly contract and its ratio-adjusted open series.
+
+    Regular-session rows of monthly expiries only (weeklies and spreads excluded). A contract
+    is the front month up to the session before its third Wednesday; on the third Wednesday
+    the position is already in the next month (rolled at that open). ``adjusted_open`` chains
+    the opens across rolls by ratio so that log differences are the return of a position
+    that is always in the front month; ``roll`` marks the sessions whose open starts a new
+    contract. ``settlement`` is the daily mark of the contract held after that open.
+    """
+    rows = futures[(futures["contract"] == commodity) & (futures["session"] == "regular")
+                   & futures["expiry"].str.fullmatch(r"\d{6}")].copy()
+    if rows.empty:
+        raise ValueError(f"No regular-session monthly rows for {commodity}")
+    rows["last_day"] = [
+        third_wednesday(int(e[:4]), int(e[4:])).isoformat() for e in rows["expiry"]
+    ]
+    rows = rows[rows["open"].notna() & (rows["open"] > 0)]
+    # The expiring contract still trades on its last day (closed at that open on a roll).
+    rows_by_key = rows.set_index(["date", "expiry"])["open"]
+    rows = rows[rows["date"] < rows["last_day"]]
+    front = rows.loc[rows.groupby("date")["expiry"].idxmin()].sort_values("date")
+    front = front.reset_index(drop=True)
+    roll = front["expiry"].ne(front["expiry"].shift()).to_numpy()
+    roll[0] = False
+    # On a roll session the old contract is closed at this open and the new one opened, so
+    # the position's growth into this session is the OLD contract's open-to-open move.
+    previous_contract_open = front["open"].shift()
+    old_open_today = [
+        rows_by_key.get((d, e), float("nan")) if r else o
+        for d, e, o, r in zip(front["date"], front["expiry"].shift(fill_value=""),
+                              front["open"], roll, strict=True)
+    ]
+    growth = [
+        float("nan") if i == 0 else (
+            float(np.log(old / prev)) if np.isfinite(old) and prev > 0 else float("nan")
+        )
+        for i, (old, prev) in enumerate(zip(old_open_today, previous_contract_open, strict=True))
+    ]
+    front["front_growth"] = growth
+    adjusted = np.exp(np.nancumsum(np.nan_to_num(front["front_growth"].to_numpy(), nan=0.0)))
+    front["adjusted_open"] = adjusted * float(front["open"].iloc[0])
+    front["roll"] = roll
+    return front[["date", "expiry", "open", "high", "low", "close", "settlement", "volume",
+                  "open_interest", "front_growth", "adjusted_open", "roll"]].reset_index(
+        drop=True)
+
+
 def parse_futures(content: bytes) -> pd.DataFrame:
     """Daily rows of every futures contract; rows end with a comma, so no index column."""
     text = content.decode("cp950")
@@ -151,7 +262,7 @@ def parse_futures(content: bytes) -> pd.DataFrame:
         frame[column] = frame[column].str.strip()
     frame["date"] = pd.to_datetime(frame["date"].str.strip(), format="%Y/%m/%d").dt.strftime(
         "%Y-%m-%d")
-    for column in ("open", "close", "volume", "open_interest"):
+    for column in ("open", "high", "low", "close", "settlement", "volume", "open_interest"):
         frame[column] = pd.to_numeric(frame[column].str.strip().replace("-", None),
                                       errors="coerce")
     frame["session"] = frame["session"].map({"一般": "regular", "盤後": "after_hours"})
@@ -236,11 +347,26 @@ def eligibility(futures: pd.DataFrame, listing: pd.DataFrame, *, min_volume: flo
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=("download",))
+    parser.add_argument("command", choices=("download", "download-contract"))
     parser.add_argument("--config", type=Path,
                         default=BACKTEST_ROOT / "config" / "capturability.json")
     parser.add_argument("--artifacts-root", type=Path, default=BACKTEST_ROOT.parent / "artifacts")
+    parser.add_argument("--commodity", default="TX", help="download-contract: TAIFEX code")
+    parser.add_argument("--start", help="download-contract: first date (YYYY-MM-DD)")
+    parser.add_argument("--end-exclusive", help="download-contract: end date, exclusive")
+    parser.add_argument("--root", type=Path, help="download-contract: output root")
+    parser.add_argument("--pause-seconds", type=float, default=2.0)
     args = parser.parse_args(argv)
+    if args.command == "download-contract":
+        if not (args.start and args.end_exclusive and args.root):
+            parser.error("download-contract needs --start, --end-exclusive and --root")
+        manifest = download_contract(args.root, args.commodity, args.start, args.end_exclusive,
+                                     pause=args.pause_seconds)
+        series = continuous_front_month(load_contract(args.root, args.commodity), args.commodity)
+        print(json.dumps({"files": len(manifest["files"]), "sessions": len(series),
+                          "first": series["date"].iloc[0], "last": series["date"].iloc[-1],
+                          "rolls": int(series["roll"].sum())}, ensure_ascii=False, indent=1))
+        return 0
     config = json.loads(args.config.read_text())
     settings = config["taifex"]
     root = args.artifacts_root / config["inputs"]["taifex"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,6 +19,15 @@ def _csv(rows):
     lines = [HEADER] + [
         f"{d},{c},{e}  ,10,11,9,10,0,0%,{v},10,5,10,10,12,8,,{s},,"
         for d, c, e, v, s in rows
+    ]
+    return ("\r\n".join(lines) + "\r\n").encode("cp950")
+
+
+def _tx_csv(rows):
+    """TX rows with explicit open and settlement: (date, expiry, open, settlement, session)."""
+    lines = [HEADER] + [
+        f"{d},TX,{e}  ,{o},{o + 10},{o - 10},{o + 5},0,0%,1000,{st},5000,{o},{o},1,1,,{s},,"
+        for d, e, o, st, s in rows
     ]
     return ("\r\n".join(lines) + "\r\n").encode("cp950")
 
@@ -85,3 +95,64 @@ def test_eligibility_uses_the_near_month_regular_session_and_trailing_volume():
     assert ("2025-06-03", "6488.TWO") not in table.index
     assert audit["unmatched_three_letter_codes"] == ["XXF"]
     assert isinstance(daily, pd.DataFrame)
+
+
+def test_parse_futures_keeps_high_low_and_settlement():
+    frame = taifex.parse_futures(_tx_csv([("2025/06/02", "202506", 21000, 21005, "一般")]))
+    assert frame["high"].iloc[0] == 21010
+    assert frame["low"].iloc[0] == 20990
+    assert frame["settlement"].iloc[0] == 21005
+
+
+def test_third_wednesday():
+    assert taifex.third_wednesday(2025, 6) == date(2025, 6, 18)
+    assert taifex.third_wednesday(2026, 1) == date(2026, 1, 21)
+    assert taifex.third_wednesday(2025, 10) == date(2025, 10, 15)
+
+
+def test_continuous_front_month_rolls_on_the_third_wednesday():
+    # June 2025 expires on Wednesday 2025-06-18; the position rolls at that session's open.
+    rows = [
+        ("2025/06/16", "202506", 21000, 21010, "一般"),
+        ("2025/06/16", "202507", 21100, 21110, "一般"),
+        ("2025/06/17", "202506", 21200, 21210, "一般"),
+        ("2025/06/17", "202507", 21300, 21310, "一般"),
+        ("2025/06/18", "202506", 21400, 21410, "一般"),
+        ("2025/06/18", "202507", 21500, 21510, "一般"),
+        ("2025/06/19", "202507", 21600, 21610, "一般"),
+        ("2025/06/19", "202507", 21650, 0, "盤後"),
+        ("2025/06/19", "202507W4", 21600, 21610, "一般"),
+    ]
+    series = taifex.continuous_front_month(taifex.parse_futures(_tx_csv(rows)), "TX")
+    assert series["expiry"].tolist() == ["202506", "202506", "202507", "202507"]
+    assert series["roll"].tolist() == [False, False, True, False]
+    # Into 06-17: June open 21000 -> 21200. Into 06-18 (roll): June open 21200 -> 21400,
+    # then the July contract is held from its 21500 open. Into 06-19: July 21500 -> 21600.
+    growth = series["front_growth"].to_numpy()
+    assert np.isnan(growth[0])
+    assert growth[1] == pytest.approx(np.log(21200 / 21000))
+    assert growth[2] == pytest.approx(np.log(21400 / 21200))
+    assert growth[3] == pytest.approx(np.log(21600 / 21500))
+    assert series["adjusted_open"].iloc[0] == 21000
+    assert series["adjusted_open"].iloc[3] == pytest.approx(
+        21000 * np.exp(np.nansum(growth)))
+    assert series["settlement"].tolist() == [21010, 21210, 21510, 21610]
+
+
+def test_download_contract_names_and_manifest(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_post(form):
+        calls.append(form)
+        return _tx_csv([(form["queryStartDate"], "202506", 21000, 21005, "一般")])
+
+    monkeypatch.setattr(taifex, "_post", fake_post)
+    monkeypatch.setattr(taifex.time, "sleep", lambda seconds: None)
+    manifest = taifex.download_contract(tmp_path, "TX", "2025-06-01", "2025-07-15", pause=0)
+    assert [form["commodity_id"] for form in calls] == ["TX", "TX"]
+    assert sorted(manifest["files"]) == ["futures-TX-20250601-20250628.csv",
+                                         "futures-TX-20250629-20250714.csv"]
+    frame = taifex.load_contract(tmp_path, "TX")
+    assert set(frame["contract"]) == {"TX"}
+    with pytest.raises(ValueError):
+        taifex.download_contract(tmp_path, "all", "2025-06-01", "2025-07-15", pause=0)
