@@ -13,7 +13,7 @@
 3. **絕對報酬是正的，輸的是基準。** 多頭版 P1 ∪ P2 年化淨報酬 B0 +23.8%（CAGR 25.7%，Sharpe 1.72，最大回撤 −13.0%）、D0 +23.1%（CAGR 24.5%，Sharpe 1.50，最大回撤 −20.0%）。同期流動性宇宙等權約 +28%／年，TAIEX 報酬指數（含息）約 +41%／年；P2 單獨看，組合 +23–26% 對上 TAIEX +115%，落後 63 個百分點。
 4. **H-D-hedged 未通過，而且是大幅虧損。** 放空 TX 對沖後 P1 ∪ P2 年化淨報酬 B0 −12.5% [−28.7%, +3.0%]、D0 −13.3%，最大回撤 −41%，28／27 次追繳。對沖的是加權指數，而組合是流動性宇宙內接近等權的 50 檔；P2 大型股獨漲時，這個對沖等於放空最強的那一端。
 5. **現金替代版與多頭版幾乎相同**（閒置現金只有 1–2%），不改變結論。
-6. **整張可行性在 1,000 萬元資本下是實質限制。** 位置金額 20 萬元買不到一張的候選股占 34–37%（高價股被跳過），年化淨報酬降 1.5–2.7 個百分點；3,000 萬元時被擋比例 5–6%，差異在 1 個百分點內。
+6. **資本情境：小資本靠零股補回，大資本被流動性限制改變了組合。** 1,000 萬元只買整張時，位置 20 萬元買不到一張的候選股占 34–37%，年化淨報酬少 1.5–2.7 個百分點；允許零股後（7–10% 的買進為零股，加 0.1% 滑價與 1 元最低手續費）結果與分數位置幾乎相同。3,000 萬到 1 億元與分數位置相差 1 個百分點內。3 億元時 5% 參與率上限擋掉 92% 的候選買單，組合被迫集中在最大的流動股，P2 反而受惠（年化淨報酬 B0 +39.7%、D0 +45.9%），P1 ∪ P2 淨超額縮到 −2.9%／−1.3%，但區間仍跨 0；10 億元時 97% 被擋、現金比例 12–15%、換手升到每日 8–9%，淨超額 −7.8%／−10.3%。沒有任何資本情境通過 H-D。
 7. **TX 多頭參考**：對 TAIEX 報酬指數年化 −2.4%（P1 −3.4%、P2 +0.3%），即期貨相對含息指數的隱含資金成本；P1 ∪ P2 共 38 次換月。這是用台指期取得市場曝險的真實代價，對沖版則反向收到這一項。
 8. **依 §13.14 第 9 點的處置**：多頭現股持有在台股成本下無法把這兩個模型的排序能力變成相對基準的報酬；下一個候選是股票期貨標的內的多空（§13.9 的可取性）或 h = 1 的當沖路線，都要另行登記。前瞻候選模型：無。
 
@@ -27,6 +27,7 @@
 | 宇宙 | 只含股票；20 日成交金額中位數 TWSE ≥ 3,000 萬、TPEX ≥ 1,000 萬，收盤價 ≥ 10 元 |
 | 訊號 | 單一 horizon 分數 → 市場內百分位名次 → 每檔 EMA（半衰期 3 日，中斷逾 5 日重設） |
 | 組合 | 進前 K 名買、掉出前 m × K 名賣；每日最多新買 ⌈K／10⌉ 檔；K 個等權位置，逐部位開盤到開盤記帳；漲停開盤不買、跌停開盤不賣 |
+| 資本情境 | 分數位置（主分析）；1,000 萬元整張；1,000 萬元可零股（零股加滑價 0.1%、最低手續費 1 元）；3,000 萬元整張；1 億、3 億、10 億元。整張：位置金額買不到一張（1,000 股）的候選股跳過；最低手續費 20 元以每筆金額補足；參與率：位置金額超過 20 日成交金額中位數 5% 的候選股跳過 |
 | 格子與選擇 | h ∈ {5, 10} × K ∈ {30, 50} × m ∈ {2, 3}，以 TWSE P1 多頭版淨超額 IR 最高者固定 |
 | 成本 | 現股主情境：手續費 0.1425% × 0.6、證交稅 0.3%、滑價 TWSE 0.1%／TPEX 0.2%；TX 每邊：期交稅 0.002%、手續費每口 50 元、滑價 1 點；換月兩邊 |
 | 對沖版 | 放空名目 = 1 × 持股市值，每日開盤調整；準備金 15% 名目，低於 10% 時賣股補足並計一次追繳，高於 25% 時把超額移回股票 |
@@ -78,16 +79,26 @@
 
 判定格（多頭、P1 ∪ P2）的區間下界 B0 −19.7%、D0 −18.2%，H-D 未通過；對沖版 P1 ∪ P2 的下界 −28.7%，H-D-hedged 未通過。
 
-#### 3.3 整張可行性（TWSE，多頭，P1 ∪ P2）
+#### 3.3 資本情境（TWSE，多頭，選定參數，主要成本）
 
-| 模型 | 資本 | 年化淨報酬 | 年化淨超額 | 被擋的候選買單比例 | 平均現金比例 |
-| --- | --- | --- | --- | --- | --- |
-| B0 | 分數位置 | +23.8% | −4.7% | 0% | 1.5% |
-| B0 | 1,000 萬 | +21.1% | −7.4% | 33.7% | 1.4% |
-| B0 | 3,000 萬 | +24.9% | −3.7% | 5.7% | 1.6% |
-| D0 | 分數位置 | +23.1% | −5.4% | 0% | 1.1% |
-| D0 | 1,000 萬 | +21.6% | −6.9% | 37.1% | 1.1% |
-| D0 | 3,000 萬 | +22.5% | −6.0% | 4.6% | 1.2% |
+| 模型 | 資本情境 | P1 ∪ P2 年化淨報酬 | Sharpe | P1 ∪ P2 年化淨超額 | 95% 區間 | 對報酬指數超額 | P2 年化淨報酬 | 整張不足被擋 | 參與率被擋 | 零股買進 | 現金比例 | 每日換手 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | 分數位置 | +23.8% | 1.72 | −4.7% | [−19.7%, +10.5%] | −16.8% | +26.1% | 0% | 0% | 0% | 1.5% | 1.9% |
+| B0 | 1,000 萬整張 | +21.1% | 1.56 | −7.4% | [−23.6%, +8.6%] | −19.4% | +19.0% | 33.7% | 0% | 0% | 1.4% | 1.9% |
+| B0 | 1,000 萬零股 | +23.8% | 1.72 | −4.8% | [−19.7%, +10.4%] | −16.8% | +26.0% | 0% | 0% | 7.3% | 1.5% | 1.9% |
+| B0 | 3,000 萬整張 | +22.8% | 1.68 | −5.7% | [−20.9%, +9.6%] | −17.8% | +25.0% | 6.7% | 0.7% | 0% | 1.5% | 1.9% |
+| B0 | 1 億 | +23.0% | 1.63 | −5.5% | [−20.0%, +9.1%] | −17.6% | +26.0% | 0% | 70.2% | 0% | 1.2% | 1.7% |
+| B0 | 3 億 | +25.6% | 1.65 | −2.9% | [−15.7%, +9.9%] | −14.9% | +39.7% | 0% | 92.4% | 0% | 1.1% | 2.0% |
+| B0 | 10 億 | +20.7% | 1.24 | −7.8% | [−19.5%, +4.5%] | −19.9% | +51.0% | 0% | 96.7% | 0% | 15.1% | 9.0% |
+| D0 | 分數位置 | +23.1% | 1.50 | −5.4% | [−18.2%, +7.7%] | −17.5% | +23.0% | 0% | 0% | 0% | 1.1% | 2.5% |
+| D0 | 1,000 萬整張 | +21.6% | 1.42 | −6.9% | [−19.7%, +6.7%] | −18.9% | +22.3% | 37.1% | 0% | 0% | 1.1% | 2.6% |
+| D0 | 1,000 萬零股 | +23.0% | 1.49 | −5.6% | [−18.3%, +7.6%] | −17.6% | +23.0% | 0% | 0% | 10.3% | 1.1% | 2.5% |
+| D0 | 3,000 萬整張 | +23.7% | 1.54 | −4.9% | [−17.4%, +7.6%] | −16.9% | +26.7% | 6.4% | 1.3% | 0% | 1.2% | 2.5% |
+| D0 | 1 億 | +23.0% | 1.41 | −5.5% | [−17.3%, +6.1%] | −17.5% | +29.7% | 0% | 66.3% | 0% | 1.0% | 2.3% |
+| D0 | 3 億 | +27.3% | 1.60 | −1.3% | [−12.7%, +9.7%] | −13.3% | +45.9% | 0% | 92.3% | 0% | 0.9% | 2.7% |
+| D0 | 10 億 | +18.2% | 1.00 | −10.3% | [−20.8%, +0.8%] | −22.4% | +56.7% | 0% | 96.7% | 0% | 12.5% | 8.1% |
+
+被擋比例是「候選買單」的比例：每個空位會往下找到可買的股票為止，所以大資本的高被擋比例代表組合被迫集中在最大的流動股，不代表空位。10 億元情境的高換手與現金比例來自可買標的太少。
 
 #### 3.4 TX 多頭參考（對 TAIEX 報酬指數，結算價對收盤價）
 
@@ -113,7 +124,7 @@
 - 策略層做對了它能做的事：換手與成本降到業界水準（每日 2%、3–5%／年），P1 的淨超額轉正。但區間仍跨 0，而且 P2 的毛超額是負的 27–31%：2025-06 之後 h = 10 的排序對 TWSE 流動性宇宙幾乎沒有多日預測力，任何多頭持有規則都救不回來。
 - 兩個模型對基準的虧損集中在 P2 的大型股獨漲：組合落後 TAIEX 報酬指數 63–66 個百分點，落後等權宇宙 31–34 個百分點。這是訊號在特定市場狀態下的失效，模型層（D0 對 B0 的 0.004 Rank IC 差距）無法補。
 - 用台指期對沖等權型多頭組合，在集中式多頭市場是結構性虧損，28 次追繳說明保證金準備要遠大於 15% 才撐得住；對沖的對象應是組合自己的 beta 與風格曝險，不是加權指數。
-- 1,000 萬元資本下 K = 50 的位置太小，三分之一的候選股買不到一張；若實際資本在這個量級，K 要降或改用零股，兩者都要重新登記。
+- 1,000 萬元資本用零股就能完整執行這套組合（零股占買進 7–10%），不需要降 K；1 億元以內與分數位置幾乎無差。3 億元以上，5% 參與率上限讓組合變成大型流動股組合，P2 反而受惠，顯示這段期間的落後有一部分是「等權買中小型流動股」的風格效果，但沒有一個資本情境的 P1 ∪ P2 區間下界大於 0。
 - 依 §13.14 第 9 點，下一步不是再調多頭規則，而是另行登記：（a）股票期貨標的內的多空（期交稅十萬分之二，可做空），（b）h = 1 的當沖路線（P2 的 h = 1 Rank IC 仍有 0.11，但每批毛超額 0.26% 對當沖來回 0.52%，現股不可行，期貨可再算）。
 
 ### 5. 限制
@@ -122,7 +133,7 @@
 - 流動性門檻與 β = 1 是事前固定值；對沖的保證金模型是簡化版（固定比例準備金與追繳規則），未用期交所逐日公告的保證金表。
 - TX 以結算價 mark、現股以開盤價記帳，兩者相差一個交易時段；對沖版的日報酬因此含約 0.3% 的時點噪音（開盤價對開盤價是 0.84%，所以選結算價）。
 - 等權基準是流動性宇宙的無成本每日再平衡，比可投資的等權 ETF 更難打；對 TAIEX 報酬指數的超額另列。
-- 未模擬成交量參與率、股利稅與借券；整張可行性只在兩個資本水準下報告。
+- 參與率上限是以位置金額對 20 日成交金額中位數的 5% 做硬性篩選，不是市場衝擊模型；未模擬股利稅與借券；零股的額外滑價與最低手續費是固定假設。
 
 ### 6. 重現方式
 
@@ -135,10 +146,10 @@ BACKTEST_WORKERS=4 uv run python -m twbacktest.tw_strategy --predictions ../arti
 | 項目 | 內容 |
 | --- | --- |
 | 事先登記 commit | `970052a`（§13.14） |
-| 程式 commit | `9b95f6a`（期交所單一契約下載與連續近月）、`9e123f1`（策略層模組與設定檔） |
+| 程式 commit | `9b95f6a`（期交所單一契約下載與連續近月）、`9e123f1`（策略層模組與設定檔）、`4f23af8`（資本情境：零股、最低手續費、參與率上限） |
 | 設定檔 | `backtest/config/tw_strategy.json` |
 | 台指期資料（不受 Git 追蹤） | `artifacts/diagnostics/taifex-tx/`（`download-TX.json` 與 47 個 raw CSV） |
-| 輸出（不受 Git 追蹤） | `artifacts/diagnostics/backtest/tw-strategy-b0-d0-20261023T074716Z/`（`report.json`、`grid.csv`、`daily_series.csv`、`summary.md`） |
+| 輸出（不受 Git 追蹤） | `artifacts/diagnostics/backtest/tw-strategy-capital-20261023T080816Z/`（`report.json`、`grid.csv`、`daily_series.csv`、`summary.md`；資本情境版，取代較早只有兩個資本水準的 `tw-strategy-b0-d0-20261023T074716Z/`） |
 
 ## English
 
@@ -153,7 +164,7 @@ Conclusions:
 3. **Absolute returns are positive; the benchmarks win.** Long-only P1 ∪ P2 annualized net return: B0 +23.8% (CAGR 25.7%, Sharpe 1.72, max drawdown −13.0%), D0 +23.1% (CAGR 24.5%, Sharpe 1.50, max drawdown −20.0%). The equal-weight liquid universe made about +28% per year and the TAIEX total-return index about +41%; in P2 alone the portfolios' +23–26% trail TAIEX's +115% by 63 points.
 4. **H-D-hedged fails, with a large loss.** Shorting TX against the book gives a P1 ∪ P2 annualized net return of −12.5% [−28.7%, +3.0%] (B0) and −13.3% (D0), a −41% drawdown and 28 / 27 margin calls. The hedge is the cap-weighted index while the book is 50 near-equal-weight liquid names; in P2's mega-cap rally the hedge shorts the strongest end of the market.
 5. **The cash-equitized version is almost identical to long-only** (idle cash is 1–2%) and changes nothing.
-6. **Board-lot feasibility binds at NT$10 million.** With NT$200k per slot, 34–37% of candidate buys cannot afford one lot (high-priced names are skipped) and the annualized net return falls by 1.5–2.7 points; at NT$30 million the blocked share is 5–6% and the difference is within 1 point.
+6. **Capital scenarios: odd lots recover small capital, liquidity limits reshape large capital.** At NT$10 million with board lots only, 34–37% of candidate buys cannot afford one lot with a NT$200k slot and the annualized net return is 1.5–2.7 points lower; allowing odd lots (7–10% of buys, with 0.1% extra slippage and a NT$1 minimum commission) brings the result back to the fractional one. NT$30 million to NT$100 million stay within 1 point of fractional. At NT$300 million the 5% participation cap blocks 92% of candidate buys and concentrates the book in the largest liquid names, which helps in P2 (annualized net return B0 +39.7%, D0 +45.9%) and narrows the P1 ∪ P2 net excess to −2.9% / −1.3%, still with an interval spanning 0; at NT$1 billion 97% are blocked, cash sits at 12–15%, turnover rises to 8–9% a day and the net excess is −7.8% / −10.3%. No capital scenario passes H-D.
 7. **TX-long reference**: −2.4% per year against the TAIEX total-return index (P1 −3.4%, P2 +0.3%), i.e. the implied financing of futures relative to a dividend-inclusive index; 38 rolls over P1 ∪ P2. This is the true cost of taking market exposure through TX; the hedged version earns it with the opposite sign.
 8. **Disposition under §13.14 item 9**: long-only stock holding cannot turn these two models' ranking skill into returns against the benchmark under Taiwan costs; the next candidates are a long-short inside the stock-futures universe (§13.9 capturability) or an h = 1 day-trade route, each needing its own registration. Forward candidate: none.
 
@@ -167,6 +178,7 @@ Conclusions:
 | Universe | Stocks only; 20-session median dollar volume ≥ NT$30 million (TWSE) / NT$10 million (TPEX); close ≥ NT$10 |
 | Signal | One horizon's score → within-market percentile rank → per-symbol EMA (3-session half-life, reset after a gap over 5 sessions) |
 | Portfolio | Buy into the top K, sell when out of the top m × K; at most ⌈K/10⌉ new buys per session; K equal slots with per-position open-to-open accounting; no buys at limit-up opens, no sells at limit-down opens |
+| Capital scenarios | Fractional slots (primary); NT$10 million board lots; NT$10 million with odd lots (0.1% extra slippage, NT$1 minimum commission); NT$30 million board lots; NT$100 million, NT$300 million, NT$1 billion. Lots: a candidate whose board lot (1,000 shares) costs more than the slot is skipped; the NT$20 minimum commission tops up small trades; participation: a candidate whose slot exceeds 5% of its 20-session median dollar volume is skipped |
 | Grid and selection | h ∈ {5, 10} × K ∈ {30, 50} × m ∈ {2, 3}, fixed at the highest TWSE P1 long-only net excess IR |
 | Costs | Stocks, primary scenario: commission 0.1425% × 0.6, transaction tax 0.3%, slippage TWSE 0.1% / TPEX 0.2%; TX per side: 0.002% tax, NT$50 commission per contract, 1 tick slippage; both sides on a roll |
 | Hedged | Short notional = 1 × stock value, adjusted at each open; 15% reserve, refilled from stocks below 10% (one margin call), excess above 25% returned to stocks |
@@ -218,16 +230,26 @@ The pattern is uniform: a wider band (m = 3) and more slots (K = 50) lower turno
 
 The decision cell (long-only, P1 ∪ P2) has lower bounds of −19.7% (B0) and −18.2% (D0), so H-D fails; the hedged P1 ∪ P2 lower bound is −28.7%, so H-D-hedged fails.
 
-#### 3.3 Board-lot feasibility (TWSE, long-only, P1 ∪ P2)
+#### 3.3 Capital scenarios (TWSE, long-only, selected parameters, primary costs)
 
-| Model | Capital | Net return (annual) | Net excess (annual) | Blocked candidate buys | Mean cash share |
-| --- | --- | --- | --- | --- | --- |
-| B0 | fractional | +23.8% | −4.7% | 0% | 1.5% |
-| B0 | NT$10 million | +21.1% | −7.4% | 33.7% | 1.4% |
-| B0 | NT$30 million | +24.9% | −3.7% | 5.7% | 1.6% |
-| D0 | fractional | +23.1% | −5.4% | 0% | 1.1% |
-| D0 | NT$10 million | +21.6% | −6.9% | 37.1% | 1.1% |
-| D0 | NT$30 million | +22.5% | −6.0% | 4.6% | 1.2% |
+| Model | Capital scenario | P1 ∪ P2 net return (annual) | Sharpe | P1 ∪ P2 net excess (annual) | 95% CI | Excess vs TR index | P2 net return (annual) | Lot-blocked | Participation-blocked | Odd-lot buys | Cash share | Daily turnover |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | fractional | +23.8% | 1.72 | −4.7% | [−19.7%, +10.5%] | −16.8% | +26.1% | 0% | 0% | 0% | 1.5% | 1.9% |
+| B0 | NT$10M lots | +21.1% | 1.56 | −7.4% | [−23.6%, +8.6%] | −19.4% | +19.0% | 33.7% | 0% | 0% | 1.4% | 1.9% |
+| B0 | NT$10M odd lots | +23.8% | 1.72 | −4.8% | [−19.7%, +10.4%] | −16.8% | +26.0% | 0% | 0% | 7.3% | 1.5% | 1.9% |
+| B0 | NT$30M lots | +22.8% | 1.68 | −5.7% | [−20.9%, +9.6%] | −17.8% | +25.0% | 6.7% | 0.7% | 0% | 1.5% | 1.9% |
+| B0 | NT$100M | +23.0% | 1.63 | −5.5% | [−20.0%, +9.1%] | −17.6% | +26.0% | 0% | 70.2% | 0% | 1.2% | 1.7% |
+| B0 | NT$300M | +25.6% | 1.65 | −2.9% | [−15.7%, +9.9%] | −14.9% | +39.7% | 0% | 92.4% | 0% | 1.1% | 2.0% |
+| B0 | NT$1B | +20.7% | 1.24 | −7.8% | [−19.5%, +4.5%] | −19.9% | +51.0% | 0% | 96.7% | 0% | 15.1% | 9.0% |
+| D0 | fractional | +23.1% | 1.50 | −5.4% | [−18.2%, +7.7%] | −17.5% | +23.0% | 0% | 0% | 0% | 1.1% | 2.5% |
+| D0 | NT$10M lots | +21.6% | 1.42 | −6.9% | [−19.7%, +6.7%] | −18.9% | +22.3% | 37.1% | 0% | 0% | 1.1% | 2.6% |
+| D0 | NT$10M odd lots | +23.0% | 1.49 | −5.6% | [−18.3%, +7.6%] | −17.6% | +23.0% | 0% | 0% | 10.3% | 1.1% | 2.5% |
+| D0 | NT$30M lots | +23.7% | 1.54 | −4.9% | [−17.4%, +7.6%] | −16.9% | +26.7% | 6.4% | 1.3% | 0% | 1.2% | 2.5% |
+| D0 | NT$100M | +23.0% | 1.41 | −5.5% | [−17.3%, +6.1%] | −17.5% | +29.7% | 0% | 66.3% | 0% | 1.0% | 2.3% |
+| D0 | NT$300M | +27.3% | 1.60 | −1.3% | [−12.7%, +9.7%] | −13.3% | +45.9% | 0% | 92.3% | 0% | 0.9% | 2.7% |
+| D0 | NT$1B | +18.2% | 1.00 | −10.3% | [−20.8%, +0.8%] | −22.4% | +56.7% | 0% | 96.7% | 0% | 12.5% | 8.1% |
+
+Blocked shares are shares of candidate buys: an empty slot keeps walking down the ranking until a buyable name appears, so a high blocked share at large capital means the book is forced into the largest liquid names, not that slots stay empty. The NT$1 billion scenario's high turnover and cash share come from the shortage of buyable names.
 
 #### 3.4 TX-long reference (against the TAIEX total-return index, settlement to close)
 
@@ -253,7 +275,7 @@ The decision cell (long-only, P1 ∪ P2) has lower bounds of −19.7% (B0) and �
 - The strategy layer did what it can: turnover and costs are down to industry levels (2% per day, 3–5% per year) and the P1 net excess is positive. The interval still spans 0, and the P2 gross excess is −27% to −31%: after 2025-06 the h = 10 ranking has almost no multi-session predictive power in the TWSE liquid universe, and no long-only holding rule recovers that.
 - Both models' losses against the benchmarks concentrate in P2's mega-cap rally: the portfolios trail the TAIEX total-return index by 63–66 points and the equal-weight universe by 31–34 points. This is a signal failure in a particular market state, which the model layer (D0's 0.004 Rank IC edge over B0) cannot offset.
 - Hedging a near-equal-weight long book with TAIEX futures is a structural loss in a concentrated bull market, and 28 margin calls show a 15% reserve is far too small; the hedge should target the book's own beta and style exposures, not the cap-weighted index.
-- At NT$10 million, K = 50 slots are too small: a third of the candidates cannot afford one lot. Capital at that level needs a smaller K or odd lots, each requiring re-registration.
+- NT$10 million can run this portfolio in full with odd lots (7–10% of buys), without lowering K; up to NT$100 million the results are within a point of fractional slots. From NT$300 million the 5% participation cap turns the book into a large liquid-cap portfolio, which helps in P2 and shows that part of the shortfall in that period is the style effect of equal-weighting mid-sized liquid names; still, no capital scenario has a P1 ∪ P2 lower bound above 0.
 - Under §13.14 item 9 the next step is not another long-only rule but a separate registration: (a) a long-short inside the stock-futures universe (0.002% tax, shortable), (b) an h = 1 day-trade route (the P2 h = 1 Rank IC is still 0.11, but 0.26% gross per batch against a 0.52% day-trade round trip rules out stocks; futures can be costed).
 
 ### 5. Limits
@@ -262,7 +284,7 @@ The decision cell (long-only, P1 ∪ P2) has lower bounds of −19.7% (B0) and �
 - The liquidity thresholds and β = 1 are fixed in advance; the margin model is simplified (fixed reserve ratio and call rule) and does not use TAIFEX's daily margin tables.
 - TX is marked at the settlement and stocks at the open, one session apart; the hedged daily returns therefore carry about 0.3% of timing noise (0.84% open-to-open, hence the settlement choice).
 - The equal-weight benchmark is a cost-free daily-rebalanced liquid universe, a harder bar than an investable equal-weight ETF; the excess over the TAIEX total-return index is listed separately.
-- Volume participation, dividend taxes and securities lending are not modelled; lot feasibility is reported at two capital levels only.
+- The participation cap is a hard screen (slot value against 5% of the 20-session median dollar volume), not a market-impact model; dividend taxes and securities lending are not modelled; the odd-lot extra slippage and minimum commissions are fixed assumptions.
 
 ### 6. Reproduction
 
@@ -275,7 +297,7 @@ BACKTEST_WORKERS=4 uv run python -m twbacktest.tw_strategy --predictions ../arti
 | Item | Content |
 | --- | --- |
 | Pre-registration commit | `970052a` (§13.14) |
-| Code commits | `9b95f6a` (TAIFEX single-contract download and continuous front month), `9e123f1` (strategy-layer module and configuration) |
+| Code commits | `9b95f6a` (TAIFEX single-contract download and continuous front month), `9e123f1` (strategy-layer module and configuration), `4f23af8` (capital scenarios: odd lots, minimum commission, participation cap) |
 | Configuration | `backtest/config/tw_strategy.json` |
 | TAIEX futures data (not tracked by Git) | `artifacts/diagnostics/taifex-tx/` (`download-TX.json` and 47 raw CSV files) |
-| Output (not tracked by Git) | `artifacts/diagnostics/backtest/tw-strategy-b0-d0-20261023T074716Z/` (`report.json`, `grid.csv`, `daily_series.csv`, `summary.md`) |
+| Output (not tracked by Git) | `artifacts/diagnostics/backtest/tw-strategy-capital-20261023T080816Z/` (`report.json`, `grid.csv`, `daily_series.csv`, `summary.md`; the capital-scenario run, superseding the earlier two-level `tw-strategy-b0-d0-20261023T074716Z/`) |

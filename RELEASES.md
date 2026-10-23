@@ -36,7 +36,9 @@
   EMA 平滑、買進／持有門檻加每日換入上限、整張可行性敏感度、台指期對沖／現金替代／多頭參考與
   保證金會計）；`twbacktest.taifex download-contract` 從期交所官方下載單一契約（如 TX）並建連續近月
   序列（第三個星期三開盤換月、結算價 mark）。結果記錄於 `docs/strategy_layer_results.md`：換手降到
-  每日 2%，但 H-D 與 H-D-hedged 都未通過（P2 訊號失效）。
+  每日 2%，但 H-D 與 H-D-hedged 都未通過（P2 訊號失效）。資本情境（1,000 萬整張／零股、3,000 萬、
+  1 億、3 億、10 億）含零股成本、最低手續費與 5% 成交金額參與率上限；另有 `twbacktest.futures_universe`
+  描述性診斷（股票期貨宇宙內的 Rank IC 與前後十分位毛報酬）。
 - 本機 guard 現在也會為 `research-xs-train` 的 GPU Pod 啟動 GPU 時脈監測。
 
 ### v0.2.2 2026-09-21
@@ -141,7 +143,10 @@
   accounting); `twbacktest.taifex download-contract` fetches one contract (e.g. TX) from the
   official TAIFEX download and builds the continuous front month (third-Wednesday open roll,
   settlement mark). Results in `docs/strategy_layer_results.md`: turnover falls to 2% a day,
-  but H-D and H-D-hedged both fail (the P2 signal failure).
+  but H-D and H-D-hedged both fail (the P2 signal failure). Capital scenarios (NT$10M lots / odd
+  lots, NT$30M, NT$100M, NT$300M, NT$1B) carry odd-lot costs, minimum commissions and a 5% dollar-
+  volume participation cap; `twbacktest.futures_universe` is a descriptive diagnostic (Rank IC and
+  top/bottom decile gross returns inside the stock-futures universe).
 - The local guard now starts the GPU clock monitor for `research-xs-train` GPU Pods too.
 
 ### v0.2.2 2026-09-21
