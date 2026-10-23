@@ -1120,6 +1120,33 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 
 **§13.14 結果（2026-10-23）**：B0 與 D0 都選出 h = 10、K = 50、m = 3（TWSE P1 多頭版淨超額 IR 0.42／0.52）。每日換手 2.0%／2.5%、成本拖累 3.4%／4.8%／年；P1 淨超額 +5.4%／+5.5%（區間跨 0），P2 毛超額 −27%／−31%，P1 ∪ P2 年化淨超額 B0 −4.7% [−19.7%, +10.5%]、D0 −5.4% [−18.2%, +7.7%]，**H-D 未通過**；對沖版 P1 ∪ P2 年化淨報酬 −12.5%／−13.3%、28／27 次追繳，**H-D-hedged 未通過**。絕對報酬：多頭版年化淨報酬 +23.8%／+23.1%，Sharpe 1.72／1.50，但 TAIEX 報酬指數同期 +41%／年（本節所稱「TAIEX 指數」在資料集中為官方報酬指數，含息；第 8 項的「價格指數」應讀為報酬指數）。資本情境（分數位置、1,000 萬整張／零股、3,000 萬、1 億、3 億、10 億；零股加 0.1% 滑價、最低手續費、5% 參與率上限）：1,000 萬整張少 1.5–2.7 個百分點，零股補回；3 億元因參與率上限集中於大型流動股，P1 ∪ P2 淨超額縮到 −2.9%／−1.3% 但區間仍跨 0；沒有資本情境通過 H-D。前瞻候選模型：無。依第 9 點，下一步為另行登記股票期貨多空或 h = 1 當沖路線。見 [台股策略層結果報告](strategy_layer_results.md)。
 
+#### 13.15 股票期貨空方當沖：h = 1 訊號的可交易性（2026-10-23 於實作與計分前寫入）
+
+背景：§13.14 的多頭持有在所有資本情境下都未通過 H-D；股票期貨宇宙診斷（策略層報告第 7 節）顯示 h = 1 的排序能力在有股票期貨的標的中保留八到九成（流動段 Rank IC 0.10–0.11，P2 0.08–0.09），而 h = 1 的毛價差幾乎全部來自空方（後十分位次日盤中 −0.36% 到 −0.45%，前十分位只有 +0.04% 到 +0.07%，宇宙盤中平均為負）。現股做空受券源、平盤下限制與當沖稅限制；股票期貨期交稅十萬分之二、不需券源。本節登記以期交所官方期貨價格回測的空方當沖。
+
+1. **資料**：期交所每日行情下載（全契約，`twbacktest.taifex download`，2022-12 至 2026-06）：每個股票期貨契約每日的開盤價、結算價、成交量與一般／盤後時段；標的對應依期交所股票期貨標的清單（契約代碼 → 股票代號、每口股數 2,000 或 100）。台指期近月序列同 §13.14。訊號為 B0、D0 的 h = 1 集成分數。
+2. **宇宙**：訊號日 t 當天，近月股票期貨契約在一般時段有成交、且近月 20 日平均成交量 ≥ 100 口（標準口換算）的標的；優先用標準契約（2,000 股），只有小型契約（100 股）者以小型契約計價並計數。契約在到期日當天改用次月。訊號日沒有次一交易日期貨價格的標的跳過並計數。
+3. **部位與價格**：依前一收盤的 h = 1 分數在宇宙內排名，放空後 q 分位（q ∈ {10%, 20%}，檔數 = ⌈n × q⌉）；次一交易日 t+1 在期貨開盤價（8:45）放空、以當日結算價平倉（結算價取自 13:30 前成交，為官方日結算 mark），不留倉。版本：**空方版**（判定用）；**多空版**（另放空等額名目的… 另做多前 q 分位等額名目）；**對沖版**（空方版加等額名目的台指期多頭，開盤到結算價）。
+4. **資本與口數**：資本情境與 §13.14 相同金額（分數位置、1,000 萬、3,000 萬、1 億、3 億、10 億元；期貨無零股情境）。目標總名目 = L × 資本，L = 1（固定）；每檔名目 = 總名目／檔數；口數 = ⌊每檔名目／（開盤價 × 每口股數）⌋，不足一口者跳過並計數；每檔口數 ≤ 該契約當日成交量 × 5%。保證金以期交所最高級距原始保證金 20.25% 計（維持 15.53%），報告保證金使用率；L × 20.25% > 100% 視為不可行。
+5. **成本**（每邊）：期交稅 0.002% × 名目；手續費每口 30 元（另報 60 元）；滑價 1 tick（另報 2 tick），tick 依標的價格級距（< 10 元 0.01、10–50 元 0.05、50–100 元 0.1、100–500 元 0.5、500–1,000 元 1、≥ 1,000 元 5）× 每口股數。主要情境：1 tick、30 元。台指期每邊：期交稅 0.002%、每口 50 元、1 點。
+6. **指標與區間**：每日報酬 = 當日損益／資本（分數位置版為名目加權報酬 × L）；毛（無成本）與淨；年化報酬（× 252）、CAGR、Sharpe、最大回撤、勝率、成本拖累、平均檔數與口數、因口數或參與率被擋的比例、保證金使用率。區間：每日淨報酬的 circular block bootstrap，區塊 5、1,000 次、seed 11。期間 P1、P2、P1 ∪ P2（依訊號日）。
+7. **選擇與判定**：
+   - q 在 TWSE 加 TPEX 的合併宇宙（股票期貨宇宙不分市場）、P1、空方版、分數位置、主要成本下以淨 Sharpe 最高者選定，B0 與 D0 分別選。
+   - **H-E（空方當沖可交易）**：選定 q 的空方版，P1 ∪ P2 年化淨報酬（絕對）的 95% 區間下界 > 0，且 P2 單獨的年化淨報酬 > 0。B0 與 D0 分別判定。
+   - 多空版與對沖版只作描述。資本情境只作描述；但若 1,000 萬元情境因口數不足而被擋的比例超過 50%，在報告中標記該資本不可行。
+   - 前瞻候選模型：通過 H-E 者之中 P1 ∪ P2 淨 Sharpe 較高者。
+8. **報告（固定欄位）**：每個版本、資本情境、成本情境與期間都列出年化毛報酬、年化淨報酬與區間、CAGR、Sharpe、最大回撤、勝率、成本拖累、平均檔數、平均口數、被擋比例、保證金使用率；另報期貨開盤價對現股開盤價、結算價對現股收盤價的日差標準差（時點噪音）。
+9. **處置**：H-E 通過 → 以候選模型登記 H-C（2026-06-01 之後的 P3 前瞻，含實際期貨價格）；H-E 未通過 → h = 1 訊號在現有工具與成本下也不可交易，模型與策略層都回到研究狀態，下一步改為訊號本身（殘差化標籤、多 horizon 融合）的登記實驗。
+10. **程序**：設定檔 `backtest/config/futures_daytrade.json` 在計分前寫入並 commit；先以合成資料測試口數、參與率、成本與保證金；再對 B0、D0 計分；結果寫成中英雙語報告。
+
+判讀限制：
+
+- 契約代碼以 2026-10 的標的清單對應，期間內下市的股票期貨無法對應（存活者偏誤，約 38 個代碼）。
+- 期貨 8:45 開盤價是可成交的價格，但 8:45–9:00 的流動性低於現股開盤後；滑價以 tick 計，未模擬開盤成交量不足。
+- 結算價是官方 mark，實際平倉需在 13:30 前後成交，可能偏離結算價。
+- 保證金以最高級距一律計算，實際逐檔級距較低；未模擬盤中追繳。
+- q 在 P1 選擇，P1 ∪ P2 判定含 P1；P3 才是確認。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU
@@ -2307,6 +2334,33 @@ Interpretation limits:
 - Volume participation limits for large capital, dividend taxes and securities lending are not modelled; lot feasibility is reported at two capital levels only.
 
 **§13.14 result (2026-10-23)**: both B0 and D0 select h = 10, K = 50, m = 3 (TWSE P1 long-only net excess IR 0.42 / 0.52). Daily turnover 2.0% / 2.5%, cost drag 3.4% / 4.8% per year; P1 net excess +5.4% / +5.5% (interval spans 0), P2 gross excess −27% / −31%, P1 ∪ P2 annualized net excess B0 −4.7% [−19.7%, +10.5%] and D0 −5.4% [−18.2%, +7.7%], so **H-D fails**; the hedged P1 ∪ P2 annualized net return is −12.5% / −13.3% with 28 / 27 margin calls, so **H-D-hedged fails**. Absolute: long-only annualized net return +23.8% / +23.1%, Sharpe 1.72 / 1.50, while the TAIEX total-return index made +41% per year (the dataset's "TAIEX index" is the official total-return index, so the "price index" of item 8 reads as the total-return index). Capital scenarios (fractional, NT$10 million with lots / odd lots, NT$30 million, NT$100 million, NT$300 million, NT$1 billion; odd lots with 0.1% extra slippage, minimum commissions, a 5% participation cap): NT$10 million with lots loses 1.5–2.7 points and odd lots recover it; NT$300 million concentrates in large liquid names through the participation cap and narrows the P1 ∪ P2 net excess to −2.9% / −1.3% with the interval still spanning 0; no capital scenario passes H-D. Forward candidate: none. Under item 9 the next step is a separate registration of a stock-futures long-short or an h = 1 day-trade route. See the [strategy-layer results report](strategy_layer_results.md).
+
+#### 13.15 Stock-futures short-side day trade: tradeability of the h = 1 signal (written 2026-10-23 before implementation and scoring)
+
+Background: the §13.14 long-only holding fails H-D in every capital scenario; the stock-futures universe diagnostic (strategy-layer report, section 7) shows that the h = 1 ranking keeps 80–90% of its skill among names with stock futures (liquid segment Rank IC 0.10–0.11, P2 0.08–0.09) and that the h = 1 gross spread comes almost entirely from the short side (bottom decile next-session intraday −0.36% to −0.45%, top decile only +0.04% to +0.07%, negative universe intraday mean). Shorting stocks is constrained by borrow, the uptick rule and the day-trade tax; stock futures pay a 0.002% tax and need no borrow. This section registers a short-side day trade backtested on official TAIFEX futures prices.
+
+1. **Data**: the TAIFEX daily download of every contract (`twbacktest.taifex download`, 2022-12 to 2026-06): each stock-futures contract's daily open, settlement, volume and session; underlying mapping from the TAIFEX stock-futures list (contract code → stock symbol, 2,000 or 100 shares per contract). The TX front month as in §13.14. Signals are the h = 1 ensemble scores of B0 and D0.
+2. **Universe**: on signal date t, underlyings whose near-month stock futures traded in the regular session and whose near-month 20-session mean volume is ≥ 100 contracts (standard-contract equivalents); the standard contract (2,000 shares) is preferred, and names with only a small contract (100 shares) are priced on it and counted. On an expiry day the next month is used. Names without a futures price on the next session are skipped and counted.
+3. **Positions and prices**: ranked within the universe by the previous close's h = 1 score, the bottom q (q ∈ {10%, 20%}, ⌈n × q⌉ names) is shorted at the futures open (08:45) of session t+1 and covered at that session's settlement price (computed from trades before 13:30, the official daily mark); no overnight position. Versions: **short-only** (decides); **long-short** (plus an equal-notional long of the top q); **hedged** (short-only plus an equal-notional long TX, open to settlement).
+4. **Capital and contracts**: the §13.14 capital amounts (fractional, NT$10 million, NT$30 million, NT$100 million, NT$300 million, NT$1 billion; no odd-lot scenario for futures). Target gross notional = L × capital with L = 1 (fixed); notional per name = total / names; contracts = ⌊notional per name / (open × shares)⌋, names below one contract skipped and counted; contracts per name ≤ 5% of that contract's volume on the day. Margin uses TAIFEX's highest tier (initial 20.25%, maintenance 15.53%); margin usage is reported and L × 20.25% > 100% is infeasible.
+5. **Costs** (per side): 0.002% tax on notional; NT$30 commission per contract (NT$60 also reported); 1 tick slippage (2 ticks also reported), the tick following the underlying's price band (< NT$10: 0.01; 10–50: 0.05; 50–100: 0.1; 100–500: 0.5; 500–1,000: 1; ≥ 1,000: 5) × shares per contract. Primary scenario: 1 tick, NT$30. TX per side: 0.002% tax, NT$50 per contract, 1 point.
+6. **Metrics and intervals**: daily return = that day's P&L / capital (fractional: notional-weighted return × L), gross (no costs) and net; annualized return (× 252), CAGR, Sharpe, maximum drawdown, hit rate, cost drag, mean names and contracts, shares blocked by contract size or participation, margin usage. Intervals: circular block bootstrap of the daily net returns, block 5, 1,000 replicates, seed 11. Periods P1, P2, P1 ∪ P2 by signal date.
+7. **Selection and decisions**:
+   - q is chosen on the combined TWSE plus TPEX universe (the stock-futures universe is not split by market), P1, short-only, fractional, primary costs, by the highest net Sharpe; B0 and D0 separately.
+   - **H-E (tradeable short day trade)**: the selected q's short-only version has a P1 ∪ P2 annualized net (absolute) return with a 95% lower bound > 0, and a positive P2 annualized net return. B0 and D0 are judged separately.
+   - Long-short and hedged versions are descriptive, as are capital scenarios; if the NT$10 million scenario skips more than 50% of names for lack of a whole contract, that capital is marked infeasible in the report.
+   - Forward candidate: among the models passing H-E, the higher P1 ∪ P2 net Sharpe.
+8. **Report (fixed columns)**: for every version, capital scenario, cost scenario and period: annualized gross return, annualized net return with interval, CAGR, Sharpe, maximum drawdown, hit rate, cost drag, mean names, mean contracts, blocked shares, margin usage; plus the standard deviation of the daily differences between the futures open and the stock open and between the settlement and the stock close (timing noise).
+9. **Disposition**: H-E passes → register H-C (the P3 forward period after 2026-06-01, with actual futures prices) for the candidate model; H-E fails → the h = 1 signal is not tradeable with the available instruments and costs either, model and strategy layers return to research, and the next registered experiment targets the signal itself (residualized labels, multi-horizon blending).
+10. **Procedure**: `backtest/config/futures_daytrade.json` is written and committed before scoring; synthetic-data tests first cover contract sizing, participation, costs and margin; then B0 and D0 are scored and written up bilingually.
+
+Interpretation limits:
+
+- Contract codes are mapped through the 2026-10 underlying list, so stock futures delisted during the period cannot be mapped (survivorship bias, about 38 codes).
+- The 08:45 futures open is a tradable price, but liquidity between 08:45 and 09:00 is thinner than after the stock open; slippage is counted in ticks, and insufficient opening volume is not modelled.
+- The settlement price is the official mark; the actual cover trades around 13:30 and may deviate from it.
+- Margin uses the highest tier for every name while actual per-name tiers are lower; intraday margin calls are not modelled.
+- q is chosen on P1 and the P1 ∪ P2 decision includes P1; P3 is the confirmation.
 
 ### 14. Remote-validation boundary
 
