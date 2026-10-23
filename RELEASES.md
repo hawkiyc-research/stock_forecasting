@@ -39,6 +39,12 @@
   每日 2%，但 H-D 與 H-D-hedged 都未通過（P2 訊號失效）。資本情境（1,000 萬整張／零股、3,000 萬、
   1 億、3 億、10 億）含零股成本、最低手續費與 5% 成交金額參與率上限；另有 `twbacktest.futures_universe`
   描述性診斷（股票期貨宇宙內的 Rank IC 與前後十分位毛報酬）。
+- 新增 §13.15 的股票期貨空方當沖回測 `twbacktest.futures_daytrade`（`backtest/config/futures_daytrade.json`：
+  以期交所官方期貨開盤價與結算價、tick 滑價、每口手續費、參與率上限、保證金與資本情境）與
+  `taifex.stock_futures_sessions`（每個交易日的近月股票期貨契約表）；結果記錄於
+  `docs/futures_daytrade_results.md`：毛報酬 +61–65%／年但 tick 滑價吃掉 125%，H-E 未通過。
+- 新增 `scripts/fetch_tw_company_reference.py` 與 `configs/reference/tw_company_reference_20261022.csv`
+  （證交所、櫃買 OpenAPI 公司基本資料快照：產業別、已發行股數），供 §13.16 殘差化標籤使用。
 - 本機 guard 現在也會為 `research-xs-train` 的 GPU Pod 啟動 GPU 時脈監測。
 
 ### v0.2.2 2026-09-21
@@ -147,6 +153,15 @@
   lots, NT$30M, NT$100M, NT$300M, NT$1B) carry odd-lot costs, minimum commissions and a 5% dollar-
   volume participation cap; `twbacktest.futures_universe` is a descriptive diagnostic (Rank IC and
   top/bottom decile gross returns inside the stock-futures universe).
+- Protocol §13.15 stock-futures short day trade `twbacktest.futures_daytrade`
+  (`backtest/config/futures_daytrade.json`: official TAIFEX futures opens and settlements, tick
+  slippage, per-contract commission, participation cap, margin and capital scenarios) and
+  `taifex.stock_futures_sessions` (per-session near-month stock-futures table); results in
+  `docs/futures_daytrade_results.md`: +61–65% gross a year, but tick slippage costs 125%, so
+  H-E fails.
+- `scripts/fetch_tw_company_reference.py` and `configs/reference/tw_company_reference_20261022.csv`
+  (TWSE/TPEX OpenAPI company basic-data snapshot: industry code, issued shares) for the §13.16
+  residualized labels.
 - The local guard now starts the GPU clock monitor for `research-xs-train` GPU Pods too.
 
 ### v0.2.2 2026-09-21

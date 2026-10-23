@@ -2958,6 +2958,13 @@ worker 數預設取以下兩者的較小值，最多 32：
     cd backtest && uv run python -m twbacktest.tw_strategy --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
     ```
 
+14. **股票期貨空方當沖（本機，H-E）**：§13.15，用期交所官方全契約日資料；見
+    [backtest/README.md](backtest/README.md)，結果見 [docs/futures_daytrade_results.md](docs/futures_daytrade_results.md)。
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.futures_daytrade --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
 worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
 記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
@@ -7332,6 +7339,14 @@ the last 12 months of each window as validation) and come from
     ```bash
     cd backtest && uv run python -m twbacktest.taifex download-contract --commodity TX --start 2022-12-01 --end-exclusive 2026-07-01 --root ../artifacts/diagnostics/taifex-tx
     cd backtest && uv run python -m twbacktest.tw_strategy --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
+14. **Stock-futures short day trade (local, H-E)**: §13.15 on TAIFEX's official all-contract daily
+    data; see [backtest/README.md](backtest/README.md), results in
+    [docs/futures_daytrade_results.md](docs/futures_daytrade_results.md).
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.futures_daytrade --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
     ```
 
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the

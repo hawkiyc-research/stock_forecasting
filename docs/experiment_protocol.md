@@ -1147,6 +1147,8 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 - 保證金以最高級距一律計算，實際逐檔級距較低；未模擬盤中追繳。
 - q 在 P1 選擇，P1 ∪ P2 判定含 P1；P3 才是確認。
 
+**§13.15 結果（2026-10-23）**：兩個模型都選 q = 10%（每日約 13 檔）。以期交所官方期貨開盤價與結算價計算，空方版 P1 ∪ P2 年化毛報酬 B0 +61.5%、D0 +64.5%（P1、P2 皆為正），但主要成本下年化淨報酬 B0 −63.4% [−91.5%, −36.0%]、D0 −60.5% [−86.9%, −33.7%]，P2 亦為負，**H-E 未通過**。成本拖累約 125%／年，幾乎全為 tick 滑價（每邊約 0.23%）；損益兩平的單邊成本約 0.12%。多空版與對沖版更差或未救回；六個資本情境皆為負。依第 9 點：h = 1 訊號在現有工具與成本下不可交易，模型與策略層回到研究狀態，下一步為 §13.16。見 [股票期貨空方當沖結果報告](futures_daytrade_results.md)。
+
 #### 13.16 殘差化標籤與多 horizon 融合：多日排序在風格集中期的穩定性（2026-10-23 於實作前寫入）
 
 背景：§13.13 的 B0 與 D0 在 P1 的 Rank IC 由 h = 1 的 0.13 緩降到 h = 10 的 0.11，但在 P2（2025-06 起，TAIEX 一年漲一倍、等權宇宙只漲三成的大型股集中行情）h = 5–14 掉到 0.02–0.05，h = 1 仍有 0.11；§13.14 的多頭策略與股票期貨宇宙內的 h = 10 都因此失效。文獻與業界的對應做法（策略層報告與本節登記前的討論）：因子半衰期與再平衡匹配（Flint、Vermaak）、快慢訊號分權（Gârleanu、Pedersen 2013）、多尺度訊號融合（Han、Zhou、Zhu 2016；Jiang、Kelly、Xiu 2023）、以及把報酬對市場、市值、產業取殘差當標籤讓模型只學相對表現（風險模型中性化的標準做法）。現行標籤只去掉市場方向，沒有去掉市值與產業暴露。本節登記：換標籤、不換模型，先用最便宜的 B0 驗證。
@@ -2383,6 +2385,8 @@ Interpretation limits:
 - The settlement price is the official mark; the actual cover trades around 13:30 and may deviate from it.
 - Margin uses the highest tier for every name while actual per-name tiers are lower; intraday margin calls are not modelled.
 - q is chosen on P1 and the P1 ∪ P2 decision includes P1; P3 is the confirmation.
+
+**§13.15 result (2026-10-23)**: both models select q = 10% (about 13 names a day). On official TAIFEX futures opens and settlements the short-only P1 ∪ P2 annualized gross return is +61.5% (B0) and +64.5% (D0), positive in P1 and P2, but under the primary costs the annualized net return is −63.4% [−91.5%, −36.0%] (B0) and −60.5% [−86.9%, −33.7%] (D0), negative in P2 as well, so **H-E fails**. The cost drag of about 125% a year is almost all tick slippage (about 0.23% per side); the break-even cost per side is about 0.12%. Long-short and hedged versions are worse or not rescued; all six capital scenarios are negative. Under item 9 the h = 1 signal is not tradeable with the available instruments and costs, model and strategy layers return to research, and the next step is §13.16. See the [stock-futures short day-trade results report](futures_daytrade_results.md).
 
 #### 13.16 Residualized labels and multi-horizon blending: stability of multi-session ranking in concentrated-style periods (written 2026-10-23 before implementation)
 

@@ -288,6 +288,30 @@ uv run python -m twbacktest.tw_strategy --predictions ../artifacts/lgbm/<launch-
 市場、h、K、m、資本、版本、成本情境與期間）、`daily_series.csv`（選定參數在主情境下的每日序列）與
 `summary.md`（中英雙語摘要）。B0 與 D0 的結果見 `docs/strategy_layer_results.md`。
 
+### 股票期貨空方當沖（§13.15）與股票期貨宇宙診斷
+
+`twbacktest.futures_daytrade` 依 `docs/experiment_protocol.md` §13.15 的事先登記規則，以 `config/futures_daytrade.json`
+把 h = 1 分數變成股票期貨空方當沖：前一收盤在股票期貨宇宙（近月契約一般時段有成交、20 日平均成交量 ≥ 100 口）
+內排名，放空後 q 分位，次日以期交所官方的期貨開盤價放空、當日結算價平倉；另有多空版與台指期對沖版。
+成本為期交稅、每口手續費與依價位級距的 tick 滑價；資本情境取整口數、5% 成交量參與率上限、最高級距保證金。
+需要先用 `twbacktest.taifex download` 抓全契約日資料（`config/capturability.json` 的 `taifex` 區段決定日期範圍；
+本專案另以 2022-12 至 2026-06 建了 `artifacts/diagnostics/taifex-all/`）。
+
+```bash
+uv run python -m twbacktest.futures_daytrade --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+`--prices` 只用來計算期貨對現股的時點噪音統計；`--artifacts-root` 下需有 `diagnostics/taifex-all` 與
+`diagnostics/taifex-tx`。輸出目錄包含 `report.json`（選定 q、H-E 判定、不可行的資本情境、時點噪音）、
+`grid.csv`、`daily.csv`（主情境每日序列）與 `summary.md`。結果見 `docs/futures_daytrade_results.md`。
+
+`twbacktest.futures_universe` 是描述性診斷：在全部、有股票期貨、期貨流動三個區段計算 h = 1 與 h = 10 的
+每日 Rank IC 與前後十分位毛報酬（標籤定義的持有，未扣成本）。
+
+```bash
+uv run python -m twbacktest.futures_universe --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
 ## English
 
 ### Purpose
@@ -616,3 +640,33 @@ verdicts and the forward candidate), `grid.csv` (every model, market, h, K, m, c
 cost scenario and period), `daily_series.csv` (the selected parameters' daily series under the
 primary costs) and `summary.md` (bilingual). The B0 and D0 results are in
 `docs/strategy_layer_results.md`.
+
+### Stock-futures short day trade (§13.15) and the stock-futures universe diagnostic
+
+Following the pre-registered rules of `docs/experiment_protocol.md` §13.15, `twbacktest.futures_daytrade`
+turns h = 1 scores into a stock-futures short day trade with `config/futures_daytrade.json`: the
+previous close ranks the stock-futures universe (near-month contract traded in the regular session,
+20-session mean volume ≥ 100 contracts), the bottom q is shorted at the next session's official
+TAIFEX futures open and covered at its daily settlement; long-short and TX-hedged versions are also
+reported. Costs are the futures tax, a per-contract commission and tick slippage by price band;
+capital scenarios use whole contracts, a 5% volume participation cap and highest-tier margin. Fetch
+the all-contract daily data first with `twbacktest.taifex download` (the `taifex` section of
+`config/capturability.json` sets the date range; this project built
+`artifacts/diagnostics/taifex-all/` for 2022-12 to 2026-06).
+
+```bash
+uv run python -m twbacktest.futures_daytrade --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+`--prices` only feeds the futures-versus-stock timing statistic; `--artifacts-root` must hold
+`diagnostics/taifex-all` and `diagnostics/taifex-tx`. The output directory holds `report.json`
+(selected q, the H-E verdict, infeasible capital scenarios, timing noise), `grid.csv`, `daily.csv`
+(primary-scenario daily series) and `summary.md`. Results are in `docs/futures_daytrade_results.md`.
+
+`twbacktest.futures_universe` is a descriptive diagnostic: daily Rank IC and top/bottom decile gross
+returns for h = 1 and h = 10 in three segments (all, with stock futures, liquid futures), on the
+label's holding before costs.
+
+```bash
+uv run python -m twbacktest.futures_universe --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
