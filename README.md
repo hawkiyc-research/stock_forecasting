@@ -2965,6 +2965,17 @@ worker 數預設取以下兩者的較小值，最多 32：
     cd backtest && uv run python -m twbacktest.futures_daytrade --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
     ```
 
+15. **殘差化標籤（RunPod CPU，§13.16）**：先用官方 OpenAPI 抓公司參考表（已 commit 在
+    `configs/reference/`），再以 `--labelVariant` 在既有特徵庫旁建殘差化標籤庫，並在該標籤上重訓 B0；
+    結果會對殘差目標與原始 alpha 目標各算一次 Rank IC。規格在 `configs/labels/`。
+
+    ```bash
+    python3 scripts/fetch_tw_company_reference.py --output-dir configs/reference
+    bash scripts/runpod_workflow.sh features --labelVariant configs/labels/residual_v1a.json --maxRuntime 6h
+    bash scripts/runpod_workflow.sh lgbm --labelVariant configs/labels/residual_v1a.json --maxRuntime 24h
+    bash scripts/runpod_workflow.sh download-lgbm
+    ```
+
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
 worker 數的兩倍；worker 數取 `FIN_TS_RANK_LABEL_WORKERS`（預設 8）、可見 CPU 數減 1，以及可用
 記憶體的 40% 除以單一 worker 的估計占用，三者的最小值。特徵先寫入 `work/` 下的 memory-mapped
@@ -7347,6 +7358,19 @@ the last 12 months of each window as validation) and come from
 
     ```bash
     cd backtest && uv run python -m twbacktest.futures_daytrade --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
+15. **Residualized labels (RunPod CPU, §13.16)**: fetch the company reference table from the
+    official OpenAPIs (committed under `configs/reference/`), then build the residualized label
+    store beside the existing feature library with `--labelVariant` and retrain B0 on it; the
+    results score Rank IC against both the residual and the raw alpha targets. Specs live in
+    `configs/labels/`.
+
+    ```bash
+    python3 scripts/fetch_tw_company_reference.py --output-dir configs/reference
+    bash scripts/runpod_workflow.sh features --labelVariant configs/labels/residual_v1a.json --maxRuntime 6h
+    bash scripts/runpod_workflow.sh lgbm --labelVariant configs/labels/residual_v1a.json --maxRuntime 24h
+    bash scripts/runpod_workflow.sh download-lgbm
     ```
 
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the

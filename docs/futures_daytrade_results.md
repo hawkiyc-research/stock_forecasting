@@ -65,6 +65,8 @@ q = 20% 的空方版：B0 毛 +37.3%、淨 −87.8%；D0 毛 +35.2%、淨 −90.
 
 毛報酬換算每日每檔約 0.24%，損益兩平的單邊成本約 0.12%；主要情境的實際單邊成本約 0.25%（其中 tick 滑價約 0.23%）。
 
+**價差實測（事後檢查 1 tick 假設）**：期交所每日行情檔含「最後最佳買價／賣價」。取 2025 到 2026 年每三週抽一週、近月股票期貨一般時段的收盤報價（32,107 筆，其中成交量 ≥ 100 口的流動契約 20,109 筆）：流動契約的收盤價差中位數 2 tick（47% 為 1 tick、71% 在 2 tick 以內），市價單付的半價差每邊中位數 0.174%、平均 0.242%，與本協定假設的 1 tick／每邊（中位數 0.180%、平均 0.215%）幾乎相同；依價位級距，100–500 元半價差 0.18%、500–1,000 元 0.14%、10–50 元 0.17%。1 tick／每邊因此是收盤時實際報價的水準，不是偏嚴的假設；8:45 開盤時的價差只會更寬，日資料看不到。
+
 #### 3.3 資本情境（空方版，q = 10%，主要成本，P1 ∪ P2）
 
 | 模型 | 資本 | 年化淨報酬 | Sharpe | 平均口數／日 | 買不到一口的名單 | 參與率被擋 | 名目部署率 | 保證金使用率 |
@@ -177,6 +179,8 @@ Short-only with q = 20%: B0 gross +37.3%, net −87.8%; D0 gross +35.2%, net −
 | D0 | NT$60 | 1 tick | +64.5% | −73.6% | −2.78 |
 
 The gross return is about 0.24% per name per day, so the break-even cost per side is about 0.12%; the primary scenario's actual cost per side is about 0.25%, of which tick slippage is about 0.23%.
+
+**Spread census (post-hoc check of the 1-tick assumption)**: the TAIFEX daily files carry the last best bid and ask. Sampling every third week of 2025–2026, near-month stock futures in the regular session (32,107 rows, of which 20,109 liquid contracts with volume ≥ 100), the liquid contracts' closing quoted spread has a median of 2 ticks (47% at 1 tick, 71% within 2 ticks); the half-spread a market order pays per side has a median of 0.174% and a mean of 0.242%, almost identical to this protocol's 1 tick per side (median 0.180%, mean 0.215%); by price band the half-spread is 0.18% at NT$100–500, 0.14% at NT$500–1,000 and 0.17% at NT$10–50. One tick per side is therefore the level of the actual closing quotes, not a harsh assumption; spreads at the 08:45 open can only be wider, which daily data cannot show.
 
 #### 3.3 Capital scenarios (short-only, q = 10%, primary costs, P1 ∪ P2)
 

@@ -45,6 +45,12 @@
   `docs/futures_daytrade_results.md`：毛報酬 +61–65%／年但 tick 滑價吃掉 125%，H-E 未通過。
 - 新增 `scripts/fetch_tw_company_reference.py` 與 `configs/reference/tw_company_reference_20261022.csv`
   （證交所、櫃買 OpenAPI 公司基本資料快照：產業別、已發行股數），供 §13.16 殘差化標籤使用。
+- 新增 §13.16 的殘差化標籤 `data/residual_labels.py`（每個訊號日、市場內把原始 alpha 目標對截距、
+  市值代理與產業虛擬變數回歸，殘差再 gauss-rank；shard 多出 `residual_hNN`，identity 含規格、參考表
+  與實作，原標籤庫不變）；`stock-forecasting-build-features`／`walk-forward-lgbm` 新增 `--label-variant`，
+  `runpod_workflow.sh features`／`lgbm` 新增 `--labelVariant`（Pod 環境 `RUNPOD_LABEL_VARIANT`）；
+  LightGBM 在變體上命名為 `t-lgbm-alpha-<variant>`，對殘差目標與原始 alpha 各算 Rank IC，續跑只接受
+  同一變體的折。規格 `configs/labels/residual_v1a.json`（成交金額代理）、`residual_v1b.json`（市值快照）。
 - 本機 guard 現在也會為 `research-xs-train` 的 GPU Pod 啟動 GPU 時脈監測。
 
 ### v0.2.2 2026-09-21
@@ -162,6 +168,16 @@
 - `scripts/fetch_tw_company_reference.py` and `configs/reference/tw_company_reference_20261022.csv`
   (TWSE/TPEX OpenAPI company basic-data snapshot: industry code, issued shares) for the §13.16
   residualized labels.
+- Protocol §13.16 residualized labels `data/residual_labels.py` (within each signal date and
+  market the raw alpha targets are regressed on an intercept, a size proxy and industry dummies
+  and the residuals gauss-ranked; shards add `residual_hNN`, the identity includes the spec, the
+  reference table and the implementation, and the existing stores are untouched);
+  `stock-forecasting-build-features` / `walk-forward-lgbm` gain `--label-variant` and
+  `runpod_workflow.sh features` / `lgbm` gain `--labelVariant` (Pod env `RUNPOD_LABEL_VARIANT`);
+  LightGBM on a variant is named `t-lgbm-alpha-<variant>`, scores Rank IC against both the residual
+  and the raw alpha targets, and resumes partial folds only from the same variant. Specs
+  `configs/labels/residual_v1a.json` (dollar-volume proxy) and `residual_v1b.json` (market-cap
+  snapshot).
 - The local guard now starts the GPU clock monitor for `research-xs-train` GPU Pods too.
 
 ### v0.2.2 2026-09-21
