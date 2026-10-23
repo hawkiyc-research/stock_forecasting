@@ -425,6 +425,42 @@ class LocalControlTests(unittest.TestCase):
         ):
             monitor.alive(12345)
 
+    def test_cli_accepts_the_empty_run_id_of_research_gpu_pods(self):
+        # research-xs-train Pods have no W&B run; the guard's ready file carries run_id "".
+        with tempfile.TemporaryDirectory() as name:
+            log = Path(name) / "guard.log"
+            identity = {
+                "pid": 12345,
+                "pod_id": "pod-a",
+                "run_id": "",
+                "state": "armed",
+                "armed_at": "fixture",
+                "host_boot_id": "fixture",
+            }
+            monitor.atomic_json(monitor.paths(log)["ready"], identity)
+            argv = [
+                "start",
+                "--pod-id",
+                "pod-a",
+                "--run-id",
+                "",
+                "--guard-pid",
+                "12345",
+                "--guard-log",
+                str(log),
+            ]
+            with (
+                patch.object(sys, "argv", ["runpod_gpu_monitor.py", *argv]),
+                patch.dict(os.environ, {"RUNPOD_GPU_MONITOR": "1"}),
+                patch.object(monitor.subprocess, "Popen") as child,
+            ):
+                child.return_value.poll.return_value = None
+                self.assertEqual(monitor.main(), 0)
+                self.assertIn("--run-id", child.call_args.args[0])
+            invalid = ["runpod_gpu_monitor.py", *argv[:4], "bad id", *argv[5:]]
+            with patch.object(sys, "argv", invalid), self.assertRaises(SystemExit):
+                monitor.main()
+
     def test_start_is_idempotent_and_only_passes_monitor_environment(self):
         with tempfile.TemporaryDirectory() as name:
             log = Path(name) / "guard.log"

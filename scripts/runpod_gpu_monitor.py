@@ -636,8 +636,10 @@ def main():
     )
     args = parser.parse_args()
     if args.command in ("start", "watch"):
+        # The run ID is empty for research GPU Pods (no W&B run); the guard's ready file
+        # then carries "" too, which the ownership checks compare verbatim.
         if not re.fullmatch(r"[A-Za-z0-9_-]+", args.pod_id) or not re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}", args.run_id
+            r"(?:[A-Za-z0-9][A-Za-z0-9._-]{0,119})?", args.run_id
         ):
             parser.error("Invalid Pod/run identity")
         if not args.guard_log.is_absolute() or args.guard_pid <= 1:
