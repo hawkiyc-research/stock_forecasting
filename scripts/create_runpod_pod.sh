@@ -80,6 +80,7 @@ case "${RUNPOD_GPU_WORKFLOW}" in
 esac
 RUNPOD_XS_EXPERIMENT="${RUNPOD_XS_EXPERIMENT:-}"
 RUNPOD_XS_SEEDS="${RUNPOD_XS_SEEDS:-}"
+RUNPOD_LABEL_VARIANT="${RUNPOD_LABEL_VARIANT:-}"
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "xs" ]]; then
     if [[ ! "${RUNPOD_XS_EXPERIMENT}" =~ ^t-xs-[a-z0-9-]+$ ]]; then
         echo "RUNPOD_XS_EXPERIMENT must name a t-xs-* experiment" >&2
@@ -89,6 +90,19 @@ if [[ "${RUNPOD_GPU_WORKFLOW}" == "xs" ]]; then
         echo "RUNPOD_XS_SEEDS must be space-separated non-negative integers" >&2
         exit 2
     fi
+    if [[ -n "${RUNPOD_LABEL_VARIANT}" ]]; then
+        if [[ ! "${RUNPOD_LABEL_VARIANT}" =~ ^configs/labels/[a-z0-9_]+\.json$ ]]; then
+            echo "RUNPOD_LABEL_VARIANT must name a file under configs/labels/" >&2
+            exit 2
+        fi
+        if [[ ! -f "${SCRIPT_DIR}/../${RUNPOD_LABEL_VARIANT}" ]]; then
+            echo "RUNPOD_LABEL_VARIANT spec is missing: ${RUNPOD_LABEL_VARIANT}" >&2
+            exit 2
+        fi
+    fi
+elif [[ -n "${RUNPOD_LABEL_VARIANT}" ]]; then
+    echo "RUNPOD_LABEL_VARIANT applies to the xs workflow only" >&2
+    exit 2
 fi
 runpod_validate_project_resource_name "${RUNPOD_POD_NAME}" RUNPOD_POD_NAME
 RUNPOD_GPU_ID="${RUNPOD_CLI_GPU_ID:-${RUNPOD_GPU_ID:-NVIDIA GeForce RTX 5090}}"
@@ -541,7 +555,7 @@ POD_ENV_JSON="$(printf \
 
 POD_CREATE_JSON="$(RUNPOD_SCOPED_LIFECYCLE="${RUNPOD_SCOPED_LIFECYCLE}" RUNPOD_POD_NAME="${RUNPOD_POD_NAME}" \
     RUNPOD_GPU_WORKFLOW="${RUNPOD_GPU_WORKFLOW}" RUNPOD_XS_EXPERIMENT="${RUNPOD_XS_EXPERIMENT}" \
-    RUNPOD_XS_SEEDS="${RUNPOD_XS_SEEDS}" \
+    RUNPOD_XS_SEEDS="${RUNPOD_XS_SEEDS}" RUNPOD_LABEL_VARIANT="${RUNPOD_LABEL_VARIANT}" \
     RUNPOD_GPU_ID="${RUNPOD_GPU_ID}" RUNPOD_GPU_COUNT="${RUNPOD_GPU_COUNT}" \
     RUNPOD_IMAGE="${RUNPOD_IMAGE}" RUNPOD_MIN_CUDA_VERSION="${RUNPOD_MIN_CUDA_VERSION}" \
     RUNPOD_CLOUD_TYPE="${RUNPOD_CLOUD_TYPE}" RUNPOD_DATACENTER_ID="${RUNPOD_DATACENTER_ID}" \
@@ -572,6 +586,8 @@ if os.environ.get("RUNPOD_GPU_WORKFLOW") == "xs":
     payload["env"]["RUNPOD_GPU_WORKFLOW"] = "xs"
     payload["env"]["RUNPOD_XS_EXPERIMENT"] = os.environ["RUNPOD_XS_EXPERIMENT"]
     payload["env"]["RUNPOD_XS_SEEDS"] = os.environ["RUNPOD_XS_SEEDS"]
+    if os.environ.get("RUNPOD_LABEL_VARIANT"):
+        payload["env"]["RUNPOD_LABEL_VARIANT"] = os.environ["RUNPOD_LABEL_VARIANT"]
 if os.environ.get("RUNPOD_PAIRED_PLAN_PATH"):
     payload["env"]["RUNPOD_PAIRED_PLAN_PATH"] = os.environ["RUNPOD_PAIRED_PLAN_PATH"]
     if os.environ.get("RUNPOD_PAIRED_ACTION"):
@@ -650,7 +666,8 @@ fi
 
 printf 'Created Pod: %s\n' "${POD_ID}"
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "xs" ]]; then
-    printf 'Cross-stock experiment: %s (seeds %s)\n' "${RUNPOD_XS_EXPERIMENT}" "${RUNPOD_XS_SEEDS}"
+    printf 'Cross-stock experiment: %s (seeds %s, labels %s)\n' \
+        "${RUNPOD_XS_EXPERIMENT}" "${RUNPOD_XS_SEEDS}" "${RUNPOD_LABEL_VARIANT:-standard}"
 fi
 printf 'Run ID: %s\n' "${WANDB_RUN_ID}"
 if [[ -n "${RUNPOD_TRAINING_SEED:-}" ]]; then

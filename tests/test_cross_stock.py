@@ -20,6 +20,7 @@ from stock_forecasting.cross_stock_training import (
     plan_fold,
     run_cross_stock,
     table_from_caches,
+    write_xs_manifest,
 )
 from stock_forecasting.models.cross_stock import (
     CrossStockConfig,
@@ -270,3 +271,112 @@ def test_finished_fold_seeds_are_written_and_resumed(tmp_path: Path) -> None:
         **{**shared, "experiment": "t-xs-a4-no-gating"},
     )
     assert other["fits"]["mean_epochs"] == 1.0
+
+
+def _variant(cache, seed: int):
+    """Fake label-variant arrays: the residual target is the alpha with a group shift removed."""
+    rng = np.random.default_rng(seed)
+    residual = cache.alpha - 0.5 * cache.alpha.mean(axis=1, keepdims=True)
+    residual = residual + 0.002 * rng.standard_normal(residual.shape).astype(np.float32)
+    frame = pd.DataFrame(residual)
+    frame["group"] = cache.cutoff_ns.astype(np.int64) * 4 + cache.market_codes.astype(np.int64)
+    ranks = frame.groupby("group").rank().to_numpy(dtype=np.float32)
+    sizes = frame.groupby("group")[0].transform("size").to_numpy()[:, None]
+    return SimpleNamespace(
+        split=cache.split,
+        variant="residual_test",
+        ranks=(ranks - 0.5) / sizes,
+        residual=residual.astype(np.float32),
+    )
+
+
+def test_label_variant_scores_the_residual_target_and_reports_seed_stability(
+    tmp_path: Path,
+) -> None:
+    sessions = _sessions()
+    cache = _cache("train", sessions, 7)
+    with pytest.raises(ValueError, match="exactly the cached splits"):
+        table_from_caches({"train": cache}, label_variants={})
+    table = table_from_caches({"train": cache}, label_variants={"train": _variant(cache, 1)})
+    assert table.residual is not None and table.residual.shape == (len(table), len(HORIZONS))
+    assert not torch.equal(table.ranks, torch.from_numpy(cache.ranks))
+    folds = quarterly_folds(sessions, SCHEDULE)
+    with pytest.raises(ValueError, match="label variant"):
+        run_cross_stock(
+            table,
+            experiment="t-xs-scratch",
+            folds=folds,
+            schedule=SCHEDULE,
+            output_root=tmp_path / "unnamed",
+            seeds=(1,),
+            min_group_size=5,
+            device="cpu",
+        )
+    dates = pd.DatetimeIndex(sorted(set(table.dates)))
+    predicted = dates[(dates >= pd.Timestamp("2024-01-01")) & (dates < pd.Timestamp("2024-07-01"))]
+    baseline_name = f"{BASELINE}-residual_test"
+    baseline = pd.DataFrame(
+        [
+            {"model": baseline_name, "market": market, "h": h, "date": day, "ic": 0.01, "n": 24}
+            for day in predicted
+            for market in ("TPEX", "TWSE")
+            for h in HORIZONS
+        ]
+    )
+    output = tmp_path / "variant"
+    results = run_cross_stock(
+        table,
+        experiment="t-xs-scratch",
+        folds=folds,
+        schedule=SCHEDULE,
+        output_root=output,
+        seeds=(1, 2),
+        min_group_size=5,
+        device="cpu",
+        params={"max_epochs": 2, "patience": 2},
+        baseline_daily=baseline,
+        baseline_daily_residual=baseline.assign(ic=0.02),
+        baseline_model=baseline_name,
+        label_variant="residual_test",
+        max_groups_per_epoch=40,
+    )
+    assert results["label_variant"] == "residual_test"
+    assert results["baseline_model"] == baseline_name
+    targets = pd.read_parquet(output / "targets.parquet")
+    assert {f"residual_h{h:02d}" for h in HORIZONS} <= set(targets.columns)
+    residual_daily = pd.read_parquet(output / "daily_rank_ic_residual.parquet")
+    assert set(residual_daily["model"]) == {
+        "t-xs-scratch",
+        "t-xs-scratch-seed1",
+        "t-xs-scratch-seed2",
+    }
+    # HORIZONS has no h >= 11, so the long cell is empty.
+    assert {c["cell"] for c in results["cells_residual"]} == {"short", "holding"}
+    assert all(p["baseline"] == baseline_name for p in results["paired_vs_baseline"])
+    residual_pairs = results["paired_vs_baseline_residual"]
+    assert {p["cell"] for p in residual_pairs} == {"short", "holding"}
+    stability = {(s["cell"], s["period"]): s for s in results["seed_stability"]}
+    row = stability[("short", "P1+P2")]
+    assert row["seeds"] == 2 and len(row["seed_rank_ic"]) == 2
+    assert row["seed_range"] == pytest.approx(max(row["seed_rank_ic"]) - min(row["seed_rank_ic"]))
+    assert row["ensemble_gain"] == pytest.approx(row["ensemble_rank_ic"] - row["seed_mean"])
+    assert isinstance(row["single_seed_adequate"], bool)
+    manifest = write_xs_manifest(output, results=results, label_variant="residual_test")
+    assert "daily_rank_ic_residual.parquet" in manifest["files"]
+    # Partials of the standard labels are not reused by a variant run and vice versa.
+    standard = run_cross_stock(
+        table_from_caches({"train": cache}),
+        experiment="t-xs-scratch",
+        folds=folds,
+        schedule=SCHEDULE,
+        output_root=tmp_path / "standard",
+        seeds=(1, 2),
+        min_group_size=5,
+        device="cpu",
+        params={"max_epochs": 1, "patience": 1},
+        resume_root=output,
+        max_groups_per_epoch=20,
+    )
+    assert standard["label_variant"] is None
+    assert standard["cells_residual"] == [] and standard["fits"]["mean_epochs"] == 1.0
+    assert not (tmp_path / "standard" / "daily_rank_ic_residual.parquet").exists()

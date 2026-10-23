@@ -43,6 +43,7 @@ from stock_forecasting.walk_forward_lgbm import (
     fold_masks,
     group_codes,
     rank_column,
+    residual_column,
     score_column,
     summarize_cells,
 )
@@ -93,26 +94,49 @@ class SampleTable:
     horizons: list[int]
     feature_columns: list[str]
     encoded: torch.Tensor | None = None  # (N, D_enc) cached frozen-encoder embeddings
+    # (N, H) float32 residual targets of a label variant (protocol 13.16); None = standard labels
+    residual: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.dates)
 
 
-def table_from_caches(caches: dict[str, Any], *, windows_dtype=torch.float32) -> SampleTable:
-    """Concatenate the split caches (train, validation, test) into one table."""
+def table_from_caches(
+    caches: dict[str, Any],
+    *,
+    windows_dtype=torch.float32,
+    label_variants: dict[str, Any] | None = None,
+) -> SampleTable:
+    """Concatenate the split caches (train, validation, test) into one table.
+
+    With ``label_variants`` (one ``LabelVariantArrays`` per split present in ``caches``) the
+    variant's ranks replace the cache's standard ranks and its residual targets are attached.
+    """
     order = ("train", "validation", "test")
-    parts = [caches[split] for split in order if split in caches]
+    splits = [split for split in order if split in caches]
+    parts = [caches[split] for split in splits]
     if not parts:
         raise ValueError("At least one split cache is required")
     horizons, columns = parts[0].horizons, parts[0].feature_columns
     for cache in parts[1:]:
         if cache.horizons != horizons or cache.feature_columns != columns:
             raise ValueError("Split caches disagree on horizons or feature columns")
+    residual = None
+    if label_variants is not None:
+        if set(label_variants) != set(splits):
+            raise ValueError("Label-variant arrays must cover exactly the cached splits")
+        variants = [label_variants[split] for split in splits]
+        for cache, variant in zip(parts, variants, strict=True):
+            if len(variant.ranks) != len(cache.cutoff_ns):
+                raise ValueError(f"{cache.split}: label-variant rows differ from the cache")
+        ranks = torch.cat([torch.from_numpy(np.ascontiguousarray(v.ranks)) for v in variants])
+        residual = np.concatenate([np.asarray(v.residual, dtype=np.float32) for v in variants])
+    else:
+        ranks = torch.cat([torch.from_numpy(np.ascontiguousarray(c.ranks)) for c in parts])
     windows = torch.cat(
         [torch.from_numpy(np.ascontiguousarray(c.windows)).to(windows_dtype) for c in parts]
     )
     features = torch.cat([torch.from_numpy(np.ascontiguousarray(c.features)) for c in parts])
-    ranks = torch.cat([torch.from_numpy(np.ascontiguousarray(c.ranks)) for c in parts])
     alpha = np.concatenate([np.asarray(c.alpha, dtype=np.float32) for c in parts])
     dates = np.concatenate(
         [np.asarray(c.cutoff_ns, dtype="int64").astype("datetime64[ns]") for c in parts]
@@ -138,6 +162,7 @@ def table_from_caches(caches: dict[str, Any], *, windows_dtype=torch.float32) ->
         ordinal=ordinal,
         horizons=horizons,
         feature_columns=columns,
+        residual=residual,
     )
 
 
@@ -440,6 +465,54 @@ def paired_comparison(
     return rows
 
 
+def seed_stability(
+    cells: list[dict[str, Any]], experiment: str, seeds: tuple[int, ...]
+) -> list[dict[str, Any]]:
+    """Per cell and period: dispersion of the single-seed Rank ICs and the ensemble's gain.
+
+    ``single_seed_adequate`` holds when both the seed range and the ensemble gain (ensemble
+    minus mean single seed) stay below half the ensemble's 95% interval half-width, so a
+    single seed would land inside the ensemble's own sampling noise.
+    """
+    rows = []
+    by_key = {(row["model"], row["cell"], row["period"]): row for row in cells}
+    scopes = sorted({(row["cell"], row["period"]) for row in cells if row["model"] == experiment})
+    for cell, period in scopes:
+        ensemble = by_key[(experiment, cell, period)]
+        values = [
+            by_key[(f"{experiment}-seed{seed}", cell, period)]["rank_ic"]
+            for seed in seeds
+            if (f"{experiment}-seed{seed}", cell, period) in by_key
+        ]
+        if len(values) < 2:
+            continue
+        array = np.asarray(values, dtype=np.float64)
+        half_width = (ensemble["ci95_high"] - ensemble["ci95_low"]) / 2.0
+        seed_range = float(array.max() - array.min())
+        gain = float(ensemble["rank_ic"] - array.mean())
+        rows.append(
+            {
+                "model": experiment,
+                "cell": cell,
+                "period": period,
+                "seeds": len(values),
+                "seed_rank_ic": [float(v) for v in values],
+                "seed_mean": float(array.mean()),
+                "seed_std": float(array.std(ddof=1)),
+                "seed_range": seed_range,
+                "ensemble_rank_ic": float(ensemble["rank_ic"]),
+                "ensemble_gain": gain,
+                "ensemble_ci95_half_width": float(half_width),
+                "single_seed_adequate": bool(
+                    np.isfinite(half_width)
+                    and seed_range < 0.5 * half_width
+                    and abs(gain) < 0.5 * half_width
+                ),
+            }
+        )
+    return rows
+
+
 def decide_h_a(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     """H-A: the paired difference's lower bound is above 0 in both short and holding cells."""
     by_cell = {row["cell"]: row for row in pairs if row["period"] == DECISION_PERIOD}
@@ -475,13 +548,25 @@ def run_cross_stock(
     max_groups_per_epoch: int | None = None,
     headroom_bytes: int = 4 * 1024**3,
     resume_root: Path | None = None,
+    baseline_model: str = BASELINE_MODEL,
+    baseline_daily_residual: pd.DataFrame | None = None,
+    label_variant: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold and seed; each finished (fold, seed) is written to ``output_root/partial``
-    immediately and reused from ``resume_root`` after a restart."""
+    immediately and reused from ``resume_root`` after a restart.
+
+    With a label variant (``table.residual`` set, ``label_variant`` named) the scores are also
+    evaluated against the residual targets (protocol 13.16) and, when
+    ``baseline_daily_residual`` is given, paired against the baseline on that target too.
+    """
     started = time.monotonic()
+    if (table.residual is None) != (label_variant is None):
+        raise ValueError("A label variant needs both the residual targets and its name")
     partial_root = output_root / "partial"
     partial_root.mkdir(parents=True, exist_ok=True)
-    resumed = _load_xs_partials(resume_root, partial_root, experiment, folds, seeds)
+    resumed = _load_xs_partials(
+        resume_root, partial_root, experiment, folds, seeds, label_variant=label_variant
+    )
     params = {**TRAINING_PARAMS, **(params or {})}
     config, lambda_corr = make_config(experiment, table)
     index = build_group_index(table)
@@ -512,7 +597,16 @@ def run_cross_stock(
             )
             scores[(plan.fold.index, seed)] = (rows, values)
             records.append(record)
-            _save_xs_partial(partial_root, experiment, plan.fold.index, seed, rows, values, record)
+            _save_xs_partial(
+                partial_root,
+                experiment,
+                plan.fold.index,
+                seed,
+                rows,
+                values,
+                record,
+                label_variant=label_variant,
+            )
             print(
                 json.dumps(
                     {
@@ -544,6 +638,8 @@ def run_cross_stock(
         for position, h in enumerate(horizons):
             targets[alpha_column(h)] = table.alpha[rows, position]
             targets[rank_column(h)] = ranks[:, position]
+            if table.residual is not None:
+                targets[residual_column(h)] = table.residual[rows, position]
         target_frames.append(targets)
         stacked = []
         for seed in seeds:
@@ -571,15 +667,33 @@ def run_cross_stock(
     cells = summarize_cells(daily, schedule)
     pairs = (
         paired_comparison(
-            daily, baseline_daily, schedule, model=experiment, baseline=BASELINE_MODEL
+            daily, baseline_daily, schedule, model=experiment, baseline=baseline_model
         )
         if baseline_daily is not None
         else []
     )
+    # Protocol 13.16: the residual target is what the variant model predicts; the raw alpha
+    # target above is what a long portfolio earns.
+    daily_residual, cells_residual, pairs_residual = None, [], []
+    if table.residual is not None:
+        daily_residual = daily_rank_ic(
+            predictions, targets, horizons=horizons, minimum=min_group_size, target=residual_column
+        )
+        cells_residual = summarize_cells(daily_residual, schedule)
+        if baseline_daily_residual is not None:
+            pairs_residual = paired_comparison(
+                daily_residual,
+                baseline_daily_residual,
+                schedule,
+                model=experiment,
+                baseline=baseline_model,
+            )
     output_root.mkdir(parents=True, exist_ok=True)
     predictions.to_parquet(output_root / "predictions.parquet", index=False)
     targets.to_parquet(output_root / "targets.parquet", index=False)
     daily.to_parquet(output_root / "daily_rank_ic.parquet", index=False)
+    if daily_residual is not None:
+        daily_residual.to_parquet(output_root / "daily_rank_ic_residual.parquet", index=False)
     fits = pd.DataFrame([{k: v for k, v in r.items() if k != "history"} for r in records])
     fits.to_parquet(output_root / "fits.parquet", index=False)
     (output_root / "training_history.json").write_text(
@@ -594,6 +708,8 @@ def run_cross_stock(
         "schema_version": SCHEMA_VERSION,
         "model_schema": MODEL_SCHEMA,
         "model": experiment,
+        "label_variant": label_variant,
+        "baseline_model": baseline_model if baseline_daily is not None else None,
         "generated_at": datetime.now(UTC).isoformat(),
         "config": config.to_dict(),
         "lambda_corr": lambda_corr,
@@ -604,7 +720,10 @@ def run_cross_stock(
         "folds": fold_frame(folds).to_dict(orient="records"),
         "device": store.plan,
         "cells": cells,
+        "cells_residual": cells_residual,
+        "seed_stability": seed_stability(cells, experiment, seeds),
         "paired_vs_baseline": pairs,
+        "paired_vs_baseline_residual": pairs_residual,
         "decision": decide_h_a(pairs) if pairs else None,
         "per_market_horizon": per_horizon.to_dict(orient="records"),
         "fits": {
@@ -633,10 +752,19 @@ def _save_xs_partial(
     rows: np.ndarray,
     values: np.ndarray,
     record: dict[str, Any],
+    *,
+    label_variant: str | None = None,
 ) -> None:
     pending = partial_root / (_xs_partial_name(fold_index, seed) + ".pending")
     with pending.open("wb") as stream:
-        np.savez(stream, rows=rows, values=values, record=json.dumps(record), experiment=experiment)
+        np.savez(
+            stream,
+            rows=rows,
+            values=values,
+            record=json.dumps(record),
+            experiment=experiment,
+            label_variant=label_variant or "",
+        )
         stream.flush()
         os.fsync(stream.fileno())
     pending.replace(partial_root / _xs_partial_name(fold_index, seed))
@@ -648,8 +776,13 @@ def _load_xs_partials(
     experiment: str,
     folds: list[Fold],
     seeds: tuple[int, ...],
+    label_variant: str | None = None,
 ) -> dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]]:
-    """Finished (fold, seed) pairs of an earlier run of the same experiment."""
+    """Finished (fold, seed) pairs of an earlier run of the same experiment and label variant.
+
+    Partials saved under another label variant (or by the standard labels when a variant is
+    asked for) are ignored.
+    """
     if resume_root is None:
         return {}
     source = Path(resume_root) / "partial"
@@ -661,6 +794,9 @@ def _load_xs_partials(
                 continue
             with np.load(path, allow_pickle=False) as payload:
                 if str(payload["experiment"]) != experiment:
+                    continue
+                stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
+                if stored != (label_variant or ""):
                     continue
                 resumed[(fold.index, seed)] = (
                     np.asarray(payload["rows"], dtype=np.int64),
@@ -683,6 +819,8 @@ def write_xs_manifest(
         "fits.parquet",
         "training_history.json",
     )
+    if (output_root / "daily_rank_ic_residual.parquet").is_file():
+        names = (*names, "daily_rank_ic_residual.parquet")
     payload = {
         "schema_version": SCHEMA_VERSION,
         "kind": "cross-stock-walk-forward",

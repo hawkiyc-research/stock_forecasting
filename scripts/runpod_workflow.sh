@@ -66,7 +66,7 @@ Usage:
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
   bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID]
+  bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json]
   bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
   bash scripts/runpod_workflow.sh volume-weights inventory|delete [OPTIONS]
   bash scripts/runpod_workflow.sh cpu-logs
@@ -576,6 +576,7 @@ EOF
         xs_seeds=()
         xs_max_runtime=24h
         xs_gpu_id="NVIDIA GeForce RTX 5090"
+        xs_label_variant=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
@@ -583,6 +584,7 @@ EOF
                 --seed) xs_seeds+=("$2") ;;
                 --maxRuntime|--max-runtime) xs_max_runtime="$2" ;;
                 --gpuId|--gpu-id) xs_gpu_id="$2" ;;
+                --labelVariant|--label-variant) xs_label_variant="$2" ;;
                 *)
                     echo "Unknown xs-train option: $1" >&2
                     usage
@@ -611,6 +613,7 @@ EOF
         export RUNPOD_CLI_GPU_ID="${xs_gpu_id}"
         export RUNPOD_XS_EXPERIMENT="${xs_experiment}"
         export RUNPOD_XS_SEEDS="${xs_seeds[*]}"
+        runpod_export_label_variant "${xs_label_variant}"
         exec env RUNPOD_GPU_WORKFLOW=xs bash "${SCRIPT_DIR}/create_runpod_pod.sh"
         ;;
     readiness)

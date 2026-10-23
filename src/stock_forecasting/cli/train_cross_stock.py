@@ -4,6 +4,10 @@ Builds (or reuses) the cross-stock sample cache of every split from the ready fe
 rank-label stores, trains the experiment over the quarterly walk-forward folds with the given
 seeds, and writes the B0-compatible outputs plus the paired comparison against the LightGBM
 baseline under ``--output-root``.
+
+With ``--label-variant`` (protocol 13.16) the residualized store's ranks replace the standard
+labels, the scores are also evaluated against the residual targets, and the baseline must be
+the B0 run trained on the same variant.
 """
 
 from __future__ import annotations
@@ -65,7 +69,41 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Verify encoder weights in the local Hugging Face cache instead of downloading.",
     )
+    parser.add_argument(
+        "--label-variant",
+        type=Path,
+        help="Residualized label spec (configs/labels/NAME.json) whose ready store supplies "
+        "the ranks and residual targets (protocol 13.16).",
+    )
     return parser
+
+
+def load_baseline(
+    root: Path, label_variant: str | None
+) -> tuple[str, pd.DataFrame, pd.DataFrame | None]:
+    """The baseline model name and daily Rank IC series, checked against the label variant."""
+    path = root / "daily_rank_ic.parquet"
+    if not path.is_file():
+        raise SystemExit(f"Baseline daily Rank IC is missing: {path}")
+    model, baseline_variant = BASELINE_MODEL, None
+    results_path = root / "results.json"
+    if results_path.is_file():
+        results = json.loads(results_path.read_text())
+        model = str(results.get("model", BASELINE_MODEL))
+        baseline_variant = results.get("label_variant")
+    if (baseline_variant or None) != (label_variant or None):
+        raise SystemExit(
+            f"Baseline {root} was trained on label variant {baseline_variant!r}, "
+            f"this run uses {label_variant!r}"
+        )
+    daily = pd.read_parquet(path)
+    if model not in set(daily["model"]):
+        raise SystemExit(f"Baseline file has no {model} rows")
+    residual = None
+    residual_path = root / "daily_rank_ic_residual.parquet"
+    if label_variant is not None and residual_path.is_file():
+        residual = pd.read_parquet(residual_path)
+    return model, daily, residual
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,16 +122,33 @@ def main(argv: list[str] | None = None) -> int:
     schedule = load_schedule(args.schedule)
     roots = validated_split_roots(config)
     min_group_size = int(config.model.rank_min_group_size)
-    caches, cache_roots = {}, {}
+    label_spec, variant_name = None, None
+    if args.label_variant is not None:
+        from stock_forecasting.data.residual_labels import load_label_spec
+
+        label_spec = load_label_spec(args.label_variant)
+        variant_name = str(label_spec["name"])
+    caches, cache_roots, variants, variant_roots = {}, {}, {}, {}
     for split in ("train", "validation", "test"):
         source = open_clean_dataset(config, split, validated_root=roots[split])
         try:
             root = ensure_xs_cache(source, spec, min_group_size, workers=args.workers)
+            caches[split] = open_xs_cache(root)
+            if label_spec is not None:
+                from stock_forecasting.data.xs_label_variant import (
+                    ensure_label_variant,
+                    open_label_variant,
+                )
+
+                variant_root = ensure_label_variant(
+                    caches[split], source, min_group_size, label_spec
+                )
+                variants[split] = open_label_variant(variant_root)
+                variant_roots[split] = str(variant_root)
         finally:
             source.close()
-        caches[split] = open_xs_cache(root)
         cache_roots[split] = str(root)
-    table = table_from_caches(caches)
+    table = table_from_caches(caches, label_variants=variants if label_spec is not None else None)
     encoder_name = EXPERIMENTS[args.experiment].get("encoder")
     encoder_records = None
     if encoder_name is not None:
@@ -145,14 +200,11 @@ def main(argv: list[str] | None = None) -> int:
         folds = [fold for fold in folds if fold.index in wanted]
         if not folds:
             raise SystemExit("--folds selected no fold of the schedule")
-    baseline_daily = None
+    baseline_model, baseline_daily, baseline_residual = BASELINE_MODEL, None, None
     if args.baseline_root is not None:
-        path = args.baseline_root / "daily_rank_ic.parquet"
-        if not path.is_file():
-            raise SystemExit(f"Baseline daily Rank IC is missing: {path}")
-        baseline_daily = pd.read_parquet(path)
-        if BASELINE_MODEL not in set(baseline_daily["model"]):
-            raise SystemExit(f"Baseline file has no {BASELINE_MODEL} rows")
+        baseline_model, baseline_daily, baseline_residual = load_baseline(
+            args.baseline_root, variant_name
+        )
     params = {}
     if args.max_epochs is not None:
         params["max_epochs"] = args.max_epochs
@@ -171,6 +223,9 @@ def main(argv: list[str] | None = None) -> int:
         baseline_daily=baseline_daily,
         max_groups_per_epoch=args.max_groups_per_epoch,
         resume_root=args.resume_root,
+        baseline_model=baseline_model,
+        baseline_daily_residual=baseline_residual,
+        label_variant=variant_name,
     )
     write_xs_manifest(
         args.output_root,
@@ -178,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
         experiment_config=str(args.experiment_config),
         schedule=str(args.schedule),
         caches=cache_roots,
+        label_variant=variant_name,
+        label_variant_arrays=variant_roots or None,
         baseline_root=None if args.baseline_root is None else str(args.baseline_root),
         encoder=encoder_records,
     )
@@ -186,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "output_root": str(args.output_root),
                 "experiment": args.experiment,
+                "label_variant": variant_name,
                 "parameters": results["parameters"],
                 "device": results["device"],
                 "fits": results["fits"],
@@ -194,6 +252,12 @@ def main(argv: list[str] | None = None) -> int:
                     for c in results["cells"]
                     if c["model"] == args.experiment and c["period"] == "P1+P2"
                 ],
+                "cells_residual": [
+                    c
+                    for c in results["cells_residual"]
+                    if c["model"] == args.experiment and c["period"] == "P1+P2"
+                ],
+                "seed_stability": [s for s in results["seed_stability"] if s["period"] == "P1+P2"],
                 "decision": results["decision"],
                 "seconds": round(results["seconds"], 1),
             },

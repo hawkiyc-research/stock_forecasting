@@ -24,11 +24,16 @@ FEATURES_LOG="${RUNPOD_TMUX_LOG_FILE:-${LOG_ROOT}/xs-train/${LAUNCH_ID}/combined
 CODE_MARKER="${LIFECYCLE_ROOT}/stage1/code.json"
 # One marker per volume, as for the research job; the guard checks its Pod ID.
 FEATURES_MARKER="${LIFECYCLE_ROOT}/research/xs-train.json"
-BASELINE_MARKER="${LIFECYCLE_ROOT}/research/lgbm.json"
 OUTPUT_ROOT="${NETWORK_VOLUME_ROOT}/diagnostics/xs/${LAUNCH_ID}"
 WALK_FORWARD_SCHEDULE="configs/walk_forward/tw_quarterly_v1.json"
 XS_EXPERIMENT="${RUNPOD_XS_EXPERIMENT:-t-xs-scratch}"
 XS_SEEDS="${RUNPOD_XS_SEEDS:-42 43 44}"
+# Protocol 13.16: train on a residualized label variant and pair against the B0 run of the
+# same variant; empty = the standard labels.
+LABEL_VARIANT="${RUNPOD_LABEL_VARIANT:-}"
+# Optional explicit B0 launch to pair against (launch-...); default = newest finished B0 of
+# the same label variant on this volume.
+XS_BASELINE_LAUNCH="${RUNPOD_XS_BASELINE_LAUNCH:-}"
 CACHE_ROOT="${CACHE_ROOT:-${NETWORK_VOLUME_ROOT}/cache}"
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export HF_HUB_DISABLE_XET=1
@@ -51,6 +56,14 @@ if [[ ! "${XS_SEEDS}" =~ ^[0-9]+( [0-9]+)*$ ]]; then
     echo "RUNPOD_XS_SEEDS must be space-separated non-negative integers" >&2
     exit 2
 fi
+if [[ -n "${LABEL_VARIANT}" && ! "${LABEL_VARIANT}" =~ ^configs/labels/[a-z0-9_]+\.json$ ]]; then
+    echo "RUNPOD_LABEL_VARIANT must name a file under configs/labels/" >&2
+    exit 2
+fi
+if [[ -n "${XS_BASELINE_LAUNCH}" && ! "${XS_BASELINE_LAUNCH}" =~ ^launch-[A-Za-z0-9_-]{1,150}$ ]]; then
+    echo "RUNPOD_XS_BASELINE_LAUNCH must be a launch-... ID" >&2
+    exit 2
+fi
 runpod_validate_absolute_path "${NETWORK_VOLUME_ROOT}" NETWORK_VOLUME_ROOT
 if [[ ! "${LAUNCH_ID}" =~ ^launch-[A-Za-z0-9_-]{1,150}$ ]]; then
     echo "RUNPOD_LAUNCH_ID contains unsupported characters" >&2
@@ -67,7 +80,7 @@ if [[ ! "${FEATURE_EXPERIMENT_CONFIG}" =~ ^configs/experiments/[a-z0-9_]+\.yaml$
 fi
 for path_name in \
     PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT POETRY_BIN FEATURES_LOG \
-    CODE_MARKER FEATURES_MARKER BASELINE_MARKER OUTPUT_ROOT CACHE_ROOT; do
+    CODE_MARKER FEATURES_MARKER OUTPUT_ROOT CACHE_ROOT; do
     path_value="${!path_name}"
     case "${path_value}" in
         /workspace|/workspace/*)
@@ -82,7 +95,8 @@ if [[ ! -x "${RUNPOD_PYTHON_BIN}" ]]; then
     echo "RunPod image Python is unavailable: ${RUNPOD_PYTHON_BIN}" >&2
     exit 127
 fi
-for relative in "${FEATURE_SPEC}" "${FEATURE_EXPERIMENT_CONFIG}" "${WALK_FORWARD_SCHEDULE}"; do
+for relative in "${FEATURE_SPEC}" "${FEATURE_EXPERIMENT_CONFIG}" "${WALK_FORWARD_SCHEDULE}" \
+    ${LABEL_VARIANT:+"${LABEL_VARIANT}"}; do
     if [[ ! -f "${PROJECT_ROOT}/${relative}" || -L "${PROJECT_ROOT}/${relative}" ]]; then
         echo "Required config is missing or is a symlink: ${relative}" >&2
         exit 2
@@ -158,25 +172,37 @@ printf '[%s] cross-stock tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${POETRY_BIN}" run pytest -q \
     tests/test_walk_forward.py tests/test_cross_stock.py tests/test_encoders.py
 bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
-# The paired H-A comparison needs the finished B0 run recorded on this volume.
-BASELINE_ROOT=""
-if [[ -f "${BASELINE_MARKER}" ]]; then
-    BASELINE_ROOT="$("${RUNPOD_PYTHON_BIN}" - "${BASELINE_MARKER}" "${NETWORK_VOLUME_ROOT}" <<'PY'
+# The paired H-A comparison needs a finished B0 run of the same label variant on this
+# volume: the newest diagnostics/lgbm/launch-*/results.json whose label_variant matches (the
+# lgbm marker only remembers the latest launch, which may be another variant's).
+BASELINE_ROOT="$("${RUNPOD_PYTHON_BIN}" - "${NETWORK_VOLUME_ROOT}" "${PROJECT_ROOT}" \
+    "${LABEL_VARIANT}" "${XS_BASELINE_LAUNCH}" <<'PY'
 import json, sys
-marker = json.load(open(sys.argv[1]))
-launch = str(marker.get("launch_id", ""))
-if marker.get("kind") == "research-lgbm" and marker.get("state") == "ready" and launch.startswith("launch-"):
-    print(f"{sys.argv[2]}/diagnostics/lgbm/{launch}")
+from pathlib import Path
+volume, project, spec_path, explicit = sys.argv[1:5]
+wanted = json.load(open(Path(project) / spec_path))["name"] if spec_path else None
+root = Path(volume) / "diagnostics" / "lgbm"
+candidates = [root / explicit] if explicit else sorted(root.glob("launch-*"), reverse=True)
+for launch in candidates:
+    results = launch / "results.json"
+    if not results.is_file() or not (launch / "daily_rank_ic.parquet").is_file():
+        continue
+    payload = json.load(open(results))
+    if (payload.get("label_variant") or None) != wanted:
+        continue
+    print(launch)
+    break
 PY
 )"
-fi
-if [[ -z "${BASELINE_ROOT}" || ! -f "${BASELINE_ROOT}/daily_rank_ic.parquet" ]]; then
-    echo "The B0 LightGBM baseline is not ready on this volume; run cpu-lgbm first" >&2
+if [[ -z "${BASELINE_ROOT}" ]]; then
+    echo "No finished B0 LightGBM run of label variant '${LABEL_VARIANT:-standard}' is on this volume; run cpu-lgbm first" >&2
     exit 2
 fi
+printf 'Paired baseline: %s\n' "${BASELINE_ROOT}"
 
-printf '[%s] cross-stock experiment %s seeds %s: %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${XS_EXPERIMENT}" "${XS_SEEDS}" "${DATA_ROOT}"
+printf '[%s] cross-stock experiment %s seeds %s labels %s: %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${XS_EXPERIMENT}" "${XS_SEEDS}" \
+    "${LABEL_VARIANT:-standard}" "${DATA_ROOT}"
 mkdir -p "${HF_HOME}"
 # A container restart loses the job but not the volume: reuse the newest earlier launch's
 # finished folds of this dataset (the trainer verifies they match before using them).
@@ -203,6 +229,11 @@ if [[ -n "${RESUME_ROOT}" && -d "${RESUME_ROOT}" ]]; then
 fi
 if [[ -n "${FIN_TS_XS_CACHE_WORKERS:-}" ]]; then
     XS_ARGUMENTS+=(--workers "${FIN_TS_XS_CACHE_WORKERS}")
+fi
+if [[ -n "${LABEL_VARIANT}" ]]; then
+    # The trainer only resumes partial folds saved under the same label variant.
+    printf 'Residualized label variant: %s\n' "${LABEL_VARIANT}"
+    XS_ARGUMENTS+=(--label-variant "${LABEL_VARIANT}")
 fi
 "${POETRY_BIN}" run stock-forecasting-train-cross-stock "${XS_ARGUMENTS[@]}"
 
