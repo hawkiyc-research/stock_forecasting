@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "name": "holding-walk-forward-tw",
+  "description": "Label-aligned secondary analysis of walk-forward ranking scores (not a pre-registered decision of protocol section 13.13): top-K bought at the next open and sold at the close h sessions later with h start sleeves, the stage 1 engine and costs; h = 1 pays the day-trade tax.",
+  "markets": {"TWSE": ["TWSE"], "TPEX": ["TPEX"], "TW": ["TWSE", "TPEX"]},
+  "holding_days": [1, 2, 3, 5, 10],
+  "top_k": [10, 20, 50],
+  "costs": {
+    "commission_rate": 0.001425,
+    "transaction_tax": {"stock": 0.003, "etf": 0.001},
+    "day_trade_tax": {"stock": 0.0015, "etf": 0.001},
+    "slippage_per_side": {"TWSE": 0.001, "TPEX": 0.002},
+    "discounts": [1.0, 0.6, 0.28],
+    "slippage_multipliers": [0, 1, 2],
+    "turnover_modes": ["conservative", "optimistic"],
+    "primary": {"discount": 0.6, "slippage_multiplier": 1, "turnover": "conservative"}
+  },
+  "annualization_days": 252,
+  "bootstrap": {"replicates": 1000, "seed": 11, "min_block": 5, "block_per_holding_day": 2},
+  "periods": {
+    "P1": ["2023-01-02", "2025-06-01"],
+    "P2": ["2025-06-01", "2026-06-01"]
+  },
+  "selection": {"market": "TWSE", "period": "P1", "version": "long_only", "metric": "net_excess_ir"}
+}

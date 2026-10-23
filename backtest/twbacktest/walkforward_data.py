@@ -53,6 +53,9 @@ def load_prices(path: Path) -> pd.DataFrame:
     frame["open_1"] = grouped["adj_open"].shift(-1)
     frame["open_2"] = grouped["adj_open"].shift(-2)
     frame["close_2"] = grouped["adj_close"].shift(-2)
+    # Holding-aligned exits: the close h sessions after the signal date, h = 1..14.
+    for h in range(1, 15):
+        frame[f"close_{h}"] = grouped["adj_close"].shift(-h)
     return frame
 
 
@@ -125,3 +128,56 @@ def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForward
     return WalkForwardInputs(
         index=index, scores=scores, horizons=horizons, link=links(index), move=move, dates=dates
     )
+
+
+HOLDING_HORIZONS = list(range(1, 15))
+
+
+def build_holding_returns(
+    predictions: pd.DataFrame, prices: pd.DataFrame
+) -> tuple[np.ndarray, np.ndarray]:
+    """Log return from the next open to the close h sessions later, and its log alpha.
+
+    Row order follows ``predictions``; column h-1 holds horizon h. These are the quantities the
+    walk-forward labels are built from, so a top-K batch bought at the next open and sold at the
+    close h sessions later (the stage 1 engine) is evaluated on exactly what the model ranked.
+    """
+    stock_columns = ["symbol", "date", "open_1", *[f"close_{h}" for h in HOLDING_HORIZONS]]
+    stocks = prices[prices["asset_type"] != "index"][stock_columns]
+    merged = predictions[["symbol", "market", "signal_date"]].merge(
+        stocks,
+        left_on=["symbol", "signal_date"],
+        right_on=["symbol", "date"],
+        how="left",
+        validate="one_to_one",
+    )
+    index_frames = []
+    for market, symbol in INDEX_SYMBOLS.items():
+        rows = prices[(prices["asset_type"] == "index") & (prices["symbol"] == symbol)]
+        rows = rows[["date", "open_1", *[f"close_{h}" for h in HOLDING_HORIZONS]]].copy()
+        rows["market"] = market
+        index_frames.append(rows)
+    bench = pd.concat(index_frames, ignore_index=True)
+    merged = merged.merge(
+        bench,
+        left_on=["market", "signal_date"],
+        right_on=["market", "date"],
+        how="left",
+        suffixes=("", "_bench"),
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        entry = merged["open_1"].to_numpy(dtype=np.float64)
+        bench_entry = merged["open_1_bench"].to_numpy(dtype=np.float64)
+        log_return = np.column_stack(
+            [
+                np.log(merged[f"close_{h}"].to_numpy(dtype=np.float64) / entry)
+                for h in HOLDING_HORIZONS
+            ]
+        )
+        bench_return = np.column_stack(
+            [
+                np.log(merged[f"close_{h}_bench"].to_numpy(dtype=np.float64) / bench_entry)
+                for h in HOLDING_HORIZONS
+            ]
+        )
+    return log_return, log_return - bench_return

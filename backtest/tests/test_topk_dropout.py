@@ -159,3 +159,41 @@ def test_run_selects_the_informative_horizon_and_judges_h_b(tmp_path: Path) -> N
     assert set(grid["market"]) == {"TWSE", "TPEX"} and set(grid["model"]) == {"good", "noise"}
     assert (tmp_path / "out" / "summary.md").read_text().startswith("# Top-k dropout")
     assert (tmp_path / "out" / "daily_series.csv").is_file()
+
+
+def test_holding_backtest_finds_the_intraday_signal(tmp_path: Path) -> None:
+    from twbacktest import holding_walkforward
+    from twbacktest.walkforward_data import build_holding_returns
+
+    predictions_path, prices_path = _fixture(tmp_path)
+    prices = load_prices(prices_path)
+    predictions = load_predictions(predictions_path, "good")
+    log_return, log_alpha = build_holding_returns(predictions, prices)
+    assert (
+        log_return.shape == (len(predictions), 14) and np.isfinite(log_return[:, 0]).mean() > 0.99
+    )
+    assert np.isfinite(log_alpha[:, 4]).mean() > 0.99
+    # An "intraday" model that knows the next open-to-close move must win at h = 1.
+    intraday = predictions.copy()
+    rng = np.random.default_rng(9)
+    for h in range(1, 15):
+        intraday[f"h{h:02d}"] = rng.normal(size=len(intraday))
+    intraday["h01"] = np.nan_to_num(log_return[:, 0]) + rng.normal(0, 0.002, len(intraday))
+    intraday["model"] = "intraday"
+    both = tmp_path / "both.parquet"
+    pd.concat([pd.read_parquet(predictions_path), intraday]).to_parquet(both, index=False)
+    config = json.loads(holding_walkforward.DEFAULT_CONFIG.read_text())
+    config["bootstrap"]["replicates"] = 100
+    config["holding_days"] = [1, 5]
+    config["top_k"] = [10]
+    config_path = tmp_path / "holding.json"
+    config_path.write_text(json.dumps(config))
+    report = holding_walkforward.run(config_path, both, "intraday", prices_path, tmp_path / "hold")
+    assert report["selection"]["h"] == 1 and report["selection"]["k"] == 10
+    assert report["selection"]["P1+P2"]["gross_excess_mean"] > 0
+    grid = pd.read_csv(tmp_path / "hold" / "grid.csv")
+    assert set(grid["period"]) == {"P1", "P2", "P1+P2"} and set(grid["market"]) == {
+        "TWSE",
+        "TPEX",
+        "TW",
+    }
