@@ -312,6 +312,18 @@ uv run python -m twbacktest.futures_daytrade --predictions ../artifacts/lgbm/<la
 uv run python -m twbacktest.futures_universe --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
 
+`twbacktest.exposure_diagnostics` 是 `docs/experiment_protocol.md` §13.17 的步驟 0（描述性，含事前停止規則）：
+以殘差化標籤模型的 h = 5／10 分數，在 §13.14 流動性宇宙與 §13.15 股票期貨流動宇宙內，計算對殘差目標與
+原始報酬的 Rank IC、前後四分位價差，以及 plain／產業中性／規模中性三種金額中性多空組合的毛年化，並以
+股票期貨成本（期交稅、每口手續費、1 tick、每日換 1/h 加每月換月）估年化成本拖累；停止規則為股票期貨宇宙
+h = 10、P1 ∪ P2 的產業中性毛年化須達成本拖累的兩倍。需要同一 run 的 `targets.parquet`（`residual_hNN`
+欄）與 `configs/reference/` 的公司參考表。輸出 `grid.csv`、`daily.csv`、`report.json`（含判定）與
+`summary.md`。結果見 `docs/exposure_diagnostics_results.md`。
+
+```bash
+uv run python -m twbacktest.exposure_diagnostics --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --targets ../artifacts/lgbm/<launch-id>/targets.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --targets ../artifacts/xs/<launch-id>/targets.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
 ## English
 
 ### Purpose
@@ -669,4 +681,19 @@ label's holding before costs.
 
 ```bash
 uv run python -m twbacktest.futures_universe --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+`twbacktest.exposure_diagnostics` is step 0 of `docs/experiment_protocol.md` §13.17 (descriptive, with a
+pre-registered stop rule): with the residual-label models' h = 5 / 10 scores, inside the §13.14 liquidity
+universe and the §13.15 liquid stock-futures universe, it computes Rank IC and top-minus-bottom quartile
+spreads against the residual target and the raw return, the gross annual return of plain / industry-neutral /
+size-neutral dollar-neutral long-short books, and the annual cost drag under stock-futures costs (tax,
+per-contract commission, one tick, 1/h of the book replaced daily plus a monthly roll); the stop rule requires
+the industry-neutral gross in the stock-futures universe at h = 10 on P1 ∪ P2 to reach twice the cost drag.
+It needs the same run's `targets.parquet` (`residual_hNN` columns) and the company reference table under
+`configs/reference/`. Outputs: `grid.csv`, `daily.csv`, `report.json` (with the verdicts) and `summary.md`.
+Results in `docs/exposure_diagnostics_results.md`.
+
+```bash
+uv run python -m twbacktest.exposure_diagnostics --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --targets ../artifacts/lgbm/<launch-id>/targets.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --targets ../artifacts/xs/<launch-id>/targets.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
