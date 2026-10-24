@@ -1185,6 +1185,10 @@ P0 逐樣本拆解把三分類 CE 分成兩部分：「報酬會不會超出 ±1
 
 **§13.16 模型線結論（2026-10-24）**：三個模型在殘差目標上的多日排序能力相同（P2 持有格 B0 0.0646、D0 0.0676、D1 0.0710，區間重疊），h = 1 只有 D0 三 seed 集成對 B0 有 +0.004 的可信增量。依 H-A 處置，**B0 為策略基線**，D0 集成並列為候選訊號；策略層（§13.17）以 B0 與 D0 兩者執行，D1 不進入策略層。
 
+**執行面變更（2026-10-24，Chronos-2 執行前）**：跨股票 trainer 的每步主機同步點移除（epoch loss 留在 GPU 累加、loss 細節改回傳 tensor、群組列索引常駐 GPU 以切片取 batch、驗證與預測一次回傳主機）並改用 fused AdamW。模型、損失、每步一個 (訊號日, 市場) 群組、超參數、seed 與資料全部不變，CPU 上的單元測試結果逐位元相同；此變更只縮短牆鐘時間，不影響任何數字，D0／D1 不重跑。GPU 利用率低的原因是每步一個群組、模型小（0.4–0.65M 參數）而被 kernel launch 與主機同步綁住；多群組打包成一個 batch 會改變有效 batch 與優化軌跡，屬訓練程序變更，不在此做。
+
+**§13.16 D1 第二個編碼器**：`t-xs-chronos2-small`（凍結 Chronos-2-small，通用時序基礎模型，28M 參數，Apache-2.0），`residual_v1a` 標籤，依第 9 點只跑 seed 42，配對同標籤 B0，並以 `scripts/compare_xs_runs.py` 對 D0 集成與 D0 單 seed 配對。事前預期（Kronos 論文台股附錄、Rahimikia 2025）：通用預訓練不轉移到台股截面，結果應不優於 Kronos-small；若對 D0 單 seed 的配對差在短格或持有格的區間下界 > 0 才改變結論。
+
 ### 14. 遠端驗證邊界
 
 Python environment、Poetry lock、lint、pytest、data preparation、model prefetch、GPU

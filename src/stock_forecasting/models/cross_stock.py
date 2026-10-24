@@ -170,14 +170,21 @@ class CrossStockModel(nn.Module):
 
 
 def cross_sectional_loss(
-    scores: torch.Tensor, targets: torch.Tensor, lambda_corr: float
-) -> tuple[torch.Tensor, dict[str, float]]:
+    scores: torch.Tensor,
+    targets: torch.Tensor,
+    lambda_corr: float,
+    *,
+    check_labels: bool = True,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """MSE on the gauss-rank labels + lambda * (1 - cross-sectional Pearson correlation).
 
-    NaN targets (unlabelled groups) are masked; both terms average over horizons.
+    NaN targets (unlabelled groups) are masked; both terms average over horizons. The returned
+    details are detached 0-d tensors, and with ``check_labels=False`` (training groups are
+    pre-filtered to labelled ones) nothing here reads a device value back to the host, so the
+    per-group steps queue without a sync.
     """
     mask = torch.isfinite(targets)
-    if not mask.any():
+    if check_labels and not bool(mask.any()):
         raise ValueError("A batch without any labelled sample cannot contribute to the loss")
     scores = scores.float()
     targets = torch.where(mask, targets.float(), torch.zeros_like(scores))
@@ -189,13 +196,13 @@ def cross_sectional_loss(
     ds = (scores - score_mean) * weight
     dt = (targets - target_mean) * weight
     corr = (ds * dt).sum(dim=0) / torch.sqrt((ds**2).sum(dim=0) * (dt**2).sum(dim=0) + 1e-12)
-    usable = count > 2
-    corr_term = (1.0 - corr)[usable].mean() if usable.any() else scores.new_zeros(())
+    usable = (count > 2).float()
+    usable_count = usable.sum().clamp_min(1.0)
+    # Horizons with fewer than three labelled rows contribute nothing (data-independent form).
+    corr_term = ((1.0 - corr) * usable).sum() / usable_count
     loss = mse.mean() + lambda_corr * corr_term
-    return loss, {
-        "mse": float(mse.mean().detach()),
-        "corr": float(corr[usable].mean().detach()) if usable.any() else float("nan"),
-    }
+    corr_mean = (corr * usable).sum() / usable_count
+    return loss, {"mse": mse.mean().detach(), "corr": corr_mean.detach()}
 
 
 def parameter_count(model: nn.Module) -> int:

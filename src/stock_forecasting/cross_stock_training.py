@@ -232,9 +232,15 @@ class TensorStore:
             "device": str(device),
             "tensor_bytes": int(needed),
         }
+        self.order: torch.Tensor | None = None
 
-    def batch(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
-        index = torch.as_tensor(rows, dtype=torch.long)
+    def attach_order(self, order: np.ndarray) -> None:
+        """Keep the group row order where the gather runs, so a group batch is one slice and
+        one index_select with no per-step host-to-device copy or host sync."""
+        tensor = torch.as_tensor(np.ascontiguousarray(order), dtype=torch.long)
+        self.order = tensor.to(self.device) if self.resident else tensor
+
+    def gather(self, index: torch.Tensor) -> dict[str, torch.Tensor]:
         if self.resident:
             index = index.to(self.device)
             return {k: v.index_select(0, index) for k, v in self.tensors.items()}
@@ -242,6 +248,16 @@ class TensorStore:
             k: v.index_select(0, index).to(self.device, non_blocking=True)
             for k, v in self.tensors.items()
         }
+
+    def batch(self, rows: np.ndarray) -> dict[str, torch.Tensor]:
+        return self.gather(torch.as_tensor(rows, dtype=torch.long))
+
+    def group_batch(self, index: GroupIndex, group: int) -> dict[str, torch.Tensor]:
+        """Batch of one (date, market) group through the attached order."""
+        if self.order is None:
+            return self.batch(index.rows(group))
+        start = int(index.starts[group])
+        return self.gather(self.order[start : start + int(index.sizes[group])])
 
 
 def make_config(experiment: str, table: SampleTable) -> tuple[CrossStockConfig, float]:
@@ -286,13 +302,13 @@ def _predict(
     rows_out, scores_out = [], []
     with torch.no_grad():
         for group in groups:
-            rows = index.rows(int(group))
-            batch = store.batch(rows)
+            batch = store.group_batch(index, int(group))
             with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
                 scores = _forward(model, batch)
-            rows_out.append(rows)
-            scores_out.append(scores.float().cpu().numpy())
-    return np.concatenate(rows_out), np.concatenate(scores_out)
+            rows_out.append(index.rows(int(group)))
+            scores_out.append(scores.float())
+    # A single device-to-host copy per call; per-group .cpu() calls serialized the GPU.
+    return np.concatenate(rows_out), torch.cat(scores_out).cpu().numpy()
 
 
 def _validation_ic(
@@ -364,8 +380,13 @@ def train_fold(
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     model = CrossStockModel(config).to(store.device)
+    # One fused kernel per step instead of per-parameter updates: the per-group steps are
+    # launch-bound (one (date, market) group per step), so kernel count is the wall clock.
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=params["learning_rate"], weight_decay=params["weight_decay"]
+        model.parameters(),
+        lr=params["learning_rate"],
+        weight_decay=params["weight_decay"],
+        fused=store.device.type == "cuda",
     )
     autocast = store.device.type == "cuda"
     best_ic, best_epoch, best_state, bad_epochs, history = -np.inf, -1, None, 0, []
@@ -374,17 +395,23 @@ def train_fold(
         groups = rng.permutation(plan.train_groups)
         if max_groups_per_epoch is not None:
             groups = groups[:max_groups_per_epoch]
-        losses = []
+        # The epoch loss stays on the device: a float(loss) per step forced a host sync that
+        # kept the GPU idle while Python queued the next step.
+        loss_sum, steps = torch.zeros((), device=store.device), 0
         for group in groups:
-            batch = store.batch(index.rows(int(group)))
+            batch = store.group_batch(index, int(group))
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
                 scores = _forward(model, batch)
-            loss, _parts = cross_sectional_loss(scores, batch["ranks"], lambda_corr)
+            loss, _parts = cross_sectional_loss(
+                scores, batch["ranks"], lambda_corr, check_labels=False
+            )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), params["gradient_clip"])
             optimizer.step()
-            losses.append(float(loss.detach()))
+            loss_sum += loss.detach()
+            steps += 1
+        losses = [float(loss_sum) / max(steps, 1)]
         rows, scores = _predict(model, store, index, plan.valid_groups, autocast=autocast)
         if not np.array_equal(rows, plan.valid_rows):
             raise RuntimeError("Validation rows changed order between planning and prediction")
@@ -572,6 +599,7 @@ def run_cross_stock(
     index = build_group_index(table)
     torch_device = resolve_device(device)
     store = TensorStore(table, torch_device, headroom_bytes=headroom_bytes)
+    store.attach_order(index.order)
     plans = [plan_fold(table, index, fold, min_group_size=min_group_size) for fold in folds]
     records, scores = [], {}
     for plan in plans:
