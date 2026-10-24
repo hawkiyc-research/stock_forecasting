@@ -2,7 +2,25 @@
 
 ## 中文
 
-### 未發布 2026-10-22
+### v0.4.0 2026-10-25
+
+- 台股橫斷面排序主線（協定 §13.12–§13.17）完成並結案：B0 LightGBM 基線、D0 跨股票 transformer 與消融 A1、
+  殘差化標籤變體 A／B、D1 凍結編碼器（Kronos-small、Chronos-2-small）、策略層 H-B／H-D／H-E／H-F 判定與
+  §13.17 步驟 0 診斷。結論：模型有 h = 1 與殘差多日排序能力，但在台灣工具與成本下沒有勝過 0050 買進持有的
+  可部署策略。結果見 `docs/residual_labels_results.md`、`docs/exposure_diagnostics_results.md` 與
+  `reports/taiwan_rank_pipeline_results_20261025.docx`（`scripts/build_results_report.py` 產生）。
+- `runpod_workflow.sh xs-train --labelVariant`：D0／D1 在殘差化標籤上重訓；變體的 rank 與殘差目標寫在跨股票快取旁
+  的 `label-variants/<digest>/`，快取與 embedding 快取不重建；GPU 工作以 `label_variant` 配對同變體的 B0
+  （`RUNPOD_XS_BASELINE_LAUNCH` 可指定）；`results.json` 新增 `cells_residual`、`paired_vs_baseline_residual`
+  與 `seed_stability`（事前的單 seed 規則）。
+- `scripts/compare_xs_runs.py` 在相同訊號日配對兩個 xs 輸出（D1 對 D0）；`scripts/score_label_variant.py` 計 H-F。
+- 跨股票 trainer 移除每步的主機同步（epoch loss 留在 GPU、loss 細節回傳 tensor、群組索引常駐 GPU、驗證一次回傳）
+  並改用 fused AdamW；模型與數字不變，每 epoch 13.4 秒降為 9.2 秒，訓練階段 GPU 利用率 25–33% 升到 44–48%。
+- 修正：研究型 GPU Pod 沒有 W&B run ID 時 GPU 時脈監測無法啟動；tmux 包裝器對研究工作重寫失敗 marker 時誤帶
+  run ID；Kronos-small adapter 把字串路徑交給原始碼驗證器。
+- 新增 §13.17 步驟 0 診斷 `twbacktest.exposure_diagnostics`（殘差 alpha 幅度對股票期貨成本，含停止規則）。
+- README 重組：目前主線（台股橫斷面排序 pipeline、操作手冊、完整 CLI 參數）移到前面，Kronos alpha／方向模型
+  主線整節移入歷史實驗附錄；`MODEL_DEVELOPMENT_ROADMAP.md` 第 1、9 節補上結論與研究帳本。
 
 - 台灣行情取得：除權息調整改在有界 spawn process pool 執行（每個 provider 一個
   pool，worker 數受 `--workers`、可見 CPU、可用記憶體與交易日數限制，
@@ -52,6 +70,20 @@
   LightGBM 在變體上命名為 `t-lgbm-alpha-<variant>`，對殘差目標與原始 alpha 各算 Rank IC，續跑只接受
   同一變體的折。規格 `configs/labels/residual_v1a.json`（成交金額代理）、`residual_v1b.json`（市值快照）。
 - 本機 guard 現在也會為 `research-xs-train` 的 GPU Pod 啟動 GPU 時脈監測。
+
+### v0.3.0 2026-10-16
+
+- 一組實驗、兩個獨立模型：`a-signal64`／`b-signal64` 以同一 Pod 依序訓練 alpha 穩健點估計（normalized Smooth L1）
+  與固定 ±1% 報酬帶的個股漲／平／跌分類（CE），各有獨立 Kronos／LoRA-64、optimizer、head 與 checkpoint；
+  `-datemix` 對照只改訓練順序。父 run 管理成對子模型，`runs`／`status`／`download`／`resume` 支援父 ID。
+- direction64 V1／V2／V3 多任務系列（成本感知雙方向、市場 residual V2 與 PCGrad、有序方向 V3 與市場狀態 gate）、
+  adaptive64／adaptive128 與 LoRA 容量實驗，連同完整 CUDA 驗收與模型效能報告（`reports/`，舊版歸檔於
+  `reports/deprecated/`）。
+- RunPod 控制面：隔離的平行實驗與 run-scoped lifecycle、本機 GPU 降頻監控與通知、以 Pod ID 選擇或連接全部 Pod 的
+  TTL SSH socket、run inventory 與完成狀態查詢、baseline readiness 對當前資料規則的核對、GPU telemetry 重連、
+  過大 CUDA probe 的安全拒絕。
+- 文件：完整雙語 README 稽核與重排、RunPod CLI 選項與機房 GPU 查詢、特徵路徑與保留架構的 CLI 流程、
+  以證據連結的模型開發 roadmap 與交接文件（`MODEL_DEVELOPMENT_ROADMAP.md`）。
 
 ### v0.2.2 2026-09-21
 
@@ -115,7 +147,33 @@
 
 ## English
 
-### Unreleased 2026-10-22
+### v0.4.0 2026-10-25
+
+- The Taiwan cross-sectional rank line (protocol §13.12–§13.17) is complete and closed: the B0 LightGBM
+  baseline, the D0 cross-stock transformer with ablation A1, residualized label variants A / B, the D1
+  frozen encoders (Kronos-small, Chronos-2-small), the strategy-layer decisions H-B / H-D / H-E / H-F and the
+  §13.17 step 0 diagnostic. Conclusion: the models rank at h = 1 and, on residual targets, over multiple
+  days, but under Taiwan's instruments and costs no deployable strategy beats 0050 buy-and-hold. Results in
+  `docs/residual_labels_results.md`, `docs/exposure_diagnostics_results.md` and
+  `reports/taiwan_rank_pipeline_results_20261025.docx` (built by `scripts/build_results_report.py`).
+- `runpod_workflow.sh xs-train --labelVariant`: D0 / D1 retrain on residualized labels; the variant's ranks
+  and residual targets live beside the cross-stock cache under `label-variants/<digest>/`, so neither the
+  cache nor the embedding caches are rebuilt; the GPU job pairs against the same-variant B0 by
+  `label_variant` (`RUNPOD_XS_BASELINE_LAUNCH` overrides); `results.json` adds `cells_residual`,
+  `paired_vs_baseline_residual` and `seed_stability` (the pre-registered single-seed rule).
+- `scripts/compare_xs_runs.py` pairs two xs outputs on common signal dates (D1 vs D0);
+  `scripts/score_label_variant.py` scores H-F.
+- The cross-stock trainer drops its per-step host syncs (epoch loss on the GPU, loss details as tensors,
+  group index resident on the GPU, one validation copy) and uses fused AdamW; model and numbers unchanged,
+  13.4 → 9.2 s per epoch, training-phase GPU utilization 25–33% → 44–48%.
+- Fixes: the GPU clock monitor could not arm for research GPU Pods without a W&B run ID; the tmux wrapper
+  attached a run ID when rewriting a research failure marker; the Kronos-small adapter handed a string path
+  to the source verifier.
+- New §13.17 step 0 diagnostic `twbacktest.exposure_diagnostics` (residual alpha size against stock-futures
+  costs, with the stop rule).
+- README restructure: the current main line (the Taiwan rank pipeline, its operations guide and the complete
+  CLI parameters) moves to the front and the Kronos alpha / direction line moves whole into the historical
+  appendix; `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9 record the conclusions and the research ledger.
 
 - Taiwan acquisition applies corporate-action adjustments in a bounded spawn process
   pool (one pool per provider; workers limited by `--workers`, visible CPUs, available
@@ -179,6 +237,25 @@
   `configs/labels/residual_v1a.json` (dollar-volume proxy) and `residual_v1b.json` (market-cap
   snapshot).
 - The local guard now starts the GPU clock monitor for `research-xs-train` GPU Pods too.
+
+### v0.3.0 2026-10-16
+
+- One experiment, two independent models: `a-signal64` / `b-signal64` train the robust alpha point estimate
+  (normalized Smooth L1) and the fixed ±1% band stock down/neutral/up classifier (CE) in sequence on one Pod,
+  each with its own Kronos / LoRA-64, optimizer, head and checkpoints; the `-datemix` controls change only
+  the training order. A parent run manages the paired children; `runs` / `status` / `download` / `resume`
+  accept the parent ID.
+- The direction64 V1 / V2 / V3 multitask series (cost-aware dual direction, market-residual V2 with PCGrad,
+  ordinal V3 with market-state gates), the adaptive64 / adaptive128 and LoRA capacity experiments, with full
+  CUDA acceptance and the model performance reports (`reports/`; earlier versions archived under
+  `reports/deprecated/`).
+- RunPod control plane: isolated parallel experiments with run-scoped lifecycles, local GPU throttling
+  alerts, TTL SSH sockets selected by Pod ID or connecting every Pod, run inventory and completion queries,
+  baseline readiness checked against the current data rules, GPU telemetry reconnection, safe rejection of
+  oversized CUDA probes.
+- Documentation: the audited bilingual README reorganization, RunPod CLI options and regional GPU queries,
+  feature paths and retained-architecture CLI workflows, and the evidence-linked model development roadmap
+  and handoff (`MODEL_DEVELOPMENT_ROADMAP.md`).
 
 ### v0.2.2 2026-09-21
 

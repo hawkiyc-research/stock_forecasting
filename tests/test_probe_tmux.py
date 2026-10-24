@@ -321,12 +321,13 @@ class ProbeTmuxTests(unittest.TestCase):
 
     def test_readme_only_documents_tmux_for_remote_probe_execution(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        # The probe chapter sits one level deeper since the Kronos line moved to the appendix.
         for heading in (
-            "### 歷史尺度表徵診斷",
-            "### Historical scale representation diagnostics",
+            "#### 歷史尺度表徵診斷",
+            "#### Historical scale representation diagnostics",
         ):
             with self.subTest(heading=heading):
-                section = readme.split(heading, 1)[1].split("\n### ", 1)[0]
+                section = readme.split(heading, 1)[1].split("\n#### ", 1)[0]
                 language = "zh" if "歷史" in heading else "en"
                 self.assertIn(f"#single-model-{language}", section)
                 advanced = readme.split(f'<a id="single-model-{language}"></a>', 1)[1].split(
@@ -350,11 +351,11 @@ class ProbeTmuxTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         commands_by_language = []
         for heading in (
-            "#### 在本機下載診斷結果",
-            "#### Download diagnostic results locally",
+            "##### 在本機下載診斷結果",
+            "##### Download diagnostic results locally",
         ):
             with self.subTest(heading=heading):
-                section = readme.split(heading, 1)[1].split("\n#### ", 1)[0]
+                section = readme.split(heading, 1)[1].split("\n##### ", 1)[0]
                 commands = [part.split("```", 1)[0] for part in section.split("```bash\n")[1:]]
                 commands_by_language.append(commands)
                 self.assertEqual(

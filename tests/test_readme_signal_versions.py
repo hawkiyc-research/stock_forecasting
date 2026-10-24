@@ -169,24 +169,38 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
             self.assertEqual(text.count(appendix_marker), 1)
             current, historical = text.split(appendix_marker, 1)
             with self.subTest(language=language):
+                # The Taiwan rank line and the shared infrastructure stay in the main body.
                 for section in (
-                    "signal-tasks",
+                    "pipeline-current",
+                    "current-models",
+                    "current-evaluation",
                     "data",
-                    "training",
+                    "pipeline",
+                    "features",
                     "operations",
-                    "baseline",
-                    "train",
-                    "run-status",
-                    "download",
-                    "artifacts",
+                    "setup",
+                    "configure",
+                    "cpu",
+                    "gpu-catalog",
                     "cli-reference",
                     "acceptance",
                     "references",
                 ):
                     self.assertIn(f'<a id="{section}-{language}"></a>', current)
                     self.assertNotIn(f'<a id="{section}-{language}"></a>', historical)
-                self.assertIn(f'<a id="model-versions-{language}"></a>', historical)
-                self.assertNotIn(f'<a id="model-versions-{language}"></a>', current)
+                # The Kronos alpha/direction line (closed 2026-10-16) is the appendix.
+                for section in (
+                    "signal-tasks",
+                    "training",
+                    "baseline",
+                    "train",
+                    "run-status",
+                    "download",
+                    "artifacts",
+                    "model-versions",
+                ):
+                    self.assertIn(f'<a id="{section}-{language}"></a>', historical)
+                    self.assertNotIn(f'<a id="{section}-{language}"></a>', current)
                 self.assertIn(f"](#historical-experiments-{language})", current)
                 for variant in HISTORICAL_VARIANTS:
                     for group in ("a", "b"):
@@ -220,13 +234,18 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                         with self.subTest(language=language, command=command.strip()):
                             self.assertIn(preset, allowed)
                         found.add(preset)
+            # The Kronos launch examples live in the historical appendix since 2026-10-25; the
+            # current part keeps only the Taiwan rank line's commands.
+            historical = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[1]
+            historical = historical.replace("\\\n", " ")
             with self.subTest(language=language):
                 for variant in (*CURRENT_VARIANTS, *RANK_VARIANTS):
-                    self.assertIn(f"a-{variant}", found)
+                    self.assertRegex(historical, rf"train\s+--experiment\s+a-{variant}\b")
+                self.assertFalse(found - allowed)
 
     def test_pair_workflow_and_model_scoped_advanced_operations_are_explicit(self):
         for language, text in self.languages.items():
-            current, appendix = text.split(f'<a id="historical-experiments-{language}"></a>', 1)
+            appendix = text.split(f'<a id="historical-experiments-{language}"></a>', 1)[1]
             advanced = anchored_section(appendix, f"single-model-{language}")
             with self.subTest(language=language):
                 for variant in INDIVIDUAL_VARIANTS:
@@ -239,14 +258,14 @@ class ReadmeSignalVersionsTests(unittest.TestCase):
                     "download-result.json",
                     "RUNPOD_RESULT_DOWNLOAD_WORKERS",
                 ):
-                    self.assertIn(marker, current)
-                self.assertTrue(re.search(r"三台 pod|3 pods|three pods", plain(current)))
+                    self.assertIn(marker, appendix)
+                self.assertTrue(re.search(r"三台 pod|3 pods|three pods", plain(appendix)))
                 self.assertTrue(
                     re.search(
-                        r"六個(?:子)?模型|(?:6|six) (?:independent |child )?models", plain(current)
+                        r"六個(?:子)?模型|(?:6|six) (?:independent |child )?models", plain(appendix)
                     )
                 )
-                self.assertIn("--seed 42 --seed 43 --seed 44", current)
+                self.assertIn("--seed 42 --seed 43 --seed 44", appendix)
 
     def test_protocol_uses_same_public_pair_workflow_in_both_languages(self):
         text = (ROOT / "docs/experiment_protocol.md").read_text(encoding="utf-8")

@@ -131,9 +131,8 @@ class ReadmeCliReferenceTests(unittest.TestCase):
         for language, text in self.languages.items():
             with self.subTest(language=language):
                 self.assertRegex(text, r"(?m)^\| `--seed N` \|[^\n]*4294967295")
-                query = text.split(f'<a id="run-status-{language}"></a>', 1)[1].split(
-                    "\n##### ", 2
-                )[1]
+                after = text.split(f'<a id="run-status-{language}"></a>', 1)[1]
+                query = re.split(r"\n#{5,6} ", after, maxsplit=2)[1]
                 self.assertIn("`--seed N`", query)
                 self.assertIn("4294967295", query)
         self.assertEqual(self.markdown.count("--seed 42 --seed 43 --seed 44"), 2)
@@ -167,9 +166,8 @@ class ReadmeCliReferenceTests(unittest.TestCase):
                     "rank_ic_method=spearman_average_ties_v1",
                 ):
                     self.assertIn(value, text)
-                section = text.split(f'<a id="baseline-{language}"></a>', 1)[1].split("\n#### ", 2)[
-                    1
-                ]
+                after = text.split(f'<a id="baseline-{language}"></a>', 1)[1]
+                section = re.split(r"\n#{4,5} ", after, maxsplit=2)[1]
                 self.assertIn("`--experiment NAME`", section)
         self.assertNotIn("不能把 `--experiment` 傳給 baseline", self.markdown)
         self.assertNotIn("baseline does not accept\n`--experiment`", self.markdown)
