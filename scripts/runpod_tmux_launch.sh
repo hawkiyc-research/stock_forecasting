@@ -500,6 +500,13 @@ mkdir -p "${JOB_DIR}"
         printf '  return 1\n'
         printf '}\n'
     fi
+    # Only the stage1 GPU markers carry a W&B run ID. Research jobs (xs-train uses
+    # RUN_DIRECTORY_ID just for its log directory) write their marker without one, so passing
+    # the directory ID here made the inherited failure write fail with a run-ID mismatch.
+    LIFECYCLE_RUN_ID=""
+    case "${FAILURE_LIFECYCLE_KIND}" in
+        stage1-training|stage1-validation|stage1-baseline) LIFECYCLE_RUN_ID="${RUN_DIRECTORY_ID}" ;;
+    esac
     printf 'publish_lifecycle() {\n'
     printf '  local marker="$1" kind="$2" state="$3" lifecycle_exit_code="${4:-${job_exit_code}}"\n'
     printf '  local finalization_attempt=1\n'
@@ -507,7 +514,7 @@ mkdir -p "${JOB_DIR}"
     printf '    if %q %q write-state --output "${marker}" --network-volume-root %q --kind "${kind}" --state "${state}" --launch-id %q --exit-code "${lifecycle_exit_code}" --log-path %q --max-runtime-seconds %q --wandb-run-id %q --inherit-existing; then\n' \
         "${RUNPOD_IMAGE_PYTHON}" "${READINESS_HELPER}" \
         "${NETWORK_VOLUME_ROOT}" "${LAUNCH_ID}" "${JOB_LOG}" \
-        "${MAX_RUNTIME_SECONDS}" "${RUN_DIRECTORY_ID}"
+        "${MAX_RUNTIME_SECONDS}" "${LIFECYCLE_RUN_ID}"
     printf '      return 0\n'
     printf '    fi\n'
     printf '    sleep "$((finalization_attempt * finalization_retry_delay))"\n'

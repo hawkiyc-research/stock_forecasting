@@ -72,7 +72,8 @@ class KronosEncoder(nn.Module):
         from stock_forecasting.factory import _prepare_kronos_import
         from stock_forecasting.models.backbones import KronosBackbone
 
-        _prepare_kronos_import(kronos_source_root, kronos_source_revision)
+        # The CLI hands the config values over as strings; the verifier wants a Path.
+        _prepare_kronos_import(Path(kronos_source_root), str(kronos_source_revision))
         self.backbone = KronosBackbone.from_pretrained(
             spec.repositories[0], spec.repositories[1], local_files_only=True
         )
