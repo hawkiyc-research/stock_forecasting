@@ -203,6 +203,7 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | [Word 成果報告](reports/taiwan_rank_pipeline_results_20261025.docx) | 以上全部表格的雙語彙整，由 `scripts/build_results_report.py` 產生 |
 | [Word 六情境報告](reports/institution_cost_scenarios_20261025.docx) | §13.19 雙語報告的 Word 版，由 `scripts/build_scenario_report.py` 產生 |
 | [模型開發 roadmap](MODEL_DEVELOPMENT_ROADMAP.md) | 第 1 節結論、第 9 節研究帳本（含 §13.1–§13.11 的歷史實驗） |
+| [下一步實驗佇列](NEXT_EXPERIMENTS.md) | 只列尚未完成的實驗與前置工作，依執行順序，標明訓練需求；做完即移除 |
 
 
 <a id="data-zh"></a>
@@ -4426,6 +4427,7 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | [Word results report](reports/taiwan_rank_pipeline_results_20261025.docx) | Every table above in one bilingual document, produced by `scripts/build_results_report.py` |
 | [Word six-scenario report](reports/institution_cost_scenarios_20261025.docx) | Word version of the §13.19 bilingual report, built by `scripts/build_scenario_report.py` |
 | [Model development roadmap](MODEL_DEVELOPMENT_ROADMAP.md) | Section 1 conclusions and the section 9 research ledger (including the §13.1–§13.11 historical experiments) |
+| [Next experiments queue](NEXT_EXPERIMENTS.md) | Only the experiments and prerequisites not yet done, in execution order, with training needs; items are removed when finished |
 
 
 <a id="data-en"></a>
