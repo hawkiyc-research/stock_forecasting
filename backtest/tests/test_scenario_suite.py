@@ -209,7 +209,13 @@ def test_end_to_end_run_writes_outputs_and_selects(tmp_path):
     assert institution["net_return_annual"] > retail["net_return_annual"]
     assert institution["cost_drag_annual"] < retail["cost_drag_annual"]
     assert {"long_net_annual", "short_net_annual", "beta_abs_mean", "index_total_return_annual",
-            "hit_rate", "holding_mean"} <= set(grid.columns)
+            "hit_rate", "holding_mean", "deployed_share", "capped_share"} <= set(grid.columns)
+    # Cap-and-scale (the cost profile default): the 300M book is capped, not emptied.
+    big = grid[(grid["stage"] == "final") & (grid["scenario"] == "md_ls")
+               & (grid["capital"] == "300M") & (grid["market"] == "TWSE")
+               & grid["primary_slippage"]]
+    assert (big["cap_mode"] == "scale").all()
+    assert (big["deployed_share"] < 0.5).all() and (big["capped_share"] > 0).all()
 
 
 def test_purified_band_construction_runs_both_variants_and_matchings(tmp_path):

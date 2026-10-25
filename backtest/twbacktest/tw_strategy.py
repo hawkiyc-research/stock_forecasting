@@ -38,6 +38,8 @@ DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "tw_strategy.j
 DEFAULT_ARTIFACTS = Path(__file__).resolve().parents[2] / "artifacts"
 FRACTIONAL = "fractional"
 VERSIONS = ("long_only", "hedged", "cash_equitized")
+CAP_MODES = ("skip", "scale")
+MIN_FILL = 0.1  # a capped position below this share of its slot is skipped instead
 TX_REFERENCE = "tx_long_reference"
 
 
@@ -145,6 +147,9 @@ class BandResult:
     sell_value: np.ndarray  # slot value at the sale, per row (NaN when the row was not sold)
     odd_buy: np.ndarray  # row bought as odd lots
     odd_sell: np.ndarray  # row sold from an odd-lot position
+    fill_fraction: np.ndarray  # share of the slot invested while holding the row (NaN: none)
+    capped_buys: int  # buys scaled down by the participation cap (cap_mode "scale")
+    deployed: np.ndarray  # per interval: invested share of the K slots (1 = fully)
 
 
 def simulate_band(
@@ -162,6 +167,7 @@ def simulate_band(
     odd_lots: bool = False,
     dollar_volume: np.ndarray | None = None,
     participation_cap: float | None = None,
+    cap_mode: str = "skip",
 ) -> BandResult:
     """The hold-buffer rule of positions.simulate with a daily entry cap and capital limits.
 
@@ -172,8 +178,12 @@ def simulate_band(
     a candidate whose lot costs more than the slot's current value is skipped and counted,
     unless ``odd_lots`` lets the slot buy odd lots (flagged for their own costs). With
     ``dollar_volume`` and ``participation_cap``, a candidate whose slot value exceeds the cap
-    times its recent daily dollar volume is skipped and counted (a large-capital limit).
+    times its recent daily dollar volume is skipped and counted (a large-capital limit) when
+    ``cap_mode`` is "skip"; with "scale" the position is capped at the allowed value and the
+    rest of the slot stays in cash (skipped only below ``MIN_FILL`` of the slot).
     """
+    if cap_mode not in CAP_MODES:
+        raise ValueError(f"Unknown cap_mode {cap_mode!r}")
     intervals = len(ranked) - 1
     if intervals < 1:
         raise ValueError("At least two signal dates are needed")
@@ -197,6 +207,10 @@ def simulate_band(
     sell_value = np.full(rows_total, np.nan)
     odd_buy = np.zeros(rows_total, dtype=bool)
     odd_sell = np.zeros(rows_total, dtype=bool)
+    slot_fill = np.ones(k)
+    fill_row = np.full(rows_total, np.nan)
+    deployed = np.zeros(intervals)
+    capped_buys = 0
     periods: list[int] = []
     blocked_buys = blocked_sells = missing_exits = lot_blocked = buy_attempts = 0
     liquidity_blocked = odd_lot_buys = 0
@@ -205,6 +219,7 @@ def simulate_band(
         sell_value[row] = value[s]
         odd_sell[row] = odd_slot[s]
         odd_slot[s] = False
+        slot_fill[s] = 1.0
 
     for j in range(intervals):
         sold = set()
@@ -227,20 +242,27 @@ def simulate_band(
             if slot[s] >= 0 or waiting[s] or buys >= max_buys:
                 continue
             odd = False
+            fill = 1.0
             while True:
                 row = next(candidates, None)
                 if row is None:
                     break
                 buy_attempts += 1
+                fill = 1.0
                 if slot_capital is not None and dollar_volume is not None \
                         and participation_cap is not None:
                     volume = dollar_volume[row]
-                    if not np.isfinite(volume) or value[s] > participation_cap * volume:
-                        liquidity_blocked += 1
-                        continue
+                    allowed = participation_cap * volume if np.isfinite(volume) else np.nan
+                    if not np.isfinite(allowed) or value[s] > allowed:
+                        if cap_mode == "scale" and np.isfinite(allowed) \
+                                and allowed >= MIN_FILL * value[s]:
+                            fill = allowed / value[s]
+                        else:
+                            liquidity_blocked += 1
+                            continue
                 if lot_cost is not None and slot_capital is not None:
                     cost = lot_cost[row]
-                    if not np.isfinite(cost) or cost > value[s]:
+                    if not np.isfinite(cost) or cost > fill * value[s]:
                         if odd_lots and np.isfinite(cost) and cost > 0:
                             odd = True
                         else:
@@ -256,22 +278,28 @@ def simulate_band(
             slot[s] = row
             entry[s] = j
             buys += 1
-            buy_value[row] = value[s]
+            buy_value[row] = fill * value[s]
             odd_buy[row] = odd
             odd_slot[s] = odd
             odd_lot_buys += int(odd)
+            slot_fill[s] = fill
+            fill_row[row] = fill
+            capped_buys += int(fill < 1.0)
         waiting[:] = False
         for s in range(k):
             row = slot[s]
             if row < 0:
                 continue
             held[j, s] = row
+            deployed[j] += slot_fill[s] / k
             following = link.next_row[row]
             if following >= 0 and np.isfinite(move.growth[row]):
-                growth[j, s] = move.growth[row]
+                growth[j, s] = _scaled_growth(move.growth[row], slot_fill[s])
                 slot[s] = following
+                fill_row[following] = slot_fill[s]
             else:
-                growth[j, s] = move.fallback[row] if np.isfinite(move.fallback[row]) else 0.0
+                fallback = move.fallback[row] if np.isfinite(move.fallback[row]) else 0.0
+                growth[j, s] = _scaled_growth(fallback, slot_fill[s])
                 sell_close[j, s] = row
                 missing_exits += 1
                 periods.append(j - int(entry[s]) + 1)
@@ -301,7 +329,21 @@ def simulate_band(
         path=path, lot_blocked=lot_blocked, liquidity_blocked=liquidity_blocked,
         odd_lot_buys=odd_lot_buys, buy_attempts=buy_attempts, buy_value=buy_value,
         sell_value=sell_value, odd_buy=odd_buy, odd_sell=odd_sell,
+        fill_fraction=fill_row, capped_buys=capped_buys, deployed=deployed,
     )
+
+
+def _scaled_growth(growth: float, fill: float) -> float:
+    """Log growth of a slot whose invested share is ``fill`` (the rest is cash)."""
+    return growth if fill >= 1.0 else math.log1p(fill * math.expm1(growth))
+
+
+def scaled_rates(
+    result: BandResult, buy_rate: np.ndarray, sell_rate: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Cost rates as a share of the slot value: the traded value is the filled share."""
+    fill = np.where(np.isfinite(result.fill_fraction), result.fill_fraction, 1.0)
+    return buy_rate * fill, sell_rate * fill
 
 
 def capital_scenarios(config: dict[str, Any]) -> list[CapitalScenario]:
@@ -624,6 +666,7 @@ def evaluate_task(
         odd_lots=capital.odd_lots,
         dollar_volume=None if fractional else inputs.dollar_volume,
         participation_cap=None if fractional else config["capital"].get("participation_cap"),
+        cap_mode=str(config["capital"].get("participation_mode", "skip")),
     )
     path = result.path
     free = np.zeros(inputs.index.count)
@@ -644,13 +687,17 @@ def evaluate_task(
         "liquidity_blocked_share": result.liquidity_blocked / attempts,
         "odd_lot_buys": result.odd_lot_buys,
         "odd_lot_share": result.odd_lot_buys / attempts,
+        "capped_buys": result.capped_buys,
+        "capped_share": result.capped_buys / attempts,
+        "deployed_share": float(result.deployed.mean()),
         "futures_missing_intervals": futures.missing,
         **positions.path_statistics(path),
     }
     rows, series = [], {}
     for scenario, (base_buy_rate, base_sell_rate) in market_inputs.rates.items():
         buy_extra, sell_extra = rate_adjustments(result, scenario, config, capital=capital)
-        buy_rate, sell_rate = base_buy_rate + buy_extra, base_sell_rate + sell_extra
+        buy_rate, sell_rate = scaled_rates(
+            result, base_buy_rate + buy_extra, base_sell_rate + sell_extra)
         net = positions.replay(path, buy_rate, sell_rate)
         buy_mean, sell_mean = _mean_rate((buy_rate, sell_rate), market_rows)
         hedged = hedged_overlay(

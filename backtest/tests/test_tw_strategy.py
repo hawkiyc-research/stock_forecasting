@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -158,6 +159,26 @@ def test_band_entry_cap_and_lot_feasibility():
     )
     assert result.liquidity_blocked == 1
     assert 1 not in set(symbols[result.path.buy[0][result.path.buy[0] >= 0]])
+    # Cap-and-scale: the same slot buys stock 1 at 5 / 25 = 20% of the slot, rest in cash.
+    growth_move = positions.Moves(growth=np.full(rows.size, math.log(1.1)),
+                                  fallback=np.zeros(rows.size), gap=np.zeros(rows.size),
+                                  index_growth=np.zeros(rows.size))
+    scaled = tw_strategy.simulate_band(
+        ranked, k=4, buffer=2, max_buys=4, symbols=symbols, link=link, move=growth_move,
+        limit=0.095, lot_cost=np.full(symbols.size, 1.0), slot_capital=100.0,
+        dollar_volume=volume, participation_cap=0.05, cap_mode="scale",
+    )
+    assert scaled.liquidity_blocked == 0 and scaled.capped_buys == 1
+    bought = scaled.path.buy[0][scaled.path.buy[0] >= 0]
+    assert 1 in set(symbols[bought])
+    capped_row = bought[symbols[bought] == 1][0]
+    assert scaled.fill_fraction[capped_row] == pytest.approx(0.2)
+    slot_index = int(np.flatnonzero(scaled.path.buy[0] == capped_row)[0])
+    assert scaled.path.growth[0, slot_index] == pytest.approx(math.log1p(0.2 * 0.1))
+    assert scaled.deployed[0] == pytest.approx((3 + 0.2) / 4)
+    buy_rate, _sell_rate = tw_strategy.scaled_rates(scaled, np.full(symbols.size, 0.01),
+                                                   np.zeros(symbols.size))
+    assert buy_rate[capped_row] == pytest.approx(0.002)
 
 
 def test_hedged_overlay_is_flat_when_stocks_track_the_future_and_calls_on_a_spike():
@@ -258,6 +279,7 @@ def test_rate_adjustments_add_minimum_commission_and_odd_lot_slippage():
         buy_value=np.array([200_000.0, 5_000.0, np.nan]),
         sell_value=np.array([np.nan, 5_000.0, 1e6]),
         odd_buy=np.array([False, True, False]), odd_sell=np.array([False, True, False]),
+        fill_fraction=np.full(3, np.nan), capped_buys=0, deployed=np.ones(1),
     )
     scenario = Scenario(0.6, 1.0, "positions")
     capital = tw_strategy.CapitalScenario("10M-odd", 1e7, True)

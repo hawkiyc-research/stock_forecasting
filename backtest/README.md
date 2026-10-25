@@ -355,7 +355,11 @@ uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<laun
 `exposure_features.trailing_features` 直接從 raw `market.parquet` 計算）；`leg_matching` 取 `none` 與 `momentum`
 （依前 20 日報酬分 `momentum_quintiles` 個五分位，每個五分位各跑一對多空 band、K 平均分配、等權合併）；
 `scenarios` 限制只算部分情境；`multi_day.fixed` 以模型名給定 (h, K, m)，略過 P1 選擇。每一列與門檻判定都帶
-`score_variant`、`leg_matching` 欄；非基線組合的門檻鍵為 `市場|變體/配平`。`construction.grid_score_variant`
+`score_variant`、`leg_matching` 欄；非基線組合的門檻鍵為 `市場|變體/配平`。`config/cost_profiles.json` 的 `participation_mode`
+決定資本情境碰到參與率上限（位置金額 > 5% × 20 日成交金額中位數）時的處理：`scale`（2026-10-26 起的預設）把部位
+封頂在上限、超出部分留現金並報告 `deployed_share` 與 `capped_share`；`skip` 是舊規則，整檔跳過換下一名（§13.19
+原表格用的規則，會把組合推向排序後段的大型股）。`tw_strategy` 的 `capital.participation_mode` 同義，預設 `skip`
+以維持 §13.14 的結果可重現。`construction.grid_score_variant`
 讓 P1 選擇格子改用 v1 分數計算，`multi_day.grid_markets` 讓格子在多個市場各算一次（只報告，不改變選擇；
 `config/scenario_suite_v1_grid.json` 即 §13.19 補充三的 V1 全格子）。每次執行另寫 `yearly.csv`：每條主要成本
 日序列依曆年的複利淨報酬、毛報酬、年化 Sharpe、最大回撤、勝率與交易日數。
@@ -802,7 +806,13 @@ and `momentum` (`momentum_quintiles` quintiles of the trailing 20-session return
 per quintile with K split equally, combined with equal weights); `scenarios` restricts the run to some
 scenarios; `multi_day.fixed` gives (h, K, m) per model name and skips the P1 selection. Every row and every
 bar verdict carries `score_variant` and `leg_matching`; non-baseline verdicts are keyed `market|variant/matching`.
-`construction.grid_score_variant` computes the P1 selection grid on the v1 score and `multi_day.grid_markets`
+`participation_mode` in `config/cost_profiles.json` sets what a capital scenario does when a slot exceeds the
+participation cap (5% of the 20-session median dollar volume): `scale` (the default since 2026-10-26) caps the
+position at the limit, leaves the rest of the slot in cash and reports `deployed_share` and `capped_share`;
+`skip` is the old rule that skipped the name for the next candidate (used by the original §13.19 tables; it
+pushes the book towards large names deep in the ranking). `capital.participation_mode` in `tw_strategy` is
+the same switch, default `skip` so the §13.14 results stay reproducible. `construction.grid_score_variant`
+computes the P1 selection grid on the v1 score and `multi_day.grid_markets`
 repeats the grid on further markets (reported only, the selection is unchanged; `config/scenario_suite_v1_grid.json`
 is the §13.19 supplement 3 v1 grid). Every run also writes `yearly.csv`: per calendar year of every primary-cost
 daily series, the compounded net and gross return, annualized Sharpe, maximum drawdown, hit rate and interval count.

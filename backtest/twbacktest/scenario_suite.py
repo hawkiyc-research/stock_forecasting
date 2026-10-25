@@ -51,6 +51,7 @@ from twbacktest.tw_strategy import (
     FuturesSeries,
     futures_series,
     percentile_ranks,
+    scaled_rates,
     simulate_band,
     smooth_by_symbol,
     universe_groups,
@@ -400,6 +401,7 @@ def _band_long_short(
     max_buys: int,
     limit: float,
     participation_cap: float,
+    cap_mode: str = "skip",
 ) -> dict[str, Any]:
     """One long band book and one short band book on ``groups`` ranked by ``score``."""
     inputs = data.inputs
@@ -411,6 +413,7 @@ def _band_long_short(
         "slot_capital": None if fractional else capital.twd,
         "dollar_volume": None if fractional else inputs.dollar_volume,
         "participation_cap": None if fractional else participation_cap,
+        "cap_mode": cap_mode,
     }
     long_result = simulate_band(engine.rankings(score, groups), move=inputs.move, **common)
     short_result = simulate_band(
@@ -423,9 +426,11 @@ def _band_long_short(
     short_stats = positions.path_statistics(short_result.path)
     return {
         "long_gross": positions.replay(long_result.path, free, free).daily,
-        "long_net": positions.replay(long_result.path, *profile.long_rates(codes)).daily,
+        "long_net": positions.replay(
+            long_result.path, *scaled_rates(long_result, *profile.long_rates(codes))).daily,
         "short_gross": positions.replay(short_result.path, free, free).daily,
-        "short_net": positions.replay(short_path, *profile.short_rates(codes)).daily,
+        "short_net": positions.replay(
+            short_path, *scaled_rates(short_result, *profile.short_rates(codes))).daily,
         "turnover": 0.5 * (long_stats["turnover"] + short_stats["turnover"]),
         "holding_mean": 0.5 * (long_stats["holding_mean"] + short_stats["holding_mean"]),
         "cash_fraction": 0.5 * (long_stats["cash_fraction"] + short_stats["cash_fraction"]),
@@ -433,6 +438,8 @@ def _band_long_short(
                           + short_stats["blocked_buys"] + short_stats["blocked_sells"]),
         "liquidity_blocked": long_result.liquidity_blocked + short_result.liquidity_blocked,
         "buy_attempts": long_result.buy_attempts + short_result.buy_attempts,
+        "capped_buys": long_result.capped_buys + short_result.capped_buys,
+        "deployed_share": float(0.5 * (long_result.deployed.mean() + short_result.deployed.mean())),
     }
 
 
@@ -474,11 +481,12 @@ def multi_day_book(
         raise ValueError(f"Unknown score variant {score_variant!r}")
     cap_fraction = float(config["multi_day"]["entry_cap_fraction"])
     limit = float(config["price_limit"]["open_gap"])
+    cap_mode = str(load_profiles(config).get("participation_mode", "skip"))
     if leg_matching == "none":
         parts = [_band_long_short(
             data, score, data.groups, profile, capital, k=k, buffer=buffer,
             max_buys=max(1, math.ceil(k * cap_fraction)), limit=limit,
-            participation_cap=participation_cap,
+            participation_cap=participation_cap, cap_mode=cap_mode,
         )]
     elif leg_matching == "momentum":
         quintiles = int(config.get("construction", {}).get("momentum_quintiles", 5))
@@ -490,7 +498,7 @@ def multi_day_book(
             parts.append(_band_long_short(
                 data, score, groups_q, profile, capital, k=k_sub, buffer=buffer,
                 max_buys=max(1, math.ceil(k_sub * cap_fraction)), limit=limit,
-                participation_cap=participation_cap,
+                participation_cap=participation_cap, cap_mode=cap_mode,
             ))
     else:
         raise ValueError(f"Unknown leg matching {leg_matching!r}")
@@ -510,6 +518,9 @@ def multi_day_book(
         "cash_fraction": float(np.mean([part["cash_fraction"] for part in parts])),
         "limit_blocked": int(sum(part["limit_blocked"] for part in parts)),
         "liquidity_blocked_share": sum(part["liquidity_blocked"] for part in parts) / attempts,
+        "capped_share": sum(part["capped_buys"] for part in parts) / attempts,
+        "deployed_share": float(np.mean([part["deployed_share"] for part in parts])),
+        "cap_mode": cap_mode,
     }
     return Book(net=long_net + short_net, gross=long_gross + short_gross, info=info,
                 legs={"long": long_net, "short": short_net})

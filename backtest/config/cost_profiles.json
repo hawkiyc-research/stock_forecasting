@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "name": "cost-profiles",
-  "description": "Dual cost profiles of experiment protocol sections 13.18 item 8 and 13.19 item 6: every backtest table lists the retail (decision) and institution (information) columns side by side. Rates are fractions of the traded value per side unless stated.",
+  "description": "Dual cost profiles of experiment protocol sections 13.18 item 8 and 13.19 item 6: every backtest table lists the retail (decision) and institution (information) columns side by side. Rates are fractions of the traded value per side unless stated. participation_mode 'scale' caps a position at participation_cap x the 20-session median dollar volume and leaves the rest of the slot in cash ('skip' is the pre-2026-10-26 rule that skipped the name).",
   "primary": "institution",
   "profiles": {
     "retail": {
@@ -10,10 +10,17 @@
       "commission_rate": 0.000855,
       "transaction_tax": 0.003,
       "day_trade_tax": 0.0015,
-      "slippage_per_side": {"TWSE": 0.001, "TPEX": 0.002},
+      "slippage_per_side": {
+        "TWSE": 0.001,
+        "TPEX": 0.002
+      },
       "short_entry_fee": 0.0008,
       "borrow_fee_annual": 0.0,
-      "tx": {"tax_rate": 2e-05, "commission_per_contract_twd": 50, "slippage_points": 1},
+      "tx": {
+        "tax_rate": 2e-05,
+        "commission_per_contract_twd": 50,
+        "slippage_points": 1
+      },
       "capital_scenarios": []
     },
     "institution": {
@@ -22,18 +29,36 @@
       "commission_rate": 0.0003,
       "transaction_tax": 0.003,
       "day_trade_tax": 0.0015,
-      "slippage_per_side": {"TWSE": 0.0005, "TPEX": 0.0005},
+      "slippage_per_side": {
+        "TWSE": 0.0005,
+        "TPEX": 0.0005
+      },
       "short_entry_fee": 0.0,
       "borrow_fee_annual": 0.02,
-      "tx": {"tax_rate": 2e-05, "commission_per_contract_twd": 30, "slippage_points": 1},
+      "tx": {
+        "tax_rate": 2e-05,
+        "commission_per_contract_twd": 30,
+        "slippage_points": 1
+      },
       "capital_scenarios": [
-        {"name": "300M", "twd": 300000000},
-        {"name": "1B", "twd": 1000000000}
+        {
+          "name": "300M",
+          "twd": 300000000
+        },
+        {
+          "name": "1B",
+          "twd": 1000000000
+        }
       ]
     }
   },
-  "slippage_multipliers": [0, 1, 2],
+  "slippage_multipliers": [
+    0,
+    1,
+    2
+  ],
   "primary_slippage_multiplier": 1,
   "participation_cap": 0.05,
-  "board_lot": 1000
+  "board_lot": 1000,
+  "participation_mode": "scale"
 }

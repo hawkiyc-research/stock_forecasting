@@ -1139,7 +1139,7 @@ S2 S1 加台指期滾動 β 疊加：
 | D0 | TW | v1 | 動能五分位 | 散戶 | P2 | +25.6% | -5.9% | [-16.0%, +6.3%] | -0.97 | -10.7% | +10.0% | 3.8 | +31.5% | +22.1% | -16.3% | -11.7% | +0.08 |
 | D0 | TW | v1 | 動能五分位 | 散戶 | P1 ∪ P2 | +21.1% | -13.2% | [-20.2%, -6.4%] | -2.43 | -37.7% | +10.0% | 3.8 | +34.4% | +4.1% | -13.5% | -3.8% | +0.08 |
 
-機構 3 億與 10 億（V1、無配平，P1 ∪ P2）：
+機構 3 億與 10 億（V1、無配平，P1 ∪ P2；原「跳過」規則，與 §13.19 主表同一規則）：
 
 | 情境 | 模型 | 市場 | 資本 | 年化毛報酬 | 年化淨報酬 | 95% 區間 | Sharpe | P2 年化淨報酬 | 參與率擋掉的候選買單 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1179,6 +1179,59 @@ S2 S1 加台指期滾動 β 疊加：
 | S2 S1 + 台指期 | D0 | TW | 分數位置 | +39.3% | +25.0% | [+11.4%, +40.4%] | +1.82 | +19.6% | +0.0% |
 | S2 S1 + 台指期 | D0 | TW | 3 億 | +35.6% | +15.2% | [+1.9%, +30.9%] | +0.98 | +29.5% | +88.7% |
 | S2 S1 + 台指期 | D0 | TW | 10 億 | +24.4% | -2.6% | [-12.7%, +9.3%] | -0.21 | +19.5% | +95.0% |
+
+同一組設定在 2026-10-26 修正後的「封頂」規則下（部位封在 5% × 20 日成交金額中位數，超出部分留現金；§13.19 補充四第 5 項），與跳過規則並列：
+
+| 情境 | 模型 | 市場 | 資本 | 規則 | 年化毛報酬 | 年化淨報酬 | 95% 區間 | Sharpe | 最大回撤 | 候選被擋 | 被封頂 | 名目部署率 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| S1 多日台股多空 | B0 | TWSE | 3 億 | 跳過 | +24.9% | +15.7% | [-1.9%, +34.1%] | +0.92 | -14.7% | +81.4% | — | — |
+| S1 多日台股多空 | B0 | TWSE | 3 億 | 封頂 | +18.9% | +11.8% | [-1.9%, +26.5%] | +0.89 | -11.0% | +0.6% | +48.4% | +79.1% |
+| S1 多日台股多空 | B0 | TWSE | 10 億 | 跳過 | +26.3% | +11.2% | [-6.0%, +28.9%] | +0.69 | -19.5% | +95.5% | — | — |
+| S1 多日台股多空 | B0 | TWSE | 10 億 | 封頂 | +15.2% | +9.8% | [-0.3%, +20.7%] | +1.03 | -8.3% | +29.6% | +50.7% | +54.0% |
+| S1 多日台股多空 | B0 | TPEX | 3 億 | 跳過 | +40.6% | +28.0% | [+11.5%, +44.6%] | +1.99 | -11.2% | +95.4% | — | — |
+| S1 多日台股多空 | B0 | TPEX | 3 億 | 封頂 | +20.1% | +14.4% | [+4.4%, +24.5%] | +1.49 | -8.3% | +26.0% | +49.6% | +53.9% |
+| S1 多日台股多空 | B0 | TPEX | 10 億 | 跳過 | +18.1% | -5.8% | [-19.5%, +7.8%] | -0.44 | -33.6% | +97.3% | — | — |
+| S1 多日台股多空 | B0 | TPEX | 10 億 | 封頂 | +25.5% | +20.5% | [+7.5%, +33.6%] | +2.23 | -8.9% | +84.8% | +12.3% | +40.7% |
+| S1 多日台股多空 | B0 | TW | 3 億 | 跳過 | +32.8% | +21.8% | [+8.9%, +36.2%] | +1.71 | -10.8% | +88.4% | — | — |
+| S1 多日台股多空 | B0 | TW | 3 億 | 封頂 | +19.5% | +13.1% | [+3.4%, +24.1%] | +1.32 | -8.1% | +13.3% | — | +66.5% |
+| S1 多日台股多空 | B0 | TW | 10 億 | 跳過 | +22.2% | +2.7% | [-10.0%, +16.3%] | +0.22 | -22.0% | +96.4% | — | — |
+| S1 多日台股多空 | B0 | TW | 10 億 | 封頂 | +20.4% | +15.2% | [+5.6%, +25.3%] | +2.02 | -6.0% | +57.2% | — | +47.4% |
+| S1 多日台股多空 | D0 | TWSE | 3 億 | 跳過 | +21.8% | +6.0% | [-8.8%, +23.0%] | +0.36 | -16.7% | +83.9% | — | — |
+| S1 多日台股多空 | D0 | TWSE | 3 億 | 封頂 | +20.8% | +9.9% | [-4.3%, +25.4%] | +0.73 | -13.9% | +0.7% | +47.2% | +77.2% |
+| S1 多日台股多空 | D0 | TWSE | 10 億 | 跳過 | +19.6% | -6.1% | [-22.7%, +11.0%] | -0.37 | -35.9% | +93.6% | — | — |
+| S1 多日台股多空 | D0 | TWSE | 10 億 | 封頂 | +16.3% | +7.9% | [-3.3%, +20.5%] | +0.75 | -7.2% | +39.0% | +44.0% | +53.7% |
+| S1 多日台股多空 | D0 | TPEX | 3 億 | 跳過 | +36.8% | +12.0% | [-5.8%, +30.5%] | +0.70 | -16.9% | +93.5% | — | — |
+| S1 多日台股多空 | D0 | TPEX | 3 億 | 封頂 | +26.0% | +18.2% | [+6.6%, +29.5%] | +1.88 | -11.1% | +29.6% | +48.9% | +51.8% |
+| S1 多日台股多空 | D0 | TPEX | 10 億 | 跳過 | +19.8% | -8.3% | [-19.6%, +3.4%] | -0.76 | -37.8% | +96.3% | — | — |
+| S1 多日台股多空 | D0 | TPEX | 10 億 | 封頂 | +25.4% | +17.4% | [+6.9%, +28.4%] | +2.13 | -10.3% | +87.4% | +10.3% | +39.5% |
+| S1 多日台股多空 | D0 | TW | 3 億 | 跳過 | +29.3% | +9.0% | [-4.6%, +23.7%] | +0.62 | -15.8% | +88.7% | — | — |
+| S1 多日台股多空 | D0 | TW | 3 億 | 封頂 | +23.4% | +14.0% | [+2.9%, +26.0%] | +1.41 | -8.8% | +15.1% | — | +64.5% |
+| S1 多日台股多空 | D0 | TW | 10 億 | 跳過 | +19.7% | -7.2% | [-18.2%, +4.4%] | -0.62 | -32.9% | +95.0% | — | — |
+| S1 多日台股多空 | D0 | TW | 10 億 | 封頂 | +20.8% | +12.7% | [+3.6%, +22.8%] | +1.66 | -7.8% | +63.2% | — | +46.6% |
+| S2 S1 + 台指期 | B0 | TWSE | 3 億 | 跳過 | +31.6% | +22.3% | [+5.6%, +40.9%] | +1.25 | -14.5% | +81.4% | — | — |
+| S2 S1 + 台指期 | B0 | TWSE | 3 億 | 封頂 | +22.6% | +15.5% | [+2.9%, +29.7%] | +1.12 | -10.7% | +0.6% | +48.4% | +79.1% |
+| S2 S1 + 台指期 | B0 | TWSE | 10 億 | 跳過 | +30.3% | +15.1% | [-1.7%, +32.0%] | +0.93 | -17.3% | +95.5% | — | — |
+| S2 S1 + 台指期 | B0 | TWSE | 10 億 | 封頂 | +15.8% | +10.4% | [+0.8%, +21.4%] | +1.07 | -8.5% | +29.6% | +50.7% | +54.0% |
+| S2 S1 + 台指期 | B0 | TPEX | 3 億 | 跳過 | +41.5% | +28.8% | [+13.3%, +44.8%] | +1.98 | -10.8% | +95.4% | — | — |
+| S2 S1 + 台指期 | B0 | TPEX | 3 億 | 封頂 | +25.3% | +19.6% | [+9.3%, +29.9%] | +1.88 | -7.2% | +26.0% | +49.6% | +53.9% |
+| S2 S1 + 台指期 | B0 | TPEX | 10 億 | 跳過 | +24.9% | +0.9% | [-12.9%, +14.9%] | +0.07 | -22.3% | +97.3% | — | — |
+| S2 S1 + 台指期 | B0 | TPEX | 10 億 | 封頂 | +23.8% | +18.8% | [+6.9%, +30.7%] | +2.09 | -8.3% | +84.8% | +12.3% | +40.7% |
+| S2 S1 + 台指期 | B0 | TW | 3 億 | 跳過 | +36.5% | +25.6% | [+13.1%, +38.9%] | +1.91 | -10.5% | +88.4% | — | — |
+| S2 S1 + 台指期 | B0 | TW | 3 億 | 封頂 | +24.0% | +17.6% | [+8.0%, +28.1%] | +1.67 | -7.9% | +13.3% | — | +66.5% |
+| S2 S1 + 台指期 | B0 | TW | 10 億 | 跳過 | +27.6% | +8.0% | [-3.7%, +20.8%] | +0.63 | -16.8% | +96.4% | — | — |
+| S2 S1 + 台指期 | B0 | TW | 10 億 | 封頂 | +19.8% | +14.6% | [+6.1%, +23.4%] | +1.98 | -5.9% | +57.2% | — | +47.4% |
+| S2 S1 + 台指期 | D0 | TWSE | 3 億 | 跳過 | +25.3% | +9.5% | [-5.4%, +26.7%] | +0.55 | -15.2% | +83.9% | — | — |
+| S2 S1 + 台指期 | D0 | TWSE | 3 億 | 封頂 | +25.6% | +14.7% | [+2.0%, +29.7%] | +1.05 | -9.0% | +0.7% | +47.2% | +77.2% |
+| S2 S1 + 台指期 | D0 | TWSE | 10 億 | 跳過 | +24.2% | -1.5% | [-16.6%, +14.7%] | -0.09 | -26.4% | +93.6% | — | — |
+| S2 S1 + 台指期 | D0 | TWSE | 10 億 | 封頂 | +17.6% | +9.3% | [-0.6%, +20.4%] | +0.87 | -7.0% | +39.0% | +44.0% | +53.7% |
+| S2 S1 + 台指期 | D0 | TPEX | 3 億 | 跳過 | +45.8% | +20.9% | [+3.7%, +39.5%] | +1.13 | -15.3% | +93.5% | — | — |
+| S2 S1 + 台指期 | D0 | TPEX | 3 億 | 封頂 | +30.9% | +23.1% | [+12.2%, +34.6%] | +2.21 | -10.8% | +29.6% | +48.9% | +51.8% |
+| S2 S1 + 台指期 | D0 | TPEX | 10 億 | 跳過 | +24.5% | -3.6% | [-15.1%, +8.9%] | -0.32 | -31.0% | +96.3% | — | — |
+| S2 S1 + 台指期 | D0 | TPEX | 10 億 | 封頂 | +25.1% | +17.1% | [+7.9%, +27.0%] | +2.10 | -9.1% | +87.4% | +10.3% | +39.5% |
+| S2 S1 + 台指期 | D0 | TW | 3 億 | 跳過 | +35.6% | +15.2% | [+1.9%, +30.9%] | +0.98 | -12.5% | +88.7% | — | — |
+| S2 S1 + 台指期 | D0 | TW | 3 億 | 封頂 | +28.3% | +18.9% | [+8.4%, +30.4%] | +1.79 | -8.0% | +15.1% | — | +64.5% |
+| S2 S1 + 台指期 | D0 | TW | 10 億 | 跳過 | +24.4% | -2.6% | [-12.7%, +9.3%] | -0.21 | -25.9% | +95.0% | — | — |
+| S2 S1 + 台指期 | D0 | TW | 10 億 | 封頂 | +21.4% | +13.2% | [+5.3%, +21.9%] | +1.75 | -6.8% | +63.2% | — | +46.6% |
 
 吸引力門檻（機構主要成本、分數位置、P1 ∪ P2）：
 
@@ -1238,7 +1291,7 @@ S2 S1 加台指期滾動 β 疊加：
 1. **分數正交化（V1、無配平）就改變了結論。** 同一組 band 參數下，S1 的 P1 ∪ P2 機構淨報酬由 B0 TWSE −6.3% → +17.3% [−0.6%, +37.3%]（Sharpe −0.25 → 1.04）、B0 TPEX −2.5% → +19.4% [+4.9%, +34.4%]（1.50）、B0 TW −4.4% → +18.3% [+5.5%, +33.6%]（1.46）、D0 TPEX +7.6% → +28.8% [+13.5%, +43.6%]（2.16）、D0 TW +1.3% → +19.7% [+6.3%, +34.7%]（1.53）；P2 全部轉正（+4.7% 到 +23.2%），最大回撤由 −30% 到 −45% 縮到 −11% 到 −18%。組合的 β 由 −0.5 降到 −0.15 到 −0.20，TX 腿的貢獻只剩 +2% 到 +9%。
 2. **達標的格子。** 機構成本下，B0 的 S1 在 TPEX 與 TW、S2 在三個市場，D0 的 S1 在 TPEX 與 TW、S2 在三個市場，共 **10 格達到事前寫死的門檻**（Sharpe ≥ 1.0、區間下界 > 0、P2 > 0）；B0 TWSE S1（下界 −0.6%）與 D0 TWSE S1（Sharpe 0.62）未達。散戶成本下 B0 TW 的 S1 +14.7% [+1.9%, +29.7%]（Sharpe 1.17）與 S2 +19.6% [+6.5%, +34.2%]（1.46）也為正。
 3. **動能五分位配平在 band 建構裡失敗，原因是換手。** 持股換了五分位就離開子組合而被賣出，平均持有由 20 到 43 日掉到 4 日、每日換手 10%、成本拖累 20% 到 25%／年，P1 全部為負；這是補充二第 2 項事先寫明會計入的代價，結果證明以每日五分位重算的配平不可行。正交化單獨就把 β 與反動能傾斜拿掉，不需要配平。
-4. **容量仍是上限。** V1 S1 在 3 億元：B0 TW +21.8%（Sharpe 1.71）、TPEX +28.0%（1.99）、D0 TW +9.0%；10 億元時 81% 到 97% 的候選買單被參與率上限擋掉，淨報酬 −8% 到 +11%。可行的規模約在 3 億元以內。
+4. **容量：跳過規則誇大了問題，封頂規則下 10 億元仍為正。** 原引擎對超過參與率上限的候選整檔跳過、換下一名，3 億元有 81% 到 97% 的候選買單被擋，組合被推向排序後段的大型股，10 億元因此轉負（B0 TPEX −5.8%、D0 TWSE −6.1%）。2026-10-26 改為封頂（部位封在上限、超出留現金）之後，同一設定 3 億元 B0 TW +13.1% [+3.4%, +24.1%]（Sharpe 1.32，名目部署率 67%）、10 億元 +15.2% [+5.6%, +25.3%]（2.02，部署率 47%）；D0 TW 3 億 +14.0%、10 億 +12.7%。淨報酬以總資本計、閒置現金不計息，所以部署率 40% 到 80% 下的淨報酬是打了折的；以部署資本計的報酬高於分數位置。容量限制的真實形態是「資金只能用一半」，不是「策略轉負」。
 5. **這不是 P3 驗證。** 正交化本身沒有擬合參數（每日橫斷面 OLS），band 參數固定，但「對 beta 與動能正交化」這個設計是在看過 P2 失效之後才決定的；P2 的 +17% 到 +26% 因此不能當作樣本外證據，達標只在資訊層面，需要 P3（2026-06 之後）確認。另外，空頭腿假設流動性宇宙全部可借券，而最強的結果在 TPEX，正是借券最難的區段；S1 的絕對報酬（+17% 到 +29%）仍低於同期 TAIEX 報酬指數（+41%），它贏的是風險調整後的市場中性報酬，不是 0050 買進持有。
 
 #### 3.10 穩健性檢查（§13.19 補充三）：逐年表與 V1 全格子
@@ -2728,7 +2781,7 @@ S2 S1 plus the rolling-β TX overlay:
 | D0 | TW | v1 | momentum quintiles | Retail | P2 | +25.6% | -5.9% | [-16.0%, +6.3%] | -0.97 | -10.7% | +10.0% | 3.8 | +31.5% | +22.1% | -16.3% | -11.7% | +0.08 |
 | D0 | TW | v1 | momentum quintiles | Retail | P1 ∪ P2 | +21.1% | -13.2% | [-20.2%, -6.4%] | -2.43 | -37.7% | +10.0% | 3.8 | +34.4% | +4.1% | -13.5% | -3.8% | +0.08 |
 
-Institution NT$300M and NT$1B (V1, no matching, P1 ∪ P2):
+Institution NT$300M and NT$1B (V1, no matching, P1 ∪ P2; the original "skip" rule, the same as the §13.19 main tables):
 
 | Scenario | Model | Market | Capital | Gross (annual) | Net (annual) | 95% CI | Sharpe | P2 net (annual) | Candidate buys blocked by the cap |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -2768,6 +2821,59 @@ Institution NT$300M and NT$1B (V1, no matching, P1 ∪ P2):
 | S2 S1 + TX | D0 | TW | Fractional | +39.3% | +25.0% | [+11.4%, +40.4%] | +1.82 | +19.6% | +0.0% |
 | S2 S1 + TX | D0 | TW | NT$300M | +35.6% | +15.2% | [+1.9%, +30.9%] | +0.98 | +29.5% | +88.7% |
 | S2 S1 + TX | D0 | TW | NT$1B | +24.4% | -2.6% | [-12.7%, +9.3%] | -0.21 | +19.5% | +95.0% |
+
+The same settings under the "cap-and-scale" rule fixed on 2026-10-26 (position capped at 5% × the 20-session median dollar volume, the rest of the slot in cash; §13.19 supplement 4 item 5), side by side with the skip rule:
+
+| Scenario | Model | Market | Capital | Rule | Gross (annual) | Net (annual) | 95% CI | Sharpe | Max drawdown | Candidates blocked | Capped | Deployed share |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| S1 multi-day stock L/S | B0 | TWSE | NT$300M | skip | +24.9% | +15.7% | [-1.9%, +34.1%] | +0.92 | -14.7% | +81.4% | — | — |
+| S1 multi-day stock L/S | B0 | TWSE | NT$300M | cap-and-scale | +18.9% | +11.8% | [-1.9%, +26.5%] | +0.89 | -11.0% | +0.6% | +48.4% | +79.1% |
+| S1 multi-day stock L/S | B0 | TWSE | NT$1B | skip | +26.3% | +11.2% | [-6.0%, +28.9%] | +0.69 | -19.5% | +95.5% | — | — |
+| S1 multi-day stock L/S | B0 | TWSE | NT$1B | cap-and-scale | +15.2% | +9.8% | [-0.3%, +20.7%] | +1.03 | -8.3% | +29.6% | +50.7% | +54.0% |
+| S1 multi-day stock L/S | B0 | TPEX | NT$300M | skip | +40.6% | +28.0% | [+11.5%, +44.6%] | +1.99 | -11.2% | +95.4% | — | — |
+| S1 multi-day stock L/S | B0 | TPEX | NT$300M | cap-and-scale | +20.1% | +14.4% | [+4.4%, +24.5%] | +1.49 | -8.3% | +26.0% | +49.6% | +53.9% |
+| S1 multi-day stock L/S | B0 | TPEX | NT$1B | skip | +18.1% | -5.8% | [-19.5%, +7.8%] | -0.44 | -33.6% | +97.3% | — | — |
+| S1 multi-day stock L/S | B0 | TPEX | NT$1B | cap-and-scale | +25.5% | +20.5% | [+7.5%, +33.6%] | +2.23 | -8.9% | +84.8% | +12.3% | +40.7% |
+| S1 multi-day stock L/S | B0 | TW | NT$300M | skip | +32.8% | +21.8% | [+8.9%, +36.2%] | +1.71 | -10.8% | +88.4% | — | — |
+| S1 multi-day stock L/S | B0 | TW | NT$300M | cap-and-scale | +19.5% | +13.1% | [+3.4%, +24.1%] | +1.32 | -8.1% | +13.3% | — | +66.5% |
+| S1 multi-day stock L/S | B0 | TW | NT$1B | skip | +22.2% | +2.7% | [-10.0%, +16.3%] | +0.22 | -22.0% | +96.4% | — | — |
+| S1 multi-day stock L/S | B0 | TW | NT$1B | cap-and-scale | +20.4% | +15.2% | [+5.6%, +25.3%] | +2.02 | -6.0% | +57.2% | — | +47.4% |
+| S1 multi-day stock L/S | D0 | TWSE | NT$300M | skip | +21.8% | +6.0% | [-8.8%, +23.0%] | +0.36 | -16.7% | +83.9% | — | — |
+| S1 multi-day stock L/S | D0 | TWSE | NT$300M | cap-and-scale | +20.8% | +9.9% | [-4.3%, +25.4%] | +0.73 | -13.9% | +0.7% | +47.2% | +77.2% |
+| S1 multi-day stock L/S | D0 | TWSE | NT$1B | skip | +19.6% | -6.1% | [-22.7%, +11.0%] | -0.37 | -35.9% | +93.6% | — | — |
+| S1 multi-day stock L/S | D0 | TWSE | NT$1B | cap-and-scale | +16.3% | +7.9% | [-3.3%, +20.5%] | +0.75 | -7.2% | +39.0% | +44.0% | +53.7% |
+| S1 multi-day stock L/S | D0 | TPEX | NT$300M | skip | +36.8% | +12.0% | [-5.8%, +30.5%] | +0.70 | -16.9% | +93.5% | — | — |
+| S1 multi-day stock L/S | D0 | TPEX | NT$300M | cap-and-scale | +26.0% | +18.2% | [+6.6%, +29.5%] | +1.88 | -11.1% | +29.6% | +48.9% | +51.8% |
+| S1 multi-day stock L/S | D0 | TPEX | NT$1B | skip | +19.8% | -8.3% | [-19.6%, +3.4%] | -0.76 | -37.8% | +96.3% | — | — |
+| S1 multi-day stock L/S | D0 | TPEX | NT$1B | cap-and-scale | +25.4% | +17.4% | [+6.9%, +28.4%] | +2.13 | -10.3% | +87.4% | +10.3% | +39.5% |
+| S1 multi-day stock L/S | D0 | TW | NT$300M | skip | +29.3% | +9.0% | [-4.6%, +23.7%] | +0.62 | -15.8% | +88.7% | — | — |
+| S1 multi-day stock L/S | D0 | TW | NT$300M | cap-and-scale | +23.4% | +14.0% | [+2.9%, +26.0%] | +1.41 | -8.8% | +15.1% | — | +64.5% |
+| S1 multi-day stock L/S | D0 | TW | NT$1B | skip | +19.7% | -7.2% | [-18.2%, +4.4%] | -0.62 | -32.9% | +95.0% | — | — |
+| S1 multi-day stock L/S | D0 | TW | NT$1B | cap-and-scale | +20.8% | +12.7% | [+3.6%, +22.8%] | +1.66 | -7.8% | +63.2% | — | +46.6% |
+| S2 S1 + TX | B0 | TWSE | NT$300M | skip | +31.6% | +22.3% | [+5.6%, +40.9%] | +1.25 | -14.5% | +81.4% | — | — |
+| S2 S1 + TX | B0 | TWSE | NT$300M | cap-and-scale | +22.6% | +15.5% | [+2.9%, +29.7%] | +1.12 | -10.7% | +0.6% | +48.4% | +79.1% |
+| S2 S1 + TX | B0 | TWSE | NT$1B | skip | +30.3% | +15.1% | [-1.7%, +32.0%] | +0.93 | -17.3% | +95.5% | — | — |
+| S2 S1 + TX | B0 | TWSE | NT$1B | cap-and-scale | +15.8% | +10.4% | [+0.8%, +21.4%] | +1.07 | -8.5% | +29.6% | +50.7% | +54.0% |
+| S2 S1 + TX | B0 | TPEX | NT$300M | skip | +41.5% | +28.8% | [+13.3%, +44.8%] | +1.98 | -10.8% | +95.4% | — | — |
+| S2 S1 + TX | B0 | TPEX | NT$300M | cap-and-scale | +25.3% | +19.6% | [+9.3%, +29.9%] | +1.88 | -7.2% | +26.0% | +49.6% | +53.9% |
+| S2 S1 + TX | B0 | TPEX | NT$1B | skip | +24.9% | +0.9% | [-12.9%, +14.9%] | +0.07 | -22.3% | +97.3% | — | — |
+| S2 S1 + TX | B0 | TPEX | NT$1B | cap-and-scale | +23.8% | +18.8% | [+6.9%, +30.7%] | +2.09 | -8.3% | +84.8% | +12.3% | +40.7% |
+| S2 S1 + TX | B0 | TW | NT$300M | skip | +36.5% | +25.6% | [+13.1%, +38.9%] | +1.91 | -10.5% | +88.4% | — | — |
+| S2 S1 + TX | B0 | TW | NT$300M | cap-and-scale | +24.0% | +17.6% | [+8.0%, +28.1%] | +1.67 | -7.9% | +13.3% | — | +66.5% |
+| S2 S1 + TX | B0 | TW | NT$1B | skip | +27.6% | +8.0% | [-3.7%, +20.8%] | +0.63 | -16.8% | +96.4% | — | — |
+| S2 S1 + TX | B0 | TW | NT$1B | cap-and-scale | +19.8% | +14.6% | [+6.1%, +23.4%] | +1.98 | -5.9% | +57.2% | — | +47.4% |
+| S2 S1 + TX | D0 | TWSE | NT$300M | skip | +25.3% | +9.5% | [-5.4%, +26.7%] | +0.55 | -15.2% | +83.9% | — | — |
+| S2 S1 + TX | D0 | TWSE | NT$300M | cap-and-scale | +25.6% | +14.7% | [+2.0%, +29.7%] | +1.05 | -9.0% | +0.7% | +47.2% | +77.2% |
+| S2 S1 + TX | D0 | TWSE | NT$1B | skip | +24.2% | -1.5% | [-16.6%, +14.7%] | -0.09 | -26.4% | +93.6% | — | — |
+| S2 S1 + TX | D0 | TWSE | NT$1B | cap-and-scale | +17.6% | +9.3% | [-0.6%, +20.4%] | +0.87 | -7.0% | +39.0% | +44.0% | +53.7% |
+| S2 S1 + TX | D0 | TPEX | NT$300M | skip | +45.8% | +20.9% | [+3.7%, +39.5%] | +1.13 | -15.3% | +93.5% | — | — |
+| S2 S1 + TX | D0 | TPEX | NT$300M | cap-and-scale | +30.9% | +23.1% | [+12.2%, +34.6%] | +2.21 | -10.8% | +29.6% | +48.9% | +51.8% |
+| S2 S1 + TX | D0 | TPEX | NT$1B | skip | +24.5% | -3.6% | [-15.1%, +8.9%] | -0.32 | -31.0% | +96.3% | — | — |
+| S2 S1 + TX | D0 | TPEX | NT$1B | cap-and-scale | +25.1% | +17.1% | [+7.9%, +27.0%] | +2.10 | -9.1% | +87.4% | +10.3% | +39.5% |
+| S2 S1 + TX | D0 | TW | NT$300M | skip | +35.6% | +15.2% | [+1.9%, +30.9%] | +0.98 | -12.5% | +88.7% | — | — |
+| S2 S1 + TX | D0 | TW | NT$300M | cap-and-scale | +28.3% | +18.9% | [+8.4%, +30.4%] | +1.79 | -8.0% | +15.1% | — | +64.5% |
+| S2 S1 + TX | D0 | TW | NT$1B | skip | +24.4% | -2.6% | [-12.7%, +9.3%] | -0.21 | -25.9% | +95.0% | — | — |
+| S2 S1 + TX | D0 | TW | NT$1B | cap-and-scale | +21.4% | +13.2% | [+5.3%, +21.9%] | +1.75 | -6.8% | +63.2% | — | +46.6% |
 
 Attractiveness bar (institution primary costs, fractional, P1 ∪ P2):
 
@@ -2827,7 +2933,7 @@ Reading:
 1. **Orthogonalizing the score (V1, no matching) alone changes the conclusion.** With the same band parameters, S1's P1 ∪ P2 institution net goes from B0 TWSE −6.3% → +17.3% [−0.6%, +37.3%] (Sharpe −0.25 → 1.04), B0 TPEX −2.5% → +19.4% [+4.9%, +34.4%] (1.50), B0 TW −4.4% → +18.3% [+5.5%, +33.6%] (1.46), D0 TPEX +7.6% → +28.8% [+13.5%, +43.6%] (2.16), D0 TW +1.3% → +19.7% [+6.3%, +34.7%] (1.53); every P2 turns positive (+4.7% to +23.2%) and the maximum drawdown shrinks from −30% to −45% to −11% to −18%. The book's β falls from −0.5 to −0.15 to −0.20 and the TX leg contributes only +2% to +9%.
 2. **Cells that clear the bar.** Under institution costs, B0's S1 on TPEX and TW and S2 on all three markets, and D0's S1 on TPEX and TW and S2 on all three markets, **10 cells in all**, clear the pre-registered bar (Sharpe ≥ 1.0, lower bound > 0, P2 > 0); B0 TWSE S1 (lower bound −0.6%) and D0 TWSE S1 (Sharpe 0.62) do not. Under retail costs B0 TW's S1 +14.7% [+1.9%, +29.7%] (Sharpe 1.17) and S2 +19.6% [+6.5%, +34.2%] (1.46) are positive as well.
 3. **Momentum-quintile matching fails inside the band construction, because of turnover.** A holding that changes quintile leaves its sub-book's ranking and is sold: the mean holding falls from 20–43 to 4 sessions, turnover rises to 10% a day and the cost drag to 20–25% a year, and every P1 is negative. Supplement 2 item 2 said this cost would be counted; the result shows that matching by daily re-computed quintiles is not viable. Orthogonalization alone removes the β and anti-momentum tilt, so the matching is not needed.
-4. **Capacity remains the ceiling.** V1 S1 at NT$300M: B0 TW +21.8% (Sharpe 1.71), TPEX +28.0% (1.99), D0 TW +9.0%; at NT$1B 81–97% of the candidate buys are blocked by the participation cap and the net is −8% to +11%. The workable scale is about NT$300M or less.
+4. **Capacity: the skip rule overstated the problem; under cap-and-scale NT$1B stays positive.** The original engine skipped any candidate above the participation cap and moved to the next name, so at NT$300M 81–97% of the candidate buys were blocked, the book drifted to large names deep in the ranking and NT$1B turned negative (B0 TPEX −5.8%, D0 TWSE −6.1%). After the 2026-10-26 fix (position capped at the limit, the rest of the slot in cash) the same settings give B0 TW +13.1% [+3.4%, +24.1%] at NT$300M (Sharpe 1.32, 67% deployed) and +15.2% [+5.6%, +25.3%] at NT$1B (2.02, 47% deployed); D0 TW +14.0% and +12.7%. Net returns are on total capital with idle cash earning nothing, so with 40–80% deployed they are diluted; on deployed capital the return exceeds the fractional book. The true shape of the capacity limit is "only half the money can be put to work", not "the strategy turns negative".
 5. **This is not a P3 validation.** The orthogonalization has no fitted parameters (a daily cross-sectional OLS) and the band parameters are fixed, but the decision to orthogonalize against beta and momentum was taken after seeing P2 fail on momentum, so P2's +17% to +26% cannot count as out-of-sample evidence; the bar is met at the informational level only and needs P3 (after 2026-06). The short book also assumes every liquid name is borrowable, and the strongest results are on TPEX, exactly where borrowing is hardest; S1's absolute return (+17% to +29%) is still below the TAIEX total-return index over the same period (+41%), so what it wins is a risk-adjusted market-neutral return, not a beat of 0050 buy-and-hold.
 
 #### 3.10 Robustness checks (§13.19 supplement 3): year by year and the V1 grid
