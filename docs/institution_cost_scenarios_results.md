@@ -9,7 +9,7 @@
 結論：
 
 1. **六個情境、兩個模型、三個市場共 36 格，沒有一格達標。** 最接近的是 D0 的 S2（多日多空加台指期滾動 beta 對沖）在兩市場合併：P1 ∪ P2 年化淨報酬 +16.8% [+1.4%, +33.7%]、Sharpe 0.83，區間下界過了 0，但 Sharpe 不到 1.0，P2 單獨 −6.5%。TPEX 的 D0 S2（Sharpe 0.87，P2 −7.3%）與 S6（Sharpe 0.86，P2 −9.7%）同樣只差 Sharpe 與 P2 兩項。
-2. **機構成本不是多日多空的瓶頸。** S1 的成本拖累由散戶的 9.6–17%／年降到機構的 8–13%／年，差距只有 2–5 個百分點，但 P1 ∪ P2 的淨報酬仍為 B0 TWSE −6.3%、TPEX −2.5%，D0 TWSE −5.0%、TPEX +7.6%，P2 全部為負（−26% 到 −63%）。問題在空頭腿：P1 ∪ P2 多頭腿年化 +24% 到 +31%，空頭腿 −24% 到 −31%；P2 空頭腿 −61% 到 −89%，對上同期 TAIEX 報酬指數 +88.5%、TPEX +81.0%。第 3.7 節量了空頭腿實際持有的股票：規模與宇宙相同（成交金額百分位 0.52–0.55，宇宙 0.50），但進場前 20 日平均已漲 6–9%、60 日 17–26%（宇宙 1–4%、7–10%），多頭腿則是近期沒漲的股票；也就是說，模型的 h = 10 排序本質上是**短期反轉訊號**：放空近期強勢股、買進落後股。P1 這套反轉成立（空頭腿事後報酬低於宇宙、多頭腿高於宇宙），P2 是動能延續的行情：被放空的強勢股事後年化 +75% 到 +79%（宇宙 +57.5%），被買進的落後股只有 +21% 到 +27%，兩腿同時逆向。模型的多空價差（毛年化 P1 ∪ P2 TWSE +1.8%／+7.9%）付不起任何成本檔。
+2. **機構成本不是多日多空的瓶頸。** S1 的成本拖累由散戶的 9.6–17%／年降到機構的 8–13%／年，差距只有 2–5 個百分點，但 P1 ∪ P2 的淨報酬仍為 B0 TWSE −6.3%、TPEX −2.5%，D0 TWSE −5.0%、TPEX +7.6%，P2 全部為負（−26% 到 −63%）。問題在空頭腿：P1 ∪ P2 多頭腿年化 +24% 到 +31%，空頭腿 −24% 到 −31%；P2 空頭腿 −61% 到 −89%，對上同期 TAIEX 報酬指數 +88.5%、TPEX +81.0%。第 3.7 節量了空頭腿實際持有的股票：規模與宇宙相同（成交金額百分位 0.52–0.55，宇宙 0.50），但進場前 20 日平均已漲 6–9%、60 日 17–26%（宇宙 1–4%、7–10%），多頭腿則是近期沒漲的股票；也就是說，模型的 h = 10 排序本質上是**短期反轉訊號**：放空近期強勢股、買進落後股。P1 這套反轉成立（空頭腿事後報酬低於宇宙、多頭腿高於宇宙），P2 是動能延續的行情：被放空的強勢股事後年化 +75% 到 +79%（宇宙 +57.5%），被買進的落後股只有 +21% 到 +27%，兩腿同時逆向。這與 §13.16「變體 A 讓 P2 排序不崩」並不矛盾：變體 A 恢復的是**全宇宙的殘差目標 Rank IC**（P2 0.05–0.065，一個相關係數），但第 3.7 節第二張表顯示，band 組合實際進場的前後 50 檔在 P2 的殘差目標價差已是 −0.4%／10 日（P1 +0.9% 到 +1.2%），而組合賺的是原始報酬，P2 的原始多空價差 −0.8% 到 −1.4%／10 日：殘差化只從**標籤**裡拿掉了市場、規模與產業，沒有拿掉動能，也沒有改變**組合**的暴露。模型的多空價差（毛年化 P1 ∪ P2 TWSE +1.8%／+7.9%）付不起任何成本檔。
 3. **台指期疊加救回的是 beta，不是 alpha。** 多空組合對市場的滾動 beta 平均 −0.43 到 −0.52（空頭腿的 beta 高於多頭腿），對沖因此是**做多**台指期；TX 腿在 P1 ∪ P2 貢獻 +10% 到 +21%、P2 貢獻 +19% 到 +58%，把 S2 推到 B0 TWSE +13.5%、D0 TWSE +16.3%、D0 TW +16.8%。這一段報酬來自多頭市場裡持有約半倍市場曝險，任何人買 0050 都拿得到；拿掉 TX 腿後的 S1 就是上一點的結果。
 4. **當沖是純粹的執行成本問題。** S3 的毛報酬年化 +123% 到 +179%（每邊每日 0.25–0.33%），h = 1 訊號真實且穩定（P2 毛報酬仍有 +122% 到 +142%）。機構成本的往返 0.31%／腿（手續費 0.06%、滑價 0.10%、當沖稅 0.15%）年化拖累 156%，淨報酬 TWSE B0 −32.6% [−55.5%, −8.4%]、D0 −17.4%，TPEX 轉正（B0 +7.4%、D0 +12.4%，Sharpe 0.33／0.53）但區間跨 0 且 P2 為負。散戶成本的拖累 263–363%／年，淨報酬 −119% 到 −224%，是六個情境裡最糟的。滑價歸零的機構敏感度（拖累 106%）下 TWSE P1 ∪ P2 淨報酬 B0 +17.2%（Sharpe 0.79）、D0 +32.4%（Sharpe 1.51）：當沖只有在每邊成交成本只剩手續費與稅、完全沒有滑價時才成立，而 0.15% 的當沖稅已占去機構往返成本的一半。
 5. **合併情境沒有加分。** S5 把多日與當沖各半，Sharpe 介於兩者之間；S6 加上兩個 TX 疊加後 D0 TPEX +15.7% [−3.0%, +35.7%]、Sharpe 0.86，仍是靠 TX 腿，P2 −9.7%。
@@ -633,6 +633,25 @@ S3 當沖：
 
 同期 TAIEX 開盤到開盤年化：P1 +21.9%、P2 +89.3%。空頭腿的規模與宇宙相同，不是大型股；它放空的是近 20–60 日漲幅最大的股票（反轉式空頭）。P1 的反轉成立：空頭腿事後報酬低於宇宙（B0 +14.4%、D0 +2.0% 對 +15.1%），多頭腿高於宇宙（+27% 對 +15%）。P2 動能延續：空頭腿事後 +75% 到 +79%、高於宇宙 17–21 個百分點，多頭腿 +21% 到 +27%、低於宇宙 30–37 個百分點，兩腿同時逆向。
 
+兩腿進場的股票，其殘差目標（模型預測的量）與原始 alpha（對指數的 10 日相對報酬）的均值如下，每次進場計一次：
+
+| 模型 | 期間 | 腿 | 進場次數 | 殘差目標 h = 10 均值 | 原始 alpha h = 10 均值 |
+| --- | --- | --- | --- | --- | --- |
+| B0 | P1 | 多頭 | 539 | +0.79% | +0.69% |
+| B0 | P1 | 空頭 | 959 | −0.39% | −1.00% |
+| B0 | P1 | 宇宙 | 242,925 | −0.01% | −0.67% |
+| B0 | P2 | 多頭 | 139 | −0.21% | −2.45% |
+| B0 | P2 | 空頭 | 346 | +0.24% | −1.05% |
+| B0 | P2 | 宇宙 | 91,720 | −0.06% | −1.88% |
+| D0 | P1 | 多頭 | 1,264 | +0.40% | +0.09% |
+| D0 | P1 | 空頭 | 1,501 | −0.50% | −1.15% |
+| D0 | P1 | 宇宙 | 242,925 | −0.01% | −0.67% |
+| D0 | P2 | 多頭 | 311 | −0.15% | −2.14% |
+| D0 | P2 | 空頭 | 543 | +0.22% | −1.38% |
+| D0 | P2 | 宇宙 | 91,720 | −0.06% | −1.88% |
+
+多減空的 10 日價差：P1 殘差 +1.19%（B0）／+0.90%（D0），原始 +1.70%／+1.24%；P2 殘差 **−0.45%／−0.37%**，原始 **−1.40%／−0.76%**。§13.16 報告的「P2 殘差 Rank IC 0.05–0.065」是全宇宙的相關係數；在 band 組合實際進場的前後約 50 檔，P2 的殘差價差已經是負的，原始價差更負。殘差化從標籤拿掉的是市場、規模與產業，不是動能；組合持有的是原始股票，它的反動能傾斜在 P2 的動能行情裡付出的代價，是殘差 alpha 幅度的數倍。
+
 ### 4. 意涵
 
 - 把成本換成機構條件，改變的是幅度不是結論：S1 的淨報酬只多出 2–5 個百分點，當沖的拖累由 263–363% 降到 156%，但毛報酬 123–179% 仍付不起。模型的排序能力在這套工具下換不成業界會買單的 Sharpe。
@@ -674,7 +693,7 @@ This report records the informational analysis of [experiment protocol §13.19](
 Conclusions:
 
 1. **None of the 36 cells (six scenarios × two models × three markets) clears the bar.** The closest is D0's S2 (multi-day long-short plus a rolling-beta TX overlay) on the two markets combined: P1 ∪ P2 net +16.8% [+1.4%, +33.7%] a year, Sharpe 0.83, lower bound above 0, but Sharpe below 1.0 and P2 at −6.5%. D0's S2 (Sharpe 0.87, P2 −7.3%) and S6 (Sharpe 0.86, P2 −9.7%) on TPEX miss the same two conditions.
-2. **Institution costs are not the bottleneck of the multi-day long-short.** S1's cost drag falls from 9.6–17% a year (retail) to 8–13% (institution), a 2–5 point difference, yet the P1 ∪ P2 net return stays at B0 TWSE −6.3%, TPEX −2.5%, D0 TWSE −5.0%, TPEX +7.6%, with every P2 negative (−26% to −63%). The short book is the problem: on P1 ∪ P2 the long book earns +24% to +31% a year and the short book −24% to −31%; in P2 the short book loses 61% to 89% while the TAIEX total-return index gains 88.5% and TPEX 81.0%. Section 3.7 measures what the short book actually held: names of the same size as the universe (dollar-volume percentile 0.52–0.55 against 0.50) that had already risen 6–9% over the previous 20 sessions and 17–26% over 60 (universe 1–4% and 7–10%), while the long book held names that had not moved. The model's h = 10 ranking is therefore in substance a **short-term reversal signal**: short the recent winners, buy the laggards. In P1 the reversal worked (the shorts then underperformed the universe and the longs outperformed it); P2 was a momentum regime in which the shorted winners went on to earn +75% to +79% a year (universe +57.5%) and the bought laggards only +21% to +27%, so both legs ran against the book at once. The model's long-short spread (gross P1 ∪ P2 TWSE +1.8% / +7.9%) cannot pay for either cost profile.
+2. **Institution costs are not the bottleneck of the multi-day long-short.** S1's cost drag falls from 9.6–17% a year (retail) to 8–13% (institution), a 2–5 point difference, yet the P1 ∪ P2 net return stays at B0 TWSE −6.3%, TPEX −2.5%, D0 TWSE −5.0%, TPEX +7.6%, with every P2 negative (−26% to −63%). The short book is the problem: on P1 ∪ P2 the long book earns +24% to +31% a year and the short book −24% to −31%; in P2 the short book loses 61% to 89% while the TAIEX total-return index gains 88.5% and TPEX 81.0%. Section 3.7 measures what the short book actually held: names of the same size as the universe (dollar-volume percentile 0.52–0.55 against 0.50) that had already risen 6–9% over the previous 20 sessions and 17–26% over 60 (universe 1–4% and 7–10%), while the long book held names that had not moved. The model's h = 10 ranking is therefore in substance a **short-term reversal signal**: short the recent winners, buy the laggards. In P1 the reversal worked (the shorts then underperformed the universe and the longs outperformed it); P2 was a momentum regime in which the shorted winners went on to earn +75% to +79% a year (universe +57.5%) and the bought laggards only +21% to +27%, so both legs ran against the book at once. This does not contradict §13.16's finding that variant A keeps the P2 ranking alive: variant A restored the **universe-wide Rank IC against the residual target** (P2 0.05–0.065, a correlation coefficient), but the second table of section 3.7 shows that for the top and bottom 50 names the band portfolio actually entered, the P2 residual-target spread is already −0.4% per 10 sessions (P1 +0.9% to +1.2%), and the portfolio earns raw returns, whose P2 long-short spread is −0.8% to −1.4% per 10 sessions: residualization removed market, size and industry from the **labels**, not momentum, and it changed nothing about the **portfolio's** exposures. The model's long-short spread (gross P1 ∪ P2 TWSE +1.8% / +7.9%) cannot pay for either cost profile.
 3. **The TX overlay recovers beta, not alpha.** The long-short book's rolling beta averages −0.43 to −0.52 (the shorts carry more beta than the longs), so the hedge is **long** TX; the TX leg contributes +10% to +21% on P1 ∪ P2 and +19% to +58% in P2, lifting S2 to B0 TWSE +13.5%, D0 TWSE +16.3% and D0 TW +16.8%. That return is half a unit of market exposure in a bull market, available to anyone holding 0050; take the TX leg away and S1 is what remains.
 4. **Day trading is purely an execution-cost problem.** S3 earns +123% to +179% gross a year (0.25–0.33% per side per session); the h = 1 signal is real and stable (P2 gross still +122% to +142%). The institution round trip of 0.31% per leg (commission 0.06%, slippage 0.10%, day-trade tax 0.15%) costs 156% a year: net TWSE B0 −32.6% [−55.5%, −8.4%], D0 −17.4%; TPEX turns positive (B0 +7.4%, D0 +12.4%, Sharpe 0.33 / 0.53) but the intervals span 0 and P2 is negative. Retail costs drag 263–363% a year for net returns of −119% to −224%, the worst of the six scenarios. With institution slippage set to zero (drag 106%) the TWSE P1 ∪ P2 net is B0 +17.2% (Sharpe 0.79) and D0 +32.4% (Sharpe 1.51): day trading works only when each side costs nothing beyond commission and tax, and the 0.15% day-trade tax alone is half of the institution round trip.
 5. **Combining the books adds nothing.** S5 (half multi-day, half day trade) lands between its parts; S6 with both TX overlays reaches D0 TPEX +15.7% [−3.0%, +35.7%], Sharpe 0.86, again through the TX leg, with P2 at −9.7%.
@@ -1297,6 +1316,25 @@ Computed from the daily holdings (`held`) of `simulate_band`: size is the percen
 | D0 | P2 | Universe | 426.6 | 0.50 | 25% | +3.8% | +9.5% | +57.5% |
 
 TAIEX open to open over the same intervals: P1 +21.9%, P2 +89.3% annualized. The short book has the universe's size, not large caps; what it shorts are the names with the largest gains over the previous 20–60 sessions (a reversal short). In P1 the reversal held: the shorts then earned less than the universe (B0 +14.4%, D0 +2.0% against +15.1%) and the longs more (+27% against +15%). In P2 momentum persisted: the shorts earned +75% to +79%, 17–21 points above the universe, and the longs +21% to +27%, 30–37 points below it, so both legs ran against the book.
+
+The mean residual target (what the model predicts) and raw alpha (10-session return relative to the index) of the names each book entered, one count per entry:
+
+| Model | Period | Book | Entries | Mean residual target h = 10 | Mean raw alpha h = 10 |
+| --- | --- | --- | --- | --- | --- |
+| B0 | P1 | Long | 539 | +0.79% | +0.69% |
+| B0 | P1 | Short | 959 | −0.39% | −1.00% |
+| B0 | P1 | Universe | 242,925 | −0.01% | −0.67% |
+| B0 | P2 | Long | 139 | −0.21% | −2.45% |
+| B0 | P2 | Short | 346 | +0.24% | −1.05% |
+| B0 | P2 | Universe | 91,720 | −0.06% | −1.88% |
+| D0 | P1 | Long | 1,264 | +0.40% | +0.09% |
+| D0 | P1 | Short | 1,501 | −0.50% | −1.15% |
+| D0 | P1 | Universe | 242,925 | −0.01% | −0.67% |
+| D0 | P2 | Long | 311 | −0.15% | −2.14% |
+| D0 | P2 | Short | 543 | +0.22% | −1.38% |
+| D0 | P2 | Universe | 91,720 | −0.06% | −1.88% |
+
+Long-minus-short spread per 10 sessions: P1 residual +1.19% (B0) / +0.90% (D0), raw +1.70% / +1.24%; P2 residual **−0.45% / −0.37%**, raw **−1.40% / −0.76%**. The "P2 residual Rank IC 0.05–0.065" of the §13.16 report is a universe-wide correlation; among the roughly 50 names at each end that the band portfolio actually enters, the P2 residual spread is already negative and the raw spread more so. Residualization took market, size and industry out of the labels, not momentum; the portfolio holds raw stocks, and the price its anti-momentum tilt paid in P2's momentum regime is several times the size of the residual alpha.
 
 ### 4. Implications
 
