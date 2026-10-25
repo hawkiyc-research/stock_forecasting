@@ -37,7 +37,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from twbacktest import engine, positions, runner, taifex
+from twbacktest import engine, positions, runner, stats, taifex
 from twbacktest.data import MARKETS
 from twbacktest.exposure_features import (
     FEATURES,
@@ -760,8 +760,9 @@ def _profile_rows(
 
 def select_multi_day(
     data: MarketData, config: dict[str, Any], profile: CostProfile, participation_cap: float,
+    *, score_variant: str = "v0",
 ) -> tuple[list[dict[str, Any]], tuple[int, int, int], dict[str, Any]]:
-    """Evaluate the S1 grid on the selection market and pick (h, K, m) by P1 net Sharpe."""
+    """Evaluate the S1 grid on one market and pick (h, K, m) by the selection metric."""
     grid = config["multi_day"]["grid"]
     rule = config["selection"]
     rows, candidates = [], []
@@ -770,11 +771,13 @@ def select_multi_day(
         for k in grid["k"]:
             for m in grid["buffer_multiples"]:
                 book = multi_day_book(data, config, profile, fractional, h=int(h), k=int(k),
-                                      buffer=int(m), participation_cap=participation_cap)
+                                      buffer=int(m), participation_cap=participation_cap,
+                                      score_variant=score_variant)
                 shared = {"model": None, "market": data.market, "profile": profile.name,
                           "slippage_multiplier": profile.slippage_multiplier,
                           "primary_slippage": True, "capital": FRACTIONAL, "capital_twd": None,
-                          "stage": "grid"}
+                          "stage": "grid", "score_variant": score_variant,
+                          "leg_matching": "none"}
                 for row in summarize_book(book, "md_ls", config, data.masks,
                                           data.index_total_return, shared):
                     rows.append(row)
@@ -897,6 +900,7 @@ def run(
             for market in config["markets"]
         }
         chooser = markets[config["selection"]["market"]]
+        grid_variant = construction.get("grid_score_variant", "v0")
         if label in fixed:
             spec = fixed[label]
             md_params = (int(spec["h"]), int(spec["k"]), int(spec["buffer"]))
@@ -905,7 +909,17 @@ def run(
             grid_rows: list[dict[str, Any]] = []
         else:
             grid_rows, md_params, md_choice = select_multi_day(
-                chooser, config, selection_profile, participation_cap)
+                chooser, config, selection_profile, participation_cap,
+                score_variant=grid_variant)
+            md_choice["score_variant"] = grid_variant
+        # Extra grid markets are reported, never used for the selection.
+        for market in config["multi_day"].get("grid_markets", []):
+            if market == config["selection"]["market"] or market not in markets:
+                continue
+            more, _params, _choice = select_multi_day(
+                markets[market], config, selection_profile, participation_cap,
+                score_variant=grid_variant)
+            grid_rows.extend(more)
         if any(name in wanted for name in DAY_TRADE):
             dt_rows, fraction, dt_choice = select_day_trade(
                 chooser, config, selection_profile, participation_cap)
@@ -914,7 +928,8 @@ def run(
                 config["day_trade"]["grid"]["fractions"][0]), {"skipped": True}
         for row in grid_rows + dt_rows:
             row["model"] = label
-            row["score_variant"], row["leg_matching"] = "v0", "none"
+            row.setdefault("score_variant", "v0")
+            row.setdefault("leg_matching", "none")
         all_rows.extend(grid_rows + dt_rows)
         selection[label] = {"multi_day": md_choice, "day_trade": dt_choice}
         for (variant, matching), profile in itertools.product(combos, cost_profiles(profiles)):
@@ -961,7 +976,10 @@ def run(
     verdicts = attractiveness(grid, config)
     output_root.mkdir(parents=True, exist_ok=False)
     grid.to_csv(output_root / "grid.csv", index=False)
-    pd.concat(daily_frames, ignore_index=True).to_csv(output_root / "daily.csv", index=False)
+    daily = pd.concat(daily_frames, ignore_index=True)
+    daily.to_csv(output_root / "daily.csv", index=False)
+    yearly_summary(daily, annualization_days=int(config["annualization_days"])).to_csv(
+        output_root / "yearly.csv", index=False)
     report = {
         "kind": "scenario-suite-retail-vs-institution",
         "config": str(config_path),
@@ -978,6 +996,34 @@ def run(
     (output_root / "summary.md").write_text(summary_markdown(report, grid, profiles),
                                             encoding="utf-8")
     return report
+
+
+def yearly_summary(daily: pd.DataFrame, *, annualization_days: int) -> pd.DataFrame:
+    """Per calendar year of the interval start: compounded net and gross return, annualized
+    Sharpe of the daily net series, maximum drawdown, hit rate and the number of intervals, for
+    every daily series (model, market, profile, scenario and construction)."""
+    frame = daily.copy()
+    frame["year"] = pd.to_datetime(frame["interval_start"]).dt.year
+    keys = [c for c in ("model", "market", "profile", "scenario", "score_variant", "leg_matching")
+            if c in frame.columns]
+    rows = []
+    for key, part in frame.groupby([*keys, "year"], sort=True):
+        net = part["net"].to_numpy(dtype=np.float64)
+        gross = part["gross"].to_numpy(dtype=np.float64)
+        record = dict(zip([*keys, "year"], key, strict=True))
+        record.update({
+            "days": int(np.isfinite(net).sum()),
+            "net_return": float(np.prod(1.0 + np.nan_to_num(net)) - 1.0),
+            "gross_return": float(np.prod(1.0 + np.nan_to_num(gross)) - 1.0),
+            "net_mean_annual": float(np.nanmean(net)) * annualization_days,
+            "sharpe": stats.ratio(net, annualization_days),
+            "max_drawdown": stats.max_drawdown(net),
+            "hit_rate": float(np.mean(net[np.isfinite(net)] > 0)) if net.size else float("nan"),
+            "index_total_return": float(
+                np.prod(1.0 + np.nan_to_num(part["index_total_return"].to_numpy())) - 1.0),
+        })
+        rows.append(record)
+    return pd.DataFrame(rows)
 
 
 def _daily_frame(label: str, market: str, profile: CostProfile, books: dict[str, Book],

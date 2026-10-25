@@ -238,6 +238,9 @@ def test_purified_band_construction_runs_both_variants_and_matchings(tmp_path):
     assert "TWSE" in verdict and "TWSE|v1/momentum" in verdict
     daily = pd.read_csv(output / "daily.csv")
     assert {"score_variant", "leg_matching"} <= set(daily.columns)
+    yearly = pd.read_csv(output / "yearly.csv")
+    assert {"year", "net_return", "sharpe", "max_drawdown", "days"} <= set(yearly.columns)
+    assert set(yearly["year"]) >= {2023, 2024, 2025}
     # The momentum-matched book splits k over the quintile sub-books but keeps the same k label.
     matched = grid[(grid["leg_matching"] == "momentum") & (grid["market"] == "TWSE")]
     assert matched["k"].eq(6).all() and matched["turnover"].notna().all()
