@@ -2,7 +2,7 @@
 
 ## 中文
 
-本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-25。
+本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-26。
 
 ### 現況
 
@@ -14,7 +14,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 回填完成後 curate 全部 13 個資料集、events、calendar、manifest、validate | `tw_chip_data` DECISION_SUMMARY §10 | 回填結束（回填在終端分頁執行中） | 無 | curated 層、manifest、驗證摘要 | 資料專案；使用者在終端 commit |
 | 2 | 名單品項：「平盤下得融（借）券賣出」（兩所，可回溯至 2013-09-23）、「得為融資融券」 | `tw_chip_data` §10.3；§13.19 補充三第 3 項 | 第 1 項 | 無 | 兩張每日名單表 | 資料專案 |
-| 3 | **補充四**：空頭腿限可借券名單，重算正交化 S1／S2（兩成本檔、三市場） | §13.19 補充二、三 | 第 2 項 | 無（本機回測） | 報告新節、協定結果註記 | 本專案 |
+| 3 | **補充四**：執行不確定性與可借券宇宙，重算正交化 S1／S2——空頭腿限可借券名單、借不到的機率依規模三等分抽樣（機構 2／10／25%，散戶 5／20／50%，× 0 與 × 2 敏感度）、借券召回機率、借券費分層（1.5／3／6%）、資本情境改為封頂而非跳過；5 個隨機重複 | §13.19 補充四（已登記） | 第 2 項 | 無（本機回測；`scenario_suite` 新增 `execution` 設定） | 報告新節、協定結果註記 | 本專案 |
 | 4 | **§13.17 補充**：0050 核心加正交化多空疊加，變體 A（質押借款）與 B（台指期提供 β），H-G 資訊性判讀 | §13.17 補充（已登記設計與門檻） | 第 3 項 | 無（本機回測；新模組 `core_overlay.py`） | 雙語報告、協定結果 | 本專案 |
 | 5 | **§13.18 籌碼特徵庫 `chip_tw_v1`** 與 B0 的 F1／F2 | §13.18 第 1 到 4 項 | 第 1 項的 curated 層；`stock-forecasting-build-features --spec` 支援多規格 | **RunPod CPU**：`features --spec`、`lgbm --spec` 各一次（F1、F2 各一個 B0 walk-forward，三 seed） | 特徵庫、兩組 B0 預測 | 本專案寫程式；使用者啟動 Pod |
 | 6 | **G1 與 H-H**：F1 − F0、F2 − F0 配對差，全宇宙與中小型股分列、分期、強勢股子分析（以 V1 分數為基線） | §13.18 第 5 項與 G1 子分析 | 第 5 項 | 無 | 協定結果、報告 | 本專案 |
@@ -36,7 +36,7 @@
 
 ## English
 
-This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-25.
+This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-26.
 
 ### Where things stand
 
@@ -48,7 +48,7 @@ After orthogonalizing the score daily against the 60-session beta and the traili
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | After the backfill: curate all 13 datasets, events, calendar, manifest, validate | `tw_chip_data` DECISION_SUMMARY §10 | Backfill finished (running in a terminal tab) | None | Curated layer, manifest, validation summary | Data project; the user commits in the terminal |
 | 2 | Eligibility lists: "short-sale-below-reference allowed" (both exchanges, back to 2013-09-23) and "margin-eligible" | `tw_chip_data` §10.3; §13.19 supplement 3 item 3 | Step 1 | None | Two daily list tables | Data project |
-| 3 | **Supplement 4**: short book restricted to the borrowable list, rerun the orthogonalized S1 / S2 (both cost profiles, three markets) | §13.19 supplements 2 and 3 | Step 2 | None (local backtest) | New report section, protocol result note | This project |
+| 3 | **Supplement 4**: execution uncertainty and the borrowable universe, rerun the orthogonalized S1 / S2 — short candidates restricted to the borrowable list, borrow failure drawn per name and day by dollar-volume tercile (institution 2 / 10 / 25%, retail 5 / 20 / 50%, × 0 and × 2 sensitivities), recall probability, tiered borrow fees (1.5 / 3 / 6%), capital scenarios capped-and-scaled instead of skipped; 5 random replicates | §13.19 supplement 4 (registered) | Step 2 | None (local backtest; new `execution` block in `scenario_suite`) | New report section, protocol result note | This project |
 | 4 | **§13.17 supplement**: 0050 core plus orthogonalized long-short overlay, variant A (loan secured on 0050) and B (β from TX), informational H-G | §13.17 supplement (design and bar registered) | Step 3 | None (local backtest; new module `core_overlay.py`) | Bilingual report, protocol result | This project |
 | 5 | **§13.18 chip feature library `chip_tw_v1`** and B0's F1 / F2 | §13.18 items 1–4 | Curated layer of step 1; multi-spec support in `stock-forecasting-build-features --spec` | **RunPod CPU**: one `features --spec` and one `lgbm --spec` each (a B0 walk-forward for F1 and for F2, three seeds) | Feature store, two sets of B0 predictions | This project writes the code; the user launches the Pods |
 | 6 | **G1 and H-H**: paired F1 − F0 and F2 − F0, full universe and small / mid caps, by period, recent-winner sub-analysis (V1 score as the baseline) | §13.18 item 5 and the G1 sub-analysis | Step 5 | None | Protocol result, report | This project |
