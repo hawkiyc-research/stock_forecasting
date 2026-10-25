@@ -324,6 +324,32 @@ h = 10、P1 ∪ P2 的產業中性毛年化須達成本拖累的兩倍。需要�
 uv run python -m twbacktest.exposure_diagnostics --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --targets ../artifacts/lgbm/<launch-id>/targets.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --targets ../artifacts/xs/<launch-id>/targets.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
 
+### 機構成本下的六情境回測（§13.19）
+
+`twbacktest.scenario_suite` 是 `docs/experiment_protocol.md` §13.19 的資訊性分析：同一組 walk-forward 分數在
+每個市場的流動性宇宙內建六個多空情境，每個情境都在 `config/cost_profiles.json` 的兩個成本檔（散戶、機構）
+下計分並並列。S1 多日多空：多頭 band 組合（§13.14 規則）加上反向排序的空頭 band 組合，空頭位置每日等權
+重設、機構另扣借券年費；S2 = S1 加滾動 β（組合自身毛報酬對指數，嚴格用前 60 個區間）的台指期疊加；
+S3 當沖：t 收盤 h = 1 分數，t+1 開盤買前 q、放空後 q，收盤平倉，當沖稅 0.15%；S4 = S3 加台指期日內疊加；
+S5／S6 = 多日與當沖各半（不含／含 TX）。參數（S1 的 h、K、m 與 S3 的 q）以 TWSE、P1、機構主要成本、
+分數位置的淨 Sharpe 選定後固定；另報 TPEX、兩市場各半的 TW、滑價 0／1／2 倍，以及機構 3 億與 10 億
+（多日：每檔名目超過 20 日成交金額中位數 5% 的候選跳過；當沖：名目封頂、超出留現金）。事前寫死的
+「吸引力」門檻：機構主要成本、分數位置、P1 ∪ P2 淨 Sharpe ≥ 1.0、淨報酬區間下界 > 0、P2 淨報酬 > 0。
+輸出 `grid.csv`（含 P1 選擇格子與全部最終列）、`daily.csv`（主要成本的每日序列）、`report.json`（選定
+參數與門檻判定）與 `summary.md`。結果見 `docs/institution_cost_scenarios_results.md`。
+
+```bash
+uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| 選項 | 說明 | 預設 |
+| --- | --- | --- |
+| `--config` | 情境設定檔（宇宙、格子、TX、區間、選擇與門檻規則；成本檔路徑在其中） | `config/scenario_suite.json` |
+| `--predictions` / `--model` | 成對、可重複：walk-forward `predictions.parquet` 與其中的模型名 | 必填 |
+| `--prices` | 資料集 raw `market.parquet` | 必填 |
+| `--artifacts-root` | 主專案 `artifacts/`（讀 `diagnostics/taifex-tx`） | `../artifacts` |
+| `--output-root` | 輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/scenario-suite-<UTC 時間>-<隨機碼>` |
+
 ## English
 
 ### Purpose
@@ -697,3 +723,35 @@ Results in `docs/exposure_diagnostics_results.md`.
 ```bash
 uv run python -m twbacktest.exposure_diagnostics --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --targets ../artifacts/lgbm/<launch-id>/targets.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --targets ../artifacts/xs/<launch-id>/targets.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
+
+### Six scenarios under institution costs (§13.19)
+
+`twbacktest.scenario_suite` is the informational analysis of `docs/experiment_protocol.md` §13.19: the same
+walk-forward scores build six long-short scenarios inside each market's liquidity universe, and every
+scenario is scored under both cost profiles of `config/cost_profiles.json` (retail and institution), side
+by side. S1 multi-day long-short: the long band portfolio (§13.14 rule) plus a short band portfolio on the
+reversed ranking, each short slot reset to its value every session, with the institution borrow fee; S2 =
+S1 plus a TX overlay sized by the book's rolling β (its own gross return on the index, strictly the previous
+60 intervals); S3 day trade: h = 1 scores at the close of t, buy the top q and sell short the bottom q at the
+open of t+1, close at the close, day-trade tax 0.15%; S4 = S3 plus an intraday TX overlay; S5 / S6 = half
+multi-day and half day trade without / with the TX overlays. The parameters (h, K, m of S1 and q of S3) are
+selected by net Sharpe on TWSE, P1, institution primary costs and fractional positions, then fixed; TPEX,
+the half-and-half TW combination, slippage at 0 / 1 / 2× and the institution capital scenarios NT$300M and
+NT$1B (multi-day: candidates whose slot exceeds 5% of the 20-session median dollar volume are skipped; day
+trade: slots capped, the excess stays in cash) are reported as well. The pre-registered "attractive to the
+industry" bar: institution primary costs, fractional positions, P1 ∪ P2 net Sharpe ≥ 1.0, net-return lower
+bound > 0 and a positive P2 net return. Outputs: `grid.csv` (the P1 selection grid and every final row),
+`daily.csv` (daily series under primary costs), `report.json` (selected parameters and the bar verdicts) and
+`summary.md`. Results in `docs/institution_cost_scenarios_results.md`.
+
+```bash
+uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--config` | Scenario configuration (universe, grids, TX, intervals, selection and bar rules; the cost-profile path is inside it) | `config/scenario_suite.json` |
+| `--predictions` / `--model` | In pairs, repeatable: a walk-forward `predictions.parquet` and the model name inside it | required |
+| `--prices` | The dataset's raw `market.parquet` | required |
+| `--artifacts-root` | The main project's `artifacts/` (reads `diagnostics/taifex-tx`) | `../artifacts` |
+| `--output-root` | Output directory, must not exist yet | `artifacts/diagnostics/backtest/scenario-suite-<UTC time>-<random>` |

@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "name": "scenario-suite-retail-vs-institution",
+  "description": "Pre-registered six-scenario suite (experiment protocol section 13.19): multi-day stock long-short (S1), with a rolling-beta TX overlay (S2), next-session stock day trade long-short (S3), with a TX intraday overlay (S4), and the half-and-half combinations (S5, S6), each under the retail and institution cost profiles of cost_profiles.json.",
+  "cost_profiles": "cost_profiles.json",
+  "markets": {
+    "TWSE": {"codes": ["TWSE"], "index": "TAIEX.TW", "min_dollar_volume": 30000000},
+    "TPEX": {"codes": ["TPEX"], "index": "TPEX.TWO", "min_dollar_volume": 10000000}
+  },
+  "combined_market": {"name": "TW", "weights": {"TWSE": 0.5, "TPEX": 0.5}},
+  "universe": {"liquidity_lookback_sessions": 20, "min_close": 10, "exclude_etf": true},
+  "signal": {"half_life_sessions": 3, "max_gap_sessions": 5},
+  "multi_day": {
+    "grid": {"score_horizons": [5, 10], "k": [30, 50], "buffer_multiples": [2, 3]},
+    "entry_cap_fraction": 0.1,
+    "bootstrap_block": 21
+  },
+  "day_trade": {
+    "horizon": 1,
+    "grid": {"fractions": [0.05, 0.1]},
+    "bootstrap_block": 5
+  },
+  "combination": {"multi_day_weight": 0.5, "day_trade_weight": 0.5, "bootstrap_block": 21},
+  "price_limit": {"open_gap": 0.095},
+  "tx": {
+    "contract": "TX",
+    "root": "diagnostics/taifex-tx",
+    "multiplier": 200,
+    "beta_window": 60,
+    "beta_min_observations": 30
+  },
+  "annualization_days": 252,
+  "bootstrap": {"replicates": 1000, "seed": 11},
+  "periods": {"P1": ["2023-01-02", "2025-06-01"], "P2": ["2025-06-01", "2026-06-01"]},
+  "selection": {"market": "TWSE", "period": "P1", "profile": "institution", "metric": "sharpe"},
+  "attractiveness": {
+    "profile": "institution",
+    "period": "P1+P2",
+    "min_sharpe": 1.0,
+    "lower_bound_above": 0.0,
+    "require_positive_period": "P2"
+  }
+}

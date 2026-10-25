@@ -184,6 +184,7 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | `twbacktest.futures_universe` | 描述性 | 全部／有股票期貨／期貨流動三個區段的 h = 1、10 Rank IC 與前後十分位毛報酬 |
 | `twbacktest.futures_daytrade` | §13.15（H-E） | 後 q 分位於 8:45 期貨開盤放空、結算價平倉；tick 滑價、每口手續費、參與率上限、保證金、資本情境；多空與對沖版 |
 | `twbacktest.exposure_diagnostics` | §13.17 步驟 0 | 殘差標籤模型在流動性宇宙與股票期貨流動宇宙的殘差／原始 Rank IC、四分位價差、plain／產業中性／規模中性多空毛年化與股票期貨成本拖累，含停止規則判定 |
+| `twbacktest.scenario_suite` | §13.19（資訊性） | 六個多空情境（多日 band 多空、加台指期滾動 β 疊加、現股當沖多空、加台指期日內疊加、兩者各半、再加台指期）在散戶與機構兩個成本檔下並列；P1 選參數、TPEX 與 TW 合併、滑價敏感度、機構 3 億與 10 億容量、事前寫死的吸引力門檻 |
 
 <a id="current-results-zh"></a>
 
@@ -197,7 +198,9 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | [股票期貨空方當沖結果](docs/futures_daytrade_results.md) | q 選擇、成本敏感度、資本情境、價差普查（H-E） |
 | [殘差化標籤與可抽換編碼器結果](docs/residual_labels_results.md) | 變體 A／B 對舊 B0（H-F）、D0 重訓、D1 兩個編碼器、seed 穩定度、P1 → P2 保留率 |
 | [§13.17 步驟 0 結果](docs/exposure_diagnostics_results.md) | 殘差 alpha 幅度對成本、兩個宇宙、停止規則 |
+| [機構成本六情境結果](docs/institution_cost_scenarios_results.md) | 散戶對機構成本、六情境、多空各腿與 TX 腿、滑價敏感度、容量、吸引力門檻（§13.19） |
 | [Word 成果報告](reports/taiwan_rank_pipeline_results_20261025.docx) | 以上全部表格的雙語彙整，由 `scripts/build_results_report.py` 產生 |
+| [Word 六情境報告](reports/institution_cost_scenarios_20261025.docx) | §13.19 雙語報告的 Word 版，由 `scripts/build_scenario_report.py` 產生 |
 | [模型開發 roadmap](MODEL_DEVELOPMENT_ROADMAP.md) | 第 1 節結論、第 9 節研究帳本（含 §13.1–§13.11 的歷史實驗） |
 
 
@@ -669,6 +672,17 @@ manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-25
 
     ```bash
     cd backtest && uv run python -m twbacktest.exposure_diagnostics --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --targets ../artifacts/lgbm/<launch-id>/targets.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --targets ../artifacts/xs/<launch-id>/targets.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
+17. **機構成本下的六情境回測（本機，§13.19）**：同一組殘差標籤模型在散戶與機構兩個成本檔下，
+    跑多日多空、台指期疊加、現股當沖與合併六個情境，並以事前寫死的吸引力門檻判讀；見
+    [backtest/README.md](backtest/README.md)，結果見
+    [docs/institution_cost_scenarios_results.md](docs/institution_cost_scenarios_results.md)，Word 版以
+    `scripts/build_scenario_report.py` 產生。
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    python3 scripts/build_scenario_report.py docs/institution_cost_scenarios_results.md reports/institution_cost_scenarios_20261025.docx
     ```
 
 特徵庫與 rank 標籤都以有界的 spawn process pool 建立：每個 bucket 一個工作，同時送出不超過
@@ -1610,6 +1624,7 @@ Pod 內的 Python 入口（由 tmux 工作呼叫，也可在 Pod 內直接執行
 | `PYTHONPATH=src inference/.venv/bin/python scripts/compare_xs_runs.py` | `--model DIR`、`--baseline DIR` 兩個 `artifacts/xs/<launch>`（必填，標籤變體必須相同）；`--schedule PATH` 預設季度 fold 設定；`--output PATH` 預設 model 目錄的 `paired-vs-xs.json`。對原始 alpha 與殘差目標各算配對差 |
 | `python3 scripts/fetch_tw_company_reference.py` | `--output-dir DIR` 預設 `configs/reference`；以 curl 從證交所與櫃買 OpenAPI 抓公司基本資料，寫 CSV 與 JSON |
 | `python3 scripts/build_results_report.py REPO_ROOT OUTPUT.docx` | 兩個位置參數；從各 Markdown 結果報告產生雙語 Word 成果報告 |
+| `python3 scripts/build_scenario_report.py REPORT.md OUTPUT.docx [FOOTER]` | 把一份中英雙語 Markdown 結果報告（以 `## English` 分隔）轉成 Word；第三個位置參數為頁尾文字，預設為專案名加報告標題 |
 | `uv run python -m twbacktest.topk_dropout` | `--predictions PATH`、`--model NAME`、`--prices PATH` 必填；`--config PATH` 預設 `config/topk_dropout.json`；`--compare-predictions PATH` 與 `--compare-model NAME` 加入第二個模型做配對比較；`--output-root DIR` 預設 `../artifacts/diagnostics/backtest/topk-dropout-<時間>/` |
 | `uv run python -m twbacktest.holding_walkforward` | `--predictions`、`--model`、`--prices` 必填；`--config PATH` 預設 `config/holding_walkforward.json`；`--output-root DIR` |
 | `uv run python -m twbacktest.tw_strategy` | `--predictions PATH` 與 `--model NAME` 成對、可重複；`--prices PATH` 必填；`--config PATH` 預設 `config/tw_strategy.json`；`--artifacts-root DIR` 預設 `../artifacts`（讀 `diagnostics/taifex-tx`）；`--workers N` process pool 大小（預設依 CPU 與記憶體）；`--output-root DIR` |
@@ -1617,6 +1632,7 @@ Pod 內的 Python 入口（由 tmux 工作呼叫，也可在 Pod 內直接執行
 | `uv run python -m twbacktest.futures_universe` | `--predictions`／`--model` 成對可重複；`--prices` 必填；`--artifacts-root`；`--taifex-root DIR` 預設 `<artifacts>/diagnostics/taifex-all`；`--min-volume X` 近月 20 日平均成交量（標準口）門檻，預設 100；`--lookback N` 預設 20；`--output-root` |
 | `uv run python -m twbacktest.futures_daytrade` | `--predictions`／`--model` 成對可重複；`--prices PATH` 可選（只用於時點噪音統計）；`--config PATH` 預設 `config/futures_daytrade.json`；`--artifacts-root`；`--output-root` |
 | `uv run python -m twbacktest.exposure_diagnostics` | `--predictions`、`--targets`（同一 run 的 `targets.parquet`，含 `residual_hNN`）、`--model` 三者成對可重複；`--prices` 必填；`--artifacts-root`；`--taifex-root`；`--reference PATH` 公司參考表，預設 `configs/reference/tw_company_reference_20261022.csv`；`--min-volume X` 預設 100；`--lookback N` 預設 20；`--output-root` |
+| `uv run python -m twbacktest.scenario_suite` | `--predictions`／`--model` 成對可重複；`--prices` 必填；`--config PATH` 預設 `config/scenario_suite.json`（成本檔 `config/cost_profiles.json` 的路徑在其中）；`--artifacts-root`（讀 `diagnostics/taifex-tx`）；`--output-root` 預設 `../artifacts/diagnostics/backtest/scenario-suite-<時間>/`。六情境 × 散戶／機構成本檔，P1 選參數後固定 |
 
 
 #### 共用基礎設施與歷史命令：本機控制命令
@@ -4389,6 +4405,7 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | `twbacktest.futures_universe` | Descriptive | Rank IC and top / bottom decile gross returns at h = 1 and 10 in the all / with-futures / liquid-futures segments |
 | `twbacktest.futures_daytrade` | §13.15 (H-E) | Short the bottom quantile at the 08:45 futures open and cover at settlement; tick slippage, per-contract commission, participation cap, margin, capital scenarios; long-short and hedged versions |
 | `twbacktest.exposure_diagnostics` | §13.17 step 0 | Residual-label models' residual / raw Rank IC, quartile spreads, plain / industry-neutral / size-neutral long-short gross annual returns and the stock-futures cost drag in the liquidity and liquid stock-futures universes, with the stop-rule verdict |
+| `twbacktest.scenario_suite` | §13.19 (informational) | Six long-short scenarios (multi-day band L/S, plus a rolling-β TX overlay, stock day-trade L/S, plus an intraday TX overlay, the half-and-half combination, plus TX) under the retail and institution cost profiles side by side; P1 selection, TPEX and the TW combination, slippage sensitivity, NT$300M / NT$1B capacity, the pre-registered attractiveness bar |
 
 <a id="current-results-en"></a>
 
@@ -4402,7 +4419,9 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | [Stock-futures short day-trade results](docs/futures_daytrade_results.md) | q selection, cost sensitivity, capital scenarios, spread census (H-E) |
 | [Residualized labels and pluggable encoders](docs/residual_labels_results.md) | Variants A / B against the old B0 (H-F), D0 retraining, both D1 encoders, seed stability, P1 → P2 retention |
 | [§13.17 step 0 results](docs/exposure_diagnostics_results.md) | Residual alpha size against costs, both universes, stop rule |
+| [Six scenarios under institution costs](docs/institution_cost_scenarios_results.md) | Retail vs institution costs, six scenarios, long / short / TX legs, slippage sensitivity, capacity, attractiveness bar (§13.19) |
 | [Word results report](reports/taiwan_rank_pipeline_results_20261025.docx) | Every table above in one bilingual document, produced by `scripts/build_results_report.py` |
+| [Word six-scenario report](reports/institution_cost_scenarios_20261025.docx) | Word version of the §13.19 bilingual report, built by `scripts/build_scenario_report.py` |
 | [Model development roadmap](MODEL_DEVELOPMENT_ROADMAP.md) | Section 1 conclusions and the section 9 research ledger (including the §13.1–§13.11 historical experiments) |
 
 
@@ -4955,6 +4974,18 @@ the last 12 months of each window as validation) and come from
 
     ```bash
     cd backtest && uv run python -m twbacktest.exposure_diagnostics --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --targets ../artifacts/lgbm/<launch-id>/targets.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --targets ../artifacts/xs/<launch-id>/targets.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    ```
+
+17. **Six scenarios under institution costs (local, §13.19)**: run the same residual-label models
+    through the multi-day long-short, TX overlay, stock day-trade and combined scenarios under the
+    retail and institution cost profiles, read against the pre-registered attractiveness bar; see
+    [backtest/README.md](backtest/README.md), results in
+    [docs/institution_cost_scenarios_results.md](docs/institution_cost_scenarios_results.md), Word version
+    built by `scripts/build_scenario_report.py`.
+
+    ```bash
+    cd backtest && uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+    python3 scripts/build_scenario_report.py docs/institution_cost_scenarios_results.md reports/institution_cost_scenarios_20261025.docx
     ```
 
 Both stores are built with bounded spawn process pools: one task per bucket, at most twice the
@@ -6031,6 +6062,7 @@ Local scripts and backtest modules:
 | `PYTHONPATH=src inference/.venv/bin/python scripts/compare_xs_runs.py` | `--model DIR`, `--baseline DIR` two `artifacts/xs/<launch>` directories (required, same label variant); `--schedule PATH` default: the quarterly fold schedule; `--output PATH` default `paired-vs-xs.json` in the model directory. Paired differences on the raw alpha and the residual target |
 | `python3 scripts/fetch_tw_company_reference.py` | `--output-dir DIR` default `configs/reference`; fetches company data from the TWSE and TPEX OpenAPIs with curl and writes the CSV and JSON |
 | `python3 scripts/build_results_report.py REPO_ROOT OUTPUT.docx` | Two positional arguments; builds the bilingual Word results report from the Markdown result reports |
+| `python3 scripts/build_scenario_report.py REPORT.md OUTPUT.docx [FOOTER]` | Turns one bilingual Markdown results report (split at `## English`) into Word; the optional third argument is the footer text, default project name plus report title |
 | `uv run python -m twbacktest.topk_dropout` | `--predictions PATH`, `--model NAME`, `--prices PATH` required; `--config PATH` default `config/topk_dropout.json`; `--compare-predictions PATH` with `--compare-model NAME` adds a second model for the paired comparison; `--output-root DIR` default `../artifacts/diagnostics/backtest/topk-dropout-<time>/` |
 | `uv run python -m twbacktest.holding_walkforward` | `--predictions`, `--model`, `--prices` required; `--config PATH` default `config/holding_walkforward.json`; `--output-root DIR` |
 | `uv run python -m twbacktest.tw_strategy` | `--predictions PATH` and `--model NAME` in pairs, repeatable; `--prices PATH` required; `--config PATH` default `config/tw_strategy.json`; `--artifacts-root DIR` default `../artifacts` (reads `diagnostics/taifex-tx`); `--workers N` process-pool size (default from CPUs and memory); `--output-root DIR` |
@@ -6038,6 +6070,7 @@ Local scripts and backtest modules:
 | `uv run python -m twbacktest.futures_universe` | `--predictions` / `--model` in pairs, repeatable; `--prices` required; `--artifacts-root`; `--taifex-root DIR` default `<artifacts>/diagnostics/taifex-all`; `--min-volume X` near-month 20-session mean volume (standard contracts) for "liquid", default 100; `--lookback N` default 20; `--output-root` |
 | `uv run python -m twbacktest.futures_daytrade` | `--predictions` / `--model` in pairs, repeatable; `--prices PATH` optional (timing-noise statistic only); `--config PATH` default `config/futures_daytrade.json`; `--artifacts-root`; `--output-root` |
 | `uv run python -m twbacktest.exposure_diagnostics` | `--predictions`, `--targets` (the same run's `targets.parquet` with `residual_hNN`) and `--model` in triples, repeatable; `--prices` required; `--artifacts-root`; `--taifex-root`; `--reference PATH` company reference, default `configs/reference/tw_company_reference_20261022.csv`; `--min-volume X` default 100; `--lookback N` default 20; `--output-root` |
+| `uv run python -m twbacktest.scenario_suite` | `--predictions` / `--model` in pairs, repeatable; `--prices` required; `--config PATH` default `config/scenario_suite.json` (which names the cost-profile file `config/cost_profiles.json`); `--artifacts-root` (reads `diagnostics/taifex-tx`); `--output-root` default `../artifacts/diagnostics/backtest/scenario-suite-<time>/`. Six scenarios × retail / institution cost profiles, parameters selected on P1 then fixed |
 
 
 #### Shared infrastructure and historical commands: local control commands

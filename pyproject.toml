@@ -93,6 +93,9 @@ ignore = ["B008"]
 "scripts/runpod_paired_train.py" = ["UP017"]
 # README assertions quote Traditional Chinese text with full-width punctuation on purpose.
 "tests/test_readme_signal_versions.py" = ["RUF001"]
+# Report builders: bilingual narrative with full-width punctuation and one-line OOXML constants.
+"scripts/build_results_report.py" = ["E501", "RUF001"]
+"scripts/docx_report.py" = ["E501", "RUF001"]
 
 [tool.mypy]
 python_version = "3.12"
