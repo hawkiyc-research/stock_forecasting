@@ -210,3 +210,34 @@ def test_end_to_end_run_writes_outputs_and_selects(tmp_path):
     assert institution["cost_drag_annual"] < retail["cost_drag_annual"]
     assert {"long_net_annual", "short_net_annual", "beta_abs_mean", "index_total_return_annual",
             "hit_rate", "holding_mean"} <= set(grid.columns)
+
+
+def test_purified_band_construction_runs_both_variants_and_matchings(tmp_path):
+    predictions_path, prices_path, artifacts = _fixture(tmp_path)
+    config = json.loads(ss.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    config["cost_profiles"] = str(ss.CONFIG_DIR / "cost_profiles.json")
+    config["markets"]["TWSE"]["min_dollar_volume"] = 1_000_000
+    config["markets"]["TPEX"]["min_dollar_volume"] = 1_000_000
+    config["scenarios"] = ["md_ls", "md_ls_tx"]
+    config["construction"] = {"score_variants": ["v0", "v1"], "leg_matching": ["none", "momentum"],
+                              "momentum_quintiles": 2}
+    config["multi_day"]["fixed"] = {"good": {"h": 10, "k": 6, "buffer": 2}}
+    config["bootstrap"]["replicates"] = 50
+    path = tmp_path / "v1.json"
+    path.write_text(json.dumps(config))
+    output = tmp_path / "out-v1"
+    report = ss.run(path, [predictions_path], ["good"], prices_path, output, artifacts=artifacts)
+    grid = pd.read_csv(output / "grid.csv")
+    assert set(grid["scenario"]) == {"md_ls", "md_ls_tx"}
+    assert set(zip(grid["score_variant"], grid["leg_matching"], strict=True)) == {
+        ("v0", "none"), ("v1", "none"), ("v0", "momentum"), ("v1", "momentum")}
+    assert report["selection"]["good"]["multi_day"]["fixed"] is True
+    assert report["selection"]["good"]["day_trade"] == {"skipped": True}
+    assert (grid["stage"] == "final").all()  # no selection grid with fixed parameters
+    verdict = report["attractiveness"]["good"]["md_ls"]
+    assert "TWSE" in verdict and "TWSE|v1/momentum" in verdict
+    daily = pd.read_csv(output / "daily.csv")
+    assert {"score_variant", "leg_matching"} <= set(daily.columns)
+    # The momentum-matched book splits k over the quintile sub-books but keeps the same k label.
+    matched = grid[(grid["leg_matching"] == "momentum") & (grid["market"] == "TWSE")]
+    assert matched["k"].eq(6).all() and matched["turnover"].notna().all()

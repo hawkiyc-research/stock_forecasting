@@ -9,6 +9,7 @@ import pytest
 from tests.test_tw_strategy import _fixture
 from twbacktest import reversal_exposure as rx
 from twbacktest.exposure_diagnostics import quantile_long_short
+from twbacktest.exposure_features import orthogonalize
 from twbacktest.walkforward_data import load_prices
 
 
@@ -16,15 +17,15 @@ def test_orthogonalize_removes_the_regressors():
     rng = np.random.default_rng(0)
     x = rng.normal(size=(500, 3))
     score = 0.8 * x[:, 0] - 0.5 * x[:, 2] + rng.normal(scale=0.1, size=500)
-    residual = rx.orthogonalize(score, x)
+    residual = orthogonalize(score, x)
     for k in range(3):
         assert abs(np.corrcoef(residual, x[:, k])[0, 1]) < 1e-6
     assert residual.mean() == pytest.approx(0.0, abs=1e-9)
     score[3] = np.nan
     x[7, 1] = np.nan
-    residual = rx.orthogonalize(score, x)
+    residual = orthogonalize(score, x)
     assert np.isnan(residual[3]) and np.isnan(residual[7]) and np.isfinite(residual).sum() == 498
-    assert np.isnan(rx.orthogonalize(score[:3], x[:3])).all()  # too few rows
+    assert np.isnan(orthogonalize(score[:3], x[:3])).all()  # too few rows
 
 
 def test_quantile_labels_are_balanced_and_monotone():

@@ -27,6 +27,7 @@ serially on purpose (process pools would cost more in start-up than they save).
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 from dataclasses import dataclass, replace
@@ -38,6 +39,13 @@ import pandas as pd
 
 from twbacktest import engine, positions, runner, taifex
 from twbacktest.data import MARKETS
+from twbacktest.exposure_features import (
+    FEATURES,
+    orthogonalize_by_group,
+    quantile_labels,
+    row_features,
+    trailing_features,
+)
 from twbacktest.topk_dropout import period_masks
 from twbacktest.tw_strategy import (
     FuturesSeries,
@@ -221,6 +229,7 @@ class MarketData:
     intraday: np.ndarray  # per row: log(close / open) of the session after the signal date
     lot_cost: np.ndarray  # one board lot at the execution open, per row
     masks: dict[str, np.ndarray]
+    features: dict[str, np.ndarray] | None = None  # trailing returns, beta, turnover spike
 
 
 def _index_series(prices: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -250,6 +259,7 @@ def prepare_market(
     config: dict[str, Any],
     prices: pd.DataFrame,
     front: pd.DataFrame,
+    features: dict[str, np.ndarray] | None = None,
 ) -> MarketData:
     spec = config["markets"][market]
     codes = tuple(MARKETS.index(c) for c in spec["codes"])
@@ -300,6 +310,7 @@ def prepare_market(
         index_intraday=index_intraday, index_total_return=index_total, futures=futures,
         tx_intraday=tx_intraday, tx_notional_per_contract=notional, intraday=intraday,
         lot_cost=raw_open * lot, masks=period_masks(dates[1:], config["periods"]),
+        features=features,
     )
 
 
@@ -358,6 +369,73 @@ def rolling_beta(returns: np.ndarray, market: np.ndarray, *, window: int, min_ob
     return beta
 
 
+def _finite_mean(values: list[float]) -> float:
+    finite = [v for v in values if np.isfinite(v)]
+    return float(np.mean(finite)) if finite else float("nan")
+
+
+def momentum_labels(data: MarketData, quintiles: int) -> np.ndarray:
+    """Per row: the quintile (0..quintiles-1) of the trailing 20-session return inside the row's
+    date group; -1 where the feature is missing or the row is outside the universe."""
+    if data.features is None:
+        raise ValueError("momentum-matched legs need the trailing features")
+    ret20 = data.features["ret20"]
+    labels = np.full(data.inputs.index.count, -1, dtype=np.int64)
+    for rows in data.groups:
+        finite = rows[np.isfinite(ret20[rows])]
+        if finite.size:
+            labels[finite] = quantile_labels(ret20[finite], quintiles)
+    return labels
+
+
+def _band_long_short(
+    data: MarketData,
+    score: np.ndarray,
+    groups: tuple[np.ndarray, ...],
+    profile: CostProfile,
+    capital: Capital,
+    *,
+    k: int,
+    buffer: int,
+    max_buys: int,
+    limit: float,
+    participation_cap: float,
+) -> dict[str, Any]:
+    """One long band book and one short band book on ``groups`` ranked by ``score``."""
+    inputs = data.inputs
+    fractional = capital.twd is None
+    common = {
+        "k": k, "buffer": buffer, "max_buys": max_buys, "symbols": inputs.index.symbol_codes,
+        "link": inputs.link, "limit": limit,
+        "lot_cost": None if fractional else data.lot_cost,
+        "slot_capital": None if fractional else capital.twd,
+        "dollar_volume": None if fractional else inputs.dollar_volume,
+        "participation_cap": None if fractional else participation_cap,
+    }
+    long_result = simulate_band(engine.rankings(score, groups), move=inputs.move, **common)
+    short_result = simulate_band(
+        engine.rankings(-score, groups), move=short_moves(inputs.move), **common
+    )
+    codes = inputs.index.market_codes
+    free = np.zeros(inputs.index.count)
+    short_path = with_borrow_fee(short_result.path, profile.borrow_fee_daily)
+    long_stats = positions.path_statistics(long_result.path)
+    short_stats = positions.path_statistics(short_result.path)
+    return {
+        "long_gross": positions.replay(long_result.path, free, free).daily,
+        "long_net": positions.replay(long_result.path, *profile.long_rates(codes)).daily,
+        "short_gross": positions.replay(short_result.path, free, free).daily,
+        "short_net": positions.replay(short_path, *profile.short_rates(codes)).daily,
+        "turnover": 0.5 * (long_stats["turnover"] + short_stats["turnover"]),
+        "holding_mean": 0.5 * (long_stats["holding_mean"] + short_stats["holding_mean"]),
+        "cash_fraction": 0.5 * (long_stats["cash_fraction"] + short_stats["cash_fraction"]),
+        "limit_blocked": (long_stats["blocked_buys"] + long_stats["blocked_sells"]
+                          + short_stats["blocked_buys"] + short_stats["blocked_sells"]),
+        "liquidity_blocked": long_result.liquidity_blocked + short_result.liquidity_blocked,
+        "buy_attempts": long_result.buy_attempts + short_result.buy_attempts,
+    }
+
+
 def multi_day_book(
     data: MarketData,
     config: dict[str, Any],
@@ -368,49 +446,70 @@ def multi_day_book(
     k: int,
     buffer: int,
     participation_cap: float,
+    score_variant: str = "v0",
+    leg_matching: str = "none",
 ) -> Book:
+    """The multi-day long-short book.
+
+    ``score_variant`` ``v0`` is the smoothed percentile score; ``v1`` orthogonalizes it every day
+    inside the universe against the trailing 20/60-session returns and the 60-session beta.
+    ``leg_matching`` ``none`` runs one long and one short band on the whole universe;
+    ``momentum`` runs one pair per quintile of the trailing 20-session return with k / quintiles
+    slots each (equal capital per quintile), so both legs share the momentum distribution.
+    """
     inputs = data.inputs
     column = inputs.horizons.index(h)
     ranks = percentile_ranks(inputs.scores[:, column], data.groups, data.mask)
     signal = config["signal"]
-    smoothed = smooth_by_symbol(
+    score = smooth_by_symbol(
         ranks, inputs.index.date_codes, inputs.index.symbol_codes,
         half_life=float(signal["half_life_sessions"]), max_gap=int(signal["max_gap_sessions"]),
     )
-    max_buys = max(1, math.ceil(k * float(config["multi_day"]["entry_cap_fraction"])))
+    if score_variant == "v1":
+        if data.features is None:
+            raise ValueError("score variant v1 needs the trailing features")
+        regressors = np.column_stack([data.features[name] for name in FEATURES])
+        score = orthogonalize_by_group(score, regressors, data.groups)
+    elif score_variant != "v0":
+        raise ValueError(f"Unknown score variant {score_variant!r}")
+    cap_fraction = float(config["multi_day"]["entry_cap_fraction"])
     limit = float(config["price_limit"]["open_gap"])
-    fractional = capital.twd is None
-    common = {
-        "k": k, "buffer": buffer, "max_buys": max_buys, "symbols": inputs.index.symbol_codes,
-        "link": inputs.link, "limit": limit,
-        "lot_cost": None if fractional else data.lot_cost,
-        "slot_capital": None if fractional else capital.twd,
-        "dollar_volume": None if fractional else inputs.dollar_volume,
-        "participation_cap": None if fractional else participation_cap,
-    }
-    long_result = simulate_band(engine.rankings(smoothed, data.groups), move=inputs.move, **common)
-    short_result = simulate_band(
-        engine.rankings(-smoothed, data.groups), move=short_moves(inputs.move), **common
-    )
-    codes = inputs.index.market_codes
-    free = np.zeros(inputs.index.count)
-    long_gross = positions.replay(long_result.path, free, free).daily
-    long_net = positions.replay(long_result.path, *profile.long_rates(codes)).daily
-    short_gross = positions.replay(short_result.path, free, free).daily
-    short_path = with_borrow_fee(short_result.path, profile.borrow_fee_daily)
-    short_net = positions.replay(short_path, *profile.short_rates(codes)).daily
-    long_stats = positions.path_statistics(long_result.path)
-    short_stats = positions.path_statistics(short_result.path)
-    attempts = max(long_result.buy_attempts + short_result.buy_attempts, 1)
+    if leg_matching == "none":
+        parts = [_band_long_short(
+            data, score, data.groups, profile, capital, k=k, buffer=buffer,
+            max_buys=max(1, math.ceil(k * cap_fraction)), limit=limit,
+            participation_cap=participation_cap,
+        )]
+    elif leg_matching == "momentum":
+        quintiles = int(config.get("construction", {}).get("momentum_quintiles", 5))
+        labels = momentum_labels(data, quintiles)
+        k_sub = max(1, k // quintiles)
+        parts = []
+        for q in range(quintiles):
+            groups_q = tuple(rows[labels[rows] == q] for rows in data.groups)
+            parts.append(_band_long_short(
+                data, score, groups_q, profile, capital, k=k_sub, buffer=buffer,
+                max_buys=max(1, math.ceil(k_sub * cap_fraction)), limit=limit,
+                participation_cap=participation_cap,
+            ))
+    else:
+        raise ValueError(f"Unknown leg matching {leg_matching!r}")
+    n = len(parts)
+
+    def mean_series(key: str) -> np.ndarray:
+        return sum(part[key] for part in parts) / n
+
+    long_net, long_gross = mean_series("long_net"), mean_series("long_gross")
+    short_net, short_gross = mean_series("short_net"), mean_series("short_gross")
+    attempts = max(sum(part["buy_attempts"] for part in parts), 1)
     info = {
-        "h": h, "k": k, "buffer": buffer,
-        "turnover": 0.5 * (long_stats["turnover"] + short_stats["turnover"]),
-        "holding_mean": 0.5 * (long_stats["holding_mean"] + short_stats["holding_mean"]),
-        "cash_fraction": 0.5 * (long_stats["cash_fraction"] + short_stats["cash_fraction"]),
-        "limit_blocked": (long_stats["blocked_buys"] + long_stats["blocked_sells"]
-                          + short_stats["blocked_buys"] + short_stats["blocked_sells"]),
-        "liquidity_blocked_share": (long_result.liquidity_blocked
-                                    + short_result.liquidity_blocked) / attempts,
+        "h": h, "k": k, "buffer": buffer, "score_variant": score_variant,
+        "leg_matching": leg_matching,
+        "turnover": float(np.mean([part["turnover"] for part in parts])),
+        "holding_mean": _finite_mean([part["holding_mean"] for part in parts]),
+        "cash_fraction": float(np.mean([part["cash_fraction"] for part in parts])),
+        "limit_blocked": int(sum(part["limit_blocked"] for part in parts)),
+        "liquidity_blocked_share": sum(part["liquidity_blocked"] for part in parts) / attempts,
     }
     return Book(net=long_net + short_net, gross=long_gross + short_gross, info=info,
                 legs={"long": long_net, "short": short_net})
@@ -590,18 +689,23 @@ def summarize_book(
 def scenario_books(
     data: MarketData, config: dict[str, Any], profile: CostProfile, capital: Capital,
     *, md_params: tuple[int, int, int], fraction: float, participation_cap: float,
+    score_variant: str = "v0", leg_matching: str = "none",
 ) -> dict[str, Book]:
+    wanted = tuple(config.get("scenarios", SCENARIOS))
     h, k, buffer = md_params
+    books: dict[str, Book] = {}
     md = multi_day_book(data, config, profile, capital, h=h, k=k, buffer=buffer,
-                        participation_cap=participation_cap)
-    dt = day_trade_book(data, config, profile, capital, fraction=fraction,
-                        participation_cap=participation_cap)
+                        participation_cap=participation_cap, score_variant=score_variant,
+                        leg_matching=leg_matching)
     md_tx = tx_overlay(md, data, profile, config, intraday=False)
-    dt_tx = tx_overlay(dt, data, profile, config, intraday=True)
-    return {
-        "md_ls": md, "md_ls_tx": md_tx, "dt_ls": dt, "dt_ls_tx": dt_tx,
-        "combo": combine(md, dt, config), "combo_tx": combine(md_tx, dt_tx, config),
-    }
+    books["md_ls"], books["md_ls_tx"] = md, md_tx
+    if any(name in wanted for name in DAY_TRADE):
+        dt = day_trade_book(data, config, profile, capital, fraction=fraction,
+                            participation_cap=participation_cap)
+        dt_tx = tx_overlay(dt, data, profile, config, intraday=True)
+        books["dt_ls"], books["dt_ls_tx"] = dt, dt_tx
+        books["combo"], books["combo_tx"] = combine(md, dt, config), combine(md_tx, dt_tx, config)
+    return {name: books[name] for name in SCENARIOS if name in wanted and name in books}
 
 
 def combined_market(
@@ -611,7 +715,8 @@ def combined_market(
     if not spec or any(market not in books for market in spec["weights"]):
         return None
     out = {}
-    for scenario in SCENARIOS:
+    scenarios = [name for name in SCENARIOS if name in next(iter(books.values()))]
+    for scenario in scenarios:
         net = sum(float(w) * books[m][scenario].net for m, w in spec["weights"].items())
         gross = sum(float(w) * books[m][scenario].gross for m, w in spec["weights"].items())
         info = {"turnover": sum(float(w) * books[m][scenario].info["turnover"]
@@ -639,11 +744,12 @@ def combined_market(
 def _profile_rows(
     label: str, market: str, profile: CostProfile, capital: Capital, books: dict[str, Book],
     data: MarketData, config: dict[str, Any], *, primary: bool,
+    extra: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     shared = {
         "model": label, "market": market, "profile": profile.name,
         "slippage_multiplier": profile.slippage_multiplier, "primary_slippage": primary,
-        "capital": capital.name, "capital_twd": capital.twd,
+        "capital": capital.name, "capital_twd": capital.twd, **(extra or {}),
     }
     rows = []
     for scenario, book in books.items():
@@ -714,7 +820,10 @@ def attractiveness(grid: pd.DataFrame, config: dict[str, Any]) -> dict[str, Any]
     out: dict[str, Any] = {}
     base = grid[(grid["stage"] == "final") & (grid["profile"] == rule["profile"])
                 & grid["primary_slippage"] & (grid["capital"] == FRACTIONAL)]
-    for (model, scenario, market), rows in base.groupby(["model", "scenario", "market"]):
+    keys = ["model", "scenario", "market", "score_variant", "leg_matching"]
+    for (model, scenario, market, variant, matching), rows in base.groupby(keys):
+        baseline = (variant, matching) == ("v0", "none")
+        label = market if baseline else f"{market}|{variant}/{matching}"
         decision = rows[rows["period"] == rule["period"]]
         confirm = rows[rows["period"] == rule["require_positive_period"]]
         if decision.empty:
@@ -724,7 +833,7 @@ def attractiveness(grid: pd.DataFrame, config: dict[str, Any]) -> dict[str, Any]
         lower = float(row["net_excess_annual_low"])
         lower_ok = bool(np.isfinite(lower) and lower > float(rule["lower_bound_above"]))
         confirm_ok = bool(not confirm.empty and float(confirm.iloc[0]["net_return_annual"]) > 0)
-        out.setdefault(model, {}).setdefault(scenario, {})[market] = {
+        out.setdefault(model, {}).setdefault(scenario, {})[label] = {
             "sharpe": float(row["sharpe"]), "sharpe_ok": sharpe_ok,
             "net_return_annual": float(row["net_return_annual"]),
             "net_return_annual_low": lower, "lower_bound_ok": lower_ok,
@@ -768,6 +877,13 @@ def run(
         taifex.load_contract(artifacts / tx_cfg["root"], tx_cfg["contract"]), tx_cfg["contract"]
     )
     selection_profile = _primary_profile(profiles, config["selection"]["profile"])
+    construction = config.get("construction", {})
+    combos = list(itertools.product(construction.get("score_variants", ["v0"]),
+                                    construction.get("leg_matching", ["none"])))
+    needs_features = any(v != "v0" or m != "none" for v, m in combos)
+    features_table = trailing_features(prices_path) if needs_features else None
+    wanted = tuple(config.get("scenarios", SCENARIOS))
+    fixed = config["multi_day"].get("fixed", {})
     all_rows: list[dict[str, Any]] = []
     selection: dict[str, Any] = {}
     daily_frames = []
@@ -775,21 +891,35 @@ def run(
         frame = load_predictions(path, label)
         inputs = build_inputs(frame, prices)
         intraday = intraday_returns(frame, prices)
+        features = row_features(frame, features_table) if features_table is not None else None
         markets = {
-            market: prepare_market(inputs, intraday, market, config, prices, front)
+            market: prepare_market(inputs, intraday, market, config, prices, front, features)
             for market in config["markets"]
         }
         chooser = markets[config["selection"]["market"]]
-        grid_rows, md_params, md_choice = select_multi_day(
-            chooser, config, selection_profile, participation_cap)
-        dt_rows, fraction, dt_choice = select_day_trade(
-            chooser, config, selection_profile, participation_cap)
+        if label in fixed:
+            spec = fixed[label]
+            md_params = (int(spec["h"]), int(spec["k"]), int(spec["buffer"]))
+            md_choice = {"h": md_params[0], "k": md_params[1], "buffer": md_params[2],
+                         "fixed": True}
+            grid_rows: list[dict[str, Any]] = []
+        else:
+            grid_rows, md_params, md_choice = select_multi_day(
+                chooser, config, selection_profile, participation_cap)
+        if any(name in wanted for name in DAY_TRADE):
+            dt_rows, fraction, dt_choice = select_day_trade(
+                chooser, config, selection_profile, participation_cap)
+        else:
+            dt_rows, fraction, dt_choice = [], float(
+                config["day_trade"]["grid"]["fractions"][0]), {"skipped": True}
         for row in grid_rows + dt_rows:
             row["model"] = label
+            row["score_variant"], row["leg_matching"] = "v0", "none"
         all_rows.extend(grid_rows + dt_rows)
         selection[label] = {"multi_day": md_choice, "day_trade": dt_choice}
-        for profile in cost_profiles(profiles):
+        for (variant, matching), profile in itertools.product(combos, cost_profiles(profiles)):
             primary = is_primary(profile, profiles)
+            extra = {"score_variant": variant, "leg_matching": matching}
             for capital in capital_scenarios(profiles):
                 if capital.profile is not None and capital.profile != profile.name:
                     continue
@@ -799,16 +929,18 @@ def run(
                 for market, data in markets.items():
                     books = scenario_books(
                         data, config, profile, capital, md_params=md_params, fraction=fraction,
-                        participation_cap=participation_cap,
+                        participation_cap=participation_cap, score_variant=variant,
+                        leg_matching=matching,
                     )
                     books_by_market[market] = books
                     rows = _profile_rows(label, market, profile, capital, books, data, config,
-                                         primary=primary)
+                                         primary=primary, extra=extra)
                     for row in rows:
                         row["stage"] = "final"
                     all_rows.extend(rows)
                     if primary and capital.twd is None:
-                        daily_frames.append(_daily_frame(label, market, profile, books, data))
+                        daily_frames.append(
+                            _daily_frame(label, market, profile, books, data, extra))
                 combined = combined_market(books_by_market, config)
                 if combined is not None:
                     name = config["combined_market"]["name"]
@@ -818,12 +950,13 @@ def run(
                     shared = {"model": label, "market": name, "profile": profile.name,
                               "slippage_multiplier": profile.slippage_multiplier,
                               "primary_slippage": primary, "capital": capital.name,
-                              "capital_twd": capital.twd, "stage": "final"}
+                              "capital_twd": capital.twd, "stage": "final", **extra}
                     for scenario, book in combined.items():
                         all_rows.extend(summarize_book(book, scenario, config, first.masks,
                                                        index_total, shared))
                     if primary and capital.twd is None:
-                        daily_frames.append(_daily_frame(label, name, profile, combined, first))
+                        daily_frames.append(
+                            _daily_frame(label, name, profile, combined, first, extra))
     grid = pd.DataFrame(all_rows)
     verdicts = attractiveness(grid, config)
     output_root.mkdir(parents=True, exist_ok=False)
@@ -848,14 +981,14 @@ def run(
 
 
 def _daily_frame(label: str, market: str, profile: CostProfile, books: dict[str, Book],
-                 data: MarketData) -> pd.DataFrame:
+                 data: MarketData, extra: dict[str, Any] | None = None) -> pd.DataFrame:
     dates = data.inputs.dates[1:].strftime("%Y-%m-%d")
     frames = []
     for scenario, book in books.items():
         frames.append(pd.DataFrame({
             "model": label, "market": market, "profile": profile.name, "scenario": scenario,
             "interval_start": dates, "net": book.net, "gross": book.gross,
-            "index_total_return": data.index_total_return,
+            "index_total_return": data.index_total_return, **(extra or {}),
         }))
     return pd.concat(frames, ignore_index=True)
 
@@ -889,7 +1022,8 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame, profiles: dict[
     for row in final.sort_values(sort_keys).itertuples():
         pct = runner.percent
         lines.append(
-            f"| {row.scenario} | {row.model} | {row.market} | {row.profile} | {row.period} | "
+            f"| {row.scenario} {row.score_variant}/{row.leg_matching} | {row.model} | "
+            f"{row.market} | {row.profile} | {row.period} | "
             f"{pct(row.gross_excess_annual)} | {pct(row.net_return_annual)} | {_cell_ci(row)} | "
             f"{runner.number(row.sharpe)} | {pct(row.max_drawdown)} | {pct(row.hit_rate)} | "
             f"{pct(row.turnover)} | {pct(row.cost_drag_annual)} | "

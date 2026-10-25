@@ -350,6 +350,17 @@ uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<laun
 | `--artifacts-root` | 主專案 `artifacts/`（讀 `diagnostics/taifex-tx`） | `../artifacts` |
 | `--output-root` | 輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/scenario-suite-<UTC 時間>-<隨機碼>` |
 
+設定檔可選的 `construction` 區塊（§13.19 補充二，`config/scenario_suite_v1.json`）：`score_variants` 取 `v0`
+（平滑百分位分數）與 `v1`（每日在宇宙內對前 20／60 日報酬與 60 日 beta 取 OLS 殘差，特徵由
+`exposure_features.trailing_features` 直接從 raw `market.parquet` 計算）；`leg_matching` 取 `none` 與 `momentum`
+（依前 20 日報酬分 `momentum_quintiles` 個五分位，每個五分位各跑一對多空 band、K 平均分配、等權合併）；
+`scenarios` 限制只算部分情境；`multi_day.fixed` 以模型名給定 (h, K, m)，略過 P1 選擇。每一列與門檻判定都帶
+`score_variant`、`leg_matching` 欄；非基線組合的門檻鍵為 `市場|變體/配平`。
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1.json --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
 ### 反轉暴露診斷（§13.19 補充）
 
 `twbacktest.reversal_exposure` 把 S1 多空組合的結果拆成「對動能與 beta 的結構性暴露」與「扣掉暴露後剩下的
@@ -779,6 +790,19 @@ uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<laun
 | `--prices` | The dataset's raw `market.parquet` | required |
 | `--artifacts-root` | The main project's `artifacts/` (reads `diagnostics/taifex-tx`) | `../artifacts` |
 | `--output-root` | Output directory, must not exist yet | `artifacts/diagnostics/backtest/scenario-suite-<UTC time>-<random>` |
+
+The optional `construction` block of the configuration (§13.19 supplement 2, `config/scenario_suite_v1.json`):
+`score_variants` takes `v0` (the smoothed percentile score) and `v1` (its daily OLS residual inside the
+universe on the trailing 20 / 60-session returns and the 60-session beta, features computed by
+`exposure_features.trailing_features` straight from the raw `market.parquet`); `leg_matching` takes `none`
+and `momentum` (`momentum_quintiles` quintiles of the trailing 20-session return, one long-short band pair
+per quintile with K split equally, combined with equal weights); `scenarios` restricts the run to some
+scenarios; `multi_day.fixed` gives (h, K, m) per model name and skips the P1 selection. Every row and every
+bar verdict carries `score_variant` and `leg_matching`; non-baseline verdicts are keyed `market|variant/matching`.
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1.json --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
 
 ### Reversal-exposure diagnostic (§13.19 supplement)
 
