@@ -350,6 +350,30 @@ uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<laun
 | `--artifacts-root` | 主專案 `artifacts/`（讀 `diagnostics/taifex-tx`） | `../artifacts` |
 | `--output-root` | 輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/scenario-suite-<UTC 時間>-<隨機碼>` |
 
+### 反轉暴露診斷（§13.19 補充）
+
+`twbacktest.reversal_exposure` 把 S1 多空組合的結果拆成「對動能與 beta 的結構性暴露」與「扣掉暴露後剩下的
+排序能力」：分數變體 v0 為 §13.14 的平滑百分位分數，v1 為每日在宇宙內把 v0 對前 20 日與前 60 日報酬和 60 日
+beta 做 OLS 取殘差；建構為每日成批、持有 10 日的前後四分位金額中性多空（兩腿各占資本 100%，同 S1）：
+`plain`、`momentum`（在前 20 日報酬的五分位內排序與配對）與 `turnover_low/mid/high`（依週轉率跳升三等分，
+各自報 plain 價差）；目標為原始遠期報酬、原始 alpha 與 `targets.parquet` 的殘差目標。每列另報分數對三個特徵
+的平均橫斷面 Spearman 相關、兩個成本檔（`config/cost_profiles.json`）下每批兩腿進出一次的年化成本拖累與淨
+年化。`report.json` 的 `reading` 依協定第 6 項的事前規則給出 `exposure_is_main_cause`、
+`model_is_reversal_only` 與 `conditioning_helps`。
+
+```bash
+uv run python -m twbacktest.reversal_exposure --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --targets ../artifacts/lgbm/<launch-id>/targets.parquet --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --targets ../artifacts/xs/<launch-id>/targets.parquet --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| 選項 | 說明 | 預設 |
+| --- | --- | --- |
+| `--predictions` / `--model` | 成對、可重複 | 必填 |
+| `--targets` | 同一 run 的 `targets.parquet`（`residual_h10`），每個模型一個；省略時殘差目標欄為缺值 | 無 |
+| `--prices` | 資料集 raw `market.parquet`（直接讀取成交量以算週轉率跳升） | 必填 |
+| `--cost-profiles` | 成本檔 | `config/cost_profiles.json` |
+| `--artifacts-root` | 只用來決定預設輸出目錄 | `../artifacts` |
+| `--output-root` | 輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/reversal-exposure-<UTC 時間>-<隨機碼>` |
+
 ## English
 
 ### Purpose
@@ -755,3 +779,31 @@ uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<laun
 | `--prices` | The dataset's raw `market.parquet` | required |
 | `--artifacts-root` | The main project's `artifacts/` (reads `diagnostics/taifex-tx`) | `../artifacts` |
 | `--output-root` | Output directory, must not exist yet | `artifacts/diagnostics/backtest/scenario-suite-<UTC time>-<random>` |
+
+### Reversal-exposure diagnostic (§13.19 supplement)
+
+`twbacktest.reversal_exposure` separates the S1 long-short result into the structural exposure to
+momentum and beta and the ranking skill left after removing it. Score variants: `v0` is the §13.14
+smoothed percentile score, `v1` its daily OLS residual inside the universe on the trailing 20- and
+60-session returns and a 60-session beta. Constructions are daily cohorts held 10 sessions, top-minus-
+bottom quartile, dollar-neutral with each leg at full capital like S1: `plain`, `momentum` (ranked and
+paired inside quintiles of the trailing 20-session return) and `turnover_low/mid/high` (the plain
+spread inside terciles of the turnover spike). Targets: the raw forward return, the raw alpha and the
+residual target of `targets.parquet`. Every row also reports the mean cross-sectional Spearman
+correlation of the score with the three features and, under both cost profiles of
+`config/cost_profiles.json`, the annual cost drag of one entry and exit per leg per cohort and the net.
+`report.json` carries the pre-registered reading of protocol item 6 (`exposure_is_main_cause`,
+`model_is_reversal_only`, `conditioning_helps`).
+
+```bash
+uv run python -m twbacktest.reversal_exposure --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --targets ../artifacts/lgbm/<launch-id>/targets.parquet --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --targets ../artifacts/xs/<launch-id>/targets.parquet --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--predictions` / `--model` | In pairs, repeatable | required |
+| `--targets` | The same run's `targets.parquet` (`residual_h10`), one per model; without it the residual-target rows are NaN | none |
+| `--prices` | The dataset's raw `market.parquet` (volume is read directly for the turnover spike) | required |
+| `--cost-profiles` | Cost profiles | `config/cost_profiles.json` |
+| `--artifacts-root` | Only used for the default output directory | `../artifacts` |
+| `--output-root` | Output directory, must not exist yet | `artifacts/diagnostics/backtest/reversal-exposure-<UTC time>-<random>` |

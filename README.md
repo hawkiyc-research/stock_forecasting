@@ -185,6 +185,7 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | `twbacktest.futures_daytrade` | §13.15（H-E） | 後 q 分位於 8:45 期貨開盤放空、結算價平倉；tick 滑價、每口手續費、參與率上限、保證金、資本情境；多空與對沖版 |
 | `twbacktest.exposure_diagnostics` | §13.17 步驟 0 | 殘差標籤模型在流動性宇宙與股票期貨流動宇宙的殘差／原始 Rank IC、四分位價差、plain／產業中性／規模中性多空毛年化與股票期貨成本拖累，含停止規則判定 |
 | `twbacktest.scenario_suite` | §13.19（資訊性） | 六個多空情境（多日 band 多空、加台指期滾動 β 疊加、現股當沖多空、加台指期日內疊加、兩者各半、再加台指期）在散戶與機構兩個成本檔下並列；P1 選參數、TPEX 與 TW 合併、滑價敏感度、機構 3 億與 10 億容量、事前寫死的吸引力門檻 |
+| `twbacktest.reversal_exposure` | §13.19 補充（描述性） | 把多空結果拆成動能與 beta 暴露和剩餘排序能力：分數對前 20／60 日報酬與 beta 正交化（v1）、動能五分位內配對的多空、週轉率跳升三等分內的反轉價差，對原始報酬、原始 alpha 與殘差目標各報，含兩個成本檔的淨年化與事前判讀 |
 
 <a id="current-results-zh"></a>
 
@@ -1633,6 +1634,7 @@ Pod 內的 Python 入口（由 tmux 工作呼叫，也可在 Pod 內直接執行
 | `uv run python -m twbacktest.futures_daytrade` | `--predictions`／`--model` 成對可重複；`--prices PATH` 可選（只用於時點噪音統計）；`--config PATH` 預設 `config/futures_daytrade.json`；`--artifacts-root`；`--output-root` |
 | `uv run python -m twbacktest.exposure_diagnostics` | `--predictions`、`--targets`（同一 run 的 `targets.parquet`，含 `residual_hNN`）、`--model` 三者成對可重複；`--prices` 必填；`--artifacts-root`；`--taifex-root`；`--reference PATH` 公司參考表，預設 `configs/reference/tw_company_reference_20261022.csv`；`--min-volume X` 預設 100；`--lookback N` 預設 20；`--output-root` |
 | `uv run python -m twbacktest.scenario_suite` | `--predictions`／`--model` 成對可重複；`--prices` 必填；`--config PATH` 預設 `config/scenario_suite.json`（成本檔 `config/cost_profiles.json` 的路徑在其中）；`--artifacts-root`（讀 `diagnostics/taifex-tx`）；`--output-root` 預設 `../artifacts/diagnostics/backtest/scenario-suite-<時間>/`。六情境 × 散戶／機構成本檔，P1 選參數後固定 |
+| `uv run python -m twbacktest.reversal_exposure` | `--predictions`／`--model` 成對可重複；`--targets` 同一 run 的 `targets.parquet`（每個模型一個，可省略）；`--prices` 必填（直接讀成交量）；`--cost-profiles` 預設 `config/cost_profiles.json`；`--artifacts-root` 只決定預設輸出目錄；`--output-root` 預設 `../artifacts/diagnostics/backtest/reversal-exposure-<時間>/` |
 
 
 #### 共用基礎設施與歷史命令：本機控制命令
@@ -4406,6 +4408,7 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | `twbacktest.futures_daytrade` | §13.15 (H-E) | Short the bottom quantile at the 08:45 futures open and cover at settlement; tick slippage, per-contract commission, participation cap, margin, capital scenarios; long-short and hedged versions |
 | `twbacktest.exposure_diagnostics` | §13.17 step 0 | Residual-label models' residual / raw Rank IC, quartile spreads, plain / industry-neutral / size-neutral long-short gross annual returns and the stock-futures cost drag in the liquidity and liquid stock-futures universes, with the stop-rule verdict |
 | `twbacktest.scenario_suite` | §13.19 (informational) | Six long-short scenarios (multi-day band L/S, plus a rolling-β TX overlay, stock day-trade L/S, plus an intraday TX overlay, the half-and-half combination, plus TX) under the retail and institution cost profiles side by side; P1 selection, TPEX and the TW combination, slippage sensitivity, NT$300M / NT$1B capacity, the pre-registered attractiveness bar |
+| `twbacktest.reversal_exposure` | §13.19 supplement (descriptive) | Splits the long-short result into momentum / beta exposure and remaining skill: scores orthogonalized to the trailing 20 / 60-session returns and beta (v1), long-short paired inside momentum quintiles, reversal spreads inside turnover-spike terciles, each against the raw return, raw alpha and residual target, with both cost profiles' net and the pre-registered reading |
 
 <a id="current-results-en"></a>
 
@@ -6071,6 +6074,7 @@ Local scripts and backtest modules:
 | `uv run python -m twbacktest.futures_daytrade` | `--predictions` / `--model` in pairs, repeatable; `--prices PATH` optional (timing-noise statistic only); `--config PATH` default `config/futures_daytrade.json`; `--artifacts-root`; `--output-root` |
 | `uv run python -m twbacktest.exposure_diagnostics` | `--predictions`, `--targets` (the same run's `targets.parquet` with `residual_hNN`) and `--model` in triples, repeatable; `--prices` required; `--artifacts-root`; `--taifex-root`; `--reference PATH` company reference, default `configs/reference/tw_company_reference_20261022.csv`; `--min-volume X` default 100; `--lookback N` default 20; `--output-root` |
 | `uv run python -m twbacktest.scenario_suite` | `--predictions` / `--model` in pairs, repeatable; `--prices` required; `--config PATH` default `config/scenario_suite.json` (which names the cost-profile file `config/cost_profiles.json`); `--artifacts-root` (reads `diagnostics/taifex-tx`); `--output-root` default `../artifacts/diagnostics/backtest/scenario-suite-<time>/`. Six scenarios × retail / institution cost profiles, parameters selected on P1 then fixed |
+| `uv run python -m twbacktest.reversal_exposure` | `--predictions` / `--model` in pairs, repeatable; `--targets` the same run's `targets.parquet` (one per model, optional); `--prices` required (volume read directly); `--cost-profiles` default `config/cost_profiles.json`; `--artifacts-root` only sets the default output directory; `--output-root` default `../artifacts/diagnostics/backtest/reversal-exposure-<time>/` |
 
 
 #### Shared infrastructure and historical commands: local control commands

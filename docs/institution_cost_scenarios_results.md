@@ -652,6 +652,190 @@ S3 當沖：
 
 多減空的 10 日價差：P1 殘差 +1.19%（B0）／+0.90%（D0），原始 +1.70%／+1.24%；P2 殘差 **−0.45%／−0.37%**，原始 **−1.40%／−0.76%**。§13.16 報告的「P2 殘差 Rank IC 0.05–0.065」是全宇宙的相關係數；在 band 組合實際進場的前後約 50 檔，P2 的殘差價差已經是負的，原始價差更負。殘差化從標籤拿掉的是市場、規模與產業，不是動能；組合持有的是原始股票，它的反動能傾斜在 P2 的動能行情裡付出的代價，是殘差 alpha 幅度的數倍。
 
+#### 3.8 反轉暴露診斷（§13.19 補充；`twbacktest.reversal_exposure`）
+
+把分數對結構性暴露純化之後，排序能力還剩多少？分數 V0 為 §13.14 的平滑百分位分數，V1 為每日在宇宙內把 V0 對前 20 日報酬、前 60 日報酬與 60 日 beta 做 OLS 的殘差。建構為每日成批、持有 10 日、前後四分位、金額中性（兩腿各占資本 100%，同 S1）：plain，或在前 20 日報酬的五分位內排序與配對（動能配平）。成本為每批兩腿各進出一次（機構約 25%／年、散戶 TWSE 約 36%、TPEX 約 44%）。
+
+分數與特徵的平均橫斷面 Spearman 相關（V1 應接近 0）：
+
+| 模型 | 市場 | 分數 | 特徵 | P1 | P2 | P1 ∪ P2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | ret20 | -0.219 | -0.264 | -0.231 |
+| B0 | TWSE | v0 | ret60 | -0.239 | -0.258 | -0.245 |
+| B0 | TWSE | v0 | beta | -0.286 | -0.452 | -0.332 |
+| B0 | TWSE | v1 | ret20 | +0.002 | -0.013 | -0.002 |
+| B0 | TWSE | v1 | ret60 | +0.004 | -0.003 | +0.002 |
+| B0 | TWSE | v1 | beta | -0.055 | -0.073 | -0.060 |
+| B0 | TPEX | v0 | ret20 | -0.171 | -0.244 | -0.191 |
+| B0 | TPEX | v0 | ret60 | -0.132 | -0.200 | -0.151 |
+| B0 | TPEX | v0 | beta | -0.384 | -0.396 | -0.387 |
+| B0 | TPEX | v1 | ret20 | -0.006 | -0.036 | -0.014 |
+| B0 | TPEX | v1 | ret60 | +0.034 | +0.002 | +0.025 |
+| B0 | TPEX | v1 | beta | -0.051 | -0.058 | -0.053 |
+| D0 | TWSE | v0 | ret20 | -0.168 | -0.133 | -0.158 |
+| D0 | TWSE | v0 | ret60 | -0.165 | -0.131 | -0.156 |
+| D0 | TWSE | v0 | beta | -0.240 | -0.427 | -0.292 |
+| D0 | TWSE | v1 | ret20 | +0.001 | -0.000 | +0.001 |
+| D0 | TWSE | v1 | ret60 | +0.025 | +0.018 | +0.023 |
+| D0 | TWSE | v1 | beta | -0.049 | -0.078 | -0.057 |
+| D0 | TPEX | v0 | ret20 | -0.168 | -0.115 | -0.153 |
+| D0 | TPEX | v0 | ret60 | -0.134 | -0.099 | -0.125 |
+| D0 | TPEX | v0 | beta | -0.306 | -0.334 | -0.314 |
+| D0 | TPEX | v1 | ret20 | -0.022 | -0.005 | -0.017 |
+| D0 | TPEX | v1 | ret60 | +0.021 | +0.018 | +0.020 |
+| D0 | TPEX | v1 | beta | -0.045 | -0.052 | -0.047 |
+
+原始分數對 60 日 beta 的相關 −0.24 到 −0.45（P2 更強）、對前 20／60 日報酬 −0.10 到 −0.26：模型把低 beta、近期沒漲的股票排在前面，這就是 S1 多空組合 β ≈ −0.5 與反動能傾斜的來源。正交化後 V1 的相關全部在 ±0.08 以內。
+
+原始遠期報酬的多減空價差（plain 對動能配平、V0 對 V1）：
+
+| 模型 | 市場 | 分數 | 建構 | 期間 | 每批價差（10 日） | 95% 區間 | 年化毛 | 機構淨 | 散戶淨 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | plain | P1 | +0.49% | [-0.11%, +1.19%] | +12.4% | -12.7% | -23.4% |
+| B0 | TWSE | v0 | plain | P2 | -1.78% | [-3.06%, -0.53%] | -44.8% | -69.9% | -80.6% |
+| B0 | TWSE | v0 | plain | P1 ∪ P2 | -0.13% | [-0.86%, +0.53%] | -3.4% | -28.6% | -39.2% |
+| B0 | TWSE | v0 | 動能配平 | P1 | +0.52% | [-0.01%, +1.09%] | +13.2% | -12.0% | -22.6% |
+| B0 | TWSE | v0 | 動能配平 | P2 | -1.01% | [-1.99%, -0.04%] | -25.3% | -50.5% | -61.2% |
+| B0 | TWSE | v0 | 動能配平 | P1 ∪ P2 | +0.10% | [-0.47%, +0.64%] | +2.5% | -22.6% | -33.3% |
+| B0 | TWSE | v1 | plain | P1 | +0.65% | [+0.14%, +1.17%] | +16.4% | -8.8% | -19.4% |
+| B0 | TWSE | v1 | plain | P2 | -0.24% | [-1.06%, +0.57%] | -6.0% | -31.2% | -41.8% |
+| B0 | TWSE | v1 | plain | P1 ∪ P2 | +0.41% | [-0.07%, +0.89%] | +10.2% | -15.0% | -25.6% |
+| B0 | TWSE | v1 | 動能配平 | P1 | +0.62% | [+0.16%, +1.09%] | +15.7% | -9.5% | -20.2% |
+| B0 | TWSE | v1 | 動能配平 | P2 | +0.09% | [-0.68%, +0.81%] | +2.3% | -22.9% | -33.6% |
+| B0 | TWSE | v1 | 動能配平 | P1 ∪ P2 | +0.47% | [+0.07%, +0.88%] | +12.0% | -13.2% | -23.9% |
+| B0 | TPEX | v0 | plain | P1 | +0.96% | [+0.46%, +1.48%] | +24.1% | -1.0% | -21.8% |
+| B0 | TPEX | v0 | plain | P2 | -1.46% | [-2.81%, -0.12%] | -36.9% | -62.1% | -82.8% |
+| B0 | TPEX | v0 | plain | P1 ∪ P2 | +0.29% | [-0.36%, +0.94%] | +7.2% | -17.9% | -38.7% |
+| B0 | TPEX | v0 | 動能配平 | P1 | +0.81% | [+0.35%, +1.31%] | +20.4% | -4.8% | -25.6% |
+| B0 | TPEX | v0 | 動能配平 | P2 | -0.65% | [-1.69%, +0.36%] | -16.3% | -41.5% | -62.2% |
+| B0 | TPEX | v0 | 動能配平 | P1 ∪ P2 | +0.41% | [-0.11%, +0.94%] | +10.2% | -15.0% | -35.7% |
+| B0 | TPEX | v1 | plain | P1 | +1.14% | [+0.69%, +1.57%] | +28.8% | +3.6% | -17.1% |
+| B0 | TPEX | v1 | plain | P2 | +0.48% | [-0.21%, +1.17%] | +12.2% | -13.0% | -33.7% |
+| B0 | TPEX | v1 | plain | P1 ∪ P2 | +0.96% | [+0.57%, +1.35%] | +24.2% | -1.0% | -21.7% |
+| B0 | TPEX | v1 | 動能配平 | P1 | +1.06% | [+0.64%, +1.46%] | +26.6% | +1.4% | -19.3% |
+| B0 | TPEX | v1 | 動能配平 | P2 | +0.82% | [+0.16%, +1.44%] | +20.6% | -4.6% | -25.3% |
+| B0 | TPEX | v1 | 動能配平 | P1 ∪ P2 | +0.99% | [+0.63%, +1.35%] | +24.9% | -0.3% | -21.0% |
+| D0 | TWSE | v0 | plain | P1 | +0.50% | [-0.04%, +1.08%] | +12.7% | -12.5% | -23.1% |
+| D0 | TWSE | v0 | plain | P2 | -1.24% | [-2.19%, -0.28%] | -31.2% | -56.4% | -67.1% |
+| D0 | TWSE | v0 | plain | P1 ∪ P2 | +0.02% | [-0.54%, +0.54%] | +0.5% | -24.6% | -35.3% |
+| D0 | TWSE | v0 | 動能配平 | P1 | +0.52% | [+0.07%, +0.99%] | +13.1% | -12.1% | -22.7% |
+| D0 | TWSE | v0 | 動能配平 | P2 | -0.68% | [-1.49%, +0.07%] | -17.2% | -42.3% | -53.0% |
+| D0 | TWSE | v0 | 動能配平 | P1 ∪ P2 | +0.19% | [-0.26%, +0.63%] | +4.7% | -20.4% | -31.1% |
+| D0 | TWSE | v1 | plain | P1 | +0.59% | [+0.16%, +1.05%] | +14.9% | -10.3% | -21.0% |
+| D0 | TWSE | v1 | plain | P2 | +0.08% | [-0.75%, +0.84%] | +2.1% | -23.1% | -33.7% |
+| D0 | TWSE | v1 | plain | P1 ∪ P2 | +0.45% | [+0.05%, +0.86%] | +11.3% | -13.8% | -24.5% |
+| D0 | TWSE | v1 | 動能配平 | P1 | +0.62% | [+0.21%, +1.05%] | +15.6% | -9.6% | -20.3% |
+| D0 | TWSE | v1 | 動能配平 | P2 | +0.16% | [-0.56%, +0.83%] | +4.2% | -21.0% | -31.7% |
+| D0 | TWSE | v1 | 動能配平 | P1 ∪ P2 | +0.49% | [+0.12%, +0.88%] | +12.4% | -12.8% | -23.4% |
+| D0 | TPEX | v0 | plain | P1 | +1.22% | [+0.78%, +1.69%] | +30.8% | +5.6% | -15.1% |
+| D0 | TPEX | v0 | plain | P2 | -0.54% | [-1.53%, +0.45%] | -13.6% | -38.8% | -59.5% |
+| D0 | TPEX | v0 | plain | P1 ∪ P2 | +0.73% | [+0.22%, +1.24%] | +18.5% | -6.7% | -27.4% |
+| D0 | TPEX | v0 | 動能配平 | P1 | +1.10% | [+0.69%, +1.55%] | +27.8% | +2.6% | -18.1% |
+| D0 | TPEX | v0 | 動能配平 | P2 | -0.13% | [-1.03%, +0.79%] | -3.4% | -28.6% | -49.3% |
+| D0 | TPEX | v0 | 動能配平 | P1 ∪ P2 | +0.76% | [+0.30%, +1.22%] | +19.2% | -6.0% | -26.7% |
+| D0 | TPEX | v1 | plain | P1 | +1.24% | [+0.83%, +1.66%] | +31.3% | +6.1% | -14.6% |
+| D0 | TPEX | v1 | plain | P2 | +0.78% | [-0.03%, +1.59%] | +19.6% | -5.6% | -26.4% |
+| D0 | TPEX | v1 | plain | P1 ∪ P2 | +1.11% | [+0.72%, +1.49%] | +28.1% | +2.9% | -17.8% |
+| D0 | TPEX | v1 | 動能配平 | P1 | +1.20% | [+0.81%, +1.61%] | +30.3% | +5.1% | -15.6% |
+| D0 | TPEX | v1 | 動能配平 | P2 | +0.91% | [+0.03%, +1.75%] | +23.0% | -2.1% | -22.9% |
+| D0 | TPEX | v1 | 動能配平 | P1 ∪ P2 | +1.12% | [+0.71%, +1.51%] | +28.3% | +3.1% | -17.6% |
+
+殘差目標的多減空價差：
+
+| 模型 | 市場 | 分數 | 建構 | 期間 | 每批價差（10 日） | 95% 區間 | 年化毛 | 機構淨 | 散戶淨 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | plain | P1 | +0.61% | [+0.19%, +1.11%] | +15.3% | -9.9% | -20.5% |
+| B0 | TWSE | v0 | plain | P2 | -0.35% | [-1.04%, +0.36%] | -8.7% | -33.9% | -44.5% |
+| B0 | TWSE | v0 | plain | P1 ∪ P2 | +0.34% | [-0.08%, +0.77%] | +8.7% | -16.5% | -27.2% |
+| B0 | TWSE | v0 | 動能配平 | P1 | +0.58% | [+0.20%, +1.00%] | +14.6% | -10.6% | -21.2% |
+| B0 | TWSE | v0 | 動能配平 | P2 | -0.19% | [-0.72%, +0.29%] | -4.9% | -30.1% | -40.7% |
+| B0 | TWSE | v0 | 動能配平 | P1 ∪ P2 | +0.37% | [+0.02%, +0.72%] | +9.2% | -16.0% | -26.6% |
+| B0 | TWSE | v1 | plain | P1 | +0.63% | [+0.24%, +1.03%] | +15.8% | -9.4% | -20.1% |
+| B0 | TWSE | v1 | plain | P2 | +0.02% | [-0.64%, +0.64%] | +0.4% | -24.8% | -35.4% |
+| B0 | TWSE | v1 | plain | P1 ∪ P2 | +0.46% | [+0.11%, +0.81%] | +11.5% | -13.7% | -24.3% |
+| B0 | TWSE | v1 | 動能配平 | P1 | +0.56% | [+0.21%, +0.93%] | +14.1% | -11.1% | -21.7% |
+| B0 | TWSE | v1 | 動能配平 | P2 | +0.13% | [-0.47%, +0.70%] | +3.3% | -21.9% | -32.5% |
+| B0 | TWSE | v1 | 動能配平 | P1 ∪ P2 | +0.44% | [+0.14%, +0.75%] | +11.1% | -14.1% | -24.7% |
+| B0 | TPEX | v0 | plain | P1 | +1.04% | [+0.65%, +1.44%] | +26.1% | +0.9% | -19.8% |
+| B0 | TPEX | v0 | plain | P2 | +0.13% | [-0.52%, +0.72%] | +3.2% | -21.9% | -42.7% |
+| B0 | TPEX | v0 | plain | P1 ∪ P2 | +0.79% | [+0.42%, +1.17%] | +19.8% | -5.4% | -26.1% |
+| B0 | TPEX | v0 | 動能配平 | P1 | +0.90% | [+0.54%, +1.29%] | +22.8% | -2.4% | -23.1% |
+| B0 | TPEX | v0 | 動能配平 | P2 | +0.35% | [-0.21%, +0.88%] | +8.7% | -16.5% | -37.2% |
+| B0 | TPEX | v0 | 動能配平 | P1 ∪ P2 | +0.75% | [+0.43%, +1.09%] | +18.9% | -6.3% | -27.0% |
+| B0 | TPEX | v1 | plain | P1 | +1.14% | [+0.79%, +1.49%] | +28.7% | +3.5% | -17.2% |
+| B0 | TPEX | v1 | plain | P2 | +0.67% | [+0.16%, +1.14%] | +16.9% | -8.3% | -29.0% |
+| B0 | TPEX | v1 | plain | P1 ∪ P2 | +1.01% | [+0.70%, +1.32%] | +25.4% | +0.2% | -20.5% |
+| B0 | TPEX | v1 | 動能配平 | P1 | +1.06% | [+0.73%, +1.41%] | +26.8% | +1.6% | -19.1% |
+| B0 | TPEX | v1 | 動能配平 | P2 | +0.80% | [+0.32%, +1.27%] | +20.1% | -5.1% | -25.8% |
+| B0 | TPEX | v1 | 動能配平 | P1 ∪ P2 | +0.99% | [+0.70%, +1.29%] | +24.9% | -0.2% | -21.0% |
+| D0 | TWSE | v0 | plain | P1 | +0.59% | [+0.23%, +1.00%] | +15.0% | -10.2% | -20.9% |
+| D0 | TWSE | v0 | plain | P2 | -0.20% | [-0.93%, +0.50%] | -5.0% | -30.2% | -40.9% |
+| D0 | TWSE | v0 | plain | P1 ∪ P2 | +0.37% | [+0.01%, +0.72%] | +9.4% | -15.7% | -26.4% |
+| D0 | TWSE | v0 | 動能配平 | P1 | +0.57% | [+0.28%, +0.90%] | +14.5% | -10.7% | -21.4% |
+| D0 | TWSE | v0 | 動能配平 | P2 | +0.03% | [-0.55%, +0.56%] | +0.8% | -24.4% | -35.0% |
+| D0 | TWSE | v0 | 動能配平 | P1 ∪ P2 | +0.42% | [+0.12%, +0.72%] | +10.7% | -14.5% | -25.1% |
+| D0 | TWSE | v1 | plain | P1 | +0.58% | [+0.24%, +0.93%] | +14.5% | -10.7% | -21.3% |
+| D0 | TWSE | v1 | plain | P2 | +0.30% | [-0.40%, +1.00%] | +7.7% | -17.5% | -28.1% |
+| D0 | TWSE | v1 | plain | P1 ∪ P2 | +0.50% | [+0.17%, +0.82%] | +12.6% | -12.6% | -23.2% |
+| D0 | TWSE | v1 | 動能配平 | P1 | +0.57% | [+0.26%, +0.90%] | +14.5% | -10.7% | -21.3% |
+| D0 | TWSE | v1 | 動能配平 | P2 | +0.28% | [-0.34%, +0.91%] | +7.1% | -18.1% | -28.7% |
+| D0 | TWSE | v1 | 動能配平 | P1 ∪ P2 | +0.49% | [+0.20%, +0.79%] | +12.4% | -12.7% | -23.4% |
+| D0 | TPEX | v0 | plain | P1 | +1.21% | [+0.85%, +1.59%] | +30.5% | +5.3% | -15.4% |
+| D0 | TPEX | v0 | plain | P2 | +0.49% | [-0.22%, +1.26%] | +12.4% | -12.8% | -33.5% |
+| D0 | TPEX | v0 | plain | P1 ∪ P2 | +1.01% | [+0.65%, +1.36%] | +25.5% | +0.3% | -20.4% |
+| D0 | TPEX | v0 | 動能配平 | P1 | +1.11% | [+0.78%, +1.47%] | +27.9% | +2.7% | -18.0% |
+| D0 | TPEX | v0 | 動能配平 | P2 | +0.64% | [+0.01%, +1.31%] | +16.1% | -9.1% | -29.8% |
+| D0 | TPEX | v0 | 動能配平 | P1 ∪ P2 | +0.98% | [+0.64%, +1.32%] | +24.6% | -0.6% | -21.3% |
+| D0 | TPEX | v1 | plain | P1 | +1.17% | [+0.84%, +1.51%] | +29.4% | +4.2% | -16.6% |
+| D0 | TPEX | v1 | plain | P2 | +0.88% | [+0.22%, +1.57%] | +22.2% | -3.0% | -23.7% |
+| D0 | TPEX | v1 | plain | P1 ∪ P2 | +1.09% | [+0.76%, +1.39%] | +27.4% | +2.2% | -18.5% |
+| D0 | TPEX | v1 | 動能配平 | P1 | +1.13% | [+0.80%, +1.48%] | +28.5% | +3.3% | -17.4% |
+| D0 | TPEX | v1 | 動能配平 | P2 | +0.87% | [+0.20%, +1.53%] | +22.0% | -3.2% | -23.9% |
+| D0 | TPEX | v1 | 動能配平 | P1 ∪ P2 | +1.06% | [+0.73%, +1.38%] | +26.7% | +1.5% | -19.2% |
+
+週轉率條件化（V0，plain，依週轉率跳升三等分；原始報酬）：
+
+| 模型 | 市場 | 分數 | 建構 | 期間 | 每批價差（10 日） | 95% 區間 | 年化毛 | 機構淨 | 散戶淨 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | 週轉率跳升 低 | P1 | +0.52% | [-0.02%, +1.11%] | +13.1% | -12.1% | -22.7% |
+| B0 | TWSE | v0 | 週轉率跳升 低 | P2 | -1.69% | [-2.96%, -0.43%] | -42.5% | -67.7% | -78.4% |
+| B0 | TWSE | v0 | 週轉率跳升 低 | P1 ∪ P2 | -0.09% | [-0.75%, +0.51%] | -2.3% | -27.5% | -38.1% |
+| B0 | TWSE | v0 | 週轉率跳升 中 | P1 | +0.59% | [-0.08%, +1.28%] | +14.8% | -10.4% | -21.1% |
+| B0 | TWSE | v0 | 週轉率跳升 中 | P2 | -1.24% | [-2.60%, -0.01%] | -31.1% | -56.3% | -67.0% |
+| B0 | TWSE | v0 | 週轉率跳升 中 | P1 ∪ P2 | +0.08% | [-0.59%, +0.77%] | +2.1% | -23.1% | -33.8% |
+| B0 | TWSE | v0 | 週轉率跳升 高 | P1 | +0.53% | [-0.24%, +1.37%] | +13.3% | -11.8% | -22.5% |
+| B0 | TWSE | v0 | 週轉率跳升 高 | P2 | -1.85% | [-3.15%, -0.52%] | -46.7% | -71.9% | -82.6% |
+| B0 | TWSE | v0 | 週轉率跳升 高 | P1 ∪ P2 | -0.13% | [-0.93%, +0.67%] | -3.3% | -28.5% | -39.1% |
+| B0 | TPEX | v0 | 週轉率跳升 低 | P1 | +0.80% | [+0.14%, +1.45%] | +20.2% | -5.0% | -25.7% |
+| B0 | TPEX | v0 | 週轉率跳升 低 | P2 | -0.91% | [-2.47%, +0.49%] | -22.9% | -48.1% | -68.8% |
+| B0 | TPEX | v0 | 週轉率跳升 低 | P1 ∪ P2 | +0.33% | [-0.35%, +0.98%] | +8.2% | -16.9% | -37.7% |
+| B0 | TPEX | v0 | 週轉率跳升 中 | P1 | +0.77% | [+0.20%, +1.41%] | +19.5% | -5.7% | -26.4% |
+| B0 | TPEX | v0 | 週轉率跳升 中 | P2 | -0.98% | [-2.30%, +0.26%] | -24.8% | -50.0% | -70.7% |
+| B0 | TPEX | v0 | 週轉率跳升 中 | P1 ∪ P2 | +0.29% | [-0.34%, +0.94%] | +7.2% | -18.0% | -38.7% |
+| B0 | TPEX | v0 | 週轉率跳升 高 | P1 | +0.86% | [+0.24%, +1.45%] | +21.6% | -3.6% | -24.3% |
+| B0 | TPEX | v0 | 週轉率跳升 高 | P2 | -0.83% | [-2.40%, +0.74%] | -20.9% | -46.1% | -66.8% |
+| B0 | TPEX | v0 | 週轉率跳升 高 | P1 ∪ P2 | +0.39% | [-0.29%, +1.07%] | +9.9% | -15.3% | -36.1% |
+| D0 | TWSE | v0 | 週轉率跳升 低 | P1 | +0.74% | [+0.28%, +1.21%] | +18.6% | -6.6% | -17.3% |
+| D0 | TWSE | v0 | 週轉率跳升 低 | P2 | -1.09% | [-1.97%, -0.24%] | -27.4% | -52.5% | -63.2% |
+| D0 | TWSE | v0 | 週轉率跳升 低 | P1 ∪ P2 | +0.23% | [-0.24%, +0.72%] | +5.9% | -19.3% | -30.0% |
+| D0 | TWSE | v0 | 週轉率跳升 中 | P1 | +0.49% | [-0.06%, +1.07%] | +12.2% | -12.9% | -23.6% |
+| D0 | TWSE | v0 | 週轉率跳升 中 | P2 | -0.91% | [-1.81%, -0.03%] | -23.1% | -48.2% | -58.9% |
+| D0 | TWSE | v0 | 週轉率跳升 中 | P1 ∪ P2 | +0.10% | [-0.44%, +0.62%] | +2.5% | -22.7% | -33.4% |
+| D0 | TWSE | v0 | 週轉率跳升 高 | P1 | +0.28% | [-0.43%, +1.05%] | +7.2% | -18.0% | -28.7% |
+| D0 | TWSE | v0 | 週轉率跳升 高 | P2 | -0.83% | [-2.02%, +0.31%] | -20.8% | -46.0% | -56.7% |
+| D0 | TWSE | v0 | 週轉率跳升 高 | P1 ∪ P2 | -0.02% | [-0.69%, +0.66%] | -0.6% | -25.8% | -36.4% |
+| D0 | TPEX | v0 | 週轉率跳升 低 | P1 | +0.94% | [+0.38%, +1.48%] | +23.6% | -1.6% | -22.4% |
+| D0 | TPEX | v0 | 週轉率跳升 低 | P2 | +0.01% | [-1.14%, +1.11%] | +0.2% | -25.0% | -45.7% |
+| D0 | TPEX | v0 | 週轉率跳升 低 | P1 ∪ P2 | +0.68% | [+0.13%, +1.23%] | +17.1% | -8.1% | -28.8% |
+| D0 | TPEX | v0 | 週轉率跳升 中 | P1 | +1.21% | [+0.73%, +1.71%] | +30.4% | +5.3% | -15.5% |
+| D0 | TPEX | v0 | 週轉率跳升 中 | P2 | -0.34% | [-1.39%, +0.64%] | -8.5% | -33.7% | -54.4% |
+| D0 | TPEX | v0 | 週轉率跳升 中 | P1 ∪ P2 | +0.78% | [+0.26%, +1.31%] | +19.7% | -5.5% | -26.2% |
+| D0 | TPEX | v0 | 週轉率跳升 高 | P1 | +1.31% | [+0.69%, +1.91%] | +33.0% | +7.8% | -12.9% |
+| D0 | TPEX | v0 | 週轉率跳升 高 | P2 | -0.37% | [-1.72%, +0.94%] | -9.4% | -34.6% | -55.3% |
+| D0 | TPEX | v0 | 週轉率跳升 高 | P1 ∪ P2 | +0.84% | [+0.18%, +1.47%] | +21.3% | -3.9% | -24.7% |
+
+依 §13.19 補充第 6 項的事前規則：**(a) 成立於四個（模型, 市場）**。V1 動能配平在 P1 保留了 V0 plain 價差的 1.0 到 1.3 倍，P2 不再顯著為負（B0 TWSE −1.78% → +0.09%、B0 TPEX −1.46% → +0.82%、D0 TWSE −1.24% → +0.16%、D0 TPEX −0.54% → +0.91%），P1 ∪ P2 四格全部為正且區間不跨 0（TWSE +0.47%／+0.49%，TPEX +0.99%／+1.12% 每 10 日）。P2 的虧損主要是分數對 beta 與動能的結構性暴露，不是排序能力消失。(b) 不成立：價量模型不是只有反轉。(c) 週轉率條件化沒有一致效果：高跳升組的價差只在 B0 TPEX 的兩個期間都高於低跳升組，其他三組至少一個期間相反；免費的週轉率代理分不出會延續的強勢股。幅度對成本：純化後的年化毛價差 TWSE +12%、TPEX +25% 到 +28%，對每 10 日全數換手的機構成本（約 25%／年）仍是機構淨 TWSE −13%、TPEX −0.3% 到 +3%，散戶淨 −18% 到 −24%。純化讓訊號跨期穩定，沒有讓它變大；下一個可登記的實驗是把正交化分數與動能配平放進 band 建構（持有約 40 日、機構拖累 8–13%／年）重算 S1／S2。
+
 ### 4. 意涵
 
 - 把成本換成機構條件，改變的是幅度不是結論：S1 的淨報酬只多出 2–5 個百分點，當沖的拖累由 263–363% 降到 156%，但毛報酬 123–179% 仍付不起。模型的排序能力在這套工具下換不成業界會買單的 Sharpe。
@@ -674,14 +858,15 @@ S3 當沖：
 ```bash
 cd backtest
 uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/launch-20261023T103805Z-2637116736/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/launch-20261023T162203Z-877225215/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+uv run python -m twbacktest.reversal_exposure --predictions ../artifacts/lgbm/launch-20261023T103805Z-2637116736/predictions.parquet --model t-lgbm-alpha-residual_v1a --targets ../artifacts/lgbm/launch-20261023T103805Z-2637116736/targets.parquet --predictions ../artifacts/xs/launch-20261023T162203Z-877225215/predictions.parquet --model t-xs-scratch --targets ../artifacts/xs/launch-20261023T162203Z-877225215/targets.parquet --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 python3 scripts/build_scenario_report.py docs/institution_cost_scenarios_results.md reports/institution_cost_scenarios_20261025.docx
 ```
 
 | 項目 | 內容 |
 | --- | --- |
-| 事先登記 | `docs/experiment_protocol.md` §13.19 |
-| 程式 | `backtest/twbacktest/scenario_suite.py`（合成資料測試 `backtest/tests/test_scenario_suite.py`）、`backtest/config/scenario_suite.json`、`backtest/config/cost_profiles.json` |
-| 輸出（不受 Git 追蹤） | `artifacts/diagnostics/backtest/scenario-suite-b0-d0-20261025T150000Z/`（`grid.csv`、`daily.csv`、`report.json`、`summary.md`） |
+| 事先登記 | `docs/experiment_protocol.md` §13.19 與其補充（反轉暴露診斷） |
+| 程式 | `backtest/twbacktest/scenario_suite.py`、`backtest/twbacktest/reversal_exposure.py`（合成資料測試 `backtest/tests/test_scenario_suite.py`、`test_reversal_exposure.py`）、`backtest/config/scenario_suite.json`、`backtest/config/cost_profiles.json` |
+| 輸出（不受 Git 追蹤） | `artifacts/diagnostics/backtest/scenario-suite-b0-d0-20261025T150000Z/` 與 `reversal-exposure-b0-d0-20261025T170000Z/`（各含 `grid.csv`、`daily.csv`、`report.json`、`summary.md`） |
 | Word 報告 | `reports/institution_cost_scenarios_20261025.docx`，由 `scripts/build_scenario_report.py` 從本檔產生 |
 
 ## English
@@ -1336,6 +1521,190 @@ The mean residual target (what the model predicts) and raw alpha (10-session ret
 
 Long-minus-short spread per 10 sessions: P1 residual +1.19% (B0) / +0.90% (D0), raw +1.70% / +1.24%; P2 residual **−0.45% / −0.37%**, raw **−1.40% / −0.76%**. The "P2 residual Rank IC 0.05–0.065" of the §13.16 report is a universe-wide correlation; among the roughly 50 names at each end that the band portfolio actually enters, the P2 residual spread is already negative and the raw spread more so. Residualization took market, size and industry out of the labels, not momentum; the portfolio holds raw stocks, and the price its anti-momentum tilt paid in P2's momentum regime is several times the size of the residual alpha.
 
+#### 3.8 Reversal-exposure diagnostic (§13.19 supplement; `twbacktest.reversal_exposure`)
+
+How much ranking skill is left once the score is purified of its structural exposures? Score V0 is the §13.14 smoothed percentile score; V1 is its daily OLS residual inside the universe on the trailing 20-session return, the trailing 60-session return and a 60-session beta. Constructions are daily cohorts held 10 sessions, top-minus-bottom quartile, dollar-neutral with each leg at full capital (as in S1): plain, or ranked and paired inside quintiles of the trailing 20-session return (momentum-matched). Costs are one entry and exit per leg per cohort (institution about 25% a year, retail about 36% on TWSE and 44% on TPEX).
+
+Mean cross-sectional Spearman correlation of the scores with the features (V1 should be near 0):
+
+| Model | Market | Score | Feature | P1 | P2 | P1 ∪ P2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | ret20 | -0.219 | -0.264 | -0.231 |
+| B0 | TWSE | v0 | ret60 | -0.239 | -0.258 | -0.245 |
+| B0 | TWSE | v0 | beta | -0.286 | -0.452 | -0.332 |
+| B0 | TWSE | v1 | ret20 | +0.002 | -0.013 | -0.002 |
+| B0 | TWSE | v1 | ret60 | +0.004 | -0.003 | +0.002 |
+| B0 | TWSE | v1 | beta | -0.055 | -0.073 | -0.060 |
+| B0 | TPEX | v0 | ret20 | -0.171 | -0.244 | -0.191 |
+| B0 | TPEX | v0 | ret60 | -0.132 | -0.200 | -0.151 |
+| B0 | TPEX | v0 | beta | -0.384 | -0.396 | -0.387 |
+| B0 | TPEX | v1 | ret20 | -0.006 | -0.036 | -0.014 |
+| B0 | TPEX | v1 | ret60 | +0.034 | +0.002 | +0.025 |
+| B0 | TPEX | v1 | beta | -0.051 | -0.058 | -0.053 |
+| D0 | TWSE | v0 | ret20 | -0.168 | -0.133 | -0.158 |
+| D0 | TWSE | v0 | ret60 | -0.165 | -0.131 | -0.156 |
+| D0 | TWSE | v0 | beta | -0.240 | -0.427 | -0.292 |
+| D0 | TWSE | v1 | ret20 | +0.001 | -0.000 | +0.001 |
+| D0 | TWSE | v1 | ret60 | +0.025 | +0.018 | +0.023 |
+| D0 | TWSE | v1 | beta | -0.049 | -0.078 | -0.057 |
+| D0 | TPEX | v0 | ret20 | -0.168 | -0.115 | -0.153 |
+| D0 | TPEX | v0 | ret60 | -0.134 | -0.099 | -0.125 |
+| D0 | TPEX | v0 | beta | -0.306 | -0.334 | -0.314 |
+| D0 | TPEX | v1 | ret20 | -0.022 | -0.005 | -0.017 |
+| D0 | TPEX | v1 | ret60 | +0.021 | +0.018 | +0.020 |
+| D0 | TPEX | v1 | beta | -0.045 | -0.052 | -0.047 |
+
+The raw score correlates −0.24 to −0.45 with the 60-session beta (more strongly in P2) and −0.10 to −0.26 with the trailing 20 / 60-session returns: the model ranks low-beta names that have not moved at the top, which is where the S1 book's β ≈ −0.5 and its anti-momentum tilt come from. After orthogonalization every V1 correlation is within ±0.08.
+
+Long-minus-short spread of the raw forward return (plain vs momentum-matched, V0 vs V1):
+
+| Model | Market | Score | Construction | Period | Spread per cohort (10 sessions) | 95% CI | Gross (annual) | Institution net | Retail net |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | plain | P1 | +0.49% | [-0.11%, +1.19%] | +12.4% | -12.7% | -23.4% |
+| B0 | TWSE | v0 | plain | P2 | -1.78% | [-3.06%, -0.53%] | -44.8% | -69.9% | -80.6% |
+| B0 | TWSE | v0 | plain | P1 ∪ P2 | -0.13% | [-0.86%, +0.53%] | -3.4% | -28.6% | -39.2% |
+| B0 | TWSE | v0 | momentum-matched | P1 | +0.52% | [-0.01%, +1.09%] | +13.2% | -12.0% | -22.6% |
+| B0 | TWSE | v0 | momentum-matched | P2 | -1.01% | [-1.99%, -0.04%] | -25.3% | -50.5% | -61.2% |
+| B0 | TWSE | v0 | momentum-matched | P1 ∪ P2 | +0.10% | [-0.47%, +0.64%] | +2.5% | -22.6% | -33.3% |
+| B0 | TWSE | v1 | plain | P1 | +0.65% | [+0.14%, +1.17%] | +16.4% | -8.8% | -19.4% |
+| B0 | TWSE | v1 | plain | P2 | -0.24% | [-1.06%, +0.57%] | -6.0% | -31.2% | -41.8% |
+| B0 | TWSE | v1 | plain | P1 ∪ P2 | +0.41% | [-0.07%, +0.89%] | +10.2% | -15.0% | -25.6% |
+| B0 | TWSE | v1 | momentum-matched | P1 | +0.62% | [+0.16%, +1.09%] | +15.7% | -9.5% | -20.2% |
+| B0 | TWSE | v1 | momentum-matched | P2 | +0.09% | [-0.68%, +0.81%] | +2.3% | -22.9% | -33.6% |
+| B0 | TWSE | v1 | momentum-matched | P1 ∪ P2 | +0.47% | [+0.07%, +0.88%] | +12.0% | -13.2% | -23.9% |
+| B0 | TPEX | v0 | plain | P1 | +0.96% | [+0.46%, +1.48%] | +24.1% | -1.0% | -21.8% |
+| B0 | TPEX | v0 | plain | P2 | -1.46% | [-2.81%, -0.12%] | -36.9% | -62.1% | -82.8% |
+| B0 | TPEX | v0 | plain | P1 ∪ P2 | +0.29% | [-0.36%, +0.94%] | +7.2% | -17.9% | -38.7% |
+| B0 | TPEX | v0 | momentum-matched | P1 | +0.81% | [+0.35%, +1.31%] | +20.4% | -4.8% | -25.6% |
+| B0 | TPEX | v0 | momentum-matched | P2 | -0.65% | [-1.69%, +0.36%] | -16.3% | -41.5% | -62.2% |
+| B0 | TPEX | v0 | momentum-matched | P1 ∪ P2 | +0.41% | [-0.11%, +0.94%] | +10.2% | -15.0% | -35.7% |
+| B0 | TPEX | v1 | plain | P1 | +1.14% | [+0.69%, +1.57%] | +28.8% | +3.6% | -17.1% |
+| B0 | TPEX | v1 | plain | P2 | +0.48% | [-0.21%, +1.17%] | +12.2% | -13.0% | -33.7% |
+| B0 | TPEX | v1 | plain | P1 ∪ P2 | +0.96% | [+0.57%, +1.35%] | +24.2% | -1.0% | -21.7% |
+| B0 | TPEX | v1 | momentum-matched | P1 | +1.06% | [+0.64%, +1.46%] | +26.6% | +1.4% | -19.3% |
+| B0 | TPEX | v1 | momentum-matched | P2 | +0.82% | [+0.16%, +1.44%] | +20.6% | -4.6% | -25.3% |
+| B0 | TPEX | v1 | momentum-matched | P1 ∪ P2 | +0.99% | [+0.63%, +1.35%] | +24.9% | -0.3% | -21.0% |
+| D0 | TWSE | v0 | plain | P1 | +0.50% | [-0.04%, +1.08%] | +12.7% | -12.5% | -23.1% |
+| D0 | TWSE | v0 | plain | P2 | -1.24% | [-2.19%, -0.28%] | -31.2% | -56.4% | -67.1% |
+| D0 | TWSE | v0 | plain | P1 ∪ P2 | +0.02% | [-0.54%, +0.54%] | +0.5% | -24.6% | -35.3% |
+| D0 | TWSE | v0 | momentum-matched | P1 | +0.52% | [+0.07%, +0.99%] | +13.1% | -12.1% | -22.7% |
+| D0 | TWSE | v0 | momentum-matched | P2 | -0.68% | [-1.49%, +0.07%] | -17.2% | -42.3% | -53.0% |
+| D0 | TWSE | v0 | momentum-matched | P1 ∪ P2 | +0.19% | [-0.26%, +0.63%] | +4.7% | -20.4% | -31.1% |
+| D0 | TWSE | v1 | plain | P1 | +0.59% | [+0.16%, +1.05%] | +14.9% | -10.3% | -21.0% |
+| D0 | TWSE | v1 | plain | P2 | +0.08% | [-0.75%, +0.84%] | +2.1% | -23.1% | -33.7% |
+| D0 | TWSE | v1 | plain | P1 ∪ P2 | +0.45% | [+0.05%, +0.86%] | +11.3% | -13.8% | -24.5% |
+| D0 | TWSE | v1 | momentum-matched | P1 | +0.62% | [+0.21%, +1.05%] | +15.6% | -9.6% | -20.3% |
+| D0 | TWSE | v1 | momentum-matched | P2 | +0.16% | [-0.56%, +0.83%] | +4.2% | -21.0% | -31.7% |
+| D0 | TWSE | v1 | momentum-matched | P1 ∪ P2 | +0.49% | [+0.12%, +0.88%] | +12.4% | -12.8% | -23.4% |
+| D0 | TPEX | v0 | plain | P1 | +1.22% | [+0.78%, +1.69%] | +30.8% | +5.6% | -15.1% |
+| D0 | TPEX | v0 | plain | P2 | -0.54% | [-1.53%, +0.45%] | -13.6% | -38.8% | -59.5% |
+| D0 | TPEX | v0 | plain | P1 ∪ P2 | +0.73% | [+0.22%, +1.24%] | +18.5% | -6.7% | -27.4% |
+| D0 | TPEX | v0 | momentum-matched | P1 | +1.10% | [+0.69%, +1.55%] | +27.8% | +2.6% | -18.1% |
+| D0 | TPEX | v0 | momentum-matched | P2 | -0.13% | [-1.03%, +0.79%] | -3.4% | -28.6% | -49.3% |
+| D0 | TPEX | v0 | momentum-matched | P1 ∪ P2 | +0.76% | [+0.30%, +1.22%] | +19.2% | -6.0% | -26.7% |
+| D0 | TPEX | v1 | plain | P1 | +1.24% | [+0.83%, +1.66%] | +31.3% | +6.1% | -14.6% |
+| D0 | TPEX | v1 | plain | P2 | +0.78% | [-0.03%, +1.59%] | +19.6% | -5.6% | -26.4% |
+| D0 | TPEX | v1 | plain | P1 ∪ P2 | +1.11% | [+0.72%, +1.49%] | +28.1% | +2.9% | -17.8% |
+| D0 | TPEX | v1 | momentum-matched | P1 | +1.20% | [+0.81%, +1.61%] | +30.3% | +5.1% | -15.6% |
+| D0 | TPEX | v1 | momentum-matched | P2 | +0.91% | [+0.03%, +1.75%] | +23.0% | -2.1% | -22.9% |
+| D0 | TPEX | v1 | momentum-matched | P1 ∪ P2 | +1.12% | [+0.71%, +1.51%] | +28.3% | +3.1% | -17.6% |
+
+Long-minus-short spread of the residual target:
+
+| Model | Market | Score | Construction | Period | Spread per cohort (10 sessions) | 95% CI | Gross (annual) | Institution net | Retail net |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | plain | P1 | +0.61% | [+0.19%, +1.11%] | +15.3% | -9.9% | -20.5% |
+| B0 | TWSE | v0 | plain | P2 | -0.35% | [-1.04%, +0.36%] | -8.7% | -33.9% | -44.5% |
+| B0 | TWSE | v0 | plain | P1 ∪ P2 | +0.34% | [-0.08%, +0.77%] | +8.7% | -16.5% | -27.2% |
+| B0 | TWSE | v0 | momentum-matched | P1 | +0.58% | [+0.20%, +1.00%] | +14.6% | -10.6% | -21.2% |
+| B0 | TWSE | v0 | momentum-matched | P2 | -0.19% | [-0.72%, +0.29%] | -4.9% | -30.1% | -40.7% |
+| B0 | TWSE | v0 | momentum-matched | P1 ∪ P2 | +0.37% | [+0.02%, +0.72%] | +9.2% | -16.0% | -26.6% |
+| B0 | TWSE | v1 | plain | P1 | +0.63% | [+0.24%, +1.03%] | +15.8% | -9.4% | -20.1% |
+| B0 | TWSE | v1 | plain | P2 | +0.02% | [-0.64%, +0.64%] | +0.4% | -24.8% | -35.4% |
+| B0 | TWSE | v1 | plain | P1 ∪ P2 | +0.46% | [+0.11%, +0.81%] | +11.5% | -13.7% | -24.3% |
+| B0 | TWSE | v1 | momentum-matched | P1 | +0.56% | [+0.21%, +0.93%] | +14.1% | -11.1% | -21.7% |
+| B0 | TWSE | v1 | momentum-matched | P2 | +0.13% | [-0.47%, +0.70%] | +3.3% | -21.9% | -32.5% |
+| B0 | TWSE | v1 | momentum-matched | P1 ∪ P2 | +0.44% | [+0.14%, +0.75%] | +11.1% | -14.1% | -24.7% |
+| B0 | TPEX | v0 | plain | P1 | +1.04% | [+0.65%, +1.44%] | +26.1% | +0.9% | -19.8% |
+| B0 | TPEX | v0 | plain | P2 | +0.13% | [-0.52%, +0.72%] | +3.2% | -21.9% | -42.7% |
+| B0 | TPEX | v0 | plain | P1 ∪ P2 | +0.79% | [+0.42%, +1.17%] | +19.8% | -5.4% | -26.1% |
+| B0 | TPEX | v0 | momentum-matched | P1 | +0.90% | [+0.54%, +1.29%] | +22.8% | -2.4% | -23.1% |
+| B0 | TPEX | v0 | momentum-matched | P2 | +0.35% | [-0.21%, +0.88%] | +8.7% | -16.5% | -37.2% |
+| B0 | TPEX | v0 | momentum-matched | P1 ∪ P2 | +0.75% | [+0.43%, +1.09%] | +18.9% | -6.3% | -27.0% |
+| B0 | TPEX | v1 | plain | P1 | +1.14% | [+0.79%, +1.49%] | +28.7% | +3.5% | -17.2% |
+| B0 | TPEX | v1 | plain | P2 | +0.67% | [+0.16%, +1.14%] | +16.9% | -8.3% | -29.0% |
+| B0 | TPEX | v1 | plain | P1 ∪ P2 | +1.01% | [+0.70%, +1.32%] | +25.4% | +0.2% | -20.5% |
+| B0 | TPEX | v1 | momentum-matched | P1 | +1.06% | [+0.73%, +1.41%] | +26.8% | +1.6% | -19.1% |
+| B0 | TPEX | v1 | momentum-matched | P2 | +0.80% | [+0.32%, +1.27%] | +20.1% | -5.1% | -25.8% |
+| B0 | TPEX | v1 | momentum-matched | P1 ∪ P2 | +0.99% | [+0.70%, +1.29%] | +24.9% | -0.2% | -21.0% |
+| D0 | TWSE | v0 | plain | P1 | +0.59% | [+0.23%, +1.00%] | +15.0% | -10.2% | -20.9% |
+| D0 | TWSE | v0 | plain | P2 | -0.20% | [-0.93%, +0.50%] | -5.0% | -30.2% | -40.9% |
+| D0 | TWSE | v0 | plain | P1 ∪ P2 | +0.37% | [+0.01%, +0.72%] | +9.4% | -15.7% | -26.4% |
+| D0 | TWSE | v0 | momentum-matched | P1 | +0.57% | [+0.28%, +0.90%] | +14.5% | -10.7% | -21.4% |
+| D0 | TWSE | v0 | momentum-matched | P2 | +0.03% | [-0.55%, +0.56%] | +0.8% | -24.4% | -35.0% |
+| D0 | TWSE | v0 | momentum-matched | P1 ∪ P2 | +0.42% | [+0.12%, +0.72%] | +10.7% | -14.5% | -25.1% |
+| D0 | TWSE | v1 | plain | P1 | +0.58% | [+0.24%, +0.93%] | +14.5% | -10.7% | -21.3% |
+| D0 | TWSE | v1 | plain | P2 | +0.30% | [-0.40%, +1.00%] | +7.7% | -17.5% | -28.1% |
+| D0 | TWSE | v1 | plain | P1 ∪ P2 | +0.50% | [+0.17%, +0.82%] | +12.6% | -12.6% | -23.2% |
+| D0 | TWSE | v1 | momentum-matched | P1 | +0.57% | [+0.26%, +0.90%] | +14.5% | -10.7% | -21.3% |
+| D0 | TWSE | v1 | momentum-matched | P2 | +0.28% | [-0.34%, +0.91%] | +7.1% | -18.1% | -28.7% |
+| D0 | TWSE | v1 | momentum-matched | P1 ∪ P2 | +0.49% | [+0.20%, +0.79%] | +12.4% | -12.7% | -23.4% |
+| D0 | TPEX | v0 | plain | P1 | +1.21% | [+0.85%, +1.59%] | +30.5% | +5.3% | -15.4% |
+| D0 | TPEX | v0 | plain | P2 | +0.49% | [-0.22%, +1.26%] | +12.4% | -12.8% | -33.5% |
+| D0 | TPEX | v0 | plain | P1 ∪ P2 | +1.01% | [+0.65%, +1.36%] | +25.5% | +0.3% | -20.4% |
+| D0 | TPEX | v0 | momentum-matched | P1 | +1.11% | [+0.78%, +1.47%] | +27.9% | +2.7% | -18.0% |
+| D0 | TPEX | v0 | momentum-matched | P2 | +0.64% | [+0.01%, +1.31%] | +16.1% | -9.1% | -29.8% |
+| D0 | TPEX | v0 | momentum-matched | P1 ∪ P2 | +0.98% | [+0.64%, +1.32%] | +24.6% | -0.6% | -21.3% |
+| D0 | TPEX | v1 | plain | P1 | +1.17% | [+0.84%, +1.51%] | +29.4% | +4.2% | -16.6% |
+| D0 | TPEX | v1 | plain | P2 | +0.88% | [+0.22%, +1.57%] | +22.2% | -3.0% | -23.7% |
+| D0 | TPEX | v1 | plain | P1 ∪ P2 | +1.09% | [+0.76%, +1.39%] | +27.4% | +2.2% | -18.5% |
+| D0 | TPEX | v1 | momentum-matched | P1 | +1.13% | [+0.80%, +1.48%] | +28.5% | +3.3% | -17.4% |
+| D0 | TPEX | v1 | momentum-matched | P2 | +0.87% | [+0.20%, +1.53%] | +22.0% | -3.2% | -23.9% |
+| D0 | TPEX | v1 | momentum-matched | P1 ∪ P2 | +1.06% | [+0.73%, +1.38%] | +26.7% | +1.5% | -19.2% |
+
+Turnover conditioning (V0, plain, inside terciles of the turnover spike; raw return):
+
+| Model | Market | Score | Construction | Period | Spread per cohort (10 sessions) | 95% CI | Gross (annual) | Institution net | Retail net |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | TWSE | v0 | turnover spike low | P1 | +0.52% | [-0.02%, +1.11%] | +13.1% | -12.1% | -22.7% |
+| B0 | TWSE | v0 | turnover spike low | P2 | -1.69% | [-2.96%, -0.43%] | -42.5% | -67.7% | -78.4% |
+| B0 | TWSE | v0 | turnover spike low | P1 ∪ P2 | -0.09% | [-0.75%, +0.51%] | -2.3% | -27.5% | -38.1% |
+| B0 | TWSE | v0 | turnover spike mid | P1 | +0.59% | [-0.08%, +1.28%] | +14.8% | -10.4% | -21.1% |
+| B0 | TWSE | v0 | turnover spike mid | P2 | -1.24% | [-2.60%, -0.01%] | -31.1% | -56.3% | -67.0% |
+| B0 | TWSE | v0 | turnover spike mid | P1 ∪ P2 | +0.08% | [-0.59%, +0.77%] | +2.1% | -23.1% | -33.8% |
+| B0 | TWSE | v0 | turnover spike high | P1 | +0.53% | [-0.24%, +1.37%] | +13.3% | -11.8% | -22.5% |
+| B0 | TWSE | v0 | turnover spike high | P2 | -1.85% | [-3.15%, -0.52%] | -46.7% | -71.9% | -82.6% |
+| B0 | TWSE | v0 | turnover spike high | P1 ∪ P2 | -0.13% | [-0.93%, +0.67%] | -3.3% | -28.5% | -39.1% |
+| B0 | TPEX | v0 | turnover spike low | P1 | +0.80% | [+0.14%, +1.45%] | +20.2% | -5.0% | -25.7% |
+| B0 | TPEX | v0 | turnover spike low | P2 | -0.91% | [-2.47%, +0.49%] | -22.9% | -48.1% | -68.8% |
+| B0 | TPEX | v0 | turnover spike low | P1 ∪ P2 | +0.33% | [-0.35%, +0.98%] | +8.2% | -16.9% | -37.7% |
+| B0 | TPEX | v0 | turnover spike mid | P1 | +0.77% | [+0.20%, +1.41%] | +19.5% | -5.7% | -26.4% |
+| B0 | TPEX | v0 | turnover spike mid | P2 | -0.98% | [-2.30%, +0.26%] | -24.8% | -50.0% | -70.7% |
+| B0 | TPEX | v0 | turnover spike mid | P1 ∪ P2 | +0.29% | [-0.34%, +0.94%] | +7.2% | -18.0% | -38.7% |
+| B0 | TPEX | v0 | turnover spike high | P1 | +0.86% | [+0.24%, +1.45%] | +21.6% | -3.6% | -24.3% |
+| B0 | TPEX | v0 | turnover spike high | P2 | -0.83% | [-2.40%, +0.74%] | -20.9% | -46.1% | -66.8% |
+| B0 | TPEX | v0 | turnover spike high | P1 ∪ P2 | +0.39% | [-0.29%, +1.07%] | +9.9% | -15.3% | -36.1% |
+| D0 | TWSE | v0 | turnover spike low | P1 | +0.74% | [+0.28%, +1.21%] | +18.6% | -6.6% | -17.3% |
+| D0 | TWSE | v0 | turnover spike low | P2 | -1.09% | [-1.97%, -0.24%] | -27.4% | -52.5% | -63.2% |
+| D0 | TWSE | v0 | turnover spike low | P1 ∪ P2 | +0.23% | [-0.24%, +0.72%] | +5.9% | -19.3% | -30.0% |
+| D0 | TWSE | v0 | turnover spike mid | P1 | +0.49% | [-0.06%, +1.07%] | +12.2% | -12.9% | -23.6% |
+| D0 | TWSE | v0 | turnover spike mid | P2 | -0.91% | [-1.81%, -0.03%] | -23.1% | -48.2% | -58.9% |
+| D0 | TWSE | v0 | turnover spike mid | P1 ∪ P2 | +0.10% | [-0.44%, +0.62%] | +2.5% | -22.7% | -33.4% |
+| D0 | TWSE | v0 | turnover spike high | P1 | +0.28% | [-0.43%, +1.05%] | +7.2% | -18.0% | -28.7% |
+| D0 | TWSE | v0 | turnover spike high | P2 | -0.83% | [-2.02%, +0.31%] | -20.8% | -46.0% | -56.7% |
+| D0 | TWSE | v0 | turnover spike high | P1 ∪ P2 | -0.02% | [-0.69%, +0.66%] | -0.6% | -25.8% | -36.4% |
+| D0 | TPEX | v0 | turnover spike low | P1 | +0.94% | [+0.38%, +1.48%] | +23.6% | -1.6% | -22.4% |
+| D0 | TPEX | v0 | turnover spike low | P2 | +0.01% | [-1.14%, +1.11%] | +0.2% | -25.0% | -45.7% |
+| D0 | TPEX | v0 | turnover spike low | P1 ∪ P2 | +0.68% | [+0.13%, +1.23%] | +17.1% | -8.1% | -28.8% |
+| D0 | TPEX | v0 | turnover spike mid | P1 | +1.21% | [+0.73%, +1.71%] | +30.4% | +5.3% | -15.5% |
+| D0 | TPEX | v0 | turnover spike mid | P2 | -0.34% | [-1.39%, +0.64%] | -8.5% | -33.7% | -54.4% |
+| D0 | TPEX | v0 | turnover spike mid | P1 ∪ P2 | +0.78% | [+0.26%, +1.31%] | +19.7% | -5.5% | -26.2% |
+| D0 | TPEX | v0 | turnover spike high | P1 | +1.31% | [+0.69%, +1.91%] | +33.0% | +7.8% | -12.9% |
+| D0 | TPEX | v0 | turnover spike high | P2 | -0.37% | [-1.72%, +0.94%] | -9.4% | -34.6% | -55.3% |
+| D0 | TPEX | v0 | turnover spike high | P1 ∪ P2 | +0.84% | [+0.18%, +1.47%] | +21.3% | -3.9% | -24.7% |
+
+Under the pre-registered rules of §13.19 supplement item 6: **(a) holds for all four (model, market) pairs**. V1 momentum-matched keeps 1.0 to 1.3 times the V0 plain spread in P1 and is no longer significantly negative in P2 (B0 TWSE −1.78% → +0.09%, B0 TPEX −1.46% → +0.82%, D0 TWSE −1.24% → +0.16%, D0 TPEX −0.54% → +0.91%); on P1 ∪ P2 all four cells are positive with intervals clear of 0 (TWSE +0.47% / +0.49%, TPEX +0.99% / +1.12% per 10 sessions). The P2 loss is mostly the score's structural exposure to beta and momentum, not vanished ranking skill. (b) does not hold: the price-volume model is not reversal only. (c) Turnover conditioning has no consistent effect: the high-spike tercile beats the low one in both periods only for B0 on TPEX, and at least one period runs the other way in the other three cases; the free turnover proxy cannot tell which winners will keep running. Magnitude against costs: the purified gross spread is +12% a year on TWSE and +25% to +28% on TPEX, which against the institution cost of full turnover every 10 sessions (about 25% a year) still leaves TWSE −13% and TPEX −0.3% to +3% net, and retail −18% to −24%. Purification made the signal stable across regimes; it did not make it bigger. The next experiment worth registering is the orthogonalized score with momentum-matched legs inside the band construction (holding about 40 sessions, institution drag 8–13% a year), rerunning S1 / S2.
+
 ### 4. Implications
 
 - Switching to institution costs changes magnitudes, not the conclusion: S1 gains only 2–5 points of net return, and the day-trade drag falls from 263–363% to 156% while the 123–179% gross still cannot pay it. With these instruments the model's ranking skill does not turn into a Sharpe the industry would buy.
@@ -1358,12 +1727,13 @@ Long-minus-short spread per 10 sessions: P1 residual +1.19% (B0) / +0.90% (D0), 
 ```bash
 cd backtest
 uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/launch-20261023T103805Z-2637116736/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/launch-20261023T162203Z-877225215/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+uv run python -m twbacktest.reversal_exposure --predictions ../artifacts/lgbm/launch-20261023T103805Z-2637116736/predictions.parquet --model t-lgbm-alpha-residual_v1a --targets ../artifacts/lgbm/launch-20261023T103805Z-2637116736/targets.parquet --predictions ../artifacts/xs/launch-20261023T162203Z-877225215/predictions.parquet --model t-xs-scratch --targets ../artifacts/xs/launch-20261023T162203Z-877225215/targets.parquet --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 python3 scripts/build_scenario_report.py docs/institution_cost_scenarios_results.md reports/institution_cost_scenarios_20261025.docx
 ```
 
 | Item | Content |
 | --- | --- |
-| Pre-registration | `docs/experiment_protocol.md` §13.19 |
-| Code | `backtest/twbacktest/scenario_suite.py` (synthetic tests in `backtest/tests/test_scenario_suite.py`), `backtest/config/scenario_suite.json`, `backtest/config/cost_profiles.json` |
-| Outputs (not tracked by Git) | `artifacts/diagnostics/backtest/scenario-suite-b0-d0-20261025T150000Z/` (`grid.csv`, `daily.csv`, `report.json`, `summary.md`) |
+| Pre-registration | `docs/experiment_protocol.md` §13.19 and its supplement (reversal-exposure diagnostic) |
+| Code | `backtest/twbacktest/scenario_suite.py`, `backtest/twbacktest/reversal_exposure.py` (synthetic tests in `backtest/tests/test_scenario_suite.py`, `test_reversal_exposure.py`), `backtest/config/scenario_suite.json`, `backtest/config/cost_profiles.json` |
+| Outputs (not tracked by Git) | `artifacts/diagnostics/backtest/scenario-suite-b0-d0-20261025T150000Z/` and `reversal-exposure-b0-d0-20261025T170000Z/` (each with `grid.csv`, `daily.csv`, `report.json`, `summary.md`) |
 | Word report | `reports/institution_cost_scenarios_20261025.docx`, built from this file by `scripts/build_scenario_report.py` |
