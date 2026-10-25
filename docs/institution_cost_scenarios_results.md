@@ -9,12 +9,12 @@
 結論：
 
 1. **六個情境、兩個模型、三個市場共 36 格，沒有一格達標。** 最接近的是 D0 的 S2（多日多空加台指期滾動 beta 對沖）在兩市場合併：P1 ∪ P2 年化淨報酬 +16.8% [+1.4%, +33.7%]、Sharpe 0.83，區間下界過了 0，但 Sharpe 不到 1.0，P2 單獨 −6.5%。TPEX 的 D0 S2（Sharpe 0.87，P2 −7.3%）與 S6（Sharpe 0.86，P2 −9.7%）同樣只差 Sharpe 與 P2 兩項。
-2. **機構成本不是多日多空的瓶頸。** S1 的成本拖累由散戶的 9.6–17%／年降到機構的 8–13%／年，差距只有 2–5 個百分點，但 P1 ∪ P2 的淨報酬仍為 B0 TWSE −6.3%、TPEX −2.5%，D0 TWSE −5.0%、TPEX +7.6%，P2 全部為負（−26% 到 −63%）。問題在空頭腿：P1 ∪ P2 多頭腿年化 +24% 到 +31%，空頭腿 −24% 到 −31%；P2 空頭腿 −61% 到 −89%，對上同期 TAIEX 報酬指數 +88.5%、TPEX +81.0%。被排到後段而放空的是 P2 大型股獨漲行情中漲最多的那一端，模型的多空價差（毛年化 P1 ∪ P2 TWSE +1.8%／+7.9%）付不起任何成本檔。
+2. **機構成本不是多日多空的瓶頸。** S1 的成本拖累由散戶的 9.6–17%／年降到機構的 8–13%／年，差距只有 2–5 個百分點，但 P1 ∪ P2 的淨報酬仍為 B0 TWSE −6.3%、TPEX −2.5%，D0 TWSE −5.0%、TPEX +7.6%，P2 全部為負（−26% 到 −63%）。問題在空頭腿：P1 ∪ P2 多頭腿年化 +24% 到 +31%，空頭腿 −24% 到 −31%；P2 空頭腿 −61% 到 −89%，對上同期 TAIEX 報酬指數 +88.5%、TPEX +81.0%。第 3.7 節量了空頭腿實際持有的股票：規模與宇宙相同（成交金額百分位 0.52–0.55，宇宙 0.50），但進場前 20 日平均已漲 6–9%、60 日 17–26%（宇宙 1–4%、7–10%），多頭腿則是近期沒漲的股票；也就是說，模型的 h = 10 排序本質上是**短期反轉訊號**：放空近期強勢股、買進落後股。P1 這套反轉成立（空頭腿事後報酬低於宇宙、多頭腿高於宇宙），P2 是動能延續的行情：被放空的強勢股事後年化 +75% 到 +79%（宇宙 +57.5%），被買進的落後股只有 +21% 到 +27%，兩腿同時逆向。模型的多空價差（毛年化 P1 ∪ P2 TWSE +1.8%／+7.9%）付不起任何成本檔。
 3. **台指期疊加救回的是 beta，不是 alpha。** 多空組合對市場的滾動 beta 平均 −0.43 到 −0.52（空頭腿的 beta 高於多頭腿），對沖因此是**做多**台指期；TX 腿在 P1 ∪ P2 貢獻 +10% 到 +21%、P2 貢獻 +19% 到 +58%，把 S2 推到 B0 TWSE +13.5%、D0 TWSE +16.3%、D0 TW +16.8%。這一段報酬來自多頭市場裡持有約半倍市場曝險，任何人買 0050 都拿得到；拿掉 TX 腿後的 S1 就是上一點的結果。
 4. **當沖是純粹的執行成本問題。** S3 的毛報酬年化 +123% 到 +179%（每邊每日 0.25–0.33%），h = 1 訊號真實且穩定（P2 毛報酬仍有 +122% 到 +142%）。機構成本的往返 0.31%／腿（手續費 0.06%、滑價 0.10%、當沖稅 0.15%）年化拖累 156%，淨報酬 TWSE B0 −32.6% [−55.5%, −8.4%]、D0 −17.4%，TPEX 轉正（B0 +7.4%、D0 +12.4%，Sharpe 0.33／0.53）但區間跨 0 且 P2 為負。散戶成本的拖累 263–363%／年，淨報酬 −119% 到 −224%，是六個情境裡最糟的。滑價歸零的機構敏感度（拖累 106%）下 TWSE P1 ∪ P2 淨報酬 B0 +17.2%（Sharpe 0.79）、D0 +32.4%（Sharpe 1.51）：當沖只有在每邊成交成本只剩手續費與稅、完全沒有滑價時才成立，而 0.15% 的當沖稅已占去機構往返成本的一半。
 5. **合併情境沒有加分。** S5 把多日與當沖各半，Sharpe 介於兩者之間；S6 加上兩個 TX 疊加後 D0 TPEX +15.7% [−3.0%, +35.7%]、Sharpe 0.86，仍是靠 TX 腿，P2 −9.7%。
 6. **容量把 TPEX 的正值抹掉。** 3 億與 10 億元在 5% 參與率上限下，多日組合 83–97% 的候選買單被擋，S1 的 10 億淨報酬 −18% 到 −33%；當沖的名目部署率降到 15–70%，TPEX 當沖 D0 3 億 +11.3% [−1.7%, +24.3%]（Sharpe 0.93）、10 億 +5.2%（部署率 14.5%）。有訊號的中小型股承載不了機構規模的資金。
-7. **對業界的意義。** 機構成本下的 Sharpe 區間是 0.5 到 0.9（含 beta 的 S2／S6），不含 beta 的 S1、S3 在 0 上下；P2 全部為負。這不是一個業者會付費的訊號：它需要（a）在 P2 這類集中式多頭裡不被空頭腿拖垮的組合建構（規模或 beta 中性的空頭、或只做多加指數對沖），（b）當沖每邊滑價壓到接近零的執行能力，（c）接受容量在 1 億元以下。三者都在模型以外。
+7. **對業界的意義。** 機構成本下的 Sharpe 區間是 0.5 到 0.9（含 beta 的 S2／S6），不含 beta 的 S1、S3 在 0 上下；P2 全部為負。這不是一個業者會付費的訊號：它需要（a）在 P2 這類動能延續的行情裡不被反轉式空頭腿拖垮的組合建構（空頭加動能或 beta 控制、或只做多加指數對沖），（b）當沖每邊滑價壓到接近零的執行能力，（c）接受容量在 1 億元以下。三者都在模型以外。
 
 ### 2. 資料與方法
 
@@ -612,10 +612,31 @@ S3 當沖：
 | D0 | S6 S5 + 台指期 | TPEX | +0.86 | -3.0% | -9.7% | 未達標 |
 | D0 | S6 S5 + 台指期 | TW | +0.46 | -8.6% | -11.7% | 未達標 |
 
+#### 3.7 S1 兩腿實際持有的股票（TWSE，h = 10、K = 50，選定的 m）
+
+以 `simulate_band` 的每日持倉列（`held`）統計：規模為訊號日 20 日成交金額中位數在宇宙內的百分位（1 = 最大），「進場前」為訊號日往前 20／60 個交易日的對數報酬，「事後」為持有期間每日開盤到開盤報酬的均值（× 252）。
+
+| 模型 | 期間 | 腿 | 每日檔數 | 規模百分位 | 前四分之一規模占比 | 前 20 日漲幅 | 前 60 日漲幅 | 事後年化（開盤到開盤） |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | P1 | 多頭 | 49.2 | 0.51 | 24% | +0.3% | +3.2% | +27.4% |
+| B0 | P1 | 空頭 | 49.5 | 0.54 | 29% | +6.0% | +21.5% | +14.4% |
+| B0 | P1 | 宇宙 | 433.0 | 0.50 | 25% | +1.3% | +6.7% | +15.1% |
+| B0 | P2 | 多頭 | 49.8 | 0.53 | 27% | +0.9% | +2.8% | +20.6% |
+| B0 | P2 | 空頭 | 50.0 | 0.55 | 29% | +9.3% | +25.6% | +74.5% |
+| B0 | P2 | 宇宙 | 426.6 | 0.50 | 25% | +3.8% | +9.5% | +57.5% |
+| D0 | P1 | 多頭 | 49.2 | 0.48 | 22% | −0.0% | +2.9% | +27.3% |
+| D0 | P1 | 空頭 | 49.4 | 0.56 | 33% | +5.6% | +17.2% | +2.0% |
+| D0 | P1 | 宇宙 | 433.0 | 0.50 | 25% | +1.3% | +6.7% | +15.1% |
+| D0 | P2 | 多頭 | 49.9 | 0.48 | 23% | +2.3% | +6.7% | +27.2% |
+| D0 | P2 | 空頭 | 49.9 | 0.52 | 25% | +6.8% | +17.0% | +78.8% |
+| D0 | P2 | 宇宙 | 426.6 | 0.50 | 25% | +3.8% | +9.5% | +57.5% |
+
+同期 TAIEX 開盤到開盤年化：P1 +21.9%、P2 +89.3%。空頭腿的規模與宇宙相同，不是大型股；它放空的是近 20–60 日漲幅最大的股票（反轉式空頭）。P1 的反轉成立：空頭腿事後報酬低於宇宙（B0 +14.4%、D0 +2.0% 對 +15.1%），多頭腿高於宇宙（+27% 對 +15%）。P2 動能延續：空頭腿事後 +75% 到 +79%、高於宇宙 17–21 個百分點，多頭腿 +21% 到 +27%、低於宇宙 30–37 個百分點，兩腿同時逆向。
+
 ### 4. 意涵
 
 - 把成本換成機構條件，改變的是幅度不是結論：S1 的淨報酬只多出 2–5 個百分點，當沖的拖累由 263–363% 降到 156%，但毛報酬 123–179% 仍付不起。模型的排序能力在這套工具下換不成業界會買單的 Sharpe。
-- 真正的瓶頸有兩個：空頭腿的建構（P2 的空頭是在放空漲最多的大型股）與當沖的執行成本（0.15% 當沖稅加任何滑價）。兩者都不是模型層能解決的；前者需要規模／beta 中性的空頭或只做多加指數對沖，後者需要接近零滑價的執行。
+- 真正的瓶頸有兩個：空頭腿的建構（模型的多日排序是短期反轉訊號，P2 的空頭是在放空近期漲幅最大、且繼續漲的股票）與當沖的執行成本（0.15% 當沖稅加任何滑價）。兩者都不是模型層能解決的；前者需要空頭加動能或 beta 控制、或只做多加指數對沖，後者需要接近零滑價的執行。
 - 含 TX 腿的 S2／S6 看起來最好（Sharpe 0.5–0.9），但那是半倍市場曝險在多頭市場的報酬；扣掉 TX 腿後就回到 S1／S5。報告不把它當成 alpha。
 - 唯一淨報酬為正且 Sharpe 接近 1 的格子（D0 S3 TPEX 3 億，+11.3%，Sharpe 0.93）容量只有約 3 成部署率，區間跨 0、P2 為負。
 - 依 §13.19 第 9 項：未達標，不觸發任何前瞻登記；結論措辭為「在機構成本下仍無對業界有吸引力的策略」。
@@ -653,12 +674,12 @@ This report records the informational analysis of [experiment protocol §13.19](
 Conclusions:
 
 1. **None of the 36 cells (six scenarios × two models × three markets) clears the bar.** The closest is D0's S2 (multi-day long-short plus a rolling-beta TX overlay) on the two markets combined: P1 ∪ P2 net +16.8% [+1.4%, +33.7%] a year, Sharpe 0.83, lower bound above 0, but Sharpe below 1.0 and P2 at −6.5%. D0's S2 (Sharpe 0.87, P2 −7.3%) and S6 (Sharpe 0.86, P2 −9.7%) on TPEX miss the same two conditions.
-2. **Institution costs are not the bottleneck of the multi-day long-short.** S1's cost drag falls from 9.6–17% a year (retail) to 8–13% (institution), a 2–5 point difference, yet the P1 ∪ P2 net return stays at B0 TWSE −6.3%, TPEX −2.5%, D0 TWSE −5.0%, TPEX +7.6%, with every P2 negative (−26% to −63%). The short book is the problem: on P1 ∪ P2 the long book earns +24% to +31% a year and the short book −24% to −31%; in P2 the short book loses 61% to 89% while the TAIEX total-return index gains 88.5% and TPEX 81.0%. The names ranked at the bottom and sold short were the strongest side of the P2 large-cap rally, and the model's long-short spread (gross P1 ∪ P2 TWSE +1.8% / +7.9%) cannot pay for either cost profile.
+2. **Institution costs are not the bottleneck of the multi-day long-short.** S1's cost drag falls from 9.6–17% a year (retail) to 8–13% (institution), a 2–5 point difference, yet the P1 ∪ P2 net return stays at B0 TWSE −6.3%, TPEX −2.5%, D0 TWSE −5.0%, TPEX +7.6%, with every P2 negative (−26% to −63%). The short book is the problem: on P1 ∪ P2 the long book earns +24% to +31% a year and the short book −24% to −31%; in P2 the short book loses 61% to 89% while the TAIEX total-return index gains 88.5% and TPEX 81.0%. Section 3.7 measures what the short book actually held: names of the same size as the universe (dollar-volume percentile 0.52–0.55 against 0.50) that had already risen 6–9% over the previous 20 sessions and 17–26% over 60 (universe 1–4% and 7–10%), while the long book held names that had not moved. The model's h = 10 ranking is therefore in substance a **short-term reversal signal**: short the recent winners, buy the laggards. In P1 the reversal worked (the shorts then underperformed the universe and the longs outperformed it); P2 was a momentum regime in which the shorted winners went on to earn +75% to +79% a year (universe +57.5%) and the bought laggards only +21% to +27%, so both legs ran against the book at once. The model's long-short spread (gross P1 ∪ P2 TWSE +1.8% / +7.9%) cannot pay for either cost profile.
 3. **The TX overlay recovers beta, not alpha.** The long-short book's rolling beta averages −0.43 to −0.52 (the shorts carry more beta than the longs), so the hedge is **long** TX; the TX leg contributes +10% to +21% on P1 ∪ P2 and +19% to +58% in P2, lifting S2 to B0 TWSE +13.5%, D0 TWSE +16.3% and D0 TW +16.8%. That return is half a unit of market exposure in a bull market, available to anyone holding 0050; take the TX leg away and S1 is what remains.
 4. **Day trading is purely an execution-cost problem.** S3 earns +123% to +179% gross a year (0.25–0.33% per side per session); the h = 1 signal is real and stable (P2 gross still +122% to +142%). The institution round trip of 0.31% per leg (commission 0.06%, slippage 0.10%, day-trade tax 0.15%) costs 156% a year: net TWSE B0 −32.6% [−55.5%, −8.4%], D0 −17.4%; TPEX turns positive (B0 +7.4%, D0 +12.4%, Sharpe 0.33 / 0.53) but the intervals span 0 and P2 is negative. Retail costs drag 263–363% a year for net returns of −119% to −224%, the worst of the six scenarios. With institution slippage set to zero (drag 106%) the TWSE P1 ∪ P2 net is B0 +17.2% (Sharpe 0.79) and D0 +32.4% (Sharpe 1.51): day trading works only when each side costs nothing beyond commission and tax, and the 0.15% day-trade tax alone is half of the institution round trip.
 5. **Combining the books adds nothing.** S5 (half multi-day, half day trade) lands between its parts; S6 with both TX overlays reaches D0 TPEX +15.7% [−3.0%, +35.7%], Sharpe 0.86, again through the TX leg, with P2 at −9.7%.
 6. **Capacity erases the TPEX positives.** At NT$300M and NT$1B under the 5% participation cap, 83–97% of the multi-day candidate buys are blocked and S1's NT$1B net is −18% to −33%; the day-trade deployed share falls to 15–70%, with TPEX D0 at NT$300M +11.3% [−1.7%, +24.3%] (Sharpe 0.93) and at NT$1B +5.2% (14.5% deployed). The small and mid caps that carry the signal cannot absorb institutional capital.
-7. **What this means for the industry.** Under institution costs the Sharpe range is 0.5 to 0.9 for the beta-carrying S2 / S6 and around 0 for S1 / S3; every P2 is negative. This is not a signal a firm would pay for. It would need (a) a short-book construction that survives a concentrated rally like P2 (size- or beta-neutral shorts, or long-only with an index hedge), (b) execution that brings day-trade slippage to nearly zero, and (c) acceptance of capacity below NT$100M. All three sit outside the model.
+7. **What this means for the industry.** Under institution costs the Sharpe range is 0.5 to 0.9 for the beta-carrying S2 / S6 and around 0 for S1 / S3; every P2 is negative. This is not a signal a firm would pay for. It would need (a) a short-book construction that survives a momentum regime like P2 without being dragged down by a reversal-driven short book (momentum or beta controls on the shorts, or long-only with an index hedge), (b) execution that brings day-trade slippage to nearly zero, and (c) acceptance of capacity below NT$100M. All three sit outside the model.
 
 ### 2. Data and method
 
@@ -1256,10 +1277,31 @@ The rolling β is negative: the long-short book falls when the market rises, so 
 | D0 | S6 S5 + TX | TPEX | +0.86 | -3.0% | -9.7% | not attractive |
 | D0 | S6 S5 + TX | TW | +0.46 | -8.6% | -11.7% | not attractive |
 
+#### 3.7 What the two S1 books actually held (TWSE, h = 10, K = 50, selected m)
+
+Computed from the daily holdings (`held`) of `simulate_band`: size is the percentile of the 20-session median dollar volume inside the universe on the signal date (1 = largest), "before entry" is the log return over the 20 / 60 sessions before the signal date, and "afterwards" is the mean daily open-to-open return while held (× 252).
+
+| Model | Period | Book | Names / day | Size percentile | Top-quartile-size share | Return over prior 20 | Return over prior 60 | Afterwards (annualized, open to open) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B0 | P1 | Long | 49.2 | 0.51 | 24% | +0.3% | +3.2% | +27.4% |
+| B0 | P1 | Short | 49.5 | 0.54 | 29% | +6.0% | +21.5% | +14.4% |
+| B0 | P1 | Universe | 433.0 | 0.50 | 25% | +1.3% | +6.7% | +15.1% |
+| B0 | P2 | Long | 49.8 | 0.53 | 27% | +0.9% | +2.8% | +20.6% |
+| B0 | P2 | Short | 50.0 | 0.55 | 29% | +9.3% | +25.6% | +74.5% |
+| B0 | P2 | Universe | 426.6 | 0.50 | 25% | +3.8% | +9.5% | +57.5% |
+| D0 | P1 | Long | 49.2 | 0.48 | 22% | −0.0% | +2.9% | +27.3% |
+| D0 | P1 | Short | 49.4 | 0.56 | 33% | +5.6% | +17.2% | +2.0% |
+| D0 | P1 | Universe | 433.0 | 0.50 | 25% | +1.3% | +6.7% | +15.1% |
+| D0 | P2 | Long | 49.9 | 0.48 | 23% | +2.3% | +6.7% | +27.2% |
+| D0 | P2 | Short | 49.9 | 0.52 | 25% | +6.8% | +17.0% | +78.8% |
+| D0 | P2 | Universe | 426.6 | 0.50 | 25% | +3.8% | +9.5% | +57.5% |
+
+TAIEX open to open over the same intervals: P1 +21.9%, P2 +89.3% annualized. The short book has the universe's size, not large caps; what it shorts are the names with the largest gains over the previous 20–60 sessions (a reversal short). In P1 the reversal held: the shorts then earned less than the universe (B0 +14.4%, D0 +2.0% against +15.1%) and the longs more (+27% against +15%). In P2 momentum persisted: the shorts earned +75% to +79%, 17–21 points above the universe, and the longs +21% to +27%, 30–37 points below it, so both legs ran against the book.
+
 ### 4. Implications
 
 - Switching to institution costs changes magnitudes, not the conclusion: S1 gains only 2–5 points of net return, and the day-trade drag falls from 263–363% to 156% while the 123–179% gross still cannot pay it. With these instruments the model's ranking skill does not turn into a Sharpe the industry would buy.
-- Two bottlenecks remain: the construction of the short book (in P2 it shorts the large caps that rose most) and the execution cost of day trading (the 0.15% day-trade tax plus any slippage). Neither is a model-layer problem; the first needs size- or beta-neutral shorts or long-only with an index hedge, the second needs near-zero slippage.
+- Two bottlenecks remain: the construction of the short book (the multi-day ranking is a short-term reversal signal; in P2 it shorts the names that rose most recently and kept rising) and the execution cost of day trading (the 0.15% day-trade tax plus any slippage). Neither is a model-layer problem; the first needs momentum or beta controls on the shorts or long-only with an index hedge, the second needs near-zero slippage.
 - S2 / S6 with the TX leg look best (Sharpe 0.5–0.9), but that is half a unit of market exposure in a bull market; without the TX leg they fall back to S1 / S5. The report does not count it as alpha.
 - The only cell with a positive net return and a Sharpe near 1 (D0 S3 TPEX at NT$300M, +11.3%, Sharpe 0.93) deploys about a third of its notional, its interval spans 0 and its P2 is negative.
 - Under §13.19 item 9: the bar is not met, nothing is registered for a forward test, and the conclusion reads "still no strategy attractive to the industry under institution costs".
