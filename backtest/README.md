@@ -368,6 +368,26 @@ uv run python -m twbacktest.scenario_suite --predictions ../artifacts/lgbm/<laun
 uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1.json --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
 
+設定檔可選的 `execution` 區塊（§13.19 補充四，`config/scenario_suite_v1_exec.json`）把空頭腿「全部可借券」的假設換成模擬，
+資料來自 `tw_chip_data` 的 curated 層（`--chip-data-root <tw_chip_data>/data`，或環境變數 `TW_CHIP_DATA_ROOT`；
+`twbacktest.chip_data` 只用 pyarrow 讀 `curated/<dataset>/year=*/part-0.parquet`，只收有 `_SUCCESS.json` 的分割，
+`report.json` 記錄每個分割的 sha256）。`borrow_list` 指定各成本檔的名單：機構 `sbl`（`eligibility.sbl_eligible`
+且 `sbl.sbl_next_quota` > 0）、散戶 `margin`（未停止融券、未被跌停封鎖、融券餘額未滿）；訊號日 t 的列在 t+1 開盤使用，
+整日缺名單時沿用前一名單並計 `carried_dates`，個股不在名單上就是借不到（跳過並計入 `ineligible_share`，分母是空頭腿
+嘗試過的候選數，不是宇宙列數）。`borrow_failure` 是各成本檔依訊號日 20 日成交金額中位數在宇宙內分大／中／小三等分的
+借不到機率，每個候選每日抽一次，`failure_multipliers` × `recall_probabilities` 構成敏感度格子（主要點由
+`primary_failure_multiplier` 與 `primary_recall_probability` 指定，其餘各點以 `stage = execution` 列出、只算主要滑價與
+分數位置）；被召回的空頭部位在次一開盤回補（`recalls`）。`borrow_fee_tiers` 以同一三等分取代成本檔的單一借券年費；
+`quota_cap` 讓資本情境把每檔新進空頭名目封在交易所公布的次日可借券限額 × 執行日開盤價（散戶為融券餘額空間），與
+參與率上限同用封頂規則，報告 `quota_capped_share` 與 `short_deployed_share`。`replicates` 個隨機重複（seed 自 `seed` 起）
+各跑一次空頭腿，以平均序列計分與 bootstrap，`short_net_annual_rep_min`／`_max` 列出重複間的極差；機率全為 0 且不分層
+時與 `scenario_suite_v1.json` 逐列相同。`twbacktest.borrow_execution` 負責名單對齊、三等分、機率與費率；`summary.md`
+多一張執行不確定性表。
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exec.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
 ### 反轉暴露診斷（§13.19 補充）
 
 `twbacktest.reversal_exposure` 把 S1 多空組合的結果拆成「對動能與 beta 的結構性暴露」與「扣掉暴露後剩下的
@@ -819,6 +839,33 @@ daily series, the compounded net and gross return, annualized Sharpe, maximum dr
 
 ```bash
 uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1.json --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+The optional `execution` block (§13.19 supplement 4, `config/scenario_suite_v1_exec.json`) replaces the short
+book's "every name is borrowable" assumption with a simulation fed by the `tw_chip_data` curated layer
+(`--chip-data-root <tw_chip_data>/data`, or the `TW_CHIP_DATA_ROOT` environment variable; `twbacktest.chip_data`
+reads `curated/<dataset>/year=*/part-0.parquet` with pyarrow only, accepts only partitions carrying
+`_SUCCESS.json`, and `report.json` records each partition's sha256). `borrow_list` names the list per cost
+profile: institution `sbl` (`eligibility.sbl_eligible` and `sbl.sbl_next_quota` > 0), retail `margin` (margin
+short not suspended, not blocked by the limit-down rule, short room left); the row of signal date t is used at
+the open of t+1, a signal date with no list at all carries the previous list forward (`carried_dates`), and a
+stock absent from the list is not borrowable (skipped, counted in `ineligible_share`, whose denominator is
+the number of candidates the short book tried, not the universe rows). `borrow_failure` gives each profile's
+borrow-failure probability by large / mid / small tercile of the 20-session median dollar volume inside the
+universe on the signal date, drawn once per candidate and day; `failure_multipliers` × `recall_probabilities`
+form the sensitivity grid (the primary point is `primary_failure_multiplier` with `primary_recall_probability`,
+the other points are reported with `stage = execution` at the primary slippage and fractional capital only); a
+recalled short is covered at the next open (`recalls`). `borrow_fee_tiers` replaces the profile's single annual
+borrow fee by the same terciles; `quota_cap` makes the capital scenarios cap each new short at the exchange's
+published next-session lending quota × the execution open (margin short room for retail), under the same
+cap-and-scale rule as the participation cap, reporting `quota_capped_share` and `short_deployed_share`.
+`replicates` random replicates (seeds from `seed`) each run the short book once; the averaged series is scored
+and bootstrapped, `short_net_annual_rep_min` / `_max` give the range across replicates; with every probability
+at 0 and no fee tiers the rows equal `scenario_suite_v1.json` exactly. `twbacktest.borrow_execution` does the
+list alignment, terciles, probabilities and fees; `summary.md` gains an execution-layer table.
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exec.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
 
 ### Reversal-exposure diagnostic (§13.19 supplement)
