@@ -271,8 +271,15 @@ def test_store_holds_chip_columns_after_the_alpha_block(rank_config, tmp_path, m
         markets = pd.Series(source.target_batch(np.arange(len(source)))["markets"])
         tw_rows = frame[(markets == "TWSE").to_numpy()]
         us_rows = frame[(markets != "TWSE").to_numpy()]
-        assert np.isfinite(tw_rows["MARGIN_UTIL"]).all()
-        assert np.allclose(tw_rows["MARGIN_UTIL"], 0.4)
+        # The synthetic margin balance grows 1% a session on a fixed limit of 2,500, so the
+        # utilization is 0.4 x 1.01^i for the i-th session: finite and positive on every TW row.
+        assert np.isfinite(tw_rows["MARGIN_UTIL"]).all() and (tw_rows["MARGIN_UTIL"] > 0).all()
+        # The cutoff dates are sessions, so each row's utilization matches the fixture formula.
+        stamps = pd.DatetimeIndex(tw_rows["timestamp"]).tz_convert("UTC").tz_localize(None)
+        session_index = np.searchsorted(days.asi8, stamps.normalize().asi8)
+        np.testing.assert_allclose(tw_rows["MARGIN_UTIL"].to_numpy(dtype=np.float64),
+                                   0.4 * 1.01 ** session_index, rtol=2e-3)
+        assert np.isin(tw_rows["DISP_ACTIVE"].to_numpy(), [0.0, 1.0]).all()
         assert us_rows["MARGIN_UTIL"].isna().all()
         if name == "alpha_chip_tw_v1":
             alpha_store = ensure_features(source, _spec_alpha(), workers=1)
