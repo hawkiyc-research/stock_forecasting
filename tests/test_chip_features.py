@@ -136,6 +136,27 @@ def _spec_alpha():
     return load_spec(ROOT / "configs/features/alpha_tw_v1.json")
 
 
+def test_partitions_are_found_under_percent_encoded_folders(tmp_path):
+    """The RunPod S3 gateway stores ``year=2024`` as ``year%3D2024`` on the volume."""
+    from stock_forecasting.data.chip_features import partition_files, read_curated
+
+    root = tmp_path / "chip"
+    frame = pd.DataFrame({"date": pd.to_datetime(["2024-01-02"]), "symbol": ["1101"],
+                          "market": ["TWSE"], "value": [1.0]})
+    for folder_name in ("year%3D2024", "year=2025"):
+        folder = root / "curated" / "margin" / folder_name
+        folder.mkdir(parents=True)
+        pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), folder / "part-0.parquet")
+        (folder / "_SUCCESS.json").write_text(json.dumps({"sha256": "x"}))
+    unfinished = root / "curated" / "margin" / "year%3D2026"
+    unfinished.mkdir()
+    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), unfinished / "part-0.parquet")
+    files = partition_files(root, "margin")
+    assert [Path(f).parent.name for f in files] == ["year%3D2024", "year=2025"]
+    assert [Path(f).parent.name for f in partition_files(root, "margin", [2024])] == ["year%3D2024"]
+    assert len(read_curated(root, "margin", ["date", "symbol", "value"])) == 2
+
+
 def test_usable_positions_follow_the_next_open_rule():
     from stock_forecasting.data.chip_features import usable_positions
 

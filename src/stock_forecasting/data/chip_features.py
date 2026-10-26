@@ -26,6 +26,7 @@ import glob
 import hashlib
 import json
 import os
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -190,12 +191,22 @@ def chip_root(spec: dict) -> Path:
     return root
 
 
+def partition_year(folder: str) -> int:
+    """Year of a ``year=YYYY`` partition folder; the RunPod S3 gateway stores the ``=`` of an
+    uploaded key percent-encoded, so ``year%3D2024`` is the same partition."""
+    name = urllib.parse.unquote(os.path.basename(folder))
+    return int(name.split("=", 1)[1])
+
+
 def partition_files(root: Path, dataset: str, years: list[int] | None = None) -> list[str]:
     """Partitions carrying the _SUCCESS marker, optionally restricted to some years."""
     files = []
-    for path in sorted(glob.glob(str(root / "curated" / dataset / "year=*" / "part-0.parquet"))):
+    base = root / "curated" / dataset
+    candidates = set(glob.glob(str(base / "year=*" / "part-0.parquet")))
+    candidates |= set(glob.glob(str(base / "year%3D*" / "part-0.parquet")))
+    for path in sorted(candidates):
         folder = os.path.dirname(path)
-        year = int(os.path.basename(folder).split("=", 1)[1])
+        year = partition_year(folder)
         if years is not None and year not in years:
             continue
         if os.path.exists(os.path.join(folder, "_SUCCESS.json")):
