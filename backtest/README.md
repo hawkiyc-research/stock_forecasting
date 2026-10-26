@@ -388,6 +388,26 @@ uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1.jso
 uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exec.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
 
+### 0050 核心加正交化多空疊加（§13.17 補充）
+
+`twbacktest.core_overlay` 把 §13.19 補充二的正交化多空（V1、無配平、固定 band 參數）疊在 0050 買進持有之上，
+門檻是勝過 0050：變體 A 以 0050 現股為核心（持有 w ∈ {0.5, 0.7}），多空每腿 L ∈ {0.5, 1.0}（散戶 {0.5}），多頭腿
+先用剩餘現金、不足以 0050 質押借款支應（年利率 r_fin ∈ {2.5%, 4%}，主要 2.5%），每日報酬 = w × r_0050 + L ×
+(r_long + r_short) − 借款 × r_fin／252，並以 `core.ltv_max`（60%）檢查借款對 0050 市值的成數、計「擔保不足日」；
+變體 B 以台指期多頭（名目 1 倍、結算價對結算價、進場／換月／出場各計一邊成本）提供 β，15% 現金保證金低於
+10% 計一次追繳，85% 作多空。多空腿由 `scenario_suite.multi_day_book` 以 `suite_config`（`scenario_suite_v1_exec.json`）
+的宇宙、訊號、執行層（補充四主要假設、五個重複）計算，長短腿的毛序列由 `Book.gross_legs` 提供；TW 為兩市場
+各半。0050 的開盤到開盤總報酬取還原開盤價，`core.splits` 列出資料集 `adjusted_close` 沒有調整的分割（0050 於
+2025-06-18 一拆四），停牌日沿用前一開盤，單日移動超過 50% 直接報錯。變體 A 的 (w, L) 在 P1 以「策略減 0050」
+日淨差的年化 IR 選定（模型、市場、成本檔各選），H-G 為 P1 ∪ P2 淨差 95% 區間下界 > 0 且 P2 淨差 > 0；資本情境只算
+`capital_market`（TW），多空每腿名目 = L × 資本、兩市場各半，散戶 1,000 萬允許零股（`odd_lots`）。輸出 `grid.csv`
+（每格含策略與 0050 的年化淨報酬、CAGR、Sharpe、最大回撤、差與區間、融資利息、擔保不足日、追繳次數、多空腿的
+執行層欄位）、`daily.csv`（主要市場的選定序列與基準）、`report.json`（選擇、H-G、覆蓋面）與 `summary.md`。
+
+```bash
+uv run python -m twbacktest.core_overlay --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
 ### 反轉暴露診斷（§13.19 補充）
 
 `twbacktest.reversal_exposure` 把 S1 多空組合的結果拆成「對動能與 beta 的結構性暴露」與「扣掉暴露後剩下的
@@ -866,6 +886,34 @@ list alignment, terciles, probabilities and fees; `summary.md` gains an executio
 
 ```bash
 uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exec.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+### 0050 core plus orthogonalized long-short overlay (§13.17 supplement)
+
+`twbacktest.core_overlay` lays the orthogonalized long-short of §13.19 supplement 2 (V1, unmatched, fixed
+band parameters) over a 0050 buy-and-hold core; the bar is beating 0050. Variant A holds 0050 itself
+(weight w ∈ {0.5, 0.7}) with each leg at L ∈ {0.5, 1.0} (retail {0.5}); the long leg uses the remaining cash
+first and a loan secured on 0050 beyond it (r_fin ∈ {2.5%, 4%} a year, primary 2.5%); the daily return is
+w × r_0050 + L × (r_long + r_short) − loan × r_fin / 252, and `core.ltv_max` (60%) checks the loan against
+the marked 0050 value and counts the collateral-shortfall days. Variant B takes β from a long TX position
+(1× notional, settlement to settlement, one side of cost on entry, two per roll and one on exit) on a 15%
+cash margin (a call is counted below 10%) and runs the long-short on the remaining 85%. The legs come from
+`scenario_suite.multi_day_book` under the universe, signal and execution layer of `suite_config`
+(`scenario_suite_v1_exec.json`: supplement 4's primary assumptions, five replicates), with the gross leg
+series in `Book.gross_legs`; TW is both markets at half weight. 0050's open-to-open total return uses the
+adjusted opens, `core.splits` lists the splits the dataset's `adjusted_close` does not carry (0050 split
+1:4 on 2025-06-18), non-trading sessions carry the previous open, and a single move above 50% raises.
+Variant A's (w, L) is selected on P1 by the annualized IR of the daily "strategy minus 0050" net difference
+(per model, market and profile); H-G is a P1 ∪ P2 difference whose 95% lower bound is above 0 with a
+positive P2 difference. Capital scenarios run on `capital_market` (TW) only, each leg at L × capital split
+between the markets, the retail NT$10M case with odd lots (`odd_lots`). Outputs: `grid.csv` (per cell the
+strategy's and 0050's annual net, CAGR, Sharpe, maximum drawdown, the difference and its interval, loan
+interest, collateral-shortfall days, margin calls and the legs' execution-layer columns), `daily.csv`
+(the selected series and the benchmark on the primary market), `report.json` (selection, H-G, coverage)
+and `summary.md`.
+
+```bash
+uv run python -m twbacktest.core_overlay --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
 
 ### Reversal-exposure diagnostic (§13.19 supplement)
