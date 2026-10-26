@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "name": "core-overlay",
+  "description": "Experiment protocol section 13.17 supplement: 0050 buy-and-hold core plus the orthogonalized (v1) stock long-short overlay of section 13.19 supplement 2, with the short book under supplement 4's primary execution assumptions. Variant A funds the long leg from the remaining cash and a loan secured on the 0050 holding; variant B takes the market exposure from a long TX position on a cash margin instead. The long-short books, universe, execution layer, TX data and periods come from suite_config; nothing in that file is re-selected here.",
+  "suite_config": "scenario_suite_v1_exec.json",
+  "core": {
+    "symbol": "0050.TW",
+    "etf_tax": 0.001,
+    "ltv_max": 0.6
+  },
+  "variant_a": {
+    "weights": [0.5, 0.7],
+    "leverage": {"institution": [0.5, 1.0], "retail": [0.5]},
+    "loan_rates": [0.025, 0.04],
+    "primary_loan_rate": 0.025
+  },
+  "variant_b": {
+    "tx_margin_fraction": 0.15,
+    "tx_maintenance_fraction": 0.10,
+    "overlay_fraction": 0.85,
+    "tx_notional": 1.0
+  },
+  "markets": ["TWSE", "TPEX", "TW"],
+  "primary_market": "TW",
+  "selection": {"period": "P1", "metric": "net_excess_ir"},
+  "decision": {"period": "P1+P2", "require_positive_period": "P2"},
+  "bootstrap": {"replicates": 1000, "seed": 11, "block": 21},
+  "capital_market": "TW",
+  "capital_scenarios": {
+    "retail": [{"name": "10M", "twd": 10000000, "odd_lots": true}],
+    "institution": [
+      {"name": "30M", "twd": 30000000},
+      {"name": "100M", "twd": 100000000},
+      {"name": "300M", "twd": 300000000}
+    ]
+  }
+}

@@ -368,6 +368,7 @@ class Book:
     gross: np.ndarray
     info: dict[str, Any]
     legs: dict[str, np.ndarray] | None = None
+    gross_legs: dict[str, np.ndarray] | None = None  # the same parts before costs and fees
 
 
 def rolling_beta(returns: np.ndarray, market: np.ndarray, *, window: int, min_obs: int):
@@ -421,6 +422,7 @@ def _band_long_short(
     execution: ExecutionSpec | None = None,
     cache: dict[tuple, Any] | None = None,
     part: int = 0,
+    odd_lots: bool = False,
 ) -> dict[str, Any]:
     """One long band book and one short band book on ``groups`` ranked by ``score``.
 
@@ -440,9 +442,10 @@ def _band_long_short(
         "dollar_volume": None if fractional else inputs.dollar_volume,
         "participation_cap": None if fractional else participation_cap,
         "cap_mode": cap_mode,
+        "odd_lots": odd_lots and not fractional,
     }
     cache = {} if cache is None else cache
-    base_key = (part, capital.name, k, buffer, max_buys, limit, cap_mode)
+    base_key = (part, capital.name, k, buffer, max_buys, limit, cap_mode, odd_lots)
     long_key = ("long", *base_key)
     if long_key not in cache:
         cache[long_key] = simulate_band(engine.rankings(score, groups), move=inputs.move,
@@ -530,6 +533,7 @@ def multi_day_book(
     leg_matching: str = "none",
     execution: ExecutionSpec | None = None,
     cache: dict[tuple, Any] | None = None,
+    odd_lots: bool = False,
 ) -> Book:
     """The multi-day long-short book.
 
@@ -563,7 +567,7 @@ def multi_day_book(
             data, score, data.groups, profile, capital, k=k, buffer=buffer,
             max_buys=max(1, math.ceil(k * cap_fraction)), limit=limit,
             participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
-            cache=cache,
+            cache=cache, odd_lots=odd_lots,
         )]
     elif leg_matching == "momentum":
         quintiles = int(config.get("construction", {}).get("momentum_quintiles", 5))
@@ -576,7 +580,7 @@ def multi_day_book(
                 data, score, groups_q, profile, capital, k=k_sub, buffer=buffer,
                 max_buys=max(1, math.ceil(k_sub * cap_fraction)), limit=limit,
                 participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
-                cache=cache, part=q + 1,
+                cache=cache, part=q + 1, odd_lots=odd_lots,
             ))
     else:
         raise ValueError(f"Unknown leg matching {leg_matching!r}")
@@ -621,7 +625,8 @@ def multi_day_book(
             "recall_prob": execution.recall_prob,
         })
     return Book(net=long_net + short_net, gross=long_gross + short_gross, info=info,
-                legs={"long": long_net, "short": short_net})
+                legs={"long": long_net, "short": short_net},
+                gross_legs={"long": long_gross, "short": short_gross})
 
 
 def day_trade_book(
