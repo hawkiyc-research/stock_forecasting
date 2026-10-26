@@ -17,7 +17,10 @@ POETRY_VERSION="${POETRY_VERSION:-2.4.0}"
 POETRY_BIN="${RUNPOD_POETRY_BIN:-${NETWORK_VOLUME_ROOT}/tools/poetry/${POETRY_VERSION}/bin/poetry}"
 RUNPOD_PYTHON_BIN="${RUNPOD_PYTHON_BIN:-/usr/local/bin/python}"
 RUNPOD_ROLE="${RUNPOD_ROLE:-cpu-research}"
-FEATURE_SPEC="configs/features/alpha_tw_v1.json"
+# Protocol 13.18: the feature spec may be a chip spec under configs/features/, whose store
+# identity needs the tw_chip_data curated layer on the volume (RUNPOD_CHIP_DATA_ROOT).
+FEATURE_SPEC="${RUNPOD_FEATURE_SPEC:-configs/features/alpha_tw_v1.json}"
+CHIP_DATA_ROOT="${RUNPOD_CHIP_DATA_ROOT:-}"
 FEATURE_EXPERIMENT_CONFIG="${FEATURE_EXPERIMENT_CONFIG:-configs/experiments/a_rank64.yaml}"
 # Protocol 13.16: an optional residualized label spec under configs/labels/.
 LABEL_VARIANT="${RUNPOD_LABEL_VARIANT:-}"
@@ -57,6 +60,19 @@ fi
 if [[ -n "${LABEL_VARIANT}" && ! "${LABEL_VARIANT}" =~ ^configs/labels/[a-z0-9_]+\.json$ ]]; then
     echo "RUNPOD_LABEL_VARIANT must name a file under configs/labels/" >&2
     exit 2
+fi
+if [[ ! "${FEATURE_SPEC}" =~ ^configs/features/[a-z0-9_]+\.json$ ]]; then
+    echo "RUNPOD_FEATURE_SPEC must name a file under configs/features/" >&2
+    exit 2
+fi
+if [[ -n "${CHIP_DATA_ROOT}" ]]; then
+    runpod_validate_path_in_root \
+        "${CHIP_DATA_ROOT}" "${NETWORK_VOLUME_ROOT}" CHIP_DATA_ROOT NETWORK_VOLUME_ROOT
+    if [[ ! -d "${CHIP_DATA_ROOT}/curated" ]]; then
+        echo "RUNPOD_CHIP_DATA_ROOT has no curated/ directory: ${CHIP_DATA_ROOT}" >&2
+        exit 2
+    fi
+    export TW_CHIP_DATA_ROOT="${CHIP_DATA_ROOT}"
 fi
 for path_name in \
     PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT POETRY_BIN FEATURES_LOG \
@@ -182,6 +198,10 @@ if [[ -n "${LABEL_VARIANT}" ]]; then
     # The trainer only resumes partial folds saved under the same label variant.
     printf 'Residualized label variant: %s\n' "${LABEL_VARIANT}"
     LGBM_ARGUMENTS+=(--label-variant "${LABEL_VARIANT}")
+fi
+if [[ -n "${CHIP_DATA_ROOT}" ]]; then
+    printf 'Feature spec %s with chip data root %s\n' "${FEATURE_SPEC}" "${CHIP_DATA_ROOT}"
+    LGBM_ARGUMENTS+=(--chip-data-root "${CHIP_DATA_ROOT}")
 fi
 "${POETRY_BIN}" run stock-forecasting-walk-forward-lgbm "${LGBM_ARGUMENTS[@]}"
 rm -rf "${LGBM_SCRATCH_ROOT}"

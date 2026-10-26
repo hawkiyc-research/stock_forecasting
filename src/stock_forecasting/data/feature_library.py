@@ -20,11 +20,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from stock_forecasting.data import chip_features
 from stock_forecasting.data.manifest import atomic_write_json, canonical_json_sha256, sha256_file
 from stock_forecasting.data.rank_labels import _bounded_map, _open_source, _worker_count, group_ids
 
 FEATURE_SCHEMA = "alpha-tw-feature-library-v1"
 IMPLEMENTATION_FILES = ("data/feature_library.py",)
+CHIP_IMPLEMENTATION_FILES = ("data/feature_library.py", "data/chip_features.py")
 DEFAULT_SPEC_PATH = Path("configs/features/alpha_tw_v1.json")
 ROLLING_OPERATORS = (
     "ROC", "MA", "STD", "BETA", "RSQR", "RESI", "MAX", "MIN", "QTLU", "QTLD", "RANK", "RSV",
@@ -39,17 +41,23 @@ MARKET_INDICATOR = "MARKET_IS_{market}"
 STATISTICS_CHUNK_ROWS = 262_144
 
 
-def implementation_sha256() -> str:
+def implementation_sha256(files: tuple[str, ...] = IMPLEMENTATION_FILES) -> str:
     package = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
-    for relative in IMPLEMENTATION_FILES:
+    for relative in files:
         digest.update(relative.encode() + b"\0" + (package / relative).read_bytes())
     return digest.hexdigest()
 
 
 def load_spec(path: str | Path = DEFAULT_SPEC_PATH) -> dict:
-    """Read and validate the fixed feature list; unknown operators are refused."""
+    """Read and validate the fixed feature list; unknown operators are refused.
+
+    A spec with the chip schema (protocol 13.18) is validated by ``chip_features`` and may
+    include the alpha spec by path; everything downstream treats both kinds alike.
+    """
     spec = json.loads(Path(path).read_text(encoding="utf-8"))
+    if spec.get("schema") == chip_features.CHIP_SCHEMA:
+        return chip_features.load_chip_spec(path)
     required = {"schema", "name", "epsilon", "kbar", "price", "volume", "rolling", "taiwan"}
     if not required <= set(spec) or spec["schema"] != FEATURE_SCHEMA:
         raise ValueError("Feature spec is incomplete or uses an unsupported schema")
@@ -86,7 +94,15 @@ def _lags(values, minimum: int) -> bool:
 
 
 def feature_names(spec: dict) -> list[str]:
-    """Column order of the store: kbar, price lags, volume lags, rolling, Taiwan."""
+    """Column order of the store: kbar, price lags, volume lags, rolling, Taiwan; a chip spec
+    appends its chip block after the included alpha block (if any)."""
+    if chip_features.is_chip_spec(spec):
+        alpha = chip_features.alpha_part(spec)
+        names = feature_names(alpha) if alpha is not None else []
+        names += chip_features.chip_feature_names(spec)
+        if len(set(names)) != len(names):
+            raise ValueError("Feature spec produces duplicate column names")
+        return names
     names = list(spec["kbar"])
     names += [f"{field}{lag}" for field in spec["price"]["fields"] for lag in spec["price"]["lags"]]
     names += [f"VOLUME{lag}" for lag in spec["volume"]["lags"]]
@@ -105,19 +121,29 @@ def feature_names(spec: dict) -> list[str]:
 
 
 def spec_identity(spec: dict) -> dict:
-    return {"name": spec["name"], "sha256": canonical_json_sha256(spec)}
+    identity = {"name": spec["name"],
+                "sha256": canonical_json_sha256(chip_features.public_spec(spec))}
+    alpha = chip_features.alpha_part(spec) if chip_features.is_chip_spec(spec) else None
+    if alpha is not None:
+        identity["alpha"] = spec_identity(alpha)
+    return identity
 
 
 def feature_identity(source, spec: dict) -> dict:
-    return {
-        "schema": FEATURE_SCHEMA,
+    chip = chip_features.is_chip_spec(spec)
+    identity = {
+        "schema": spec["schema"] if chip else FEATURE_SCHEMA,
         "source_manifest_sha256": sha256_file(source.root / "bar-store.json"),
         "sample_universe": source.sample_universe_identity,
         "split": source.split,
         "samples": len(source),
         "spec": spec_identity(spec),
-        "implementation_sha256": implementation_sha256(),
+        "implementation_sha256": implementation_sha256(
+            CHIP_IMPLEMENTATION_FILES if chip else IMPLEMENTATION_FILES),
     }
+    if chip:
+        identity["chip_data"] = chip_features.data_identity(chip_features.chip_root(spec), spec)
+    return identity
 
 
 def feature_root(source, spec: dict) -> tuple[Path, dict]:
@@ -354,8 +380,16 @@ def percentile_rank(values: np.ndarray, groups: np.ndarray) -> np.ndarray:
 # --- bounded build ------------------------------------------------------------------------
 
 
+def span_cutoffs(source, begin: int, end: int) -> np.ndarray:
+    """Positions in the symbol's bar history of the cutoff bars of ordinals ``begin..end``."""
+    ordinals = np.arange(begin, end)
+    ranges = np.searchsorted(source._range_ends, ordinals, side="right")
+    return source._range_starts[ranges] + (ordinals - source._range_begins[ranges])
+
+
 def _bucket_features(task):
-    """Write one bucket's rows straight into the shared scratch arrays."""
+    """Write one bucket's rows straight into the shared scratch arrays (the alpha columns,
+    which come first; a chip block after them is filled by the parent)."""
     bucket, spans, work, spec, columns, indicator_market = task
     from stock_forecasting.data.rank_labels import _SOURCE as source
 
@@ -366,15 +400,13 @@ def _bucket_features(task):
         row = source._index[symbol]
         asset = source._numeric_symbol(symbol)
         benchmark = source._numeric_symbol(str(row["benchmark_symbol"]))
-        ordinals = np.arange(begin, end)
-        ranges = np.searchsorted(source._range_ends, ordinals, side="right")
-        cutoffs = source._range_starts[ranges] + (ordinals - source._range_begins[ranges])
+        cutoffs = span_cutoffs(source, begin, end)
         values = symbol_features(
             asset, benchmark, spec, is_indicator_market=str(row["market"]) == indicator_market
         )
         if values.shape[1] != columns:
             raise RuntimeError("Feature spec and computed columns disagree")
-        features[begin:end] = values[cutoffs].astype(np.float32)
+        features[begin:end, :columns] = values[cutoffs].astype(np.float32)
         cutoff[begin:end] = asset["timestamps"].asi8[cutoffs]
         covered.append((begin, end))
     features.flush()
@@ -456,6 +488,9 @@ def ensure_features(source, spec: dict, *, workers: int | None = None) -> Path:
             return root
         started = time.monotonic()
         names = feature_names(spec)
+        chip = chip_features.is_chip_spec(spec)
+        alpha_spec = chip_features.alpha_part(spec) if chip else spec
+        alpha_columns = len(feature_names(alpha_spec)) if alpha_spec is not None else 0
         count = len(source)
         spans = source.symbol_spans()
         markets = sorted({str(source._index[symbol]["market"]) for symbol in spans})
@@ -486,18 +521,28 @@ def ensure_features(source, spec: dict, *, workers: int | None = None) -> Path:
             flush=True,
         )
         covered = 0
-        indicator_market = str(spec["taiwan"]["market_indicator"])
-        for _bucket, rows in _bounded_map(
-            _bucket_features,
-            [
-                (bucket, rows, str(work), spec, len(names), indicator_market)
-                for bucket, rows in sorted(buckets.items())
-            ],
-            compute_workers,
-            _open_source,
-            (source.__getstate__(),),
-        ):
-            covered += sum(end - begin for begin, end in rows)
+        if alpha_spec is not None:
+            indicator_market = str(alpha_spec["taiwan"]["market_indicator"])
+            for _bucket, rows in _bounded_map(
+                _bucket_features,
+                [
+                    (bucket, rows, str(work), alpha_spec, alpha_columns, indicator_market)
+                    for bucket, rows in sorted(buckets.items())
+                ],
+                compute_workers,
+                _open_source,
+                (source.__getstate__(),),
+            ):
+                covered += sum(end - begin for begin, end in rows)
+        else:
+            # Chip-only store: no price columns, so the cutoffs are written here.
+            cutoff = np.load(work / "cutoff_ns.npy", mmap_mode="r+")
+            for symbol, (begin, end) in spans.items():
+                positions = span_cutoffs(source, begin, end)
+                cutoff[begin:end] = source._numeric_symbol(symbol)["timestamps"].asi8[positions]
+                covered += end - begin
+            cutoff.flush()
+            del cutoff
         if covered != count:
             raise RuntimeError("Feature rows did not cover every sample exactly once")
         features = np.load(work / "features.npy", mmap_mode="r+")
@@ -505,16 +550,22 @@ def ensure_features(source, spec: dict, *, workers: int | None = None) -> Path:
         market_codes = np.empty(count, dtype=np.int64)
         for symbol, (begin, end) in spans.items():
             market_codes[begin:end] = markets.index(str(source._index[symbol]["market"]))
-        groups = group_ids(np.asarray(cutoff), market_codes)
-        rank_column = names.index(
-            DOLLAR_VOLUME_RANK.format(window=spec["taiwan"]["dollar_volume_rank_window"])
-        )
-        features[:, rank_column] = percentile_rank(
-            np.asarray(features[:, rank_column], dtype=np.float64), groups
-        ).astype(np.float32)
+        if alpha_spec is not None:
+            groups = group_ids(np.asarray(cutoff), market_codes)
+            rank_column = names.index(
+                DOLLAR_VOLUME_RANK.format(window=alpha_spec["taiwan"]["dollar_volume_rank_window"])
+            )
+            features[:, rank_column] = percentile_rank(
+                np.asarray(features[:, rank_column], dtype=np.float64), groups
+            ).astype(np.float32)
+            del groups
+        chip_coverage = None
+        if chip:
+            chip_coverage = _fill_chip_block(
+                source, spec, spans, features, np.asarray(cutoff), alpha_columns)
         features.flush()
         statistics = _column_statistics(features, names)
-        del features, cutoff, groups
+        del features, cutoff
         write_workers, write_plan = _worker_count(workers, len(buckets), 512 * 1024**2)
         files, index = {}, []
         for relative, metadata, rows in _bounded_map(
@@ -541,6 +592,7 @@ def ensure_features(source, spec: dict, *, workers: int | None = None) -> Path:
                 "files": files,
                 "markets": markets,
                 "columns": statistics,
+                "chip_coverage": chip_coverage,
                 "execution": {
                     "compute_workers": compute_workers,
                     "compute_plan": compute_plan,
@@ -554,6 +606,35 @@ def ensure_features(source, spec: dict, *, workers: int | None = None) -> Path:
             (work / name).unlink(missing_ok=True)
         print(f"Features {source.split}: ready at {root}", flush=True)
     return root
+
+
+def _fill_chip_block(source, spec: dict, spans: dict, features, cutoff_ns: np.ndarray,
+                     offset: int) -> dict:
+    """Compute the chip columns in the parent and write them after the alpha columns.
+
+    The bar store supplies the session calendar and each symbol's raw traded shares (the
+    denominator of the flow ratios); the curated layer named by the spec's environment
+    variable supplies everything else.
+    """
+    root = chip_features.chip_root(spec)
+    frames = []
+    for symbol in spans:
+        asset = source._numeric_symbol(symbol)
+        dates = asset["timestamps"].tz_convert("UTC").tz_localize(None).normalize()
+        frames.append(pd.DataFrame({"symbol": symbol, "date": dates, "volume": asset["raw"][:, 4]}))
+    volume = pd.concat(frames, ignore_index=True)
+    trading_days = pd.DatetimeIndex(np.sort(volume["date"].unique()))
+    print(f"Chip features {source.split}: reading {root} for {len(spans)} symbols over "
+          f"{len(trading_days)} sessions", flush=True)
+    tables = chip_features.build_chip_tables(root, spec, trading_days, volume)
+    width = len(chip_features.chip_feature_names(spec))
+    for symbol, (begin, end) in spans.items():
+        cutoffs = pd.DatetimeIndex(cutoff_ns[begin:end]).tz_localize("UTC")
+        block = chip_features.symbol_chip_features(tables, symbol, cutoffs, spec)
+        if block.shape != (end - begin, width):
+            raise RuntimeError("Chip feature block has the wrong shape")
+        features[begin:end, offset:offset + width] = block.astype(np.float32)
+    return tables.coverage
 
 
 def read_split_features(root: Path) -> pd.DataFrame:

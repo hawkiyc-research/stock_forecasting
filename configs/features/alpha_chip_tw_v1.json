@@ -1,0 +1,29 @@
+{
+  "schema": "chip-tw-feature-library-v1",
+  "name": "alpha_chip_tw_v1",
+  "description": "F2 of experiment protocol 13.18 item 3: the alpha_tw_v1 price / volume columns followed by the chip_tw_v1 chip and event columns, in one store. The alpha block is computed exactly as alpha_tw_v1 (its spec is included by path and hashed into the identity); the chip block is identical to chip_tw_v1.",
+  "include_alpha": "configs/features/alpha_tw_v1.json",
+  "chip_data": {
+    "root_env": "TW_CHIP_DATA_ROOT",
+    "datasets": ["institutional", "margin", "sbl", "daytrade", "foreign_holding", "attention", "disposition", "monthly_revenue"]
+  },
+  "point_in_time": {
+    "decision": "next_open",
+    "open_time": "09:00",
+    "timezone": "Asia/Taipei",
+    "max_stale_sessions": {"daily": 10, "daytrade": 10, "monthly": 45}
+  },
+  "float_proxy": {"source": "margin.margin_limit", "multiplier": 4},
+  "institutional": {
+    "investor_types": {"FRGN": "foreign", "FDLR": "foreign_dealer", "TRST": "trust", "DSLF": "dealer_self", "DHDG": "dealer_hedge"},
+    "flow_windows": [1, 5, 10, 20],
+    "float_window": 20,
+    "zscore_window": 60,
+    "total_windows": [5, 20]
+  },
+  "margin": {"balance_windows": [1, 5, 20]},
+  "sbl": {"balance_windows": [1, 5, 20], "sell_window": 5},
+  "daytrade": {"window": 20},
+  "foreign_holding": {"change_windows": [5, 20]},
+  "events": {"attention_window_days": 30, "max_event_sessions": 60, "revenue_trend_months": 3}
+}

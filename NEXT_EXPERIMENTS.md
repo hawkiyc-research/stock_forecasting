@@ -12,7 +12,7 @@
 
 | # | 步驟 | 依據 | 前置條件 | 訓練需求 | 產出 | 誰做 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **§13.18 籌碼特徵庫 `chip_tw_v1`** 與 B0 的 F1／F2 | §13.18 第 1 到 4 項 | curated 層已交付；`stock-forecasting-build-features --spec` 支援多規格 | **RunPod CPU**：`features --spec`、`lgbm --spec` 各一次（F1、F2 各一個 B0 walk-forward，三 seed） | 特徵庫、兩組 B0 預測 | 本專案寫程式；使用者啟動 Pod |
+| 1 | **§13.18 籌碼特徵庫 `chip_tw_v1`** 與 B0 的 F1／F2。程式已完成（2026-10-26：規格 `chip_tw_v1.json`／`alpha_chip_tw_v1.json`、`chip_features.py`、CLI 與 Pod 腳本的 `--spec`／`--chipDataRoot`、`upload-chip-data`、合成測試）；待使用者依 README「籌碼特徵庫」節的命令上傳資料並啟動四個 Pod（F1、F2 各一個 features 與一個 lgbm） | §13.18 第 1 到 4 項與實作註記 | curated 層已交付 | **RunPod CPU**：`features --spec ... --chipDataRoot ...`、`lgbm --spec ... --chipDataRoot ...` 各兩次（F1、F2 各一個 B0 walk-forward，三 seed，標籤 `residual_v1a`） | 特徵庫、兩組 B0 預測 | 使用者啟動 Pod |
 | 2 | **G1 與 H-H**：F1 − F0、F2 − F0 配對差，全宇宙與中小型股分列、分期、強勢股子分析（以 V1 分數為基線） | §13.18 第 5 項與 G1 子分析 | 第 1 項 | 無 | 協定結果、報告 | 本專案 |
 | 3 | **G2**：處置、注意首次公告、當沖比跳升三類事件的反轉步驟 0 | §13.18 第 6 項 | 事件表已交付 | 無 | 事件研究模組、報告 | 本專案 |
 | 4 | 分點與集保購買決定 | §13.18 第 10 項 | 第 2、3 項：G1 或 G2 任一通過才買分點（Sponsor Pro 一個月）；集保只在 S-C 進入實作時買 | — | 購買與否的紀錄 | 使用者決定 |
@@ -44,7 +44,7 @@ After orthogonalizing the score daily against the 60-session beta and the traili
 
 | # | Step | Basis | Prerequisite | Training | Output | Who |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **§13.18 chip feature library `chip_tw_v1`** and B0's F1 / F2 | §13.18 items 1–4 | Curated layer delivered; multi-spec support in `stock-forecasting-build-features --spec` | **RunPod CPU**: one `features --spec` and one `lgbm --spec` each (a B0 walk-forward for F1 and for F2, three seeds) | Feature store, two sets of B0 predictions | This project writes the code; the user launches the Pods |
+| 1 | **§13.18 chip feature library `chip_tw_v1`** and B0's F1 / F2. Code done (2026-10-26: specs `chip_tw_v1.json` / `alpha_chip_tw_v1.json`, `chip_features.py`, `--spec` / `--chipDataRoot` on the CLIs and Pod scripts, `upload-chip-data`, synthetic tests); the user uploads the data and launches four Pods (a features and an lgbm Pod each for F1 and F2) following the README section "Chip feature library" | §13.18 items 1–4 and the implementation note | Curated layer delivered | **RunPod CPU**: `features --spec ... --chipDataRoot ...` and `lgbm --spec ... --chipDataRoot ...` twice each (a B0 walk-forward for F1 and for F2, three seeds, labels `residual_v1a`) | Feature store, two sets of B0 predictions | The user launches the Pods |
 | 2 | **G1 and H-H**: paired F1 − F0 and F2 − F0, full universe and small / mid caps, by period, recent-winner sub-analysis (V1 score as the baseline) | §13.18 item 5 and the G1 sub-analysis | Step 1 | None | Protocol result, report | This project |
 | 3 | **G2**: reversal step 0 on 處置 announcements, first 注意 listings and day-trade-ratio jumps | §13.18 item 6 | Event tables delivered | None | Event-study module, report | This project |
 | 4 | Decision on buying 分點 and 集保 | §13.18 item 10 | Steps 2 and 3: 分點 (Sponsor Pro, one month) only if G1 or G2 passes; 集保 only when S-C enters implementation | — | Record of the decision | The user |

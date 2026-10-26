@@ -717,6 +717,46 @@ manifest 與 log 在 `artifacts/features/launches/<launch-id>/`。
 
 <a id="operations-zh"></a>
 
+### 籌碼特徵庫與 F1／F2（§13.18）
+
+[實驗協定 §13.18](docs/experiment_protocol.md) 的籌碼特徵庫 `chip_tw_v1`（67 欄：法人流量、融資融券、借券、當沖、
+外資持股、注意／處置／月營收事件）由 `src/stock_forecasting/data/chip_features.py` 從獨立專案 `tw_chip_data` 的
+curated 層計算，規格在 `configs/features/chip_tw_v1.json`（F1）與 `alpha_chip_tw_v1.json`（F2 = `alpha_tw_v1` 的 183 欄加
+chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號日次一交易日 09:00 時使用（與空頭腿的可借券名單同一
+規則）。F0（`alpha_tw_v1`，`launch-20261023T103805Z-2637116736`）不重跑。流程：
+
+1. **上傳籌碼資料（本機，一次）**：先不帶 `--apply` 看清單，再上傳 curated 層與 manifests 到 volume 的
+   `datasets/tw-chip-data/`。
+
+   ```bash
+   bash scripts/runpod_workflow.sh upload-chip-data /path/to/tw_chip_data/data --apply
+   ```
+
+2. **同步程式**（volume 上沒有 Pod 時）：`bash scripts/runpod_workflow.sh sync --apply`。
+
+3. **建 F1 的特徵庫（本機建 Pod，Pod 內啟動）**：殘差標籤庫 `residual_v1a` 已存在時直接沿用。
+
+   ```bash
+   bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data
+   ```
+
+   Pod 內：`cd /runpod-volume/stock_forecasting && bash scripts/runpod_tmux_launch.sh cpu-features`。
+
+4. **訓練 F1 的 B0**：
+
+   ```bash
+   bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data
+   ```
+
+   Pod 內：`bash scripts/runpod_tmux_launch.sh cpu-lgbm`。續跑只接受同一標籤變體**且同一特徵規格**的折（partial 內記錄
+   特徵欄位摘要），所以 F0 的舊折不會被 F1／F2 誤用。
+
+5. **F2 重複第 3、4 步**，`--spec configs/features/alpha_chip_tw_v1.json`。
+
+6. **下載**：`bash scripts/runpod_workflow.sh download-features`、`download-lgbm`，各 launch 存於
+   `artifacts/features/<dataset>/...` 與 `artifacts/lgbm/<launch-id>/`；G1／H-H 的配對差以 F0、F1、F2 三個 launch 的
+   `predictions.parquet` 計算（§13.18 第 4、5 項）。
+
 ### 共用基礎設施：RunPod 帳號、資料組與 Pod 守護
 
 #### 執行位置與安全邊界
@@ -1607,9 +1647,10 @@ Pod 內以 `poetry run stock-forecasting-*` 執行，本機回測在 `backtest/`
 
 | 命令 | 參數、預設值與行為 |
 | --- | --- |
-| `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json]` | 建立特徵庫與 rank 標籤的 CPU Pod，使用 active selection 的資料組；不抓行情、不需 secret 或 TPEx relay。`--maxRuntime D` 預設 `6h`；`--cpuNumber N` 預設 `16`（2／4／8／16／32）；`--cpuFlavor F` 預設 `cpu3g`。`--labelVariant`（別名 `--label-variant`）另建該規格的殘差化標籤庫（Pod 環境 `RUNPOD_LABEL_VARIANT`），規格必須是 `configs/labels/` 下已 commit 的檔案。Pod 內以 `runpod_tmux_launch.sh cpu-features` 啟動，lifecycle 標記 `lifecycle/research/features.json` |
+| `upload-chip-data <tw_chip_data>/data [--apply]` | 把 `tw_chip_data` 的 curated 層（只含有 `_SUCCESS.json` 的分割）與 `manifests/*.json` 上傳到 volume 的 `datasets/tw-chip-data/`（Pod 內 `/runpod-volume/datasets/tw-chip-data`），上傳後逐檔核對大小；不帶 `--apply` 只列出清單。§13.18 籌碼規格的 features 與 lgbm 工作讀這裡 |
+| `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | 建立特徵庫與 rank 標籤的 CPU Pod，使用 active selection 的資料組；不抓行情、不需 secret 或 TPEx relay。`--maxRuntime D` 預設 `6h`；`--cpuNumber N` 預設 `16`（2／4／8／16／32）；`--cpuFlavor F` 預設 `cpu3g`。`--labelVariant`（別名 `--label-variant`）另建該規格的殘差化標籤庫（Pod 環境 `RUNPOD_LABEL_VARIANT`），規格必須是 `configs/labels/` 下已 commit 的檔案。`--spec` 改建另一個已 commit 的特徵規格（Pod 環境 `RUNPOD_FEATURE_SPEC`，預設 `alpha_tw_v1.json`），籌碼規格須同時給 `--chipDataRoot`（Pod 環境 `RUNPOD_CHIP_DATA_ROOT`，須在 `/runpod-volume` 下）。Pod 內以 `runpod_tmux_launch.sh cpu-features` 啟動，lifecycle 標記 `lifecycle/research/features.json` |
 | `download-features [LAUNCH_ID]` | 下載最新一次（或指定 `launch-...`）已結束的特徵工作，依 store manifest 的 SHA-256 核對後存於 `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`；仍在執行回傳 3、manifest 缺少回傳 4；`RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` 調整並行數 |
-| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json]` | 建立 B0 LightGBM walk-forward 的 CPU Pod，使用已建好的特徵庫與 rank 標籤。`--maxRuntime D` 預設 `24h`（上限，工作結束 Pod 即終止）；`--cpuNumber N` 預設 `16`；`--cpuFlavor F` 預設 `cpu3g`；`--labelVariant` 改在該殘差化標籤庫上訓練（模型名 `t-lgbm-alpha-<variant>`，續跑只接受同一變體的折）。Pod 內以 `runpod_tmux_launch.sh cpu-lgbm` 啟動，標記 `lifecycle/research/lgbm.json` |
+| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | 建立 B0 LightGBM walk-forward 的 CPU Pod，使用已建好的特徵庫與 rank 標籤。`--maxRuntime D` 預設 `24h`（上限，工作結束 Pod 即終止）；`--cpuNumber N` 預設 `16`；`--cpuFlavor F` 預設 `cpu3g`；`--labelVariant` 改在該殘差化標籤庫上訓練（模型名 `t-lgbm-alpha-<variant>`，續跑只接受同一變體的折）；`--spec` 與 `--chipDataRoot` 同 `features`，在該規格的特徵庫上訓練（store 必須已由同規格的 features 工作建好）。Pod 內以 `runpod_tmux_launch.sh cpu-lgbm` 啟動，標記 `lifecycle/research/lgbm.json` |
 | `download-lgbm [LAUNCH_ID]` | 下載最新一次（或指定）已結束的 B0 工作，依 manifest 核對後存於 `artifacts/lgbm/<launch-id>/`；回傳碼同上 |
 | `xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime D] [--gpuId ID] [--labelVariant configs/labels/NAME.json]` | 建立一個 cross-stock 實驗的 GPU Pod。`--experiment` 預設 `t-xs-scratch`，可選 `t-xs-a1-no-cross`、`t-xs-a2-mse-only`、`t-xs-a3-no-features`、`t-xs-a4-no-gating`、`t-xs-kronos-small`、`t-xs-chronos2-small`；`--seed N` 可重複，預設 42／43／44；`--maxRuntime D` 預設 `24h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`（RTX 5090 無庫存時可用 `NVIDIA RTX PRO 4500 Blackwell`）；`--labelVariant` 改在該殘差化標籤庫上訓練，配對基線自動選同一 volume 上同一變體最新完成的 B0（`RUNPOD_XS_BASELINE_LAUNCH=launch-...` 可指定）。需要同一 volume 上已完成的 B0。Pod 內以 `runpod_tmux_launch.sh xs-train` 啟動，標記 `lifecycle/research/xs-train.json`；本機 guard 同時啟動 GPU 時脈監測 |
 | `download-xs [LAUNCH_ID]` | 下載最新一次（或指定）已結束的 cross-stock 工作，依 manifest 核對後存於 `artifacts/xs/<launch-id>/`；`results.json` 的 `decision` 即 H-A 結論 |
@@ -1618,8 +1659,8 @@ Pod 內的 Python 入口（由 tmux 工作呼叫，也可在 Pod 內直接執行
 
 | 入口 | 參數 |
 | --- | --- |
-| `stock-forecasting-build-features` | `--experiment-config PATH`（預設 `configs/experiments/a_rank64.yaml`，或環境變數 `FEATURE_EXPERIMENT_CONFIG`；只用其中的資料路徑、視窗、horizon 與最小組大小）；`--spec PATH` 特徵規格，預設 `configs/features/alpha_tw_v1.json`；`--output-root PATH` 必填，新目錄，寫 `features-manifest.json`；`--workers N` 1–32 的 process 數（預設依 CPU 與記憶體計算）；`--label-variant PATH` 另建該規格的殘差化標籤庫 |
-| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`、`--spec` 同上；`--schedule PATH` 預設 `configs/walk_forward/tw_quarterly_v1.json`；`--output-root PATH` 必填；`--scratch PATH` fold 矩陣暫存（預設輸出目錄）；`--resume-root PATH` 重用先前輸出的 `partial/` 折（只接受同一標籤變體）；`--workers N` 1–32；`--seeds N [N ...]` 預設 `42 43 44`；`--max-rounds N` 預設 1000；`--early-stopping N` 預設 50；`--folds I [I ...]` 與 `--horizons H [H ...]` 只跑指定折或 horizon（smoke 用）；`--label-variant PATH` 在該殘差化標籤庫上訓練並另算殘差目標的 Rank IC |
+| `stock-forecasting-build-features` | `--experiment-config PATH`（預設 `configs/experiments/a_rank64.yaml`，或環境變數 `FEATURE_EXPERIMENT_CONFIG`；只用其中的資料路徑、視窗、horizon 與最小組大小）；`--spec PATH` 特徵規格，預設 `configs/features/alpha_tw_v1.json`，也接受 §13.18 的籌碼規格 `configs/features/chip_tw_v1.json`（F1）與 `alpha_chip_tw_v1.json`（F2 = alpha 欄加 chip 欄，一個 store）；`--chip-data-root PATH` 籌碼規格所需的 `tw_chip_data/data`（curated 層；預設環境變數 `TW_CHIP_DATA_ROOT`）；`--output-root PATH` 必填，新目錄，寫 `features-manifest.json`；`--workers N` 1–32 的 process 數（預設依 CPU 與記憶體計算）；`--label-variant PATH` 另建該規格的殘差化標籤庫 |
+| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`、`--spec`、`--chip-data-root` 同上；`--schedule PATH` 預設 `configs/walk_forward/tw_quarterly_v1.json`；`--output-root PATH` 必填；`--scratch PATH` fold 矩陣暫存（預設輸出目錄）；`--resume-root PATH` 重用先前輸出的 `partial/` 折（只接受同一標籤變體）；`--workers N` 1–32；`--seeds N [N ...]` 預設 `42 43 44`；`--max-rounds N` 預設 1000；`--early-stopping N` 預設 50；`--folds I [I ...]` 與 `--horizons H [H ...]` 只跑指定折或 horizon（smoke 用）；`--label-variant PATH` 在該殘差化標籤庫上訓練並另算殘差目標的 Rank IC |
 | `stock-forecasting-train-cross-stock` | `--experiment-config`、`--spec`、`--schedule`、`--output-root`、`--resume-root`、`--workers`（快取建立的 process 數，1–32）、`--folds`、`--label-variant` 同上；`--experiment NAME` 預設 `t-xs-scratch`，選項同 `xs-train`；`--seeds N [N ...]` 預設 `42 43 44`；`--baseline-root PATH` 放有 B0 `daily_rank_ic.parquet` 與 `results.json` 的目錄（配對 H-A；標籤變體必須一致）；`--device auto\|cuda\|cpu` 預設 `auto`；`--max-epochs N`、`--patience N` 覆寫固定的 20／4（smoke 用）；`--max-groups-per-epoch N` 每 epoch 只取前 N 個群組（smoke 用）；`--embedding-batch-size N` D1 embedding 的 batch，預設 512；`--offline-encoders` 只核對本機 Hugging Face 快取的編碼器權重，不下載 |
 
 本機腳本與回測模組：
@@ -1790,7 +1831,9 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 `poetry run stock-forecasting-build-features`（由 `cpu-features` 工作呼叫，也接受 `-h`／`--help`）：
 `--experiment-config PATH` 預設 `configs/experiments/a_rank64.yaml`，只取資料路徑、視窗 128、
 horizon 與最小分組 20，可用 `FEATURE_EXPERIMENT_CONFIG` 覆寫；`--spec PATH` 預設
-`configs/features/alpha_tw_v1.json`；`--output-root PATH` 必填，須為新目錄；`--workers N` 1–32。
+`configs/features/alpha_tw_v1.json`，也接受 §13.18 的籌碼規格 `configs/features/chip_tw_v1.json`（F1）
+與 `alpha_chip_tw_v1.json`（F2），兩者需要 `--chip-data-root PATH`（`tw_chip_data/data` 的 curated 層，
+預設環境變數 `TW_CHIP_DATA_ROOT`）；`--output-root PATH` 必填，須為新目錄；`--workers N` 1–32。
 依序對 train、validation、test 建立 rank 標籤與特徵庫，身分相同的既有 store 直接沿用。
 
 台股資訊測試的兩個 CLI 由 `cpu-research` 工作依序呼叫，也接受 `-h`／`--help`：
@@ -5030,6 +5073,50 @@ manifest and logs under `artifacts/features/launches/<launch-id>/`; Git tracks n
 
 <a id="operations-en"></a>
 
+### Chip feature library and F1 / F2 (§13.18)
+
+The chip feature library `chip_tw_v1` of [experiment protocol §13.18](docs/experiment_protocol.md) (67 columns:
+institutional flows, margin and short balances, securities lending, day-trade ratio, foreign holding, attention /
+disposition / monthly-revenue events) is computed by `src/stock_forecasting/data/chip_features.py` from the
+curated layer of the sibling project `tw_chip_data`; the specs are `configs/features/chip_tw_v1.json` (F1) and
+`alpha_chip_tw_v1.json` (F2 = the 183 `alpha_tw_v1` columns followed by the 67 chip columns in one store). A source
+row is used only once its `available_at` precedes 09:00 of the trading day after the signal date (the same rule
+as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T103805Z-2637116736`) is not rerun. Steps:
+
+1. **Upload the chip data (local, once)**: run without `--apply` first to see the list, then upload the curated
+   layer and manifests to `datasets/tw-chip-data/` on the volume.
+
+   ```bash
+   bash scripts/runpod_workflow.sh upload-chip-data /path/to/tw_chip_data/data --apply
+   ```
+
+2. **Sync the code** (while no Pod uses the volume): `bash scripts/runpod_workflow.sh sync --apply`.
+
+3. **Build the F1 feature store (create the Pod locally, start inside it)**: the existing `residual_v1a` label
+   store is reused.
+
+   ```bash
+   bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data
+   ```
+
+   Inside the Pod: `cd /runpod-volume/stock_forecasting && bash scripts/runpod_tmux_launch.sh cpu-features`.
+
+4. **Train B0 on F1**:
+
+   ```bash
+   bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data
+   ```
+
+   Inside the Pod: `bash scripts/runpod_tmux_launch.sh cpu-lgbm`. A resume accepts only folds of the same
+   label variant **and the same feature spec** (the partial files record a digest of the feature columns), so
+   F0's old folds are never reused for F1 / F2.
+
+5. **Repeat steps 3 and 4 for F2** with `--spec configs/features/alpha_chip_tw_v1.json`.
+
+6. **Download**: `bash scripts/runpod_workflow.sh download-features` and `download-lgbm`; each launch lands in
+   `artifacts/features/<dataset>/...` and `artifacts/lgbm/<launch-id>/`; the paired differences of G1 / H-H use
+   the `predictions.parquet` of the F0, F1 and F2 launches (§13.18 items 4 and 5).
+
 ### Shared infrastructure: RunPod account, dataset and Pod guards
 
 #### Execution locations and safety boundaries
@@ -6053,9 +6140,10 @@ current entry point.
 
 | Command | Parameters, defaults and behavior |
 | --- | --- |
-| `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json]` | Create the CPU Pod that builds the feature library and the rank labels on the active selection's dataset; no market download, no secret or TPEx relay. `--maxRuntime D` defaults to `6h`; `--cpuNumber N` to `16` (2 / 4 / 8 / 16 / 32); `--cpuFlavor F` to `cpu3g`. `--labelVariant` (alias `--label-variant`) also builds the residualized label store of that spec (Pod environment `RUNPOD_LABEL_VARIANT`); the spec must be a committed file under `configs/labels/`. Start inside the Pod with `runpod_tmux_launch.sh cpu-features`; lifecycle marker `lifecycle/research/features.json` |
+| `upload-chip-data <tw_chip_data>/data [--apply]` | Upload the `tw_chip_data` curated layer (partitions carrying `_SUCCESS.json` only) and `manifests/*.json` to `datasets/tw-chip-data/` on the volume (`/runpod-volume/datasets/tw-chip-data` inside the Pod), verifying every file's size afterwards; without `--apply` it only lists the files. The §13.18 chip-spec features and lgbm jobs read from there |
+| `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | Create the CPU Pod that builds the feature library and the rank labels on the active selection's dataset; no market download, no secret or TPEx relay. `--maxRuntime D` defaults to `6h`; `--cpuNumber N` to `16` (2 / 4 / 8 / 16 / 32); `--cpuFlavor F` to `cpu3g`. `--labelVariant` (alias `--label-variant`) also builds the residualized label store of that spec (Pod environment `RUNPOD_LABEL_VARIANT`); the spec must be a committed file under `configs/labels/`. `--spec` builds another committed feature spec instead (Pod environment `RUNPOD_FEATURE_SPEC`, default `alpha_tw_v1.json`); a chip spec also needs `--chipDataRoot` (Pod environment `RUNPOD_CHIP_DATA_ROOT`, under `/runpod-volume`). Start inside the Pod with `runpod_tmux_launch.sh cpu-features`; lifecycle marker `lifecycle/research/features.json` |
 | `download-features [LAUNCH_ID]` | Download the latest (or the given `launch-...`) finished feature job, verified against the store manifests' SHA-256, into `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`; exits 3 while running and 4 when the manifest is missing; `RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` sets the parallelism |
-| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json]` | Create the CPU Pod of the B0 LightGBM walk-forward on the built feature library and rank labels. `--maxRuntime D` defaults to `24h` (an upper bound; the Pod terminates when the job ends); `--cpuNumber N` to `16`; `--cpuFlavor F` to `cpu3g`; `--labelVariant` trains on that residualized store instead (model name `t-lgbm-alpha-<variant>`, resume accepts only folds of the same variant). Start inside the Pod with `runpod_tmux_launch.sh cpu-lgbm`; marker `lifecycle/research/lgbm.json` |
+| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | Create the CPU Pod of the B0 LightGBM walk-forward on the built feature library and rank labels. `--maxRuntime D` defaults to `24h` (an upper bound; the Pod terminates when the job ends); `--cpuNumber N` to `16`; `--cpuFlavor F` to `cpu3g`; `--labelVariant` trains on that residualized store instead (model name `t-lgbm-alpha-<variant>`, resume accepts only folds of the same variant); `--spec` and `--chipDataRoot` as for `features`, training on that spec's store (which the same spec's features job must have built). Start inside the Pod with `runpod_tmux_launch.sh cpu-lgbm`; marker `lifecycle/research/lgbm.json` |
 | `download-lgbm [LAUNCH_ID]` | Download the latest (or the given) finished B0 job, verified against the manifest, into `artifacts/lgbm/<launch-id>/`; same exit codes |
 | `xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime D] [--gpuId ID] [--labelVariant configs/labels/NAME.json]` | Create the GPU Pod of one cross-stock experiment. `--experiment` defaults to `t-xs-scratch`; also `t-xs-a1-no-cross`, `t-xs-a2-mse-only`, `t-xs-a3-no-features`, `t-xs-a4-no-gating`, `t-xs-kronos-small`, `t-xs-chronos2-small`; `--seed N` repeats and defaults to 42 / 43 / 44; `--maxRuntime D` defaults to `24h`; `--gpuId ID` to `NVIDIA GeForce RTX 5090` (`NVIDIA RTX PRO 4500 Blackwell` when the 5090 is out of stock); `--labelVariant` trains on that residualized store and pairs against the newest finished B0 of the same variant on the volume (`RUNPOD_XS_BASELINE_LAUNCH=launch-...` overrides). Requires a finished B0 on the same volume. Start inside the Pod with `runpod_tmux_launch.sh xs-train`; marker `lifecycle/research/xs-train.json`; the local guard also starts the GPU clock monitor |
 | `download-xs [LAUNCH_ID]` | Download the latest (or the given) finished cross-stock job, verified against the manifest, into `artifacts/xs/<launch-id>/`; `decision` in `results.json` is the H-A verdict |
@@ -6064,8 +6152,8 @@ Pod-side Python entry points (called by the tmux jobs; they can also run directl
 
 | Entry point | Parameters |
 | --- | --- |
-| `stock-forecasting-build-features` | `--experiment-config PATH` (default `configs/experiments/a_rank64.yaml`, or the `FEATURE_EXPERIMENT_CONFIG` environment variable; only its dataset paths, window, horizons and group size are used); `--spec PATH` feature spec, default `configs/features/alpha_tw_v1.json`; `--output-root PATH` required, a new directory that receives `features-manifest.json`; `--workers N` 1–32 processes (default derived from CPUs and memory); `--label-variant PATH` also builds that residualized label store |
-| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`, `--spec` as above; `--schedule PATH` default `configs/walk_forward/tw_quarterly_v1.json`; `--output-root PATH` required; `--scratch PATH` fold-matrix scratch (default: the output root); `--resume-root PATH` reuses an earlier output's `partial/` folds (same label variant only); `--workers N` 1–32; `--seeds N [N ...]` default `42 43 44`; `--max-rounds N` default 1000; `--early-stopping N` default 50; `--folds I [I ...]` and `--horizons H [H ...]` run only those folds or horizons (smoke); `--label-variant PATH` trains on that residualized store and also scores the residual target |
+| `stock-forecasting-build-features` | `--experiment-config PATH` (default `configs/experiments/a_rank64.yaml`, or the `FEATURE_EXPERIMENT_CONFIG` environment variable; only its dataset paths, window, horizons and group size are used); `--spec PATH` feature spec, default `configs/features/alpha_tw_v1.json`, also the §13.18 chip specs `configs/features/chip_tw_v1.json` (F1) and `alpha_chip_tw_v1.json` (F2 = alpha columns followed by chip columns in one store); `--chip-data-root PATH` the `tw_chip_data/data` curated layer the chip specs need (default: the `TW_CHIP_DATA_ROOT` environment variable); `--output-root PATH` required, a new directory that receives `features-manifest.json`; `--workers N` 1–32 processes (default derived from CPUs and memory); `--label-variant PATH` also builds that residualized label store |
+| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`, `--spec`, `--chip-data-root` as above; `--schedule PATH` default `configs/walk_forward/tw_quarterly_v1.json`; `--output-root PATH` required; `--scratch PATH` fold-matrix scratch (default: the output root); `--resume-root PATH` reuses an earlier output's `partial/` folds (same label variant only); `--workers N` 1–32; `--seeds N [N ...]` default `42 43 44`; `--max-rounds N` default 1000; `--early-stopping N` default 50; `--folds I [I ...]` and `--horizons H [H ...]` run only those folds or horizons (smoke); `--label-variant PATH` trains on that residualized store and also scores the residual target |
 | `stock-forecasting-train-cross-stock` | `--experiment-config`, `--spec`, `--schedule`, `--output-root`, `--resume-root`, `--workers` (cache-build processes, 1–32), `--folds`, `--label-variant` as above; `--experiment NAME` default `t-xs-scratch`, same choices as `xs-train`; `--seeds N [N ...]` default `42 43 44`; `--baseline-root PATH` the directory holding B0's `daily_rank_ic.parquet` and `results.json` (paired H-A; label variants must match); `--device auto\|cuda\|cpu` default `auto`; `--max-epochs N`, `--patience N` override the fixed 20 / 4 (smoke); `--max-groups-per-epoch N` takes only the first N groups per epoch (smoke); `--embedding-batch-size N` D1 embedding batch, default 512; `--offline-encoders` verifies encoder weights in the local Hugging Face cache instead of downloading |
 
 Local scripts and backtest modules:
@@ -6245,9 +6333,12 @@ The `probe-scales` Python CLI uses the diagnostic options above; operate it thro
 `-h`/`--help`): `--experiment-config PATH` defaults to `configs/experiments/a_rank64.yaml` and
 supplies only the dataset paths, the 128-session window, the horizons and the minimum group
 size 20 (`FEATURE_EXPERIMENT_CONFIG` overrides it); `--spec PATH` defaults to
-`configs/features/alpha_tw_v1.json`; `--output-root PATH` is required and must be a new
-directory; `--workers N` is 1–32. It builds the rank labels and the feature library of train,
-validation and test in turn, reusing existing stores with the same identity.
+`configs/features/alpha_tw_v1.json` and also accepts the §13.18 chip specs
+`configs/features/chip_tw_v1.json` (F1) and `alpha_chip_tw_v1.json` (F2), which need
+`--chip-data-root PATH` (the `tw_chip_data/data` curated layer; default `TW_CHIP_DATA_ROOT`);
+`--output-root PATH` is required and must be a new directory; `--workers N` is 1–32. It builds
+the rank labels and the feature library of train, validation and test in turn, reusing existing
+stores with the same identity.
 
 The two Taiwan information test CLIs are run in order by the `cpu-research` job and also
 accept `-h`/`--help`:

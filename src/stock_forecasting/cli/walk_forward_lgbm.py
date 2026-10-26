@@ -57,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Residualized label spec (protocol 13.16): train on that store's ranks.",
     )
+    parser.add_argument(
+        "--chip-data-root",
+        type=Path,
+        default=os.environ.get("TW_CHIP_DATA_ROOT") or None,
+        help="tw_chip_data/data (curated layer) for chip feature specs (protocol 13.18); "
+             "defaults to $TW_CHIP_DATA_ROOT. Exported so the store identity can be resolved.",
+    )
     return parser
 
 
@@ -71,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--max-rounds and --early-stopping must be positive")
     if len(set(args.seeds)) != len(args.seeds) or any(seed < 0 for seed in args.seeds):
         raise SystemExit("--seeds must be distinct non-negative integers")
+    if args.chip_data_root is not None:
+        os.environ["TW_CHIP_DATA_ROOT"] = str(args.chip_data_root)
     if args.output_root.exists() and any(args.output_root.iterdir()):
         raise SystemExit(f"--output-root must be a new or empty directory: {args.output_root}")
     config = ExperimentConfig.from_yaml(args.experiment_config)

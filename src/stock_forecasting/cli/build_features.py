@@ -56,6 +56,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Residualized label spec (protocol 13.16), built beside the standard store.",
     )
+    parser.add_argument(
+        "--chip-data-root",
+        type=Path,
+        default=os.environ.get("TW_CHIP_DATA_ROOT") or None,
+        help="tw_chip_data/data (curated layer) for chip feature specs (protocol 13.18); "
+             "defaults to $TW_CHIP_DATA_ROOT.",
+    )
     return parser
 
 
@@ -146,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"--workers must be 1-{MAX_WORKERS}")
     if args.output_root.exists() and any(args.output_root.iterdir()):
         raise SystemExit(f"--output-root must be a new or empty directory: {args.output_root}")
+    if args.chip_data_root is not None:
+        os.environ["TW_CHIP_DATA_ROOT"] = str(args.chip_data_root)
     config = ExperimentConfig.from_yaml(args.experiment_config)
     spec = load_spec(args.spec)
     label_variant = load_label_spec(args.label_variant) if args.label_variant else None

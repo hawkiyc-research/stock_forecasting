@@ -27,6 +27,38 @@ runpod_export_label_variant() {
     export RUNPOD_LABEL_VARIANT="${variant}"
 }
 
+# Protocol 13.18: a feature spec other than alpha_tw_v1 (a committed file under
+# configs/features/) and the tw_chip_data curated layer on the volume for chip specs.
+runpod_export_feature_spec() {
+    local spec="$1"
+    if [[ -z "${spec}" ]]; then
+        unset RUNPOD_FEATURE_SPEC
+        return 0
+    fi
+    if [[ ! "${spec}" =~ ^configs/features/[a-z0-9_]+\.json$ ]]; then
+        echo "--spec must name a file under configs/features/" >&2
+        exit 2
+    fi
+    if [[ ! -f "${SCRIPT_DIR}/../${spec}" ]]; then
+        echo "--spec is missing: ${spec}" >&2
+        exit 2
+    fi
+    export RUNPOD_FEATURE_SPEC="${spec}"
+}
+
+runpod_export_chip_data_root() {
+    local root="$1"
+    if [[ -z "${root}" ]]; then
+        unset RUNPOD_CHIP_DATA_ROOT
+        return 0
+    fi
+    if [[ ! "${root}" =~ ^/runpod-volume/[A-Za-z0-9._/-]+$ ]]; then
+        echo "--chipDataRoot must be an absolute path under /runpod-volume" >&2
+        exit 2
+    fi
+    export RUNPOD_CHIP_DATA_ROOT="${root}"
+}
+
 usage() {
     cat >&2 <<'EOF'
 Usage:
@@ -62,9 +94,10 @@ Usage:
   bash scripts/runpod_workflow.sh download-forward-package YYYY-MM-DD
   bash scripts/runpod_workflow.sh upload-forward-cache YYYY-MM-DD
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json]
+  bash scripts/runpod_workflow.sh upload-chip-data <tw_chip_data>/data [--apply]
+  bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json]
+  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
   bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json]
   bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
@@ -129,6 +162,10 @@ case "${COMMAND}" in
         ;;
     sync)
         exec bash "${SCRIPT_DIR}/sync_project_to_runpod_volume.sh" "$@"
+        ;;
+    upload-chip-data)
+        # Protocol 13.18: the tw_chip_data curated layer and manifests onto the volume.
+        exec bash "${SCRIPT_DIR}/upload_runpod_chip_data.sh" "$@"
         ;;
     cpu)
         [[ "${1:-}" == "prepare" ]] || { usage; exit 2; }
@@ -504,6 +541,8 @@ EOF
         features_cpu_number=16
         features_cpu_flavor=cpu3g
         features_label_variant=""
+        features_spec=""
+        features_chip_root=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
@@ -511,6 +550,8 @@ EOF
                 --cpuNumber|--cpu-number) features_cpu_number="$2" ;;
                 --cpuFlavor|--cpu-flavor) features_cpu_flavor="$2" ;;
                 --labelVariant|--label-variant) features_label_variant="$2" ;;
+                --spec) features_spec="$2" ;;
+                --chipDataRoot|--chip-data-root) features_chip_root="$2" ;;
                 *)
                     echo "Unknown features option: $1" >&2
                     usage
@@ -523,6 +564,8 @@ EOF
         runpod_validate_cpu_flavor "${features_cpu_flavor}"
         features_max_seconds="$(runpod_duration_seconds "${features_max_runtime}" --maxRuntime)"
         runpod_export_label_variant "${features_label_variant}"
+        runpod_export_feature_spec "${features_spec}"
+        runpod_export_chip_data_root "${features_chip_root}"
         export RUNPOD_CPU_WORKFLOW=features
         export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${features_max_seconds}"
         export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((features_max_seconds + 3600))"
@@ -541,6 +584,8 @@ EOF
         lgbm_cpu_number=16
         lgbm_cpu_flavor=cpu3g
         lgbm_label_variant=""
+        lgbm_spec=""
+        lgbm_chip_root=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
@@ -548,6 +593,8 @@ EOF
                 --cpuNumber|--cpu-number) lgbm_cpu_number="$2" ;;
                 --cpuFlavor|--cpu-flavor) lgbm_cpu_flavor="$2" ;;
                 --labelVariant|--label-variant) lgbm_label_variant="$2" ;;
+                --spec) lgbm_spec="$2" ;;
+                --chipDataRoot|--chip-data-root) lgbm_chip_root="$2" ;;
                 *)
                     echo "Unknown lgbm option: $1" >&2
                     usage
@@ -560,6 +607,8 @@ EOF
         runpod_validate_cpu_flavor "${lgbm_cpu_flavor}"
         lgbm_max_seconds="$(runpod_duration_seconds "${lgbm_max_runtime}" --maxRuntime)"
         runpod_export_label_variant "${lgbm_label_variant}"
+        runpod_export_feature_spec "${lgbm_spec}"
+        runpod_export_chip_data_root "${lgbm_chip_root}"
         export RUNPOD_CPU_WORKFLOW=lgbm
         export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${lgbm_max_seconds}"
         export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((lgbm_max_seconds + 3600))"

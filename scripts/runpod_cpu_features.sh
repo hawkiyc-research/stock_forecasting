@@ -17,7 +17,10 @@ POETRY_VERSION="${POETRY_VERSION:-2.4.0}"
 POETRY_BIN="${RUNPOD_POETRY_BIN:-${NETWORK_VOLUME_ROOT}/tools/poetry/${POETRY_VERSION}/bin/poetry}"
 RUNPOD_PYTHON_BIN="${RUNPOD_PYTHON_BIN:-/usr/local/bin/python}"
 RUNPOD_ROLE="${RUNPOD_ROLE:-cpu-research}"
-FEATURE_SPEC="configs/features/alpha_tw_v1.json"
+# Protocol 13.18: the feature spec may be a chip spec under configs/features/, which also
+# needs the tw_chip_data curated layer on the volume (RUNPOD_CHIP_DATA_ROOT).
+FEATURE_SPEC="${RUNPOD_FEATURE_SPEC:-configs/features/alpha_tw_v1.json}"
+CHIP_DATA_ROOT="${RUNPOD_CHIP_DATA_ROOT:-}"
 FEATURE_EXPERIMENT_CONFIG="${FEATURE_EXPERIMENT_CONFIG:-configs/experiments/a_rank64.yaml}"
 # Protocol 13.16: an optional residualized label spec under configs/labels/.
 LABEL_VARIANT="${RUNPOD_LABEL_VARIANT:-}"
@@ -55,6 +58,19 @@ fi
 if [[ -n "${LABEL_VARIANT}" && ! "${LABEL_VARIANT}" =~ ^configs/labels/[a-z0-9_]+\.json$ ]]; then
     echo "RUNPOD_LABEL_VARIANT must name a file under configs/labels/" >&2
     exit 2
+fi
+if [[ ! "${FEATURE_SPEC}" =~ ^configs/features/[a-z0-9_]+\.json$ ]]; then
+    echo "RUNPOD_FEATURE_SPEC must name a file under configs/features/" >&2
+    exit 2
+fi
+if [[ -n "${CHIP_DATA_ROOT}" ]]; then
+    runpod_validate_path_in_root \
+        "${CHIP_DATA_ROOT}" "${NETWORK_VOLUME_ROOT}" CHIP_DATA_ROOT NETWORK_VOLUME_ROOT
+    if [[ ! -d "${CHIP_DATA_ROOT}/curated" ]]; then
+        echo "RUNPOD_CHIP_DATA_ROOT has no curated/ directory: ${CHIP_DATA_ROOT}" >&2
+        exit 2
+    fi
+    export TW_CHIP_DATA_ROOT="${CHIP_DATA_ROOT}"
 fi
 for path_name in \
     PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT POETRY_BIN FEATURES_LOG \
@@ -148,10 +164,10 @@ export PYTHONUNBUFFERED=1
 printf '[%s] feature tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${POETRY_BIN}" run pytest -q \
     tests/test_rank_labels.py tests/test_residual_labels.py tests/test_feature_library.py \
-    tests/test_walk_forward.py
+    tests/test_chip_features.py tests/test_walk_forward.py
 
-printf '[%s] rank labels and feature library: %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}"
+printf '[%s] rank labels and feature library: %s (spec %s)\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}" "${FEATURE_SPEC}"
 FEATURE_ARGUMENTS=(
     --experiment-config "${FEATURE_EXPERIMENT_CONFIG}"
     --spec "${FEATURE_SPEC}"
@@ -160,6 +176,10 @@ FEATURE_ARGUMENTS=(
 if [[ -n "${LABEL_VARIANT}" ]]; then
     printf 'Residualized label variant: %s\n' "${LABEL_VARIANT}"
     FEATURE_ARGUMENTS+=(--label-variant "${LABEL_VARIANT}")
+fi
+if [[ -n "${CHIP_DATA_ROOT}" ]]; then
+    printf 'Chip data root: %s\n' "${CHIP_DATA_ROOT}"
+    FEATURE_ARGUMENTS+=(--chip-data-root "${CHIP_DATA_ROOT}")
 fi
 "${POETRY_BIN}" run stock-forecasting-build-features "${FEATURE_ARGUMENTS[@]}"
 
