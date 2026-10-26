@@ -152,7 +152,7 @@ def test_usable_positions_follow_the_next_open_rule():
     assert positions.tolist() == [1, 0, -1, 2, 1]
 
 
-def test_chip_arithmetic_and_point_in_time(tmp_path):
+def test_chip_arithmetic_and_point_in_time(tmp_path, monkeypatch):
     from stock_forecasting.data.chip_features import (
         build_chip_tables,
         chip_feature_names,
@@ -229,7 +229,8 @@ def test_chip_arithmetic_and_point_in_time(tmp_path):
     tw2 = symbol_chip_features(tables2, "1101.TW", cutoffs, spec)
     assert np.isfinite(tw2[19 + 10, col["MARGIN_UTIL"]])
     assert np.isnan(tw2[19 + 11, col["MARGIN_UTIL"]])
-    # The environment lookup names the variable when it is missing.
+    # The environment lookup names the variable when it is missing (the Pod job exports it).
+    monkeypatch.delenv("TW_CHIP_DATA_ROOT", raising=False)
     with pytest.raises(ValueError, match="TW_CHIP_DATA_ROOT"):
         chip_root(spec)
 
@@ -243,13 +244,14 @@ def _fixture_days():
 @pytest.mark.parametrize("name", ["chip_tw_v1", "alpha_chip_tw_v1"])
 def test_store_holds_chip_columns_after_the_alpha_block(rank_config, tmp_path, monkeypatch, name):
     pytest.importorskip("exchange_calendars")
+    from conftest import RANK_TW_STOCKS  # the tests directory is on sys.path under pytest
+
     from stock_forecasting.baseline_storage import lazy_dataset
     from stock_forecasting.data.feature_library import (
         ensure_features,
         feature_names,
         read_split_features,
     )
-    from tests.conftest import RANK_TW_STOCKS
 
     days = _fixture_days()
     root = _synthetic_root(tmp_path / "chipdata", days,
