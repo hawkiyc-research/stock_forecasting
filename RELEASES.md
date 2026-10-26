@@ -2,6 +2,16 @@
 
 ## 中文
 
+### 未發布（2026-10-26 之後）
+
+- 台股資料管線：`TWSEProvider`／`TPExProvider` 的 `fetch_actions` 另讀取 TWSE 減資（`TWTAUU`）、變更面額（`TWTB8U`）、
+  ETF 分割（`TWTCAU`）與 TPEx 減資（`revivt`）恢復買賣參考價表，加上整理的櫃買變更面額表，以恢復買賣日的
+  `參考價 / 停止買賣前收盤價` 作價格因子，與除權息因子一起累乘到 `adjusted_close`；原始 OHLCV 不變。
+  `twse_official`／`tpex_official` 的資料內容識別碼與 `configs/data_content_identity_snapshot.json` 更新，新資料集需
+  `--dataset-revision v2`。新增 `scripts/fetch_tw_capital_actions.py`、`scripts/detect_tw_price_discontinuities.py`、
+  `configs/reference/tw_capital_actions_20261026.*`、`tw_price_discontinuities_20261026.*` 與
+  `docs/corporate_action_adjustment.md`（0050 一拆四與 2023 年起 109 檔的驗證）。
+
 ### v0.4.0 2026-10-25
 
 - 台股橫斷面排序主線（協定 §13.12–§13.17）完成並結案：B0 LightGBM 基線、D0 跨股票 transformer 與消融 A1、
@@ -146,6 +156,18 @@
 資料不納入 Git，須以 run ID、checkpoint 與各自 manifest 追溯。
 
 ## English
+
+### Unreleased (after 2026-10-26)
+
+- Taiwan data pipeline: `fetch_actions` of `TWSEProvider` / `TPExProvider` also reads the TWSE capital-reduction
+  (`TWTAUU`), par-value-change (`TWTB8U`) and ETF-split (`TWTCAU`) tables, the TPEx capital-reduction table
+  (`revivt`) and a curated TPEx par-value table, takes `reference price / last close before the halt` on the
+  resumption session as the price factor and compounds it with the ex-dividend factors into `adjusted_close`;
+  raw OHLCV is unchanged. The `twse_official` / `tpex_official` content identities and
+  `configs/data_content_identity_snapshot.json` are updated; new datasets need `--dataset-revision v2`. New:
+  `scripts/fetch_tw_capital_actions.py`, `scripts/detect_tw_price_discontinuities.py`,
+  `configs/reference/tw_capital_actions_20261026.*`, `tw_price_discontinuities_20261026.*` and
+  `docs/corporate_action_adjustment.md` (verification of 0050's 1:4 split and the 109 names since 2023).
 
 ### v0.4.0 2026-10-25
 
