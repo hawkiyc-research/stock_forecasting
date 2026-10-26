@@ -101,6 +101,9 @@ append_manifest_file "configs/data_cleaning.json"
 append_manifest_file "configs/baseline_execution_compatibility.json"
 append_manifest_file "configs/research/tw_information_test.json"
 append_manifest_file "configs/features/alpha_tw_v1.json"
+# Protocol 13.18 chip feature specs (F1 and the combined F2).
+append_manifest_file "configs/features/chip_tw_v1.json"
+append_manifest_file "configs/features/alpha_chip_tw_v1.json"
 append_manifest_file "configs/walk_forward/tw_quarterly_v1.json"
 # Protocol 13.16 residualized label specs and the official company reference snapshot.
 append_manifest_file "configs/labels/residual_v1a.json"
