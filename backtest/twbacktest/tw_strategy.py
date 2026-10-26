@@ -150,6 +150,10 @@ class BandResult:
     fill_fraction: np.ndarray  # share of the slot invested while holding the row (NaN: none)
     capped_buys: int  # buys scaled down by the participation cap (cap_mode "scale")
     deployed: np.ndarray  # per interval: invested share of the K slots (1 = fully)
+    ineligible_skipped: int = 0  # candidates outside the borrowable list (``eligible``)
+    borrow_failed: int = 0  # candidates lost to the borrow-failure draw (``fail_prob``)
+    quota_capped: int = 0  # buys scaled down by the per-row value cap (``value_cap``)
+    recalls: int = 0  # held positions forced out by the recall draw (``recall_prob``)
 
 
 def simulate_band(
@@ -168,6 +172,11 @@ def simulate_band(
     dollar_volume: np.ndarray | None = None,
     participation_cap: float | None = None,
     cap_mode: str = "skip",
+    eligible: np.ndarray | None = None,
+    fail_prob: np.ndarray | None = None,
+    value_cap: np.ndarray | None = None,
+    recall_prob: float = 0.0,
+    rng: np.random.Generator | None = None,
 ) -> BandResult:
     """The hold-buffer rule of positions.simulate with a daily entry cap and capital limits.
 
@@ -181,9 +190,19 @@ def simulate_band(
     times its recent daily dollar volume is skipped and counted (a large-capital limit) when
     ``cap_mode`` is "skip"; with "scale" the position is capped at the allowed value and the
     rest of the slot stays in cash (skipped only below ``MIN_FILL`` of the slot).
+
+    The execution-uncertainty layer of protocol 13.19 supplement 4 (for short books): a
+    candidate row with ``eligible`` False is skipped and counted; a candidate is lost with
+    probability ``fail_prob[row]`` (one uniform draw from ``rng`` per attempt); ``value_cap``
+    (NT$ per row, used with ``slot_capital``) bounds the position like the participation
+    cap, under the same ``cap_mode``; every held position is recalled with probability
+    ``recall_prob`` per interval and sold at the next open (a limit-locked open delays it).
     """
     if cap_mode not in CAP_MODES:
         raise ValueError(f"Unknown cap_mode {cap_mode!r}")
+    random = (fail_prob is not None and np.any(fail_prob > 0)) or recall_prob > 0
+    if random and rng is None:
+        raise ValueError("fail_prob / recall_prob need a random generator")
     intervals = len(ranked) - 1
     if intervals < 1:
         raise ValueError("At least two signal dates are needed")
@@ -214,18 +233,21 @@ def simulate_band(
     periods: list[int] = []
     blocked_buys = blocked_sells = missing_exits = lot_blocked = buy_attempts = 0
     liquidity_blocked = odd_lot_buys = 0
+    ineligible_skipped = borrow_failed = quota_capped = recalls = 0
+    recalled = np.zeros(k, dtype=bool)
 
     def close_position(s: int, row: int) -> None:
         sell_value[row] = value[s]
         odd_sell[row] = odd_slot[s]
         odd_slot[s] = False
         slot_fill[s] = 1.0
+        recalled[s] = False
 
     for j in range(intervals):
         sold = set()
         for s in range(k):
             row = slot[s]
-            if row < 0 or rank[row] <= keep_limit:
+            if row < 0 or (rank[row] <= keep_limit and not recalled[s]):
                 continue
             if move.gap[row] <= down:
                 blocked_sells += 1
@@ -249,14 +271,30 @@ def simulate_band(
                     break
                 buy_attempts += 1
                 fill = 1.0
-                if slot_capital is not None and dollar_volume is not None \
-                        and participation_cap is not None:
-                    volume = dollar_volume[row]
-                    allowed = participation_cap * volume if np.isfinite(volume) else np.nan
+                if eligible is not None and not eligible[row]:
+                    ineligible_skipped += 1
+                    continue
+                if fail_prob is not None and fail_prob[row] > 0 \
+                        and rng.random() < fail_prob[row]:
+                    borrow_failed += 1
+                    continue
+                if slot_capital is not None and (
+                        (dollar_volume is not None and participation_cap is not None)
+                        or value_cap is not None):
+                    allowed = np.inf
+                    by_quota = False
+                    if dollar_volume is not None and participation_cap is not None:
+                        volume = dollar_volume[row]
+                        allowed = participation_cap * volume if np.isfinite(volume) else np.nan
+                    if value_cap is not None:
+                        cap = value_cap[row]
+                        if not np.isfinite(cap) or cap < allowed:
+                            allowed, by_quota = cap, True
                     if not np.isfinite(allowed) or value[s] > allowed:
                         if cap_mode == "scale" and np.isfinite(allowed) \
                                 and allowed >= MIN_FILL * value[s]:
                             fill = allowed / value[s]
+                            quota_capped += int(by_quota)
                         else:
                             liquidity_blocked += 1
                             continue
@@ -290,6 +328,9 @@ def simulate_band(
             row = slot[s]
             if row < 0:
                 continue
+            if recall_prob > 0 and not recalled[s] and rng.random() < recall_prob:
+                recalled[s] = True
+                recalls += 1
             held[j, s] = row
             deployed[j] += slot_fill[s] / k
             following = link.next_row[row]
@@ -330,6 +371,8 @@ def simulate_band(
         odd_lot_buys=odd_lot_buys, buy_attempts=buy_attempts, buy_value=buy_value,
         sell_value=sell_value, odd_buy=odd_buy, odd_sell=odd_sell,
         fill_fraction=fill_row, capped_buys=capped_buys, deployed=deployed,
+        ineligible_skipped=ineligible_skipped, borrow_failed=borrow_failed,
+        quota_capped=quota_capped, recalls=recalls,
     )
 
 

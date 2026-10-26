@@ -1,0 +1,176 @@
+{
+  "schema_version": "1.0",
+  "name": "scenario-suite-execution-layer",
+  "description": "Experiment protocol section 13.19 supplement 4: the orthogonalized (v1, unmatched) S1 / S2 with the execution-uncertainty layer on the short book: borrowable universe from the tw_chip_data eligibility lists, next-session lending quota as a value cap in the capital scenarios, borrow-failure draws by dollar-volume tercile, recall probability and tiered borrow fees; five random replicates averaged. Parameters fixed to the section 13.19 selection (no re-selection). Run with --chip-data-root <tw_chip_data>/data.",
+  "cost_profiles": "cost_profiles.json",
+  "scenarios": [
+    "md_ls",
+    "md_ls_tx"
+  ],
+  "construction": {
+    "score_variants": [
+      "v1"
+    ],
+    "leg_matching": [
+      "none"
+    ]
+  },
+  "markets": {
+    "TWSE": {
+      "codes": [
+        "TWSE"
+      ],
+      "index": "TAIEX.TW",
+      "min_dollar_volume": 30000000
+    },
+    "TPEX": {
+      "codes": [
+        "TPEX"
+      ],
+      "index": "TPEX.TWO",
+      "min_dollar_volume": 10000000
+    }
+  },
+  "combined_market": {
+    "name": "TW",
+    "weights": {
+      "TWSE": 0.5,
+      "TPEX": 0.5
+    }
+  },
+  "universe": {
+    "liquidity_lookback_sessions": 20,
+    "min_close": 10,
+    "exclude_etf": true
+  },
+  "signal": {
+    "half_life_sessions": 3,
+    "max_gap_sessions": 5
+  },
+  "multi_day": {
+    "grid": {
+      "score_horizons": [
+        5,
+        10
+      ],
+      "k": [
+        30,
+        50
+      ],
+      "buffer_multiples": [
+        2,
+        3
+      ]
+    },
+    "fixed": {
+      "t-lgbm-alpha-residual_v1a": {
+        "h": 10,
+        "k": 50,
+        "buffer": 3
+      },
+      "t-xs-scratch": {
+        "h": 10,
+        "k": 50,
+        "buffer": 2
+      }
+    },
+    "entry_cap_fraction": 0.1,
+    "bootstrap_block": 21
+  },
+  "day_trade": {
+    "horizon": 1,
+    "grid": {
+      "fractions": [
+        0.05,
+        0.1
+      ]
+    },
+    "bootstrap_block": 5
+  },
+  "combination": {
+    "multi_day_weight": 0.5,
+    "day_trade_weight": 0.5,
+    "bootstrap_block": 21
+  },
+  "price_limit": {
+    "open_gap": 0.095
+  },
+  "tx": {
+    "contract": "TX",
+    "root": "diagnostics/taifex-tx",
+    "multiplier": 200,
+    "beta_window": 60,
+    "beta_min_observations": 30
+  },
+  "annualization_days": 252,
+  "bootstrap": {
+    "replicates": 1000,
+    "seed": 11
+  },
+  "periods": {
+    "P1": [
+      "2023-01-02",
+      "2025-06-01"
+    ],
+    "P2": [
+      "2025-06-01",
+      "2026-06-01"
+    ]
+  },
+  "selection": {
+    "market": "TWSE",
+    "period": "P1",
+    "profile": "institution",
+    "metric": "sharpe"
+  },
+  "attractiveness": {
+    "profile": "institution",
+    "period": "P1+P2",
+    "min_sharpe": 1.0,
+    "lower_bound_above": 0.0,
+    "require_positive_period": "P2"
+  },
+  "execution": {
+    "datasets": {
+      "eligibility": "eligibility",
+      "sbl": "sbl"
+    },
+    "borrow_list": {
+      "institution": "sbl",
+      "retail": "margin"
+    },
+    "borrow_failure": {
+      "institution": [
+        0.02,
+        0.1,
+        0.25
+      ],
+      "retail": [
+        0.05,
+        0.2,
+        0.5
+      ]
+    },
+    "failure_multipliers": [
+      0,
+      1,
+      2
+    ],
+    "primary_failure_multiplier": 1,
+    "recall_probabilities": [
+      0.0,
+      0.005
+    ],
+    "primary_recall_probability": 0.0,
+    "borrow_fee_tiers": {
+      "institution": [
+        0.015,
+        0.03,
+        0.06
+      ]
+    },
+    "quota_cap": true,
+    "replicates": 5,
+    "seed": 11
+  }
+}

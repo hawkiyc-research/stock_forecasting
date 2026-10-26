@@ -30,6 +30,7 @@ import argparse
 import itertools
 import json
 import math
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,14 @@ import numpy as np
 import pandas as pd
 
 from twbacktest import engine, positions, runner, stats, taifex
+from twbacktest.borrow_execution import (
+    BorrowData,
+    ExecutionSpec,
+    execution_specs,
+    load_borrow_data,
+    short_arrays,
+    summarize_borrow,
+)
 from twbacktest.data import MARKETS
 from twbacktest.exposure_features import (
     FEATURES,
@@ -202,12 +211,18 @@ def short_moves(move: positions.Moves) -> positions.Moves:
     )
 
 
-def with_borrow_fee(path: positions.Path, daily_fee: float) -> positions.Path:
-    """Charge the borrow fee on every held short slot, per interval."""
-    if daily_fee <= 0:
-        return path
-    growth = path.growth + np.where(path.held >= 0, math.log1p(-daily_fee), 0.0)
-    return replace(path, growth=growth)
+def with_borrow_fee(path: positions.Path, daily_fee: float | np.ndarray) -> positions.Path:
+    """Charge the borrow fee on every held short slot, per interval (a scalar, or a per-row
+    daily rate for tiered fees)."""
+    held = path.held >= 0
+    if np.isscalar(daily_fee):
+        if float(daily_fee) <= 0:
+            return path
+        charge = np.where(held, math.log1p(-float(daily_fee)), 0.0)
+    else:
+        rates = np.asarray(daily_fee, dtype=np.float64)[np.maximum(path.held, 0)]
+        charge = np.where(held, np.log1p(-rates), 0.0)
+    return replace(path, growth=path.growth + charge)
 
 
 # --------------------------------------------------------------------------- market inputs
@@ -231,6 +246,7 @@ class MarketData:
     lot_cost: np.ndarray  # one board lot at the execution open, per row
     masks: dict[str, np.ndarray]
     features: dict[str, np.ndarray] | None = None  # trailing returns, beta, turnover spike
+    borrow: BorrowData | None = None  # borrowability per row (supplement 4)
 
 
 def _index_series(prices: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -402,8 +418,18 @@ def _band_long_short(
     limit: float,
     participation_cap: float,
     cap_mode: str = "skip",
+    execution: ExecutionSpec | None = None,
+    cache: dict[tuple, Any] | None = None,
+    part: int = 0,
 ) -> dict[str, Any]:
-    """One long band book and one short band book on ``groups`` ranked by ``score``."""
+    """One long band book and one short band book on ``groups`` ranked by ``score``.
+
+    With ``execution`` the short book runs under the borrowability layer of supplement 4,
+    once per random replicate, and the replicates' series are averaged. ``cache`` (keyed by
+    everything the simulation depends on except the cost rates) lets the slippage
+    sensitivities of one profile reuse the simulations; ``part`` separates the matched
+    sub-books of one call.
+    """
     inputs = data.inputs
     fractional = capital.twd is None
     common = {
@@ -415,31 +441,78 @@ def _band_long_short(
         "participation_cap": None if fractional else participation_cap,
         "cap_mode": cap_mode,
     }
-    long_result = simulate_band(engine.rankings(score, groups), move=inputs.move, **common)
-    short_result = simulate_band(
-        engine.rankings(-score, groups), move=short_moves(inputs.move), **common
-    )
+    cache = {} if cache is None else cache
+    base_key = (part, capital.name, k, buffer, max_buys, limit, cap_mode)
+    long_key = ("long", *base_key)
+    if long_key not in cache:
+        cache[long_key] = simulate_band(engine.rankings(score, groups), move=inputs.move,
+                                        **common)
+    long_result = cache[long_key]
+    if execution is None:
+        short_key = ("short", *base_key, None)
+        if short_key not in cache:
+            cache[short_key] = [simulate_band(engine.rankings(-score, groups),
+                                              move=short_moves(inputs.move), **common)]
+        fee: float | np.ndarray = profile.borrow_fee_daily
+    else:
+        if data.borrow is None:
+            raise ValueError("the execution layer needs the market's borrow data")
+        short_key = ("short", *base_key, execution.profile, execution.key, execution.seed,
+                     execution.replicates, execution.quota_cap)
+        if short_key not in cache:
+            arrays = short_arrays(execution, data.borrow, fractional=fractional,
+                                  default_fee_annual=profile.borrow_fee_annual)
+            arrays.pop("fee_daily")
+            ranked = engine.rankings(-score, groups)
+            move = short_moves(inputs.move)
+            cache[short_key] = [
+                simulate_band(ranked, move=move, rng=np.random.default_rng(seed), **common,
+                              **arrays)
+                for seed in execution.replicate_seeds()
+            ]
+        fee = execution.fee_daily(data.borrow.tercile, profile.borrow_fee_annual)
+    short_results = cache[short_key]
     codes = inputs.index.market_codes
     free = np.zeros(inputs.index.count)
-    short_path = with_borrow_fee(short_result.path, profile.borrow_fee_daily)
+    short_rates = profile.short_rates(codes)
+    short_gross = np.mean([positions.replay(r.path, free, free).daily for r in short_results],
+                          axis=0)
+    short_nets = [
+        positions.replay(with_borrow_fee(r.path, fee), *scaled_rates(r, *short_rates)).daily
+        for r in short_results
+    ]
     long_stats = positions.path_statistics(long_result.path)
-    short_stats = positions.path_statistics(short_result.path)
+    short_stat_list = [positions.path_statistics(r.path) for r in short_results]
+
+    def short_stat(key: str) -> float:
+        return float(np.mean([s[key] for s in short_stat_list]))
+
+    def short_count(attr: str) -> float:
+        return float(np.mean([getattr(r, attr) for r in short_results]))
+
     return {
         "long_gross": positions.replay(long_result.path, free, free).daily,
         "long_net": positions.replay(
             long_result.path, *scaled_rates(long_result, *profile.long_rates(codes))).daily,
-        "short_gross": positions.replay(short_result.path, free, free).daily,
-        "short_net": positions.replay(
-            short_path, *scaled_rates(short_result, *profile.short_rates(codes))).daily,
-        "turnover": 0.5 * (long_stats["turnover"] + short_stats["turnover"]),
-        "holding_mean": 0.5 * (long_stats["holding_mean"] + short_stats["holding_mean"]),
-        "cash_fraction": 0.5 * (long_stats["cash_fraction"] + short_stats["cash_fraction"]),
+        "short_gross": short_gross,
+        "short_net": np.mean(short_nets, axis=0),
+        "short_net_replicates": [float(np.mean(net)) for net in short_nets],
+        "turnover": 0.5 * (long_stats["turnover"] + short_stat("turnover")),
+        "holding_mean": 0.5 * (long_stats["holding_mean"] + short_stat("holding_mean")),
+        "cash_fraction": 0.5 * (long_stats["cash_fraction"] + short_stat("cash_fraction")),
         "limit_blocked": (long_stats["blocked_buys"] + long_stats["blocked_sells"]
-                          + short_stats["blocked_buys"] + short_stats["blocked_sells"]),
-        "liquidity_blocked": long_result.liquidity_blocked + short_result.liquidity_blocked,
-        "buy_attempts": long_result.buy_attempts + short_result.buy_attempts,
-        "capped_buys": long_result.capped_buys + short_result.capped_buys,
-        "deployed_share": float(0.5 * (long_result.deployed.mean() + short_result.deployed.mean())),
+                          + short_stat("blocked_buys") + short_stat("blocked_sells")),
+        "liquidity_blocked": long_result.liquidity_blocked + short_count("liquidity_blocked"),
+        "buy_attempts": long_result.buy_attempts + short_count("buy_attempts"),
+        "short_attempts": short_count("buy_attempts"),
+        "capped_buys": long_result.capped_buys + short_count("capped_buys"),
+        "deployed_share": float(0.5 * (long_result.deployed.mean()
+                                       + np.mean([r.deployed.mean() for r in short_results]))),
+        "short_deployed_share": float(np.mean([r.deployed.mean() for r in short_results])),
+        "ineligible_skipped": short_count("ineligible_skipped"),
+        "borrow_failed": short_count("borrow_failed"),
+        "quota_capped": short_count("quota_capped"),
+        "recalls": short_count("recalls"),
     }
 
 
@@ -455,6 +528,8 @@ def multi_day_book(
     participation_cap: float,
     score_variant: str = "v0",
     leg_matching: str = "none",
+    execution: ExecutionSpec | None = None,
+    cache: dict[tuple, Any] | None = None,
 ) -> Book:
     """The multi-day long-short book.
 
@@ -463,6 +538,7 @@ def multi_day_book(
     ``leg_matching`` ``none`` runs one long and one short band on the whole universe;
     ``momentum`` runs one pair per quintile of the trailing 20-session return with k / quintiles
     slots each (equal capital per quintile), so both legs share the momentum distribution.
+    ``execution`` applies the borrowability layer of supplement 4 to the short book.
     """
     inputs = data.inputs
     column = inputs.horizons.index(h)
@@ -486,7 +562,8 @@ def multi_day_book(
         parts = [_band_long_short(
             data, score, data.groups, profile, capital, k=k, buffer=buffer,
             max_buys=max(1, math.ceil(k * cap_fraction)), limit=limit,
-            participation_cap=participation_cap, cap_mode=cap_mode,
+            participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
+            cache=cache,
         )]
     elif leg_matching == "momentum":
         quintiles = int(config.get("construction", {}).get("momentum_quintiles", 5))
@@ -498,7 +575,8 @@ def multi_day_book(
             parts.append(_band_long_short(
                 data, score, groups_q, profile, capital, k=k_sub, buffer=buffer,
                 max_buys=max(1, math.ceil(k_sub * cap_fraction)), limit=limit,
-                participation_cap=participation_cap, cap_mode=cap_mode,
+                participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
+                cache=cache, part=q + 1,
             ))
     else:
         raise ValueError(f"Unknown leg matching {leg_matching!r}")
@@ -510,6 +588,12 @@ def multi_day_book(
     long_net, long_gross = mean_series("long_net"), mean_series("long_gross")
     short_net, short_gross = mean_series("short_net"), mean_series("short_gross")
     attempts = max(sum(part["buy_attempts"] for part in parts), 1)
+    short_attempts = max(sum(part["short_attempts"] for part in parts), 1)
+    days = int(config["annualization_days"])
+    replicate_annual = [
+        days * float(np.mean(values))
+        for values in zip(*(part["short_net_replicates"] for part in parts), strict=True)
+    ]
     info = {
         "h": h, "k": k, "buffer": buffer, "score_variant": score_variant,
         "leg_matching": leg_matching,
@@ -520,8 +604,22 @@ def multi_day_book(
         "liquidity_blocked_share": sum(part["liquidity_blocked"] for part in parts) / attempts,
         "capped_share": sum(part["capped_buys"] for part in parts) / attempts,
         "deployed_share": float(np.mean([part["deployed_share"] for part in parts])),
+        "short_deployed_share": float(np.mean([part["short_deployed_share"] for part in parts])),
         "cap_mode": cap_mode,
+        "ineligible_share": sum(part["ineligible_skipped"] for part in parts) / short_attempts,
+        "borrow_failed_share": sum(part["borrow_failed"] for part in parts) / short_attempts,
+        "quota_capped_share": sum(part["quota_capped"] for part in parts) / short_attempts,
+        "recalls": float(sum(part["recalls"] for part in parts)),
+        "replicates": len(replicate_annual),
+        "short_net_annual_rep_min": min(replicate_annual),
+        "short_net_annual_rep_max": max(replicate_annual),
     }
+    if execution is not None:
+        info.update({
+            "borrow_list": execution.borrow_list,
+            "failure_multiplier": execution.failure_multiplier,
+            "recall_prob": execution.recall_prob,
+        })
     return Book(net=long_net + short_net, gross=long_gross + short_gross, info=info,
                 legs={"long": long_net, "short": short_net})
 
@@ -701,13 +799,14 @@ def scenario_books(
     data: MarketData, config: dict[str, Any], profile: CostProfile, capital: Capital,
     *, md_params: tuple[int, int, int], fraction: float, participation_cap: float,
     score_variant: str = "v0", leg_matching: str = "none",
+    execution: ExecutionSpec | None = None, cache: dict[tuple, Any] | None = None,
 ) -> dict[str, Book]:
     wanted = tuple(config.get("scenarios", SCENARIOS))
     h, k, buffer = md_params
     books: dict[str, Book] = {}
     md = multi_day_book(data, config, profile, capital, h=h, k=k, buffer=buffer,
                         participation_cap=participation_cap, score_variant=score_variant,
-                        leg_matching=leg_matching)
+                        leg_matching=leg_matching, execution=execution, cache=cache)
     md_tx = tx_overlay(md, data, profile, config, intraday=False)
     books["md_ls"], books["md_ls_tx"] = md, md_tx
     if any(name in wanted for name in DAY_TRADE):
@@ -877,12 +976,21 @@ def run(
     output_root: Path,
     *,
     artifacts: Path,
+    chip_data_root: Path | None = None,
 ) -> dict[str, Any]:
     if len(predictions) != len(models) or not models:
         raise ValueError("Give one --model per --predictions file")
     config = json.loads(config_path.read_text(encoding="utf-8"))
     profiles = load_profiles(config)
     participation_cap = float(profiles["participation_cap"])
+    exec_cfg = config.get("execution")
+    specs: dict[str, list[ExecutionSpec]] = {}
+    if exec_cfg is not None:
+        if chip_data_root is None:
+            raise ValueError("The execution layer needs --chip-data-root (tw_chip_data/data)")
+        specs = {name: execution_specs(config, name) for name in profiles["profiles"]}
+    coverage: dict[str, dict[str, Any]] = {}
+    digests: dict[str, str] = {}
     prices = load_prices(
         prices_path, liquidity_lookback=int(config["universe"]["liquidity_lookback_sessions"])
     )
@@ -910,6 +1018,13 @@ def run(
             market: prepare_market(inputs, intraday, market, config, prices, front, features)
             for market in config["markets"]
         }
+        if specs:
+            for market, data in markets.items():
+                borrow = load_borrow_data(chip_data_root, frame, inputs, data.groups,
+                                          datasets=exec_cfg.get("datasets"))
+                markets[market] = replace(data, borrow=borrow)
+                coverage.setdefault(label, {})[market] = summarize_borrow(borrow, data.groups)
+                digests.update(borrow.digests)
         chooser = markets[config["selection"]["market"]]
         grid_variant = construction.get("grid_score_variant", "v0")
         if label in fixed:
@@ -943,46 +1058,34 @@ def run(
             row.setdefault("leg_matching", "none")
         all_rows.extend(grid_rows + dt_rows)
         selection[label] = {"multi_day": md_choice, "day_trade": dt_choice}
+        caches: dict[tuple, dict[tuple, Any]] = {}
+        point = {
+            "label": label, "markets": markets, "config": config, "md_params": md_params,
+            "fraction": fraction, "participation_cap": participation_cap, "caches": caches,
+            "daily_frames": daily_frames,
+        }
         for (variant, matching), profile in itertools.product(combos, cost_profiles(profiles)):
             primary = is_primary(profile, profiles)
-            extra = {"score_variant": variant, "leg_matching": matching}
+            execution = specs[profile.name][0] if specs else None
             for capital in capital_scenarios(profiles):
                 if capital.profile is not None and capital.profile != profile.name:
                     continue
                 if capital.twd is not None and not primary:
                     continue
-                books_by_market = {}
-                for market, data in markets.items():
-                    books = scenario_books(
-                        data, config, profile, capital, md_params=md_params, fraction=fraction,
-                        participation_cap=participation_cap, score_variant=variant,
-                        leg_matching=matching,
-                    )
-                    books_by_market[market] = books
-                    rows = _profile_rows(label, market, profile, capital, books, data, config,
-                                         primary=primary, extra=extra)
-                    for row in rows:
-                        row["stage"] = "final"
-                    all_rows.extend(rows)
-                    if primary and capital.twd is None:
-                        daily_frames.append(
-                            _daily_frame(label, market, profile, books, data, extra))
-                combined = combined_market(books_by_market, config)
-                if combined is not None:
-                    name = config["combined_market"]["name"]
-                    first = next(iter(markets.values()))
-                    index_total = np.nanmean(
-                        np.vstack([markets[m].index_total_return for m in markets]), axis=0)
-                    shared = {"model": label, "market": name, "profile": profile.name,
-                              "slippage_multiplier": profile.slippage_multiplier,
-                              "primary_slippage": primary, "capital": capital.name,
-                              "capital_twd": capital.twd, "stage": "final", **extra}
-                    for scenario, book in combined.items():
-                        all_rows.extend(summarize_book(book, scenario, config, first.masks,
-                                                       index_total, shared))
-                    if primary and capital.twd is None:
-                        daily_frames.append(
-                            _daily_frame(label, name, profile, combined, first, extra))
+                all_rows.extend(_evaluate_point(
+                    profile, capital, variant=variant, matching=matching, execution=execution,
+                    primary=primary, stage="final", **point))
+        if specs:
+            # Sensitivities of the execution layer: primary slippage, fractional capital.
+            for (variant, matching), profile in itertools.product(combos,
+                                                                  cost_profiles(profiles)):
+                if not is_primary(profile, profiles):
+                    continue
+                for spec in specs[profile.name][1:]:
+                    all_rows.extend(_evaluate_point(
+                        profile, Capital(FRACTIONAL, None, None), variant=variant,
+                        matching=matching, execution=spec, primary=True, stage="execution",
+                        **{**point, "daily_frames": None}))
     grid = pd.DataFrame(all_rows)
     verdicts = attractiveness(grid, config)
     output_root.mkdir(parents=True, exist_ok=False)
@@ -1001,12 +1104,79 @@ def run(
         "attractiveness": verdicts,
         "rows": len(grid),
     }
+    if specs:
+        report["execution"] = {
+            "chip_data_root": str(chip_data_root), "config": exec_cfg,
+            "points": {name: [{"failure_multiplier": s.failure_multiplier,
+                               "recall_prob": s.recall_prob, "primary": s.primary}
+                              for s in items] for name, items in specs.items()},
+            "coverage": coverage, "partition_digests": digests,
+        }
     (output_root / "report.json").write_text(
         json.dumps(runner.clean(report), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     (output_root / "summary.md").write_text(summary_markdown(report, grid, profiles),
                                             encoding="utf-8")
     return report
+
+
+def _evaluate_point(
+    profile: CostProfile,
+    capital: Capital,
+    *,
+    label: str,
+    markets: dict[str, MarketData],
+    config: dict[str, Any],
+    md_params: tuple[int, int, int],
+    fraction: float,
+    participation_cap: float,
+    variant: str,
+    matching: str,
+    execution: ExecutionSpec | None,
+    caches: dict[tuple, dict[tuple, Any]],
+    primary: bool,
+    stage: str,
+    daily_frames: list[pd.DataFrame] | None,
+) -> list[dict[str, Any]]:
+    """Every scenario of one (profile, capital, construction, execution point) on every market
+    and on the combined market; appends the daily series of the primary fractional cells."""
+    extra = {"score_variant": variant, "leg_matching": matching}
+    if execution is not None:
+        extra.update({"failure_multiplier": execution.failure_multiplier,
+                      "recall_prob": execution.recall_prob})
+    rows: list[dict[str, Any]] = []
+    books_by_market = {}
+    for market, data in markets.items():
+        books = scenario_books(
+            data, config, profile, capital, md_params=md_params, fraction=fraction,
+            participation_cap=participation_cap, score_variant=variant,
+            leg_matching=matching, execution=execution,
+            cache=caches.setdefault((market, variant, matching), {}),
+        )
+        books_by_market[market] = books
+        market_rows = _profile_rows(label, market, profile, capital, books, data, config,
+                                    primary=primary, extra=extra)
+        for row in market_rows:
+            row["stage"] = stage
+        rows.extend(market_rows)
+        if daily_frames is not None and primary and capital.twd is None:
+            daily_frames.append(_daily_frame(label, market, profile, books, data, extra))
+    combined = combined_market(books_by_market, config)
+    if combined is not None:
+        name = config["combined_market"]["name"]
+        first = next(iter(markets.values()))
+        index_total = np.nanmean(
+            np.vstack([markets[m].index_total_return for m in markets]), axis=0)
+        shared = {"model": label, "market": name, "profile": profile.name,
+                  "slippage_multiplier": profile.slippage_multiplier,
+                  "primary_slippage": primary, "capital": capital.name,
+                  "capital_twd": capital.twd, "stage": stage, **extra}
+        for scenario, book in combined.items():
+            rows.extend(summarize_book(book, scenario, config, first.masks, index_total,
+                                       shared))
+        if daily_frames is not None and primary and capital.twd is None:
+            daily_frames.append(_daily_frame(label, name, profile, combined, first, extra))
+    return rows
 
 
 def yearly_summary(daily: pd.DataFrame, *, annualization_days: int) -> pd.DataFrame:
@@ -1087,6 +1257,28 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame, profiles: dict[
             f"{pct(row.index_total_return_annual)} |"
         )
     lines.append("")
+    if "failure_multiplier" in grid.columns and "execution" in report:
+        lines.append("## 執行不確定性（空頭腿）/ Execution layer (short book)")
+        lines.append("")
+        lines.append("| 模型 | 市場 | 成本檔 | 借不到倍率 | 召回機率 | 期間 | 年化淨報酬 "
+                     "| 95% 區間 | Sharpe | 名單外 | 借不到 | 限額封頂 | 召回次數 | 空頭重複極差 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+                     "| --- | --- |")
+        rows = grid[grid["stage"].isin(["final", "execution"]) & grid["primary_slippage"]
+                    & (grid["capital"] == FRACTIONAL) & (grid["scenario"] == "md_ls")
+                    & grid["failure_multiplier"].notna()]
+        keys = ["model", "market", "profile", "failure_multiplier", "recall_prob", "period"]
+        for row in rows.sort_values(keys).itertuples():
+            pct = runner.percent
+            lines.append(
+                f"| {row.model} | {row.market} | {row.profile} | {row.failure_multiplier:g} | "
+                f"{row.recall_prob:g} | {row.period} | {pct(row.net_return_annual)} | "
+                f"{_cell_ci(row)} | {runner.number(row.sharpe)} | {pct(row.ineligible_share)} | "
+                f"{pct(row.borrow_failed_share)} | {pct(row.quota_capped_share)} | "
+                f"{row.recalls:.0f} | {pct(row.short_net_annual_rep_min)} .. "
+                f"{pct(row.short_net_annual_rep_max)} |"
+            )
+        lines.append("")
     lines.append("## 吸引力門檻 / Attractiveness bar")
     lines.append("")
     for model, scenarios in report["attractiveness"].items():
@@ -1113,11 +1305,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prices", type=Path, required=True, help="raw market.parquet")
     parser.add_argument("--artifacts-root", type=Path, default=DEFAULT_ARTIFACTS)
     parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--chip-data-root", type=Path,
+                        default=os.environ.get("TW_CHIP_DATA_ROOT"),
+                        help="tw_chip_data/data (curated layer) for the execution layer; "
+                             "defaults to $TW_CHIP_DATA_ROOT")
     args = parser.parse_args(argv)
     output_root = args.output_root or runner.default_output_root(args.artifacts_root,
                                                                  "scenario-suite")
     report = run(args.config, args.predictions, args.model, args.prices, output_root,
-                 artifacts=args.artifacts_root)
+                 artifacts=args.artifacts_root,
+                 chip_data_root=Path(args.chip_data_root) if args.chip_data_root else None)
     print(json.dumps({"output_root": str(output_root), "selection": report["selection"],
                       "attractiveness": report["attractiveness"]}, indent=2, ensure_ascii=False))
     return 0
