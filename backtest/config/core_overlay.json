@@ -6,7 +6,8 @@
   "core": {
     "symbol": "0050.TW",
     "etf_tax": 0.001,
-    "ltv_max": 0.6
+    "ltv_max": 0.6,
+    "splits": [{"date": "2025-06-18", "ratio": 4, "note": "1:4 split; the dataset's adjusted_close carries dividends only"}]
   },
   "variant_a": {
     "weights": [0.5, 0.7],

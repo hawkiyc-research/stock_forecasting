@@ -46,7 +46,6 @@ from twbacktest.scenario_suite import (
     Capital,
     CostProfile,
     MarketData,
-    _interval_from_dates,
     cost_profiles,
     intraday_returns,
     is_primary,
@@ -84,18 +83,40 @@ def load_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 # --------------------------------------------------------------------------- 0050 core
 
 
-def etf_growth(prices: pd.DataFrame, dates: pd.DatetimeIndex, symbol: str) -> np.ndarray:
-    """Open-to-open total return of the ETF per interval (adjusted next-session opens)."""
+MAX_ETF_MOVE = 0.5  # a larger open-to-open move means an unadjusted corporate action
+
+
+def etf_growth(
+    prices: pd.DataFrame, dates: pd.DatetimeIndex, symbol: str,
+    splits: list[dict[str, Any]] | None = None,
+) -> np.ndarray:
+    """Open-to-open total return of the ETF per interval j (open of dates[j+1] to open of
+    dates[j+2]).
+
+    The dataset's adjusted prices carry dividends but not stock splits (0050 split 1:4 on
+    2025-06-18 and traded nothing on the five sessions before), so ``splits`` lists the
+    ratios to apply to the opens before each split date; a session on which the ETF did not
+    trade carries the previous open forward (its return lands on the next traded session).
+    """
     rows = prices[prices["symbol"] == symbol].drop_duplicates("date").set_index("date")
-    series = rows["open_1"].sort_index()
-    start = _interval_from_dates(series, dates, 0)
-    end = _interval_from_dates(series, dates, 1)
+    adj_open = rows["adj_open"].sort_index().astype(np.float64)
+    for item in splits or []:
+        day = pd.Timestamp(item["date"])
+        adj_open.loc[adj_open.index < day] /= float(item["ratio"])
+    opens = adj_open.reindex(dates, method="ffill")
+    values = opens.to_numpy()
     with np.errstate(invalid="ignore", divide="ignore"):
-        growth = end / start - 1.0
+        growth = values[2:] / values[1:-1] - 1.0
+    growth = np.append(growth, 0.0)  # the last interval has no following open in the sample
     missing = int((~np.isfinite(growth)).sum())
     if missing > 0.05 * growth.size:
         raise ValueError(f"{symbol} is missing on {missing} of {growth.size} intervals")
-    return np.where(np.isfinite(growth), growth, 0.0)
+    growth = np.where(np.isfinite(growth), growth, 0.0)
+    if np.any(np.abs(growth) > MAX_ETF_MOVE):
+        when = dates[1:][np.abs(growth) > MAX_ETF_MOVE][0].date()
+        raise ValueError(f"{symbol} moves more than {MAX_ETF_MOVE:.0%} around {when}: an "
+                         "unadjusted split or data gap; list it under core.splits")
+    return growth
 
 
 def etf_rates(profile: CostProfile, etf_tax: float) -> tuple[float, float]:
@@ -418,7 +439,8 @@ def run(
                                       datasets=suite["execution"].get("datasets"))
             markets[market] = replace(data, borrow=borrow)
         first = next(iter(markets.values()))
-        core = etf_growth(prices, inputs.dates, str(core_cfg["symbol"]))
+        core = etf_growth(prices, inputs.dates, str(core_cfg["symbol"]),
+                          splits=core_cfg.get("splits"))
         index_total = {m: d.index_total_return for m, d in markets.items()}
         index_total[combined_name] = np.nanmean(np.vstack(list(index_total.values())), axis=0)
         caches: dict[tuple, dict] = {}

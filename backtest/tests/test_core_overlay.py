@@ -25,6 +25,24 @@ def test_buy_and_hold_pays_costs_at_both_ends():
     assert net[2] == pytest.approx(-0.002)
 
 
+def test_etf_growth_applies_splits_and_carries_gaps():
+    dates = pd.bdate_range("2025-06-02", periods=8)  # signal dates D0..D7
+    traded = [d for d in dates if d not in (dates[3], dates[4])]  # no trading on D3, D4
+    opens = [100.0, 101.0, 102.0, 26.0, 26.5, 27.0]  # 1:4 split takes effect on D5
+    prices = pd.DataFrame({"symbol": "0050.TW", "date": traded, "adj_open": opens})
+    with pytest.raises(ValueError, match="unadjusted split"):
+        co.etf_growth(prices, dates, "0050.TW")
+    growth = co.etf_growth(prices, dates, "0050.TW",
+                           splits=[{"date": str(dates[5].date()), "ratio": 4}])
+    # Interval j runs from the open of D(j+1) to the open of D(j+2).
+    assert growth[0] == pytest.approx(102.0 / 101.0 - 1.0)
+    assert growth[1] == pytest.approx(0.0)  # D3 did not trade: carried forward
+    assert growth[2] == pytest.approx(0.0)
+    assert growth[3] == pytest.approx(104.0 / 102.0 - 1.0)  # D4 carried -> D5 (26 x 4)
+    assert growth[4] == pytest.approx(26.5 / 26.0 - 1.0)
+    assert growth[-1] == 0.0 and growth.size == len(dates) - 1
+
+
 def _legs(n: int, long: float = 0.0, short: float = 0.0):
     return {"long": np.full(n, long), "short": np.full(n, short)}
 
@@ -112,6 +130,7 @@ def test_run_end_to_end(tmp_path):
     suite_path.write_text(json.dumps(suite))
     config = json.loads(co.DEFAULT_CONFIG.read_text(encoding="utf-8"))
     config["suite_config"] = str(suite_path)
+    config["core"]["splits"] = []  # the synthetic ETF has no split
     config["bootstrap"]["replicates"] = 50
     config["capital_scenarios"] = {"retail": [{"name": "10M", "twd": 1e7, "odd_lots": True}],
                                    "institution": [{"name": "30M", "twd": 3e7}]}
