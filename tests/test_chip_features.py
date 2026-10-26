@@ -23,6 +23,11 @@ def _spec(name="chip_tw_v1"):
 
 def _write(root: Path, dataset: str, frame: pd.DataFrame, date_column: str) -> None:
     frame = frame.copy()
+    # Like the real curated layer: naive dates in milliseconds, available_at in microseconds.
+    for column in frame.columns:
+        if pd.api.types.is_datetime64_any_dtype(frame[column]):
+            unit = "us" if getattr(frame[column].dt, "tz", None) is not None else "ms"
+            frame[column] = frame[column].dt.as_unit(unit)
     for year, part in frame.groupby(pd.to_datetime(frame[date_column]).dt.year):
         folder = root / "curated" / dataset / f"year={year}"
         folder.mkdir(parents=True, exist_ok=True)
