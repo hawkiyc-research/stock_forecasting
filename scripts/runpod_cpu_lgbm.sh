@@ -30,7 +30,10 @@ CODE_MARKER="${LIFECYCLE_ROOT}/stage1/code.json"
 # One marker per volume, as for the research job; the guard checks its Pod ID.
 FEATURES_MARKER="${LIFECYCLE_ROOT}/research/lgbm.json"
 OUTPUT_ROOT="${NETWORK_VOLUME_ROOT}/diagnostics/lgbm/${LAUNCH_ID}"
-WALK_FORWARD_SCHEDULE="configs/walk_forward/tw_quarterly_v1.json"
+# Protocol 13.20: the walk-forward schedule may be another file under configs/walk_forward/
+# (RUNPOD_WALK_FORWARD_SCHEDULE, workflow option --schedule); its data_end must not exceed the
+# dataset's holdout end (configure --test-end).
+WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE:-configs/walk_forward/tw_quarterly_v1.json}"
 LGBM_SCRATCH_ROOT="${NETWORK_VOLUME_ROOT}/tmp/lgbm-${LAUNCH_ID}"
 export NETWORK_VOLUME_ROOT RUNPOD_VOLUME_ROOT="${NETWORK_VOLUME_ROOT}"
 export PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT RUNPOD_ROLE FEATURE_EXPERIMENT_CONFIG
@@ -63,6 +66,10 @@ if [[ -n "${LABEL_VARIANT}" && ! "${LABEL_VARIANT}" =~ ^configs/labels/[a-z0-9_]
 fi
 if [[ ! "${FEATURE_SPEC}" =~ ^configs/features/[a-z0-9_]+\.json$ ]]; then
     echo "RUNPOD_FEATURE_SPEC must name a file under configs/features/" >&2
+    exit 2
+fi
+if [[ ! "${WALK_FORWARD_SCHEDULE}" =~ ^configs/walk_forward/[a-z0-9_]+\.json$ ]]; then
+    echo "RUNPOD_WALK_FORWARD_SCHEDULE must name a file under configs/walk_forward/" >&2
     exit 2
 fi
 if [[ -n "${CHIP_DATA_ROOT}" ]]; then
@@ -168,8 +175,8 @@ printf '[%s] walk-forward tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${POETRY_BIN}" run pytest -q \
     tests/test_walk_forward.py tests/test_walk_forward_lgbm.py
 
-printf '[%s] LightGBM walk-forward baseline: %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}"
+printf '[%s] LightGBM walk-forward baseline: %s (schedule %s)\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}" "${WALK_FORWARD_SCHEDULE}"
 mkdir -p "${LGBM_SCRATCH_ROOT}"
 # A container restart loses the job but not the volume: reuse the newest UNFINISHED earlier
 # launch's folds (the trainer verifies label variant and feature spec before using them). A

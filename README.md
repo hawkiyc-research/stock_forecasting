@@ -781,6 +781,36 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    `predictions.parquet` 與 `targets.parquet` 計算（§13.18 第 4、5 項；`cd backtest && uv run python -m twbacktest.chip_increment ...`，
    見 [backtest/README.md](backtest/README.md) 與 [docs/chip_increment_results.md](docs/chip_increment_results.md)）。
 
+### 回測通道：把 walk-forward 延長到新資料（§13.20，P3）
+
+既有資料集的固定切分以 `2026-06-01` 為 holdout 結束日，之後的交易日不屬於任何切分，特徵庫、標籤庫與
+walk-forward 都算不到它們；`cpu prepare --forward` 的前瞻包只服務 GPU 模型的推論，沒有接到 B0 這條線。
+要讓新的區間（例如 P3 = 2026-06-01 起）進入模型，走下面這條通道，每一步都是新的資料集身分，舊資料集不動：
+
+1. **同步程式**（volume 上沒有 Pod 時）：`bash scripts/runpod_workflow.sh sync --apply`。
+2. **新的選擇**：結束日與 holdout 結束日都往後拉（籌碼 curated 層到 2026-10-22，兩個模型要對齊）：
+
+   ```bash
+   bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --start 2016-01-01 --end 2026-10-23 --test-end 2026-10-23 --universe all
+   ```
+
+3. **資料準備**（修訂 v1，沿用 v1 的 provider 快取，只抓新區間）：`bash scripts/runpod_workflow.sh cpu prepare`，
+   Pod 內 `bash scripts/runpod_tmux_launch.sh cpu-prepare`。凍結的準備腳本不改；holdout 結束日經 Pod 環境變數
+   `STAGE1_TEST_END` 傳給 `stock-forecasting-prepare --test-end`。
+4. **特徵庫**：F0 與 F2 各一個 Pod（`features --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json`，
+   以及 `--spec configs/features/alpha_chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data`）。
+5. **walk-forward**：F0 與 F2 各一個 Pod，指定延長的排程：
+
+   ```bash
+   bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json
+   ```
+
+   `tw_quarterly_v2` 與 v1 的折相同，加 2026Q3、2026Q4，`periods` 多一個 P3；`results.json` 的格子多出 `P3`，
+   `P1+P2` 仍是判定格。
+6. **下載**：`download-features`、`download-lgbm` 照舊；每個新 Pod 一開始先跑 `python3 scripts/runpod_invalid_chip_results.py` 列表。
+
+之後再延長一次，只要重複 2 到 6，`--end`／`--test-end`／排程的 `data_end` 換成新的日期。
+
 ### 共用基礎設施：RunPod 帳號、資料組與 Pod 守護
 
 #### 執行位置與安全邊界
@@ -1085,7 +1115,8 @@ mapping 也不能繞過此限制。這不保證涵蓋 provider 未回傳或帳�
 | `--data-profile` | `tw_only`、`us_only_eodhd`、`us_tw_eodhd` | 決定實際使用的 provider 與市場組合。非互動模式必填 |
 | `--dataset-revision` | 1～64 字元；英數開頭，之後可用英數、`.`、`_`、`-`；預設 `v1` | provider 修訂歷史資料時，用新 label 強制建立新的 immutable dataset namespace |
 | `--start` | `YYYY-MM-DD`；預設 `2016-01-01` | 所有市場共用的 inclusive 起始日，須早於 `2025-06-01` 且留足 context 與 train 資料 |
-| `--end` | `YYYY-MM-DD`；無預設值 | 所有市場共用的 exclusive 結束日，須至少為 `2026-06-01`；超出此日的資料不會進入固定 train／validation／holdout |
+| `--end` | `YYYY-MM-DD`；無預設值 | 所有市場共用的 exclusive 結束日，須不早於 `--test-end`；超出 `--test-end` 的資料不會進入固定 train／validation／holdout |
+| `--test-end` | `YYYY-MM-DD`；預設 `2026-06-01` | holdout（test）切分的 exclusive 結束日，須晚於 `2025-12-01`。**回測通道**：把它往後移（例如 `2026-10-23`），`2026-06-01` 之後的交易日就進入 test 切分，特徵庫、標籤庫與 walk-forward（搭配 `lgbm --schedule`）才算得到這段；改變它就是新的資料集身分 |
 | `--h-start` | `1`、`2`、`3`；預設 `1` | 最早輸出的累積持有期，之後逐日至第 14 日；仍於 `t+1` raw open 評估進場。依任務輸出 alpha 或個股方向，只改 runtime labels／模型輸出，不改 dataset identity |
 | `--feature-mode` | 新版 production 使用 `scales` 或 `combined`；預設 `combined` | 其他模式只適用關閉 explicit output scale 的自訂／舊設定；不改變 dataset namespace |
 | `--universe` | `all`、`explicit` | 控制美國商品選取方式；對 `tw_only` 只能使用 `all`。非互動模式必填 |
@@ -1674,7 +1705,7 @@ Pod 內以 `poetry run stock-forecasting-*` 執行，本機回測在 `backtest/`
 | `upload-chip-data <tw_chip_data>/data [--apply]` | 把 `tw_chip_data` 的 curated 層（只含有 `_SUCCESS.json` 的分割）與 `manifests/*.json` 上傳到 volume 的 `datasets/tw-chip-data/`（Pod 內 `/runpod-volume/datasets/tw-chip-data`），上傳後逐檔核對大小；不帶 `--apply` 只列出清單。§13.18 籌碼規格的 features 與 lgbm 工作讀這裡 |
 | `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | 建立特徵庫與 rank 標籤的 CPU Pod，使用 active selection 的資料組；不抓行情、不需 secret 或 TPEx relay。`--maxRuntime D` 預設 `6h`；`--cpuNumber N` 預設 `16`（2／4／8／16／32）；`--cpuFlavor F` 預設 `cpu3g`。`--labelVariant`（別名 `--label-variant`）另建該規格的殘差化標籤庫（Pod 環境 `RUNPOD_LABEL_VARIANT`），規格必須是 `configs/labels/` 下已 commit 的檔案。`--spec` 改建另一個已 commit 的特徵規格（Pod 環境 `RUNPOD_FEATURE_SPEC`，預設 `alpha_tw_v1.json`），籌碼規格須同時給 `--chipDataRoot`（Pod 環境 `RUNPOD_CHIP_DATA_ROOT`，須在 `/runpod-volume` 下）。Pod 內以 `runpod_tmux_launch.sh cpu-features` 啟動，lifecycle 標記 `lifecycle/research/features.json` |
 | `download-features [LAUNCH_ID]` | 下載最新一次（或指定 `launch-...`）已結束的特徵工作，依 store manifest 的 SHA-256 核對後存於 `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`；仍在執行回傳 3、manifest 缺少回傳 4；`RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` 調整並行數 |
-| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | 建立 B0 LightGBM walk-forward 的 CPU Pod，使用已建好的特徵庫與 rank 標籤。`--maxRuntime D` 預設 `24h`（上限，工作結束 Pod 即終止）；`--cpuNumber N` 預設 `16`；`--cpuFlavor F` 預設 `cpu3g`；`--labelVariant` 改在該殘差化標籤庫上訓練（模型名 `t-lgbm-alpha-<variant>`）；Pod 只從最新的未完成 launch（沒有 `results.json`）續跑，且只接受同一變體、同一特徵規格的折；`--spec` 與 `--chipDataRoot` 同 `features`，在該規格的特徵庫上訓練（store 必須已由同規格的 features 工作建好）。Pod 內以 `runpod_tmux_launch.sh cpu-lgbm` 啟動，標記 `lifecycle/research/lgbm.json` |
+| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]` | 建立 B0 LightGBM walk-forward 的 CPU Pod，使用已建好的特徵庫與 rank 標籤。`--schedule` 指定 `configs/walk_forward/` 下的排程（預設 `tw_quarterly_v1.json`；`tw_quarterly_v2.json` 延到 2026-10-23、含 P3，需要 holdout 結束日到達該日的資料集，見「回測通道」節）；partial 折記錄排程與資料集摘要，不同排程或資料集的折不續跑。`--maxRuntime D` 預設 `24h`（上限，工作結束 Pod 即終止）；`--cpuNumber N` 預設 `16`；`--cpuFlavor F` 預設 `cpu3g`；`--labelVariant` 改在該殘差化標籤庫上訓練（模型名 `t-lgbm-alpha-<variant>`）；Pod 只從最新的未完成 launch（沒有 `results.json`）續跑，且只接受同一變體、同一特徵規格的折；`--spec` 與 `--chipDataRoot` 同 `features`，在該規格的特徵庫上訓練（store 必須已由同規格的 features 工作建好）。Pod 內以 `runpod_tmux_launch.sh cpu-lgbm` 啟動，標記 `lifecycle/research/lgbm.json` |
 | `download-lgbm [LAUNCH_ID]` | 下載最新一次（或指定）已結束的 B0 工作，依 manifest 核對後存於 `artifacts/lgbm/<launch-id>/`；回傳碼同上 |
 | `xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime D] [--gpuId ID] [--labelVariant configs/labels/NAME.json]` | 建立一個 cross-stock 實驗的 GPU Pod。`--experiment` 預設 `t-xs-scratch`，可選 `t-xs-a1-no-cross`、`t-xs-a2-mse-only`、`t-xs-a3-no-features`、`t-xs-a4-no-gating`、`t-xs-kronos-small`、`t-xs-chronos2-small`；`--seed N` 可重複，預設 42／43／44；`--maxRuntime D` 預設 `24h`；`--gpuId ID` 預設 `NVIDIA GeForce RTX 5090`（RTX 5090 無庫存時可用 `NVIDIA RTX PRO 4500 Blackwell`）；`--labelVariant` 改在該殘差化標籤庫上訓練，配對基線自動選同一 volume 上同一變體最新完成的 B0（`RUNPOD_XS_BASELINE_LAUNCH=launch-...` 可指定）。需要同一 volume 上已完成的 B0。Pod 內以 `runpod_tmux_launch.sh xs-train` 啟動，標記 `lifecycle/research/xs-train.json`；本機 guard 同時啟動 GPU 時脈監測 |
 | `download-xs [LAUNCH_ID]` | 下載最新一次（或指定）已結束的 cross-stock 工作，依 manifest 核對後存於 `artifacts/xs/<launch-id>/`；`results.json` 的 `decision` 即 H-A 結論 |
@@ -5173,6 +5204,41 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    `cd backtest && uv run python -m twbacktest.chip_increment ...`, see [backtest/README.md](backtest/README.md) and
    [docs/chip_increment_results.md](docs/chip_increment_results.md)).
 
+### The backtest channel: extending the walk-forward to new data (§13.20, P3)
+
+The existing dataset's fixed split ends its holdout on `2026-06-01`; later sessions belong to no split, so the
+feature store, the label store and the walk-forward never see them, and the `cpu prepare --forward` package only
+feeds the GPU models' inference, not the B0 line. To bring a new window (for example P3 from 2026-06-01) into the
+models, follow this channel; every step creates a new dataset identity and leaves old datasets untouched:
+
+1. **Sync the code** (with no Pod on the volume): `bash scripts/runpod_workflow.sh sync --apply`.
+2. **A new selection** with both the data end and the holdout end moved later (the chip curated layer runs to
+   2026-10-22 and both models must align):
+
+   ```bash
+   bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --start 2016-01-01 --end 2026-10-23 --test-end 2026-10-23 --universe all
+   ```
+
+3. **Data preparation** (revision v1, reusing v1's provider cache, fetching only the new window):
+   `bash scripts/runpod_workflow.sh cpu prepare`, then `bash scripts/runpod_tmux_launch.sh cpu-prepare` inside the
+   Pod. The frozen preparation script is unchanged; the holdout end reaches `stock-forecasting-prepare --test-end`
+   through the Pod environment variable `STAGE1_TEST_END`.
+4. **Feature stores**: one Pod each for F0 and F2 (`features --labelVariant configs/labels/residual_v1a.json
+   --spec configs/features/alpha_tw_v1.json`, and `--spec configs/features/alpha_chip_tw_v1.json --chipDataRoot
+   /runpod-volume/datasets/tw-chip-data`).
+5. **Walk-forward**: one Pod each for F0 and F2 with the extended schedule:
+
+   ```bash
+   bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json
+   ```
+
+   `tw_quarterly_v2` keeps v1's folds, adds 2026Q3 and 2026Q4 and a P3 period; `results.json` gains `P3` cells
+   while `P1+P2` stays the decision cell.
+6. **Download**: `download-features` and `download-lgbm` as before; start every new Pod with
+   `python3 scripts/runpod_invalid_chip_results.py` to list the volume's state.
+
+To extend again later, repeat steps 2 to 6 with new dates in `--end`, `--test-end` and the schedule's `data_end`.
+
 ### Shared infrastructure: RunPod account, dataset and Pod guards
 
 #### Execution locations and safety boundaries
@@ -5520,7 +5586,8 @@ All user-facing `configure` options are:
 | `--data-profile` | `tw_only`, `us_only_eodhd`, `us_tw_eodhd` | Select the actual provider and market combination. Required in non-interactive mode |
 | `--dataset-revision` | 1-64 characters; start with an alphanumeric character, followed by alphanumerics, `.`, `_`, or `-`; default `v1` | Use a new label to force a new immutable dataset namespace after a provider revises historical data |
 | `--start` | `YYYY-MM-DD`; default `2016-01-01` | Inclusive start shared by all markets; must precede `2025-06-01` and leave enough context/training history |
-| `--end` | `YYYY-MM-DD`; no default | Exclusive end shared by all markets; must be at least `2026-06-01`. Later rows never enter the fixed train/validation/holdout splits |
+| `--end` | `YYYY-MM-DD`; no default | Exclusive end shared by all markets; must not precede `--test-end`. Rows past `--test-end` never enter the fixed train/validation/holdout splits |
+| `--test-end` | `YYYY-MM-DD`; default `2026-06-01` | Exclusive end of the holdout (test) split; must follow `2025-12-01`. **The backtest channel**: moving it later (for example `2026-10-23`) puts the sessions after `2026-06-01` into the test split, so the feature store, the label store and the walk-forward (with `lgbm --schedule`) can score them; changing it creates a new dataset identity |
 | `--h-start` | `1`, `2`, or `3`; default `1` | First cumulative holding-day horizon through day 14; entry stays at the `t+1` raw open. The task selects alpha or absolute direction; changes runtime labels/model output, not dataset identity |
 | `--feature-mode` | Production uses `scales` or `combined`; default `combined` | Other modes require custom/legacy configs with explicit output scale disabled; dataset namespace is unchanged |
 | `--universe` | `all`, `explicit` | Select the US-instrument strategy; `tw_only` accepts only `all`. Required in non-interactive mode |
@@ -6199,7 +6266,7 @@ current entry point.
 | `upload-chip-data <tw_chip_data>/data [--apply]` | Upload the `tw_chip_data` curated layer (partitions carrying `_SUCCESS.json` only) and `manifests/*.json` to `datasets/tw-chip-data/` on the volume (`/runpod-volume/datasets/tw-chip-data` inside the Pod), verifying every file's size afterwards; without `--apply` it only lists the files. The §13.18 chip-spec features and lgbm jobs read from there |
 | `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | Create the CPU Pod that builds the feature library and the rank labels on the active selection's dataset; no market download, no secret or TPEx relay. `--maxRuntime D` defaults to `6h`; `--cpuNumber N` to `16` (2 / 4 / 8 / 16 / 32); `--cpuFlavor F` to `cpu3g`. `--labelVariant` (alias `--label-variant`) also builds the residualized label store of that spec (Pod environment `RUNPOD_LABEL_VARIANT`); the spec must be a committed file under `configs/labels/`. `--spec` builds another committed feature spec instead (Pod environment `RUNPOD_FEATURE_SPEC`, default `alpha_tw_v1.json`); a chip spec also needs `--chipDataRoot` (Pod environment `RUNPOD_CHIP_DATA_ROOT`, under `/runpod-volume`). Start inside the Pod with `runpod_tmux_launch.sh cpu-features`; lifecycle marker `lifecycle/research/features.json` |
 | `download-features [LAUNCH_ID]` | Download the latest (or the given `launch-...`) finished feature job, verified against the store manifests' SHA-256, into `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`; exits 3 while running and 4 when the manifest is missing; `RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` sets the parallelism |
-| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | Create the CPU Pod of the B0 LightGBM walk-forward on the built feature library and rank labels. `--maxRuntime D` defaults to `24h` (an upper bound; the Pod terminates when the job ends); `--cpuNumber N` to `16`; `--cpuFlavor F` to `cpu3g`; `--labelVariant` trains on that residualized store instead (model name `t-lgbm-alpha-<variant>`, the Pod resumes only from the newest unfinished launch (no `results.json`) and accepts only folds of the same variant and feature spec); `--spec` and `--chipDataRoot` as for `features`, training on that spec's store (which the same spec's features job must have built). Start inside the Pod with `runpod_tmux_launch.sh cpu-lgbm`; marker `lifecycle/research/lgbm.json` |
+| `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]` | Create the CPU Pod of the B0 LightGBM walk-forward on the built feature library and rank labels. `--schedule` names a schedule under `configs/walk_forward/` (default `tw_quarterly_v1.json`; `tw_quarterly_v2.json` runs through 2026-10-23 with P3 and needs a dataset whose holdout end reaches that date, see the section "backtest channel"); partial folds record the schedule and dataset digest, so folds of another schedule or dataset are never resumed. `--maxRuntime D` defaults to `24h` (an upper bound; the Pod terminates when the job ends); `--cpuNumber N` to `16`; `--cpuFlavor F` to `cpu3g`; `--labelVariant` trains on that residualized store instead (model name `t-lgbm-alpha-<variant>`, the Pod resumes only from the newest unfinished launch (no `results.json`) and accepts only folds of the same variant and feature spec); `--spec` and `--chipDataRoot` as for `features`, training on that spec's store (which the same spec's features job must have built). Start inside the Pod with `runpod_tmux_launch.sh cpu-lgbm`; marker `lifecycle/research/lgbm.json` |
 | `download-lgbm [LAUNCH_ID]` | Download the latest (or the given) finished B0 job, verified against the manifest, into `artifacts/lgbm/<launch-id>/`; same exit codes |
 | `xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime D] [--gpuId ID] [--labelVariant configs/labels/NAME.json]` | Create the GPU Pod of one cross-stock experiment. `--experiment` defaults to `t-xs-scratch`; also `t-xs-a1-no-cross`, `t-xs-a2-mse-only`, `t-xs-a3-no-features`, `t-xs-a4-no-gating`, `t-xs-kronos-small`, `t-xs-chronos2-small`; `--seed N` repeats and defaults to 42 / 43 / 44; `--maxRuntime D` defaults to `24h`; `--gpuId ID` to `NVIDIA GeForce RTX 5090` (`NVIDIA RTX PRO 4500 Blackwell` when the 5090 is out of stock); `--labelVariant` trains on that residualized store and pairs against the newest finished B0 of the same variant on the volume (`RUNPOD_XS_BASELINE_LAUNCH=launch-...` overrides). Requires a finished B0 on the same volume. Start inside the Pod with `runpod_tmux_launch.sh xs-train`; marker `lifecycle/research/xs-train.json`; the local guard also starts the GPU clock monitor |
 | `download-xs [LAUNCH_ID]` | Download the latest (or the given) finished cross-stock job, verified against the manifest, into `artifacts/xs/<launch-id>/`; `decision` in `results.json` is the H-A verdict |

@@ -245,3 +245,17 @@ def test_partial_folds_are_written_and_resumed(tmp_path: Path, monkeypatch) -> N
         "fold-00.npz",
         "fold-01.npz",
     ]
+    # Folds saved under another context (schedule or dataset) are never reused: the third
+    # run names a context, so every fold is refitted (protocol 13.20 re-prepares the dataset).
+    third = tmp_path / "third"
+    results = run_walk_forward(
+        table, output_root=third, max_rounds=20, resume_root=first,
+        resume_context="tw_quarterly_v2|abc", **shared,
+    )
+    assert not any(info.get("resumed") for info in results["fold_rows"].values())
+    fourth = tmp_path / "fourth"
+    results = run_walk_forward(
+        table, output_root=fourth, max_rounds=2, resume_root=third,
+        resume_context="tw_quarterly_v2|abc", **shared,
+    )
+    assert all(info.get("resumed") for info in results["fold_rows"].values())

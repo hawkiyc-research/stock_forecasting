@@ -623,3 +623,34 @@ def test_tw_only_rejects_us_symbol_limit(tmp_path: Path) -> None:
 
     with pytest.raises(SELECTION.SelectionError, match="tw_only"):
         SELECTION._build_selection(_arguments(symbol_limit=10), project_root)
+
+
+def test_test_end_moves_the_holdout_and_changes_the_dataset_namespace(tmp_path: Path) -> None:
+    """The backtest channel (protocol 13.20): --test-end puts newer sessions into the test split,
+    is exported to the Pod and is part of the dataset identity; the data end must reach it."""
+    project_root = _project_root(tmp_path)
+    base = SELECTION._build_selection(_arguments(), project_root)
+    extended = SELECTION._build_selection(
+        _arguments(end="2026-10-23", test_end="2026-10-23"), project_root
+    )
+    assert base["dataset_request"]["preparation"]["fixed_split"]["test_end"] == "2026-06-01"
+    assert extended["dataset_request"]["preparation"]["fixed_split"] == {
+        "train_end": "2025-06-01",
+        "validation_end": "2025-12-01",
+        "test_end": "2026-10-23",
+    }
+    assert extended["dataset_request_sha256"] != base["dataset_request_sha256"]
+    exports = SELECTION._selection_exports(tmp_path / "selection.json", extended)
+    assert (exports["STAGE1_DATA_END"], exports["STAGE1_TEST_END"]) == (
+        "2026-10-23", "2026-10-23"
+    )
+    base_exports = SELECTION._selection_exports(tmp_path / "s.json", base)
+    assert base_exports["STAGE1_TEST_END"] == "2026-06-01"
+    with pytest.raises(SELECTION.SelectionError, match="extend through the holdout end"):
+        SELECTION._build_selection(
+            _arguments(end="2026-08-01", test_end="2026-10-23"), project_root
+        )
+    with pytest.raises(SELECTION.SelectionError, match="test_end is invalid"):
+        SELECTION._build_selection(_arguments(test_end="2025-11-01"), project_root)
+    with pytest.raises(SELECTION.SelectionError, match="test_end is invalid"):
+        SELECTION._build_selection(_arguments(test_end="2026/10/23"), project_root)

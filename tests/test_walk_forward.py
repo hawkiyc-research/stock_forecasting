@@ -91,3 +91,32 @@ def test_period_labels(schedule):
 
     dates = pd.DatetimeIndex(["2022-12-30", "2023-01-03", "2025-05-30", "2025-06-02", "2026-05-29"])
     assert period_of(dates, schedule).tolist() == ["", "P1", "P1", "P2", "P2"]
+
+
+def test_extended_schedule_adds_two_folds_and_the_p3_period():
+    """tw_quarterly_v2 (protocol 13.20) keeps every v1 fold and adds 2026Q3, 2026Q4 and P3."""
+    from stock_forecasting.walk_forward import (
+        DEFAULT_SCHEDULE_PATH,
+        load_schedule,
+        period_of,
+        quarterly_folds,
+        taiwan_sessions,
+    )
+
+    v1 = load_schedule(ROOT / DEFAULT_SCHEDULE_PATH)
+    v2 = load_schedule(ROOT / "configs/walk_forward/tw_quarterly_v2.json")
+    assert (v2["train_start"], v2["data_end"]) == ("2016-01-01", "2026-10-23")
+    assert (v2["first_quarter"], v2["last_quarter"]) == ("2023Q1", "2026Q4")
+    assert v2["periods"]["P1"] == v1["periods"]["P1"] and v2["periods"]["P2"] == v1["periods"]["P2"]
+    assert v2["periods"]["P3"] == ["2026-06-01", "2026-10-23"]
+    folds_v1 = quarterly_folds(taiwan_sessions(v1), v1)
+    folds_v2 = quarterly_folds(taiwan_sessions(v2), v2)
+    assert [f.name for f in folds_v2] == [f.name for f in folds_v1] + ["2026Q3", "2026Q4"]
+    # Every shared fold trains on the same window; only the truncated last v1 fold predicts more.
+    for a, b in zip(folds_v1[:-1], folds_v2[: len(folds_v1) - 1], strict=True):
+        assert (a.train_start, a.train_end, a.predict_start, a.predict_end) == (
+            b.train_start, b.train_end, b.predict_start, b.predict_end
+        )
+    assert str(folds_v2[-1].predict_end) == "2026-10-23"
+    dates = pd.DatetimeIndex(["2026-05-29", "2026-06-01", "2026-10-22", "2026-10-23"])
+    assert period_of(dates, v2).tolist() == ["P2", "P3", "P3", ""]

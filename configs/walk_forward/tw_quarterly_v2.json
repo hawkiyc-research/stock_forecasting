@@ -1,0 +1,17 @@
+{
+  "schema": "walk-forward-schedule-v1",
+  "name": "tw_quarterly_v2",
+  "description": "tw_quarterly_v1 extended through 2026-10-22 (experiment protocol 13.20): the same expanding quarterly folds from 2023Q1 plus 2026Q3 and 2026Q4, and the P3 out-of-sample period from 2026-06-01. Needs a dataset whose holdout end (configure --test-end) reaches 2026-10-23.",
+  "calendar": "XTAI",
+  "train_start": "2016-01-01",
+  "data_end": "2026-10-23",
+  "first_quarter": "2023Q1",
+  "last_quarter": "2026Q4",
+  "embargo_sessions": 15,
+  "validation_months": 12,
+  "periods": {
+    "P1": ["2023-01-01", "2025-06-01"],
+    "P2": ["2025-06-01", "2026-06-01"],
+    "P3": ["2026-06-01", "2026-10-23"]
+  }
+}
