@@ -748,9 +748,8 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data
    ```
 
-   Pod 內：`bash scripts/runpod_tmux_launch.sh cpu-lgbm`。續跑只接受同一標籤變體、**同一特徵規格且同一份特徵庫／標籤庫**
-   的折（partial 內記錄特徵欄位摘要與 store 身分雜湊），所以 F0 的舊折不會被 F1／F2 誤用，修 bug 後重建的特徵庫也不會
-   沿用重建前訓出的折；缺少這些標記的舊 partial 一律重訓。
+   Pod 內：`bash scripts/runpod_tmux_launch.sh cpu-lgbm`。續跑只接受同一標籤變體**且同一特徵規格**的折（partial 內記錄
+   特徵欄位摘要），所以 F0 的舊折不會被 F1／F2 誤用。
 
    **清掉錯誤結果**：若某次 F1／F2 的特徵庫建錯（`features.json` 的 `chip_coverage` 顯示沒有任何股票對上籌碼表）或
    lgbm launch 的 `mean_validation_rank_ic` 恰為 0，在 Pod 內先列出再隔離，不要讓它留在 `diagnostics/lgbm/` 被續跑或下載：
@@ -1670,7 +1669,7 @@ Pod 內的 Python 入口（由 tmux 工作呼叫，也可在 Pod 內直接執行
 | 入口 | 參數 |
 | --- | --- |
 | `stock-forecasting-build-features` | `--experiment-config PATH`（預設 `configs/experiments/a_rank64.yaml`，或環境變數 `FEATURE_EXPERIMENT_CONFIG`；只用其中的資料路徑、視窗、horizon 與最小組大小）；`--spec PATH` 特徵規格，預設 `configs/features/alpha_tw_v1.json`，也接受 §13.18 的籌碼規格 `configs/features/chip_tw_v1.json`（F1）與 `alpha_chip_tw_v1.json`（F2 = alpha 欄加 chip 欄，一個 store）；`--chip-data-root PATH` 籌碼規格所需的 `tw_chip_data/data`（curated 層；預設環境變數 `TW_CHIP_DATA_ROOT`）；`--output-root PATH` 必填，新目錄，寫 `features-manifest.json`；`--workers N` 1–32 的 process 數（預設依 CPU 與記憶體計算）；`--label-variant PATH` 另建該規格的殘差化標籤庫 |
-| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`、`--spec`、`--chip-data-root` 同上；`--schedule PATH` 預設 `configs/walk_forward/tw_quarterly_v1.json`；`--output-root PATH` 必填；`--scratch PATH` fold 矩陣暫存（預設輸出目錄）；`--resume-root PATH` 重用先前輸出的 `partial/` 折（只接受同一標籤變體、同一特徵規格與同一份 store）；`--workers N` 1–32；`--seeds N [N ...]` 預設 `42 43 44`；`--max-rounds N` 預設 1000；`--early-stopping N` 預設 50；`--folds I [I ...]` 與 `--horizons H [H ...]` 只跑指定折或 horizon（smoke 用）；`--label-variant PATH` 在該殘差化標籤庫上訓練並另算殘差目標的 Rank IC |
+| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`、`--spec`、`--chip-data-root` 同上；`--schedule PATH` 預設 `configs/walk_forward/tw_quarterly_v1.json`；`--output-root PATH` 必填；`--scratch PATH` fold 矩陣暫存（預設輸出目錄）；`--resume-root PATH` 重用先前輸出的 `partial/` 折（只接受同一標籤變體）；`--workers N` 1–32；`--seeds N [N ...]` 預設 `42 43 44`；`--max-rounds N` 預設 1000；`--early-stopping N` 預設 50；`--folds I [I ...]` 與 `--horizons H [H ...]` 只跑指定折或 horizon（smoke 用）；`--label-variant PATH` 在該殘差化標籤庫上訓練並另算殘差目標的 Rank IC |
 | `stock-forecasting-train-cross-stock` | `--experiment-config`、`--spec`、`--schedule`、`--output-root`、`--resume-root`、`--workers`（快取建立的 process 數，1–32）、`--folds`、`--label-variant` 同上；`--experiment NAME` 預設 `t-xs-scratch`，選項同 `xs-train`；`--seeds N [N ...]` 預設 `42 43 44`；`--baseline-root PATH` 放有 B0 `daily_rank_ic.parquet` 與 `results.json` 的目錄（配對 H-A；標籤變體必須一致）；`--device auto\|cuda\|cpu` 預設 `auto`；`--max-epochs N`、`--patience N` 覆寫固定的 20／4（smoke 用）；`--max-groups-per-epoch N` 每 epoch 只取前 N 個群組（smoke 用）；`--embedding-batch-size N` D1 embedding 的 batch，預設 512；`--offline-encoders` 只核對本機 Hugging Face 快取的編碼器權重，不下載 |
 
 本機腳本與回測模組：
@@ -5118,10 +5117,8 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    ```
 
    Inside the Pod: `bash scripts/runpod_tmux_launch.sh cpu-lgbm`. A resume accepts only folds of the same
-   label variant, **the same feature spec and the same feature / label store build** (the partial files record
-   a digest of the feature columns and of the store identities), so F0's old folds are never reused for F1 / F2
-   and a store rebuilt after a bug fix never inherits folds trained on the broken build; partial files without
-   these tags are always refitted.
+   label variant **and the same feature spec** (the partial files record a digest of the feature columns), so
+   F0's old folds are never reused for F1 / F2.
 
    **Removing wrong results**: when an F1 / F2 store was built wrong (its `features.json` `chip_coverage` shows that
    no symbol matched the chip tables) or an lgbm launch reports a `mean_validation_rank_ic` of exactly 0, list and
@@ -6176,7 +6173,7 @@ Pod-side Python entry points (called by the tmux jobs; they can also run directl
 | Entry point | Parameters |
 | --- | --- |
 | `stock-forecasting-build-features` | `--experiment-config PATH` (default `configs/experiments/a_rank64.yaml`, or the `FEATURE_EXPERIMENT_CONFIG` environment variable; only its dataset paths, window, horizons and group size are used); `--spec PATH` feature spec, default `configs/features/alpha_tw_v1.json`, also the §13.18 chip specs `configs/features/chip_tw_v1.json` (F1) and `alpha_chip_tw_v1.json` (F2 = alpha columns followed by chip columns in one store); `--chip-data-root PATH` the `tw_chip_data/data` curated layer the chip specs need (default: the `TW_CHIP_DATA_ROOT` environment variable); `--output-root PATH` required, a new directory that receives `features-manifest.json`; `--workers N` 1–32 processes (default derived from CPUs and memory); `--label-variant PATH` also builds that residualized label store |
-| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`, `--spec`, `--chip-data-root` as above; `--schedule PATH` default `configs/walk_forward/tw_quarterly_v1.json`; `--output-root PATH` required; `--scratch PATH` fold-matrix scratch (default: the output root); `--resume-root PATH` reuses an earlier output's `partial/` folds (same label variant, feature spec and store build only); `--workers N` 1–32; `--seeds N [N ...]` default `42 43 44`; `--max-rounds N` default 1000; `--early-stopping N` default 50; `--folds I [I ...]` and `--horizons H [H ...]` run only those folds or horizons (smoke); `--label-variant PATH` trains on that residualized store and also scores the residual target |
+| `stock-forecasting-walk-forward-lgbm` | `--experiment-config`, `--spec`, `--chip-data-root` as above; `--schedule PATH` default `configs/walk_forward/tw_quarterly_v1.json`; `--output-root PATH` required; `--scratch PATH` fold-matrix scratch (default: the output root); `--resume-root PATH` reuses an earlier output's `partial/` folds (same label variant only); `--workers N` 1–32; `--seeds N [N ...]` default `42 43 44`; `--max-rounds N` default 1000; `--early-stopping N` default 50; `--folds I [I ...]` and `--horizons H [H ...]` run only those folds or horizons (smoke); `--label-variant PATH` trains on that residualized store and also scores the residual target |
 | `stock-forecasting-train-cross-stock` | `--experiment-config`, `--spec`, `--schedule`, `--output-root`, `--resume-root`, `--workers` (cache-build processes, 1–32), `--folds`, `--label-variant` as above; `--experiment NAME` default `t-xs-scratch`, same choices as `xs-train`; `--seeds N [N ...]` default `42 43 44`; `--baseline-root PATH` the directory holding B0's `daily_rank_ic.parquet` and `results.json` (paired H-A; label variants must match); `--device auto\|cuda\|cpu` default `auto`; `--max-epochs N`, `--patience N` override the fixed 20 / 4 (smoke); `--max-groups-per-epoch N` takes only the first N groups per epoch (smoke); `--embedding-batch-size N` D1 embedding batch, default 512; `--offline-encoders` verifies encoder weights in the local Hugging Face cache instead of downloading |
 
 Local scripts and backtest modules:
