@@ -752,6 +752,15 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    的折（partial 內記錄特徵欄位摘要與 store 身分雜湊），所以 F0 的舊折不會被 F1／F2 誤用，修 bug 後重建的特徵庫也不會
    沿用重建前訓出的折；缺少這些標記的舊 partial 一律重訓。
 
+   **清掉錯誤結果**：若某次 F1／F2 的特徵庫建錯（`features.json` 的 `chip_coverage` 顯示沒有任何股票對上籌碼表）或
+   lgbm launch 的 `mean_validation_rank_ic` 恰為 0，在 Pod 內先列出再隔離，不要讓它留在 `diagnostics/lgbm/` 被續跑或下載：
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py && python3 scripts/runpod_invalid_chip_results.py --apply
+   ```
+
+   錯誤的特徵庫與 launch 會整個目錄搬到 `diagnostics/invalid/` 下的同一相對路徑，不刪除；未完成的 launch 只列出。
+
 5. **F2 重複第 3、4 步**，`--spec configs/features/alpha_chip_tw_v1.json`。
 
 6. **下載**：`bash scripts/runpod_workflow.sh download-features`、`download-lgbm`，各 launch 存於
@@ -5113,6 +5122,17 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    a digest of the feature columns and of the store identities), so F0's old folds are never reused for F1 / F2
    and a store rebuilt after a bug fix never inherits folds trained on the broken build; partial files without
    these tags are always refitted.
+
+   **Removing wrong results**: when an F1 / F2 store was built wrong (its `features.json` `chip_coverage` shows that
+   no symbol matched the chip tables) or an lgbm launch reports a `mean_validation_rank_ic` of exactly 0, list and
+   then quarantine them inside the Pod so they are neither resumed from nor downloaded:
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py && python3 scripts/runpod_invalid_chip_results.py --apply
+   ```
+
+   Wrong stores and launches are moved whole to the same relative path under `diagnostics/invalid/`, never deleted;
+   unfinished launches are only listed.
 
 5. **Repeat steps 3 and 4 for F2** with `--spec configs/features/alpha_chip_tw_v1.json`.
 
