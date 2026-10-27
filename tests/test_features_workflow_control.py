@@ -115,7 +115,16 @@ class FeatureLifecycleTests(unittest.TestCase):
     def test_sync_and_launcher_know_the_feature_workflow(self) -> None:
         sync = (ROOT / "scripts/sync_project_to_runpod_volume.sh").read_text(encoding="utf-8")
         self.assertIn('append_manifest_file "configs/features/alpha_tw_v1.json"', sync)
+        # Protocol 13.18: the chip specs must reach the volume or the Pod job stops early.
+        self.assertIn('append_manifest_file "configs/features/chip_tw_v1.json"', sync)
+        self.assertIn('append_manifest_file "configs/features/alpha_chip_tw_v1.json"', sync)
         self.assertIn('append_manifest_file "configs/walk_forward/tw_quarterly_v1.json"', sync)
+        features_job = (ROOT / "scripts/runpod_cpu_features.sh").read_text(encoding="utf-8")
+        self.assertIn('FEATURE_SPEC="${RUNPOD_FEATURE_SPEC:-', features_job)
+        self.assertIn("--chip-data-root", features_job)
+        create = (ROOT / "scripts/create_runpod_cpu_pod.sh").read_text(encoding="utf-8")
+        self.assertIn('"RUNPOD_FEATURE_SPEC":"%s"', create)
+        self.assertIn('"RUNPOD_CHIP_DATA_ROOT":"%s"', create)
         launcher = (ROOT / "scripts/runpod_tmux_launch.sh").read_text(encoding="utf-8")
         self.assertIn("SESSION_NAME=stock-forecasting-cpu-features", launcher)
         self.assertIn("FAILURE_LIFECYCLE_KIND=research-features", launcher)

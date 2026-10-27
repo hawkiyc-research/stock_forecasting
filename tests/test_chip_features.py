@@ -23,6 +23,11 @@ def _spec(name="chip_tw_v1"):
 
 def _write(root: Path, dataset: str, frame: pd.DataFrame, date_column: str) -> None:
     frame = frame.copy()
+    # Like the real curated layer: naive dates in milliseconds, available_at in microseconds.
+    for column in frame.columns:
+        if pd.api.types.is_datetime64_any_dtype(frame[column]):
+            unit = "us" if getattr(frame[column].dt, "tz", None) is not None else "ms"
+            frame[column] = frame[column].dt.as_unit(unit)
     for year, part in frame.groupby(pd.to_datetime(frame[date_column]).dt.year):
         folder = root / "curated" / dataset / f"year={year}"
         folder.mkdir(parents=True, exist_ok=True)
@@ -136,6 +141,27 @@ def _spec_alpha():
     return load_spec(ROOT / "configs/features/alpha_tw_v1.json")
 
 
+def test_partitions_are_found_under_percent_encoded_folders(tmp_path):
+    """The RunPod S3 gateway stores ``year=2024`` as ``year%3D2024`` on the volume."""
+    from stock_forecasting.data.chip_features import partition_files, read_curated
+
+    root = tmp_path / "chip"
+    frame = pd.DataFrame({"date": pd.to_datetime(["2024-01-02"]), "symbol": ["1101"],
+                          "market": ["TWSE"], "value": [1.0]})
+    for folder_name in ("year%3D2024", "year=2025"):
+        folder = root / "curated" / "margin" / folder_name
+        folder.mkdir(parents=True)
+        pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), folder / "part-0.parquet")
+        (folder / "_SUCCESS.json").write_text(json.dumps({"sha256": "x"}))
+    unfinished = root / "curated" / "margin" / "year%3D2026"
+    unfinished.mkdir()
+    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), unfinished / "part-0.parquet")
+    files = partition_files(root, "margin")
+    assert [Path(f).parent.name for f in files] == ["year%3D2024", "year=2025"]
+    assert [Path(f).parent.name for f in partition_files(root, "margin", [2024])] == ["year%3D2024"]
+    assert len(read_curated(root, "margin", ["date", "symbol", "value"])) == 2
+
+
 def test_usable_positions_follow_the_next_open_rule():
     from stock_forecasting.data.chip_features import usable_positions
 
@@ -152,7 +178,7 @@ def test_usable_positions_follow_the_next_open_rule():
     assert positions.tolist() == [1, 0, -1, 2, 1]
 
 
-def test_chip_arithmetic_and_point_in_time(tmp_path):
+def test_chip_arithmetic_and_point_in_time(tmp_path, monkeypatch):
     from stock_forecasting.data.chip_features import (
         build_chip_tables,
         chip_feature_names,
@@ -229,7 +255,8 @@ def test_chip_arithmetic_and_point_in_time(tmp_path):
     tw2 = symbol_chip_features(tables2, "1101.TW", cutoffs, spec)
     assert np.isfinite(tw2[19 + 10, col["MARGIN_UTIL"]])
     assert np.isnan(tw2[19 + 11, col["MARGIN_UTIL"]])
-    # The environment lookup names the variable when it is missing.
+    # The environment lookup names the variable when it is missing (the Pod job exports it).
+    monkeypatch.delenv("TW_CHIP_DATA_ROOT", raising=False)
     with pytest.raises(ValueError, match="TW_CHIP_DATA_ROOT"):
         chip_root(spec)
 
@@ -243,13 +270,14 @@ def _fixture_days():
 @pytest.mark.parametrize("name", ["chip_tw_v1", "alpha_chip_tw_v1"])
 def test_store_holds_chip_columns_after_the_alpha_block(rank_config, tmp_path, monkeypatch, name):
     pytest.importorskip("exchange_calendars")
+    from conftest import RANK_TW_STOCKS  # the tests directory is on sys.path under pytest
+
     from stock_forecasting.baseline_storage import lazy_dataset
     from stock_forecasting.data.feature_library import (
         ensure_features,
         feature_names,
         read_split_features,
     )
-    from tests.conftest import RANK_TW_STOCKS
 
     days = _fixture_days()
     root = _synthetic_root(tmp_path / "chipdata", days,
@@ -269,8 +297,15 @@ def test_store_holds_chip_columns_after_the_alpha_block(rank_config, tmp_path, m
         markets = pd.Series(source.target_batch(np.arange(len(source)))["markets"])
         tw_rows = frame[(markets == "TWSE").to_numpy()]
         us_rows = frame[(markets != "TWSE").to_numpy()]
-        assert np.isfinite(tw_rows["MARGIN_UTIL"]).all()
-        assert np.allclose(tw_rows["MARGIN_UTIL"], 0.4)
+        # The synthetic margin balance grows 1% a session on a fixed limit of 2,500, so the
+        # utilization is 0.4 x 1.01^i for the i-th session: finite and positive on every TW row.
+        assert np.isfinite(tw_rows["MARGIN_UTIL"]).all() and (tw_rows["MARGIN_UTIL"] > 0).all()
+        # The cutoff dates are sessions, so each row's utilization matches the fixture formula.
+        stamps = pd.DatetimeIndex(tw_rows["timestamp"]).tz_convert("UTC").tz_localize(None)
+        session_index = np.searchsorted(days.asi8, stamps.normalize().asi8)
+        np.testing.assert_allclose(tw_rows["MARGIN_UTIL"].to_numpy(dtype=np.float64),
+                                   0.4 * 1.01 ** session_index, rtol=2e-3)
+        assert np.isin(tw_rows["DISP_ACTIVE"].to_numpy(), [0.0, 1.0]).all()
         assert us_rows["MARGIN_UTIL"].isna().all()
         if name == "alpha_chip_tw_v1":
             alpha_store = ensure_features(source, _spec_alpha(), workers=1)

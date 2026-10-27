@@ -26,6 +26,7 @@ import glob
 import hashlib
 import json
 import os
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -190,12 +191,22 @@ def chip_root(spec: dict) -> Path:
     return root
 
 
+def partition_year(folder: str) -> int:
+    """Year of a ``year=YYYY`` partition folder; the RunPod S3 gateway stores the ``=`` of an
+    uploaded key percent-encoded, so ``year%3D2024`` is the same partition."""
+    name = urllib.parse.unquote(os.path.basename(folder))
+    return int(name.split("=", 1)[1])
+
+
 def partition_files(root: Path, dataset: str, years: list[int] | None = None) -> list[str]:
     """Partitions carrying the _SUCCESS marker, optionally restricted to some years."""
     files = []
-    for path in sorted(glob.glob(str(root / "curated" / dataset / "year=*" / "part-0.parquet"))):
+    base = root / "curated" / dataset
+    candidates = set(glob.glob(str(base / "year=*" / "part-0.parquet")))
+    candidates |= set(glob.glob(str(base / "year%3D*" / "part-0.parquet")))
+    for path in sorted(candidates):
         folder = os.path.dirname(path)
-        year = int(os.path.basename(folder).split("=", 1)[1])
+        year = partition_year(folder)
         if years is not None and year not in years:
             continue
         if os.path.exists(os.path.join(folder, "_SUCCESS.json")):
@@ -215,7 +226,17 @@ def read_curated(
     frame = table.to_table(columns=columns, filter=filter).to_pandas()
     if "symbol" in frame:
         frame["symbol"] = frame["symbol"].astype(str).str.strip()
+    # The curated layer stores dates in milliseconds and available_at in microseconds; every
+    # integer comparison below is in nanoseconds, so coerce once here.
+    for column in frame.columns:
+        if pd.api.types.is_datetime64_any_dtype(frame[column]):
+            frame[column] = frame[column].dt.as_unit("ns")
     return frame
+
+
+def _ns(values) -> np.ndarray:
+    """Nanosecond integers of any datetime index or series, whatever its stored unit."""
+    return pd.DatetimeIndex(values).as_unit("ns").asi8
 
 
 def data_identity(root: Path, spec: dict) -> dict:
@@ -250,18 +271,17 @@ def usable_positions(
     day before the first open that is at or after ``available_at`` (-1: none)."""
     pit = spec["point_in_time"]
     hours, minutes = (int(x) for x in pit["open_time"].split(":"))
-    opens = (
-        pd.DatetimeIndex(trading_days).tz_localize(pit["timezone"])
-        + pd.Timedelta(hours=hours, minutes=minutes)
-    ).tz_convert("UTC").asi8
-    stamps = pd.DatetimeIndex(available_at).tz_convert("UTC").asi8
+    opens = _ns(
+        (pd.DatetimeIndex(trading_days).as_unit("ns").tz_localize(pit["timezone"])
+         + pd.Timedelta(hours=hours, minutes=minutes)).tz_convert("UTC")
+    )
+    stamps = _ns(pd.DatetimeIndex(available_at).tz_convert("UTC"))
     return np.searchsorted(opens, stamps, side="left").astype(np.int64) - 1
 
 
 def _date_positions(dates: pd.Series | np.ndarray, trading_days: pd.DatetimeIndex) -> np.ndarray:
     """Position of the last trading day <= each date (-1: before the first)."""
-    values = pd.DatetimeIndex(dates).asi8
-    return np.searchsorted(trading_days.asi8, values, side="right").astype(np.int64) - 1
+    return np.searchsorted(_ns(trading_days), _ns(dates), side="right").astype(np.int64) - 1
 
 
 # --- derived tables -------------------------------------------------------------------------
@@ -499,7 +519,7 @@ def build_chip_tables(
     attention["pos"] = usable_positions(attention["available_at"], trading_days, spec)
     attention = attention[attention["pos"] >= 0]
     attention_dates = {
-        str(symbol): np.sort(trading_days.asi8[part["pos"].to_numpy()])
+        str(symbol): np.sort(_ns(trading_days)[part["pos"].to_numpy()])
         for symbol, part in attention.groupby("symbol", sort=False)
     }
     disposition = read_curated(
@@ -510,8 +530,8 @@ def build_chip_tables(
     disposition = disposition[disposition["pos"] >= 0]
     end_pos = _date_positions(pd.to_datetime(disposition["period_end"]), trading_days)
     disposition = disposition.assign(
-        start_ns=pd.DatetimeIndex(pd.to_datetime(disposition["period_start"])).asi8,
-        end_ns=pd.DatetimeIndex(pd.to_datetime(disposition["period_end"])).asi8, end_pos=end_pos)
+        start_ns=_ns(pd.to_datetime(disposition["period_start"])),
+        end_ns=_ns(pd.to_datetime(disposition["period_end"])), end_pos=end_pos)
     disposition_rows = {
         str(symbol): part.sort_values("pos")[["pos", "start_ns", "end_ns", "end_pos"]].to_numpy(
             dtype=np.int64)
@@ -578,7 +598,7 @@ def symbol_chip_features(tables: ChipTables, symbol: str, cutoffs: pd.DatetimeIn
                               len(tables.daily_columns[dataset])))
     events = spec["events"]
     n = cutoff_pos.size
-    cutoff_ns = cutoff_dates.asi8
+    cutoff_ns = _ns(cutoff_dates)
     window_ns = np.int64(events["attention_window_days"]) * np.int64(86_400_000_000_000)
     announcements = tables.attention.get(symbol)
     if announcements is None:
