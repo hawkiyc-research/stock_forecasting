@@ -32,6 +32,7 @@ DEFAULT_DATASET_STORAGE_PREPARATION = _DATASET_IDENTITY_CONTRACT[
     "DEFAULT_DATASET_STORAGE_PREPARATION"
 ]
 FIXED_EVALUATION_SPLIT = _DATASET_IDENTITY_CONTRACT["FIXED_EVALUATION_SPLIT"]
+validated_fixed_split = _DATASET_IDENTITY_CONTRACT["validated_fixed_split"]
 ACTIVE_POINTER_SCHEMA_VERSION = 1
 SELECTION_ID_PATTERN = re.compile(r"selection-[0-9a-f]{16}")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -130,11 +131,31 @@ _BASE_PREPARATION_CONTRACT = {
 }
 
 
-def _preparation_contract(h_start: int) -> Dict[str, Any]:
+def _fixed_split(test_end: Any) -> Dict[str, str]:
+    """The fixed evaluation split with an explicit exclusive holdout end.
+
+    The default holdout ends on 2026-06-01; a later ``test_end`` (the backtest channel: every
+    sample between the old holdout end and the new one lands in the test split, so a walk-forward
+    schedule that extends past 2026-06-01 can score it) must keep the three boundaries in order.
+    """
+    if test_end is None:
+        test_end = FIXED_EVALUATION_SPLIT["test_end"]
+    if not isinstance(test_end, str):
+        _fail("test_end must use YYYY-MM-DD")
+    try:
+        fixed = validated_fixed_split({**FIXED_EVALUATION_SPLIT, "test_end": test_end})
+    except ValueError as error:
+        _fail(f"test_end is invalid: {error}")
+    assert fixed is not None
+    return fixed
+
+
+def _preparation_contract(h_start: int, test_end: Any = None) -> Dict[str, Any]:
     if isinstance(h_start, bool) or not isinstance(h_start, int) or h_start not in (1, 2, 3):
         _fail("h_start must be 1, 2, or 3")
     return {
         **_BASE_PREPARATION_CONTRACT,
+        "fixed_split": _fixed_split(test_end),
         "h_start": h_start,
         "alpha_horizons": list(
             range(
@@ -172,6 +193,7 @@ EXPORT_KEYS = (
     "STAGE1_SYMBOL_LIMIT",
     "STAGE1_DATA_START",
     "STAGE1_DATA_END",
+    "STAGE1_TEST_END",
     "MAX_RUNTIME_SECONDS",
     "RUNPOD_HARD_LIMIT_SECONDS",
 )
@@ -516,8 +538,15 @@ def _validate_selection(
         or stage["feature_mode"] != "combined"
     ):
         _fail("Experiment configuration and selected dataset dates disagree")
-    if start >= FIXED_EVALUATION_SPLIT["train_end"] or end < FIXED_EVALUATION_SPLIT["test_end"]:
-        _fail("Production data must start before 2025-06-01 and extend through 2026-06-01")
+    preparation = request.get("preparation") if isinstance(request, dict) else None
+    requested_split = preparation.get("fixed_split") if isinstance(preparation, dict) else None
+    test_end = requested_split.get("test_end") if isinstance(requested_split, dict) else None
+    fixed_split = _fixed_split(test_end)
+    if start >= fixed_split["train_end"] or end < fixed_split["test_end"]:
+        _fail(
+            "Production data must start before 2025-06-01 and extend through the holdout end "
+            f"{fixed_split['test_end']}"
+        )
 
     universe = request.get("universe")
     if not isinstance(universe, dict) or universe.get("mode") not in {"all", "explicit"}:
@@ -563,8 +592,12 @@ def _validate_selection(
     if not isinstance(preparation, dict):
         _fail("Dataset preparation contract is invalid")
     h_start = preparation.get("h_start")
-    if request.get("preparation") != _preparation_contract(h_start):
+    fixed_split = preparation.get("fixed_split")
+    test_end = fixed_split.get("test_end") if isinstance(fixed_split, dict) else None
+    if request.get("preparation") != _preparation_contract(h_start, test_end):
         _fail("Dataset preparation contract is unsupported")
+    if request["date_range"]["end_exclusive"] < test_end:
+        _fail("Dataset end date must reach the holdout end (test_end)")
     if _payload_sha256(_dataset_request_core(request)) != dataset_request_sha256:
         _fail("Dataset request digest is inconsistent")
 
@@ -588,6 +621,8 @@ def _build_selection(arguments: argparse.Namespace, project_root: Path) -> Dict[
 
     start = _parse_date(arguments.start, "start")
     end = _parse_date(arguments.end, "end")
+    test_end = getattr(arguments, "test_end", None) or FIXED_EVALUATION_SPLIT["test_end"]
+    _fixed_split(test_end)
     if start >= end:
         _fail("Dataset start date must precede its exclusive end date")
     stocks = _normalize_symbols(arguments.stocks, "US stock list")
@@ -629,7 +664,7 @@ def _build_selection(arguments: argparse.Namespace, project_root: Path) -> Dict[
             "symbol_limit": symbol_limit,
             "include_delisted_us": True,
         },
-        "preparation": _preparation_contract(arguments.h_start),
+        "preparation": _preparation_contract(arguments.h_start, test_end),
     }
     payload = {  # type: Dict[str, Any]
         "schema_version": SELECTION_SCHEMA_VERSION,
@@ -712,6 +747,9 @@ def _populate_interactive(arguments: argparse.Namespace) -> None:
     arguments.dataset_revision = _prompt_text("Dataset revision label", "v1")
     arguments.start = _prompt_text("Dataset start date (inclusive)", "2016-01-01")
     arguments.end = _prompt_required_text("Dataset end date (exclusive)")
+    arguments.test_end = _prompt_text(
+        "Holdout end date (exclusive; the test split ends here)", FIXED_EVALUATION_SPLIT["test_end"]
+    )
     arguments.h_start = int(
         _prompt_choice("First holding-day forecast horizon", ("1", "2", "3"), "1")
     )
@@ -768,6 +806,7 @@ def _selection_exports(selection_path: Path, payload: Dict[str, Any]) -> Dict[st
         ),
         "STAGE1_DATA_START": request["date_range"]["start_inclusive"],
         "STAGE1_DATA_END": request["date_range"]["end_exclusive"],
+        "STAGE1_TEST_END": request["preparation"]["fixed_split"]["test_end"],
         "MAX_RUNTIME_SECONDS": str(runtime["max_runtime_seconds"]),
         "RUNPOD_HARD_LIMIT_SECONDS": str(runtime["hard_limit_seconds"]),
     }
@@ -978,6 +1017,7 @@ def _verify_environment(
             "STAGE1_SYMBOL_LIMIT",
             "STAGE1_DATA_START",
             "STAGE1_DATA_END",
+            "STAGE1_TEST_END",
         )
     }
     expected["DATA_ROOT"] = f"{network_volume_root}/datasets/{selection['dataset_request_sha256']}"
@@ -1014,6 +1054,7 @@ def command_create(arguments: argparse.Namespace) -> int:
         arguments.start = request["date_range"]["start_inclusive"]
         arguments.end = request["date_range"]["end_exclusive"]
         arguments.h_start = request["preparation"]["h_start"]
+        arguments.test_end = request["preparation"]["fixed_split"]["test_end"]
         arguments.universe = request["universe"]["mode"]
         arguments.stocks = request["universe"]["us_stocks"]
         arguments.etfs = request["universe"]["us_etfs"]
@@ -1045,7 +1086,11 @@ def command_create(arguments: argparse.Namespace) -> int:
     )
     print(f"First forecast horizon: {request['preparation']['h_start']}d")
     print(f"Feature mode: {payload['stage']['feature_mode']}")
-    print("Fixed splits: train < 2025-06-01; validation < 2025-12-01; holdout < 2026-06-01")
+    fixed = request["preparation"]["fixed_split"]
+    print(
+        f"Fixed splits: train < {fixed['train_end']}; validation < {fixed['validation_end']}; "
+        f"holdout < {fixed['test_end']}"
+    )
     print(f"Dataset request SHA-256: {payload['dataset_request_sha256']}")
     print(f"Selection file: {path}")
     return 0
@@ -1242,6 +1287,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inclusive market-data start date (default: 2016-01-01).",
     )
     create.add_argument("--end", help="Exclusive market-data end date (YYYY-MM-DD).")
+    create.add_argument(
+        "--test-end",
+        default=FIXED_EVALUATION_SPLIT["test_end"],
+        help=(
+            "Exclusive end of the holdout (test) split, default 2026-06-01; move it later to put "
+            "newer sessions into the test split for an extended walk-forward (backtest channel)."
+        ),
+    )
     create.add_argument(
         "--h-start",
         type=int,

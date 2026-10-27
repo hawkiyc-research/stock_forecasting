@@ -29,6 +29,23 @@ runpod_export_label_variant() {
 
 # Protocol 13.18: a feature spec other than alpha_tw_v1 (a committed file under
 # configs/features/) and the tw_chip_data curated layer on the volume for chip specs.
+runpod_export_walk_forward_schedule() {
+    local schedule="$1"
+    if [[ -z "${schedule}" ]]; then
+        unset RUNPOD_WALK_FORWARD_SCHEDULE
+        return 0
+    fi
+    if [[ ! "${schedule}" =~ ^configs/walk_forward/[a-z0-9_]+\.json$ ]]; then
+        echo "--schedule must name a file under configs/walk_forward/" >&2
+        exit 2
+    fi
+    if [[ ! -f "${SCRIPT_DIR}/../${schedule}" ]]; then
+        echo "--schedule is missing: ${schedule}" >&2
+        exit 2
+    fi
+    export RUNPOD_WALK_FORWARD_SCHEDULE="${schedule}"
+}
+
 runpod_export_feature_spec() {
     local spec="$1"
     if [[ -z "${spec}" ]]; then
@@ -97,7 +114,7 @@ Usage:
   bash scripts/runpod_workflow.sh upload-chip-data <tw_chip_data>/data [--apply]
   bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]
+  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
   bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json]
   bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
@@ -586,6 +603,7 @@ EOF
         lgbm_label_variant=""
         lgbm_spec=""
         lgbm_chip_root=""
+        lgbm_schedule=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
@@ -595,6 +613,7 @@ EOF
                 --labelVariant|--label-variant) lgbm_label_variant="$2" ;;
                 --spec) lgbm_spec="$2" ;;
                 --chipDataRoot|--chip-data-root) lgbm_chip_root="$2" ;;
+                --schedule) lgbm_schedule="$2" ;;
                 *)
                     echo "Unknown lgbm option: $1" >&2
                     usage
@@ -609,6 +628,7 @@ EOF
         runpod_export_label_variant "${lgbm_label_variant}"
         runpod_export_feature_spec "${lgbm_spec}"
         runpod_export_chip_data_root "${lgbm_chip_root}"
+        runpod_export_walk_forward_schedule "${lgbm_schedule}"
         export RUNPOD_CPU_WORKFLOW=lgbm
         export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${lgbm_max_seconds}"
         export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((lgbm_max_seconds + 3600))"

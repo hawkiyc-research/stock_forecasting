@@ -58,6 +58,7 @@ ALLOWED_NAMES = frozenset(
         "SAVED_MODEL_ROOT",
         "STAGE1_DATA_END",
         "STAGE1_DATA_START",
+        "STAGE1_TEST_END",
         "STAGE1_SYMBOL_LIMIT",
         "STAGE1_US_ETF_SYMBOLS",
         "STAGE1_US_SYMBOLS",

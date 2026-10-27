@@ -667,11 +667,14 @@ def _save_partial(
     fold_records: list[dict[str, Any]],
     label_variant: str | None = None,
     features: str | None = None,
+    context: str | None = None,
 ) -> None:
     """Persist one finished fold (every horizon and seed) so a restart can reuse it.
 
-    The label variant and the feature tag are stored so a resume never mixes folds trained
-    on different labels or on another feature spec (protocol 13.18 runs F1 / F2 beside F0).
+    The label variant, the feature tag and the context (schedule name and dataset identity)
+    are stored so a resume never mixes folds trained on different labels, on another feature
+    spec (protocol 13.18 runs F1 / F2 beside F0) or on another dataset or schedule (protocol
+    13.20 extends the walk-forward on a re-prepared dataset).
     """
     arrays = {f"h{h:02d}_seed{seed}": values for (h, seed), values in fold_scores.items()}
     pending = partial_root / (_partial_name(fold_index) + ".pending")
@@ -681,6 +684,7 @@ def _save_partial(
             records=json.dumps(fold_records),
             label_variant=np.array(label_variant or ""),
             features=np.array(features or ""),
+            context=np.array(context or ""),
             **arrays,
         )
         stream.flush()
@@ -696,12 +700,13 @@ def _load_partials(
     seeds: tuple[int, ...],
     label_variant: str | None = None,
     features: str | None = None,
+    context: str | None = None,
 ) -> dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]]:
     """Finished folds of an earlier run that cover every horizon and seed asked for now.
 
     Folds saved under another label variant (or by the standard labels when a variant is
-    asked for) or under another feature tag are ignored; folds saved before the tag existed
-    are ignored whenever a tag is asked for.
+    asked for), under another feature tag or under another context (schedule and dataset)
+    are ignored; folds saved before a tag existed are ignored whenever that tag is asked for.
     """
     if resume_root is None:
         return {}
@@ -720,6 +725,9 @@ def _load_partials(
                 continue
             stored_features = str(payload["features"]) if "features" in payload.files else ""
             if stored_features != (features or ""):
+                continue
+            stored_context = str(payload["context"]) if "context" in payload.files else ""
+            if stored_context != (context or ""):
                 continue
             fold_scores = {
                 (h, seed): np.asarray(payload[f"h{h:02d}_seed{seed}"], dtype=np.float32)
@@ -768,6 +776,7 @@ def run_walk_forward(
     resume_root: Path | None = None,
     model_name: str = MODEL_NAME,
     label_variant: str | None = None,
+    resume_context: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold, write predictions, targets, daily Rank IC and the cell summary.
 
@@ -784,8 +793,9 @@ def run_walk_forward(
     partial_root.mkdir(parents=True, exist_ok=True)
     records, scores = [], {}
     features = feature_tag(feature_columns)
-    resumed = _load_partials(resume_root, partial_root, folds, horizons, seeds, label_variant,
-                             features)
+    resumed = _load_partials(
+        resume_root, partial_root, folds, horizons, seeds, label_variant, features, resume_context
+    )
     for fold_index, (fold_scores, fold_records) in resumed.items():
         scores[fold_index] = fold_scores
         records.extend(fold_records)
@@ -830,6 +840,7 @@ def run_walk_forward(
                 fold_records[result["fold"]],
                 label_variant,
                 features,
+                resume_context,
             )
             _cleanup_work(work_root / f"fold-{result['fold']:02d}")
         print(

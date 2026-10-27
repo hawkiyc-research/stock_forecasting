@@ -2,7 +2,7 @@
 
 ## 中文
 
-本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-28。
+本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-28（§13.20 登記後）。
 
 ### 現況
 
@@ -12,16 +12,16 @@
 
 | # | 步驟 | 依據 | 前置條件 | 訓練需求 | 產出 | 誰做 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **G2**：處置、注意首次公告、當沖比跳升三類事件的反轉步驟 0（事件研究模組） | §13.18 第 6 項 | 事件表已交付 | 無 | 事件研究模組、報告；決定 S-B 要不要實作 | 本專案 |
-| 2 | **分點購買決定**：G1 已通過，FinMind Sponsor Pro 一個月（NT$3,330，整日 parquet 回補 2021-06-30 起）；買了就另案登記第二階段（F3 = F2 + 分點特徵） | §13.18 第 10 項 | 第 2 項 G1 通過（已成立） | — | 購買與否的紀錄 | 使用者決定 |
-| 3 | **§13.18 第 7 項策略層（F2 分數）**：S-A 低換手多頭（週頻、前 K、band）、S-C 月頻，雙成本檔；並以 F2 分數重跑 §13.19 的 band 建構（V1 正交化、補充四執行層）與 F0 並列；S-B 待第 1 項。參數在實作前補登記 | §13.18 第 7、8 項、§13.19 第 9 項門檻 | H-H 通過（已成立）；第 1 項（S-B） | 無（本機回測，F2 預測已下載） | 策略層結果、報告 | 本專案 |
-| 4 | （使用者決定）D0 在 F2 特徵上重訓：H-H 已通過，殘差價差 0.65% → 1.04% 算不算「明顯」由使用者判定；本專案建議先做第 3 項 | §13.18 第 3 項 | 使用者決定 | **RunPod GPU**：`xs-train`（三 seed，需先建 F2 的 xs 快取） | D0 F2 預測 | 本專案寫程式；使用者啟動 Pod |
-| 5 | **資料集 v2（分割與減資調整）**：分支 `claude/dataset-v2-corporate-actions-20261026` 併回 master 後重建資料集身分，並對 F0／F2 做 v1 對 v2 的配對比較（分割事件對模型效能的影響） | §13.17 補充結果 (h)、2026-10-27 決定 | 程式已完成（828883d） | **RunPod CPU**：`cpu prepare` → `features`（F0、F2）→ `lgbm`（F0、F2） | 新資料集、v1 對 v2 比較 | 使用者啟動 Pod；本專案計分 |
-| 6 | **P3 樣本外**：資料集延伸到 2026-06 之後（新資料集身分，含第 5 項的調整）、新增季度折重訓 B0（F0 與 F2），以 V1、無配平、固定參數、補充四的執行層重跑補充二與第 2 項，門檻為 §13.19 第 9 項（不再比對 0050） | §13.19 補充二處置、補充四第 (f) 項、2026-10-26 的門檻決定 | 2026-06 之後數個月資料；第 5 項 | **RunPod CPU**：資料準備與 B0 新折；D0 僅在被列為候選時（GPU） | 正式判定 | 使用者下載資料並啟動 Pod；本專案計分 |
+| 1 | **§13.20 回測通道的 Pod**：新選擇（`--end 2026-10-23 --test-end 2026-10-23`，修訂 v1）→ `cpu prepare` → `features` F0、F2 → `lgbm` F0、F2（`--schedule tw_quarterly_v2`，16 折，含 P3） | §13.20 第 1、2 項；README「回測通道」節 | 程式已完成（2026-10-28） | **RunPod CPU** 五個 Pod | P3 的 F0／F2 預測 | 使用者啟動 Pod |
+| 2 | **§13.20 策略層與報告**：S-A 模組（週頻多頭 band，K、m 於 P1 選定）、§13.19 設定檔加入 P3、S1／S2／S-A 在 F0 與 F2 上的 P1／P2／P3 回測（兩成本檔、補充四執行層）、選定規則與 H-J、`docs/research_full_report.md` 與 `docs/selected_strategy_report.md` | §13.20 第 3 到 9 項 | 第 1 項 | 無（本機回測） | 兩份報告、協定結果 | 本專案 |
+| 3 | **G2**：處置、注意首次公告、當沖比跳升三類事件的反轉步驟 0（事件研究模組） | §13.18 第 6 項 | 事件表已交付 | 無 | 事件研究模組、報告；決定 S-B 要不要實作 | 本專案 |
+| 4 | （使用者決定，暫不執行）分點購買：G1 已通過，但 2026-10-28 決定先不買付費資料 | §13.18 第 10 項 | — | — | 購買與否的紀錄 | 使用者決定 |
+| 5 | （使用者決定）資料集 v2（分割與減資調整）重訓：看完 §13.20 的報告與 v1 缺陷聲明後決定；程式已完成（分支 `claude/dataset-v2-corporate-actions-20261026`，需先 rebase 到 master）；v2 的 provider 快取修訂與資料集修訂綁在一起，整批重抓 API 之前要先拆開 | §13.17 補充結果 (h)、§13.20 第 9 項 | 第 2 項的報告 | **RunPod CPU**：prepare → features F0、F2 → lgbm F0、F2 | v2 資料集與 v1 對 v2 比較 | 使用者決定；本專案計分 |
+| 6 | （使用者決定）D0 在 F2 特徵上重訓 | §13.18 第 3 項 | 使用者決定 | **RunPod GPU**：`xs-train` | D0 F2 預測 | 本專案寫程式；使用者啟動 Pod |
 
 ### 訓練需求說明
 
-第 1、3 項是純回測，用現有預測在本機跑。第 4、5、6 項需要 Pod：第 4 項是 D0（GPU Pod），第 5 項是資料準備加 F0／F2 的特徵庫與 B0 重訓（CPU Pod），第 6 項是 P3 必須的新折重訓（新資料進來後舊折的預測不會自動延伸）。所有訓練都在 RunPod，Pod 由使用者啟動，每次 `--maxRuntime 24h`，啟動前先 `sync_project_to_runpod_volume.sh --apply`。
+第 2、3 項是純回測，在本機跑。第 1 項是 P3 必須的資料準備、特徵庫與 B0 新折重訓（五個 CPU Pod；新資料進來後舊折的預測不會自動延伸，§13.20 的回測通道就是為此而設）；第 5 項（v2）與第 6 項（D0）只在使用者決定後才開 Pod。所有訓練都在 RunPod，Pod 由使用者啟動，每次 `--maxRuntime 24h`，啟動前先 `sync_project_to_runpod_volume.sh --apply`。
 
 ### 目前不做的事
 
@@ -33,7 +33,7 @@
 
 ## English
 
-This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-28.
+This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-28 (after the §13.20 registration).
 
 ### Where things stand
 
@@ -43,16 +43,16 @@ After orthogonalizing the score daily against the 60-session beta and the traili
 
 | # | Step | Basis | Prerequisite | Training | Output | Who |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **G2**: reversal step 0 on 處置 announcements, first 注意 listings and day-trade-ratio jumps (event-study module) | §13.18 item 6 | Event tables delivered | None | Event-study module, report; decides whether S-B is built | This project |
-| 2 | **Broker-branch purchase decision**: G1 has passed; FinMind Sponsor Pro for one month (NT$3,330, full-day parquet backfill from 2021-06-30); if bought, register phase 2 separately (F3 = F2 + broker-branch features) | §13.18 item 10 | G1 pass (met) | — | Record of the decision | The user |
-| 3 | **§13.18 item 7 strategy layer on F2 scores**: S-A low-turnover long (weekly, top K, band), S-C monthly, both cost profiles; also rerun §13.19's band construction (V1 orthogonalization, supplement 4 execution layer) on F2 scores next to F0; S-B waits for step 1. Parameters are registered before implementation | §13.18 items 7–8, the §13.19 item 9 bar | H-H pass (met); step 1 for S-B | None (local backtests, F2 predictions downloaded) | Strategy-layer results, report | This project |
-| 4 | (User decision) retrain D0 on the F2 features: H-H has passed; whether the residual spread 0.65% → 1.04% counts as "clear" is the user's call; this project recommends step 3 first | §13.18 item 3 | User decision | **RunPod GPU**: `xs-train` (three seeds; the F2 xs cache must be built first) | D0 F2 predictions | This project writes the code; the user launches the Pod |
-| 5 | **Dataset v2 (split and capital-reduction adjustments)**: merge branch `claude/dataset-v2-corporate-actions-20261026` into master, rebuild the dataset identity, and compare F0 / F2 on v1 versus v2 as a paired test of what split events do to the model | §13.17 supplement result (h), decision of 2026-10-27 | Code done (828883d) | **RunPod CPU**: `cpu prepare` → `features` (F0, F2) → `lgbm` (F0, F2) | New dataset, v1-vs-v2 comparison | The user launches the Pods; this project scores |
-| 6 | **P3 out of sample**: extend the dataset past 2026-06 (new dataset identity, with step 5's adjustments), retrain B0 on the new quarterly folds (F0 and F2), rerun supplement 2 and step 2 with V1, no matching, fixed parameters and supplement 4's execution layer; the bar is §13.19 item 9 (no comparison with 0050) | §13.19 supplement 2 disposition, supplement 4 item (f), the 2026-10-26 bar decision | Several months of data after 2026-06; step 5 | **RunPod CPU** for data preparation and the new B0 folds; D0 only if it is a candidate (GPU) | The formal decision | The user downloads data and launches the Pods; this project scores |
+| 1 | **§13.20 backtest-channel Pods**: a new selection (`--end 2026-10-23 --test-end 2026-10-23`, revision v1) → `cpu prepare` → `features` F0, F2 → `lgbm` F0, F2 (`--schedule tw_quarterly_v2`, 16 folds, with P3) | §13.20 items 1–2; README section "backtest channel" | Code done (2026-10-28) | **RunPod CPU**, five Pods | P3 predictions of F0 / F2 | The user launches the Pods |
+| 2 | **§13.20 strategy layer and reports**: the S-A module (weekly long band, K and m selected on P1), P3 in the §13.19 configs, S1 / S2 / S-A on F0 and F2 over P1 / P2 / P3 (both cost profiles, supplement 4's execution layer), the selection rule and H-J, `docs/research_full_report.md` and `docs/selected_strategy_report.md` | §13.20 items 3–9 | Step 1 | None (local backtests) | The two reports, protocol results | This project |
+| 3 | **G2**: reversal step 0 on 處置 announcements, first 注意 listings and day-trade-ratio jumps (event-study module) | §13.18 item 6 | Event tables delivered | None | Event-study module, report; decides whether S-B is built | This project |
+| 4 | (User decision, on hold) broker-branch purchase: G1 passed, but on 2026-10-28 the user decided not to buy paid data for now | §13.18 item 10 | — | — | Record of the decision | The user |
+| 5 | (User decision) dataset v2 (split and capital-reduction adjustments) retraining: decided after the §13.20 reports and the v1 defect statement; code done (branch `claude/dataset-v2-corporate-actions-20261026`, to be rebased onto master); v2 ties the provider-cache revision to the dataset revision, so decouple them before a full API re-download | §13.17 supplement result (h), §13.20 item 9 | The step 2 reports | **RunPod CPU**: prepare → features F0, F2 → lgbm F0, F2 | The v2 dataset and the v1-vs-v2 comparison | The user decides; this project scores |
+| 6 | (User decision) retrain D0 on the F2 features | §13.18 item 3 | User decision | **RunPod GPU**: `xs-train` | D0 F2 predictions | This project writes the code; the user launches the Pod |
 
 ### Training notes
 
-Steps 1 and 3 are pure backtests on existing predictions, run locally. Steps 4, 5 and 6 need Pods: step 4 is D0 (GPU Pod), step 5 is data preparation plus the F0 / F2 feature stores and B0 retraining (CPU Pod), step 6 is the new-fold retraining that P3 requires (existing folds do not extend themselves when new data arrives). All training runs on RunPod, Pods are launched by the user with `--maxRuntime 24h`, after `sync_project_to_runpod_volume.sh --apply`.
+Steps 2 and 3 are pure backtests, run locally. Step 1 is the data preparation, feature stores and B0 new-fold retraining that P3 requires (five CPU Pods; existing folds do not extend themselves when new data arrives, which is what the §13.20 backtest channel is for); steps 5 (v2) and 6 (D0) get Pods only after the user decides. All training runs on RunPod, Pods are launched by the user with `--maxRuntime 24h`, after `sync_project_to_runpod_volume.sh --apply`.
 
 ### Not being done now
 

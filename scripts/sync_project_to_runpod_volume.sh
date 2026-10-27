@@ -105,6 +105,7 @@ append_manifest_file "configs/features/alpha_tw_v1.json"
 append_manifest_file "configs/features/chip_tw_v1.json"
 append_manifest_file "configs/features/alpha_chip_tw_v1.json"
 append_manifest_file "configs/walk_forward/tw_quarterly_v1.json"
+append_manifest_file "configs/walk_forward/tw_quarterly_v2.json"
 # Protocol 13.16 residualized label specs and the official company reference snapshot.
 append_manifest_file "configs/labels/residual_v1a.json"
 append_manifest_file "configs/labels/residual_v1b.json"

@@ -364,6 +364,39 @@ class LgbmControlPlaneTests(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 self.assertEqual(self.command(*arguments).returncode, 2)
 
+    def test_lgbm_pod_carries_the_requested_walk_forward_schedule(self) -> None:
+        """--schedule (protocol 13.20) reaches the Pod as RUNPOD_WALK_FORWARD_SCHEDULE; the job
+        script defaults to tw_quarterly_v1 and validates the override."""
+        write_env(self.env_file, "RUNPOD_NETWORK_VOLUME_ID=fixture-volume\n")
+        result = self.command("lgbm", "--schedule", "configs/walk_forward/tw_quarterly_v2.json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        line = next(line for line in result.stdout.splitlines() if "--name" in line)
+        command = shlex.split(line.removeprefix("DRY RUN:"))
+        env = json.loads(command[command.index("--env") + 1])
+        self.assertEqual(
+            env["RUNPOD_WALK_FORWARD_SCHEDULE"], "configs/walk_forward/tw_quarterly_v2.json"
+        )
+        plain = self.command("lgbm")
+        line = next(line for line in plain.stdout.splitlines() if "--name" in line)
+        env = json.loads(shlex.split(line.removeprefix("DRY RUN:"))[
+            shlex.split(line.removeprefix("DRY RUN:")).index("--env") + 1
+        ])
+        self.assertEqual(env["RUNPOD_WALK_FORWARD_SCHEDULE"], "")
+        for arguments in (
+            ("lgbm", "--schedule", "configs/walk_forward/missing.json"),
+            ("lgbm", "--schedule", "../etc/passwd"),
+            ("features", "--schedule", "configs/walk_forward/tw_quarterly_v2.json"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.command(*arguments).returncode, 2)
+        job = (ROOT / "scripts/runpod_cpu_lgbm.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE:-configs/walk_forward/'
+            'tw_quarterly_v1.json}"',
+            job,
+        )
+        self.assertIn("RUNPOD_WALK_FORWARD_SCHEDULE must name a file under", job)
+
     def test_download_reports_running_missing_and_verified_results(self) -> None:
         write_env(
             self.env_file,

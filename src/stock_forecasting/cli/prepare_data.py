@@ -39,7 +39,19 @@ from stock_forecasting.dataset_identity import (
     FIXED_EVALUATION_SPLIT,
     MIN_FIXED_EVALUATION_DATES,
     validate_fixed_split_audit,
+    validated_fixed_split,
 )
+
+
+def fixed_split_for(arguments: argparse.Namespace) -> dict[str, str] | None:
+    """The fixed evaluation split of this run: the production boundaries with the requested
+    holdout end, or None without --fixed-evaluation."""
+    if not arguments.fixed_evaluation:
+        return None
+    try:
+        return validated_fixed_split({**FIXED_EVALUATION_SPLIT, "test_end": arguments.test_end})
+    except ValueError as error:
+        raise SystemExit(f"--test-end is invalid: {error}") from error
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +69,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fixed-evaluation", action="store_true",
         help="Use the production 2025-06 / 2025-12 / 2026-06 exclusive boundaries.",
+    )
+    parser.add_argument(
+        "--test-end",
+        default=os.environ.get("STAGE1_TEST_END") or FIXED_EVALUATION_SPLIT["test_end"],
+        help=(
+            "Exclusive end of the holdout split under --fixed-evaluation (default: the Pod's "
+            "STAGE1_TEST_END from the dataset selection, else 2026-06-01); a later date puts the "
+            "newer sessions into the test split (the backtest channel, protocol 13.20). The "
+            "frozen RunPod prepare script passes it through the environment, not as an option."
+        ),
     )
     parser.add_argument(
         "--window-size",
@@ -183,7 +205,7 @@ def _ready_manifest(
 ) -> dict[str, Any]:
     validate_fixed_split_audit(
         result.split_audit,
-        FIXED_EVALUATION_SPLIT if arguments.fixed_evaluation else None,
+        fixed_split_for(arguments),
         minimum_evaluation_dates=MIN_FIXED_EVALUATION_DATES,
     )
     preparation_provenance = bar_store_preparation_provenance(
@@ -201,7 +223,7 @@ def _ready_manifest(
         target_horizon=arguments.target_horizon,
         diagnostic_horizons=list(arguments.diagnostic_horizons),
         flat_volatility_multiplier=arguments.flat_volatility_multiplier,
-        fixed_split=FIXED_EVALUATION_SPLIT if arguments.fixed_evaluation else None,
+        fixed_split=fixed_split_for(arguments),
     )
     storage_spec = storage_preparation_spec(preparation_provenance)
     bar_store_payload = json.loads(result.bar_store_manifest_path.read_text(encoding="utf-8"))
@@ -323,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_fraction=arguments.validation_fraction,
             purge_bars=arguments.purge_bars,
             embargo_bars=arguments.effective_embargo_bars,
-            fixed_split=FIXED_EVALUATION_SPLIT if arguments.fixed_evaluation else None,
+            fixed_split=fixed_split_for(arguments),
             bucket_count=arguments.bucket_count,
             batch_rows=arguments.batch_rows,
             deadline_epoch_seconds=arguments.deadline_epoch_seconds,

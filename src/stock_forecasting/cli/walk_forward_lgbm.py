@@ -67,6 +67,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resume_context(schedule: dict, stores: list) -> str:
+    """Schedule name and dataset identity (the three splits' bar-store digests) a partial fold
+    belongs to; a resume never reuses folds of another schedule or dataset (protocol 13.20)."""
+    digests = [
+        str(store.feature_identity.get("source_manifest_sha256", ""))[:16] for store in stores
+    ]
+    return f"{schedule['name']}|{'|'.join(digests)}"
+
+
 def main(argv: list[str] | None = None) -> int:
     from stock_forecasting.config import ExperimentConfig
     from stock_forecasting.data.sample_universe import validated_split_roots
@@ -129,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         resume_root=args.resume_root,
         model_name=model_name,
         label_variant=variant_name,
+        resume_context=resume_context(schedule, stores),
     )
     write_manifest(
         args.output_root,
