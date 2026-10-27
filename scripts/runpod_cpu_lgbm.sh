@@ -171,12 +171,14 @@ printf '[%s] walk-forward tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '[%s] LightGBM walk-forward baseline: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}"
 mkdir -p "${LGBM_SCRATCH_ROOT}"
-# A container restart loses the job but not the volume: reuse the newest earlier launch's
-# finished folds of this dataset (the trainer verifies they match before using them).
+# A container restart loses the job but not the volume: reuse the newest UNFINISHED earlier
+# launch's folds (the trainer verifies label variant and feature spec before using them). A
+# launch that already wrote results.json is a result, never a resume source: resuming from one
+# would re-emit its predictions under a new launch id instead of training anything.
 RESUME_ROOT=""
 for resume_candidate in "${NETWORK_VOLUME_ROOT}/diagnostics/lgbm"/launch-*/partial; do
     # The glob stays literal when nothing matches; only real directories qualify.
-    if [[ -d "${resume_candidate}" ]]; then
+    if [[ -d "${resume_candidate}" && ! -f "$(dirname "${resume_candidate}")/results.json" ]]; then
         RESUME_ROOT="$(dirname "${resume_candidate}")"
     fi
 done
