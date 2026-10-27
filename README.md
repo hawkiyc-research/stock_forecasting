@@ -754,6 +754,15 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    結果的 launch 是結果，不是續跑來源），且只接受同一標籤變體**且同一特徵規格**的折（partial 內記錄特徵欄位摘要），
    所以 F0 的舊折不會被 F1／F2 誤用；錯誤的結果用下面的腳本搬走。
 
+   **來源探測（把籌碼下載整合進 Pod 之前）**：`scripts/runpod_probe_chip_sources.py` 在 Pod 上用與 `tw_chip_data` 相同的
+   URL、參數與標頭，對六個官方主機各表各打一次（含兩個已知結果的對照：證交所 `MI_INDEX` 直連可用、櫃買 `dailyQuotes`
+   需要 relay），列出每張表 `ok`／`no_data`／`blocked`，並按主機判定 `direct` 或 `relay`；報告寫到
+   `/runpod-volume/diagnostics/chip-source-probe/`。在任何閒置的 CPU Pod 內執行：
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && /usr/local/bin/python scripts/runpod_probe_chip_sources.py
+   ```
+
    **清掉錯誤與死掉的結果**：每次開新 Pod、啟動 job 之前，先在 Pod 內列出 volume 上研究層的狀態，確認後再隔離：
 
    ```bash
@@ -5169,6 +5178,16 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    (one without `results.json`)**: a launch that wrote its results is a result, not a resume source. It accepts only
    folds of the same label variant **and the same feature spec** (the partial files record a digest of the feature
    columns), so F0's old folds are never reused for F1 / F2; wrong results are moved away with the script below.
+
+   **Source probe (before the chip download moves onto the Pod)**: `scripts/runpod_probe_chip_sources.py` sends, from
+   the Pod, one request per chip table with the same URL, parameters and headers as `tw_chip_data` (plus two controls
+   with known answers: TWSE `MI_INDEX` works directly, TPEx `dailyQuotes` needs the relay), lists each table as
+   `ok` / `no_data` / `blocked` and routes each host to `direct` or `relay`; the report goes to
+   `/runpod-volume/diagnostics/chip-source-probe/`. Run it inside any idle CPU Pod:
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && /usr/local/bin/python scripts/runpod_probe_chip_sources.py
+   ```
 
    **Removing wrong and dead results**: at the start of every new Pod, before launching its job, list the state of
    the volume's research layer inside the Pod, check it, then quarantine:
