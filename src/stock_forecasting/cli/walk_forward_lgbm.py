@@ -25,6 +25,7 @@ from stock_forecasting.walk_forward_lgbm import (
     build_folds,
     locate_stores,
     run_walk_forward,
+    store_tag,
     write_manifest,
 )
 
@@ -129,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         resume_root=args.resume_root,
         model_name=model_name,
         label_variant=variant_name,
+        stores=store_tag(stores),
     )
     write_manifest(
         args.output_root,

@@ -660,6 +660,23 @@ def feature_tag(feature_columns: list[str]) -> str:
     return f"{len(feature_columns)}:{digest}"
 
 
+def store_tag(stores: list[SplitStores]) -> str:
+    """Identity of the feature and label stores a fold was trained on.
+
+    The store directory names are the identity digests (dataset, spec, implementation and
+    chip-data manifests), so two builds of the same spec that differ in code or data get
+    different tags. The feature tag alone cannot tell them apart: a store rebuilt after a
+    bug fix carries the same column names as the broken one.
+    """
+    import hashlib
+
+    parts = [
+        f"{store.split}:{Path(store.feature_root).name}:{Path(store.label_root).name}"
+        for store in sorted(stores, key=lambda store: store.split)
+    ]
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
 def _save_partial(
     partial_root: Path,
     fold_index: int,
@@ -667,11 +684,13 @@ def _save_partial(
     fold_records: list[dict[str, Any]],
     label_variant: str | None = None,
     features: str | None = None,
+    stores: str | None = None,
 ) -> None:
     """Persist one finished fold (every horizon and seed) so a restart can reuse it.
 
-    The label variant and the feature tag are stored so a resume never mixes folds trained
-    on different labels or on another feature spec (protocol 13.18 runs F1 / F2 beside F0).
+    The label variant, the feature tag and the store tag are stored so a resume never mixes
+    folds trained on different labels, on another feature spec (protocol 13.18 runs F1 / F2
+    beside F0) or on another build of the same spec's stores.
     """
     arrays = {f"h{h:02d}_seed{seed}": values for (h, seed), values in fold_scores.items()}
     pending = partial_root / (_partial_name(fold_index) + ".pending")
@@ -681,6 +700,7 @@ def _save_partial(
             records=json.dumps(fold_records),
             label_variant=np.array(label_variant or ""),
             features=np.array(features or ""),
+            stores=np.array(stores or ""),
             **arrays,
         )
         stream.flush()
@@ -696,12 +716,13 @@ def _load_partials(
     seeds: tuple[int, ...],
     label_variant: str | None = None,
     features: str | None = None,
+    stores: str | None = None,
 ) -> dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]]:
     """Finished folds of an earlier run that cover every horizon and seed asked for now.
 
     Folds saved under another label variant (or by the standard labels when a variant is
-    asked for) or under another feature tag are ignored; folds saved before the tag existed
-    are ignored whenever a tag is asked for.
+    asked for), under another feature tag or under another store tag are ignored; folds
+    saved before a tag existed are ignored whenever that tag is asked for.
     """
     if resume_root is None:
         return {}
@@ -720,6 +741,9 @@ def _load_partials(
                 continue
             stored_features = str(payload["features"]) if "features" in payload.files else ""
             if stored_features != (features or ""):
+                continue
+            stored_stores = str(payload["stores"]) if "stores" in payload.files else ""
+            if stored_stores != (stores or ""):
                 continue
             fold_scores = {
                 (h, seed): np.asarray(payload[f"h{h:02d}_seed{seed}"], dtype=np.float32)
@@ -768,11 +792,13 @@ def run_walk_forward(
     resume_root: Path | None = None,
     model_name: str = MODEL_NAME,
     label_variant: str | None = None,
+    stores: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold, write predictions, targets, daily Rank IC and the cell summary.
 
     Each finished fold is written to ``output_root/partial/`` at once; ``resume_root`` names an
-    earlier output root whose partial folds are reused (a Pod restart costs at most one fold).
+    earlier output root whose partial folds are reused (a Pod restart costs at most one fold)
+    when their label variant, feature tag and store tag (``stores``, see ``store_tag``) match.
     """
     started = time.monotonic()
     backend = backend_name()
@@ -784,8 +810,9 @@ def run_walk_forward(
     partial_root.mkdir(parents=True, exist_ok=True)
     records, scores = [], {}
     features = feature_tag(feature_columns)
-    resumed = _load_partials(resume_root, partial_root, folds, horizons, seeds, label_variant,
-                             features)
+    resumed = _load_partials(
+        resume_root, partial_root, folds, horizons, seeds, label_variant, features, stores
+    )
     for fold_index, (fold_scores, fold_records) in resumed.items():
         scores[fold_index] = fold_scores
         records.extend(fold_records)
@@ -830,6 +857,7 @@ def run_walk_forward(
                 fold_records[result["fold"]],
                 label_variant,
                 features,
+                stores,
             )
             _cleanup_work(work_root / f"fold-{result['fold']:02d}")
         print(
