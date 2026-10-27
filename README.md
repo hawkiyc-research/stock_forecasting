@@ -752,14 +752,25 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    結果的 launch 是結果，不是續跑來源），且只接受同一標籤變體**且同一特徵規格**的折（partial 內記錄特徵欄位摘要），
    所以 F0 的舊折不會被 F1／F2 誤用；錯誤的結果用下面的腳本搬走。
 
-   **清掉錯誤結果**：若某次 F1／F2 的特徵庫建錯（`features.json` 的 `chip_coverage` 顯示沒有任何股票對上籌碼表）或
-   lgbm launch 的 `mean_validation_rank_ic` 恰為 0，在 Pod 內先列出再隔離，不要讓它留在 `diagnostics/lgbm/` 被續跑或下載：
+   **清掉錯誤與死掉的結果**：每次開新 Pod、啟動 job 之前，先在 Pod 內列出 volume 上研究層的狀態，確認後再隔離：
 
    ```bash
-   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py && python3 scripts/runpod_invalid_chip_results.py --apply
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py
    ```
 
-   錯誤的特徵庫與 launch 會整個目錄搬到 `diagnostics/invalid/` 下的同一相對路徑，不刪除；未完成的 launch 只列出。
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py --apply
+   ```
+
+   腳本檢查特徵庫與排名標籤庫（`prepared/features/`、`prepared/rank-labels/`）、特徵建置 launch（`diagnostics/features/`）、
+   LightGBM 與跨股 launch（`diagnostics/lgbm/`、`diagnostics/xs/`）；不碰資料準備（`raw/`、provider checkpoint、下載進度）
+   與 GPU 訓練 run。只有「有錯誤證據或已無法接續」的目錄會判為 INVALID：建錯的特徵庫（`chip_coverage` 沒有任何股票對上籌碼表、
+   或 manifest 不是 `ready`）；沒有 manifest 的半成品 store（建置不支援接續，重跑同一身分會原地重建，所以它是死的；只有
+   `lifecycle/research/features.json` 顯示有特徵建置 job 進行中時才保留）；沒有 `features-manifest.json` 且不在進行中的特徵建置
+   launch；在錯誤特徵庫上訓練、或 `mean_validation_rank_ic` 恰為 0 的已完成 launch；**續跑掃描已經搆不到的**未完成 launch——
+   lgbm 與 xs job 只從「最新的、有 `partial/` 且沒有 `results.json`」的 launch 接續，那一個 launch 不論是超時、容器重啟或當掉
+   都會保留，比它舊的未完成 launch 已被取代才會被搬走；沒有 `partial/` 又不在進行中的 launch 沒有東西可接續。`--apply` 會把
+   INVALID 的目錄整個搬到 `diagnostics/invalid/` 下的同一相對路徑（不刪除），搬之前先檢查所有目標都不存在，否則一個都不搬。
 
 5. **F2 重複第 3、4 步**，`--spec configs/features/alpha_chip_tw_v1.json`。
 
@@ -5122,16 +5133,31 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    folds of the same label variant **and the same feature spec** (the partial files record a digest of the feature
    columns), so F0's old folds are never reused for F1 / F2; wrong results are moved away with the script below.
 
-   **Removing wrong results**: when an F1 / F2 store was built wrong (its `features.json` `chip_coverage` shows that
-   no symbol matched the chip tables) or an lgbm launch reports a `mean_validation_rank_ic` of exactly 0, list and
-   then quarantine them inside the Pod so they are neither resumed from nor downloaded:
+   **Removing wrong and dead results**: at the start of every new Pod, before launching its job, list the state of
+   the volume's research layer inside the Pod, check it, then quarantine:
 
    ```bash
-   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py && python3 scripts/runpod_invalid_chip_results.py --apply
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py
    ```
 
-   Wrong stores and launches are moved whole to the same relative path under `diagnostics/invalid/`, never deleted;
-   unfinished launches are only listed.
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_invalid_chip_results.py --apply
+   ```
+
+   The script inspects feature and rank-label stores (`prepared/features/`, `prepared/rank-labels/`), feature-build
+   launches (`diagnostics/features/`) and the LightGBM and cross-stock launches (`diagnostics/lgbm/`,
+   `diagnostics/xs/`); it never touches dataset preparation (`raw/`, provider checkpoints, download progress) or GPU
+   training runs. Only directories with positive evidence of being wrong or impossible to continue are INVALID: a
+   store built wrong (`chip_coverage` matched no symbol, or a manifest that is not `ready`); a half-built store without
+   its manifest (store builds are not resumed — a rerun of the same identity rebuilds the directory in place — so it is
+   dead; it is kept only while `lifecycle/research/features.json` shows a feature-build job in flight); a feature-build
+   launch without `features-manifest.json` that is not in flight; a finished launch trained on a wrong store or with a
+   `mean_validation_rank_ic` of exactly 0; and an unfinished launch **the resume scan can no longer reach** — the lgbm
+   and xs jobs resume from the newest launch that has `partial/` and no `results.json`, so that one launch is kept
+   whether it stopped by timeout, container restart or crash, and only older unfinished launches, already superseded,
+   are moved; an unfinished launch without `partial/` that is not in flight has nothing to resume. `--apply` moves
+   each INVALID directory whole to the same relative path under `diagnostics/invalid/` (never deleted) and checks that
+   no target exists before the first move, otherwise it moves nothing.
 
 5. **Repeat steps 3 and 4 for F2** with `--spec configs/features/alpha_chip_tw_v1.json`.
 
