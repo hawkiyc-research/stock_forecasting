@@ -432,6 +432,30 @@ uv run python -m twbacktest.reversal_exposure --predictions ../artifacts/lgbm/<l
 | `--artifacts-root` | 只用來決定預設輸出目錄 | `../artifacts` |
 | `--output-root` | 輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/reversal-exposure-<UTC 時間>-<隨機碼>` |
 
+### 籌碼增量 G1／H-H（§13.18）
+
+`twbacktest.chip_increment` 是 `docs/experiment_protocol.md` §13.18 第 4、5 項的計分：同一 walk-forward、同一
+`residual_v1a` 標籤下，F0（價量）、F1（籌碼）、F2（兩者）三個 B0 run 的配對差 F1 − F0、F2 − F0，逐日在共同日期相減後
+做 block bootstrap。H-H：(i) 全宇宙持有格（h 5–10、市場等權）對殘差目標的 ΔIC 下界 > 0，且 (ii) 流動性宇宙 h = 10 的
+前後四分位殘差價差 F2 ≥ 1.5 × F0；G1：流動性宇宙或中小型股（流動性宇宙扣除股票期貨流動宇宙）任一的 ΔIC 下界 > 0 且
+F2 價差不低於 F0。子分析依期間（P1、P2、P1 ∪ P2）與分組（強勢股 = 前 20 日報酬宇宙內前五分之一、其餘）重複每個指標，
+並加「後四分位超額」（模型排在後四分位者的原始報酬減宇宙平均）。需要各 run 的 `targets.parquet`（`alpha_hNN` 與
+`residual_hNN`）、期交所 `taifex-all` 與公司參考表。輸出 `grid.csv`（水準）、`paired.csv`（配對差）、`daily.csv`、
+`report.json`（判定）與 `summary.md`。結果見 `docs/chip_increment_results.md`。
+
+```bash
+uv run python -m twbacktest.chip_increment --predictions ../artifacts/lgbm/<F0-launch>/predictions.parquet --targets ../artifacts/lgbm/<F0-launch>/targets.parquet --model t-lgbm-alpha-residual_v1a --label F0 --predictions ../artifacts/lgbm/<F1-launch>/predictions.parquet --targets ../artifacts/lgbm/<F1-launch>/targets.parquet --model t-lgbm-alpha-residual_v1a --label F1 --predictions ../artifacts/lgbm/<F2-launch>/predictions.parquet --targets ../artifacts/lgbm/<F2-launch>/targets.parquet --model t-lgbm-alpha-residual_v1a --label F2 --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| 選項 | 說明 | 預設 |
+| --- | --- | --- |
+| `--predictions`、`--targets`、`--model`、`--label` | 四者成對、可重複；`--label` 是輸出中的 run 名稱 | 必填 |
+| `--baseline` | 其他 run 都對它配對的 label | `F0` |
+| `--prices` | 資料集 raw `market.parquet` | 必填 |
+| `--taifex-root`、`--min-volume`、`--lookback` | 股票期貨流動宇宙的資料與門檻（同 `futures_universe`） | `<artifacts>/diagnostics/taifex-all`、100、20 |
+| `--reference` | 公司參考表（產業中性多空） | `configs/reference/tw_company_reference_20261022.csv` |
+| `--output-root` | 輸出目錄 | `artifacts/diagnostics/backtest/chip-increment-<labels>-<時間>-<id>` |
+
 ## English
 
 ### Purpose
@@ -943,3 +967,31 @@ uv run python -m twbacktest.reversal_exposure --predictions ../artifacts/lgbm/<l
 | `--cost-profiles` | Cost profiles | `config/cost_profiles.json` |
 | `--artifacts-root` | Only used for the default output directory | `../artifacts` |
 | `--output-root` | Output directory, must not exist yet | `artifacts/diagnostics/backtest/reversal-exposure-<UTC time>-<random>` |
+
+### Chip increment G1 / H-H (§13.18)
+
+`twbacktest.chip_increment` scores items 4–5 of `docs/experiment_protocol.md` §13.18: three B0 runs on one
+walk-forward and one `residual_v1a` label — F0 (price / volume), F1 (chip), F2 (both) — paired as F1 − F0 and
+F2 − F0, subtracted date by date on common dates and block-bootstrapped. H-H: (i) the full-universe holding
+cell (h 5–10, equal market weights) ΔIC against the residual target has a lower bound above 0, and (ii) F2's
+h = 10 top-minus-bottom quartile residual spread in the liquidity universe is at least 1.5 × F0's; G1: in the
+liquidity universe or in the small / mid caps (liquidity minus the liquid stock-futures universe) the ΔIC
+lower bound is above 0 and F2's spread is not below F0's. The sub-analysis repeats every metric by period
+(P1, P2, P1 ∪ P2) and segment (winners = top fifth by trailing 20-session return inside the universe, rest)
+and adds the bottom-quartile excess (raw return of the names ranked in the bottom quartile minus the universe
+mean). Needs each run's `targets.parquet` (`alpha_hNN` and `residual_hNN`), the TAIFEX `taifex-all` files
+and the company reference table. Writes `grid.csv` (levels), `paired.csv` (paired differences), `daily.csv`,
+`report.json` (verdicts) and `summary.md`. Results in `docs/chip_increment_results.md`.
+
+```bash
+uv run python -m twbacktest.chip_increment --predictions ../artifacts/lgbm/<F0-launch>/predictions.parquet --targets ../artifacts/lgbm/<F0-launch>/targets.parquet --model t-lgbm-alpha-residual_v1a --label F0 --predictions ../artifacts/lgbm/<F1-launch>/predictions.parquet --targets ../artifacts/lgbm/<F1-launch>/targets.parquet --model t-lgbm-alpha-residual_v1a --label F1 --predictions ../artifacts/lgbm/<F2-launch>/predictions.parquet --targets ../artifacts/lgbm/<F2-launch>/targets.parquet --model t-lgbm-alpha-residual_v1a --label F2 --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--predictions`, `--targets`, `--model`, `--label` | In quadruples, repeatable; `--label` names the run in the outputs | required |
+| `--baseline` | The label every other run is paired against | `F0` |
+| `--prices` | The dataset's raw `market.parquet` | required |
+| `--taifex-root`, `--min-volume`, `--lookback` | Liquid stock-futures universe data and thresholds (as `futures_universe`) | `<artifacts>/diagnostics/taifex-all`, 100, 20 |
+| `--reference` | Company reference table (industry-neutral long-short) | `configs/reference/tw_company_reference_20261022.csv` |
+| `--output-root` | Output directory | `artifacts/diagnostics/backtest/chip-increment-<labels>-<stamp>-<id>` |
