@@ -184,6 +184,7 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | `twbacktest.futures_universe` | 描述性 | 全部／有股票期貨／期貨流動三個區段的 h = 1、10 Rank IC 與前後十分位毛報酬 |
 | `twbacktest.futures_daytrade` | §13.15（H-E） | 後 q 分位於 8:45 期貨開盤放空、結算價平倉；tick 滑價、每口手續費、參與率上限、保證金、資本情境；多空與對沖版 |
 | `twbacktest.exposure_diagnostics` | §13.17 步驟 0 | 殘差標籤模型在流動性宇宙與股票期貨流動宇宙的殘差／原始 Rank IC、四分位價差、plain／產業中性／規模中性多空毛年化與股票期貨成本拖累，含停止規則判定 |
+| `twbacktest.chip_increment` | §13.18 第 4、5 項 | F0／F1／F2 三個 B0 run 的配對差（全宇宙、流動性宇宙、中小型股、股票期貨流動宇宙；分期與強勢股子分析），含 H-H 與 G1 判定 |
 | `twbacktest.scenario_suite` | §13.19（資訊性） | 六個多空情境（多日 band 多空、加台指期滾動 β 疊加、現股當沖多空、加台指期日內疊加、兩者各半、再加台指期）在散戶與機構兩個成本檔下並列；P1 選參數、TPEX 與 TW 合併、滑價敏感度、機構 3 億與 10 億容量、事前寫死的吸引力門檻 |
 | `twbacktest.reversal_exposure` | §13.19 補充（描述性） | 把多空結果拆成動能與 beta 暴露和剩餘排序能力：分數對前 20／60 日報酬與 beta 正交化（v1）、動能五分位內配對的多空、週轉率跳升三等分內的反轉價差，對原始報酬、原始 alpha 與殘差目標各報，含兩個成本檔的淨年化與事前判讀 |
 | `twbacktest.chip_data` | §13.19 補充四、§13.18 | 讀 `tw_chip_data` curated 層的 Parquet 分割（只收有 `_SUCCESS.json` 的分割、記錄 sha256）：每日融券／借券名單與借券限額表，對齊 walk-forward 預測列（訊號日 t 的列在 t+1 開盤使用） |
@@ -202,6 +203,7 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | [股票期貨空方當沖結果](docs/futures_daytrade_results.md) | q 選擇、成本敏感度、資本情境、價差普查（H-E） |
 | [殘差化標籤與可抽換編碼器結果](docs/residual_labels_results.md) | 變體 A／B 對舊 B0（H-F）、D0 重訓、D1 兩個編碼器、seed 穩定度、P1 → P2 保留率 |
 | [§13.17 步驟 0 結果](docs/exposure_diagnostics_results.md) | 殘差 alpha 幅度對成本、兩個宇宙、停止規則 |
+| [§13.18 籌碼增量 G1／H-H 結果](docs/chip_increment_results.md) | F1／F2 對 F0 的配對差、H-H 與 G1 判定、強勢股子分析、分點購買的第一道門 |
 | [機構成本六情境結果](docs/institution_cost_scenarios_results.md) | 散戶對機構成本、六情境、多空各腿與 TX 腿、滑價敏感度、容量、吸引力門檻（§13.19）；補充一到四：反轉暴露診斷、正交化 band、逐年與全格子、可借券名單與借不到機率下的空頭腿 |
 | [0050 核心加正交化多空疊加結果](docs/core_overlay_results.md) | §13.17 補充：0050 買進持有基準、變體 A（質押借款）與 B（台指期提供 β）全格子、選擇與 H-G、資本情境、多空腿執行層資訊、資料集分割未調整的發現；Word 版 `reports/core_overlay_results_20261026.docx` |
 | [Word 成果報告](reports/taiwan_rank_pipeline_results_20261025.docx) | 以上全部表格的雙語彙整，由 `scripts/build_results_report.py` 產生 |
@@ -776,7 +778,8 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
 
 6. **下載**：`bash scripts/runpod_workflow.sh download-features`、`download-lgbm`，各 launch 存於
    `artifacts/features/<dataset>/...` 與 `artifacts/lgbm/<launch-id>/`；G1／H-H 的配對差以 F0、F1、F2 三個 launch 的
-   `predictions.parquet` 計算（§13.18 第 4、5 項）。
+   `predictions.parquet` 與 `targets.parquet` 計算（§13.18 第 4、5 項；`cd backtest && uv run python -m twbacktest.chip_increment ...`，
+   見 [backtest/README.md](backtest/README.md) 與 [docs/chip_increment_results.md](docs/chip_increment_results.md)）。
 
 ### 共用基礎設施：RunPod 帳號、資料組與 Pod 守護
 
@@ -1700,6 +1703,7 @@ Pod 內的 Python 入口（由 tmux 工作呼叫，也可在 Pod 內直接執行
 | `uv run python -m twbacktest.futures_universe` | `--predictions`／`--model` 成對可重複；`--prices` 必填；`--artifacts-root`；`--taifex-root DIR` 預設 `<artifacts>/diagnostics/taifex-all`；`--min-volume X` 近月 20 日平均成交量（標準口）門檻，預設 100；`--lookback N` 預設 20；`--output-root` |
 | `uv run python -m twbacktest.futures_daytrade` | `--predictions`／`--model` 成對可重複；`--prices PATH` 可選（只用於時點噪音統計）；`--config PATH` 預設 `config/futures_daytrade.json`；`--artifacts-root`；`--output-root` |
 | `uv run python -m twbacktest.exposure_diagnostics` | `--predictions`、`--targets`（同一 run 的 `targets.parquet`，含 `residual_hNN`）、`--model` 三者成對可重複；`--prices` 必填；`--artifacts-root`；`--taifex-root`；`--reference PATH` 公司參考表，預設 `configs/reference/tw_company_reference_20261022.csv`；`--min-volume X` 預設 100；`--lookback N` 預設 20；`--output-root` |
+| `uv run python -m twbacktest.chip_increment` | `--predictions`、`--targets`、`--model`、`--label` 四者成對可重複（label 為輸出中的 run 名稱）；`--baseline` 預設 `F0`；`--prices` 必填；`--artifacts-root`；`--taifex-root`；`--reference PATH` 預設同上；`--min-volume X` 預設 100；`--lookback N` 預設 20；`--output-root` |
 | `uv run python -m twbacktest.scenario_suite` | `--predictions`／`--model` 成對可重複；`--prices` 必填；`--config PATH` 預設 `config/scenario_suite.json`（成本檔 `config/cost_profiles.json` 的路徑在其中；`config/scenario_suite_v1.json` 加入 `construction` 區塊：`score_variants` v0／v1、`leg_matching` none／momentum、`scenarios` 與 `multi_day.fixed`；`config/scenario_suite_v1_grid.json` 以 `grid_score_variant` 與 `grid_markets` 在 v1 分數下算 TWSE 與 TPEX 的全格子；`config/scenario_suite_v1_exec.json` 加入 `execution` 區塊，需 `--chip-data-root <tw_chip_data>/data` 或環境變數 `TW_CHIP_DATA_ROOT`）；每次另寫 `yearly.csv`（逐年淨報酬、Sharpe、回撤）；`--artifacts-root`（讀 `diagnostics/taifex-tx`）；`--output-root` 預設 `../artifacts/diagnostics/backtest/scenario-suite-<時間>/`。六情境 × 散戶／機構成本檔，P1 選參數後固定 |
 | `uv run python -m twbacktest.core_overlay` | `--predictions`／`--model` 成對可重複；`--prices` 必填；`--chip-data-root <tw_chip_data>/data`（或環境變數 `TW_CHIP_DATA_ROOT`）必填；`--config PATH` 預設 `config/core_overlay.json`（`suite_config` 指向 `scenario_suite_v1_exec.json`，宇宙、訊號、執行層、區間與固定 band 參數從那裡來；`core.splits` 列 0050 的分割）；`--artifacts-root`（讀 `diagnostics/taifex-tx`）；`--output-root` 預設 `../artifacts/diagnostics/backtest/core-overlay-<時間>/`。變體 A (w, L, r_fin) 全格子與變體 B，P1 以對 0050 的 IR 選 (w, L)，H-G 判定，TW 資本情境 |
 | `uv run python -m twbacktest.reversal_exposure` | `--predictions`／`--model` 成對可重複；`--targets` 同一 run 的 `targets.parquet`（每個模型一個，可省略）；`--prices` 必填（直接讀成交量）；`--cost-profiles` 預設 `config/cost_profiles.json`；`--artifacts-root` 只決定預設輸出目錄；`--output-root` 預設 `../artifacts/diagnostics/backtest/reversal-exposure-<時間>/` |
@@ -4477,6 +4481,7 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | `twbacktest.futures_universe` | Descriptive | Rank IC and top / bottom decile gross returns at h = 1 and 10 in the all / with-futures / liquid-futures segments |
 | `twbacktest.futures_daytrade` | §13.15 (H-E) | Short the bottom quantile at the 08:45 futures open and cover at settlement; tick slippage, per-contract commission, participation cap, margin, capital scenarios; long-short and hedged versions |
 | `twbacktest.exposure_diagnostics` | §13.17 step 0 | Residual-label models' residual / raw Rank IC, quartile spreads, plain / industry-neutral / size-neutral long-short gross annual returns and the stock-futures cost drag in the liquidity and liquid stock-futures universes, with the stop-rule verdict |
+| `twbacktest.chip_increment` | §13.18 items 4–5 | Paired differences of the F0 / F1 / F2 B0 runs (full, liquidity, small / mid-cap and liquid stock-futures universes; by period and recent-winner segment) with the H-H and G1 verdicts |
 | `twbacktest.scenario_suite` | §13.19 (informational) | Six long-short scenarios (multi-day band L/S, plus a rolling-β TX overlay, stock day-trade L/S, plus an intraday TX overlay, the half-and-half combination, plus TX) under the retail and institution cost profiles side by side; P1 selection, TPEX and the TW combination, slippage sensitivity, NT$300M / NT$1B capacity, the pre-registered attractiveness bar |
 | `twbacktest.reversal_exposure` | §13.19 supplement (descriptive) | Splits the long-short result into momentum / beta exposure and remaining skill: scores orthogonalized to the trailing 20 / 60-session returns and beta (v1), long-short paired inside momentum quintiles, reversal spreads inside turnover-spike terciles, each against the raw return, raw alpha and residual target, with both cost profiles' net and the pre-registered reading |
 | `twbacktest.chip_data` | §13.19 supplement 4, §13.18 | Reads the `tw_chip_data` curated Parquet partitions (only those carrying `_SUCCESS.json`, sha256 recorded): the daily margin / securities-lending eligibility lists and the lending-quota table, aligned with the walk-forward prediction rows (the row of signal date t is used at the open of t+1) |
@@ -4495,6 +4500,7 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | [Stock-futures short day-trade results](docs/futures_daytrade_results.md) | q selection, cost sensitivity, capital scenarios, spread census (H-E) |
 | [Residualized labels and pluggable encoders](docs/residual_labels_results.md) | Variants A / B against the old B0 (H-F), D0 retraining, both D1 encoders, seed stability, P1 → P2 retention |
 | [§13.17 step 0 results](docs/exposure_diagnostics_results.md) | Residual alpha size against costs, both universes, stop rule |
+| [§13.18 chip increment G1 / H-H results](docs/chip_increment_results.md) | Paired F1 / F2 versus F0, the H-H and G1 verdicts, the recent-winner sub-analysis, the first gate for buying broker-branch data |
 | [Six scenarios under institution costs](docs/institution_cost_scenarios_results.md) | Retail vs institution costs, six scenarios, long / short / TX legs, slippage sensitivity, capacity, attractiveness bar (§13.19); supplements 1 to 4: reversal-exposure diagnostic, orthogonalized band, yearly and full grid, the short book under the borrowable lists and borrow-failure probabilities |
 | [0050 core plus orthogonalized long-short overlay](docs/core_overlay_results.md) | §13.17 supplement: the 0050 buy-and-hold benchmark, the full grids of variant A (secured loan) and B (β from TX), selection and H-G, capital scenarios, execution-layer information of the legs, the unadjusted-split data finding; Word version `reports/core_overlay_results_20261026.docx` |
 | [Word results report](reports/taiwan_rank_pipeline_results_20261025.docx) | Every table above in one bilingual document, produced by `scripts/build_results_report.py` |
@@ -5163,7 +5169,9 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
 
 6. **Download**: `bash scripts/runpod_workflow.sh download-features` and `download-lgbm`; each launch lands in
    `artifacts/features/<dataset>/...` and `artifacts/lgbm/<launch-id>/`; the paired differences of G1 / H-H use
-   the `predictions.parquet` of the F0, F1 and F2 launches (§13.18 items 4 and 5).
+   the `predictions.parquet` and `targets.parquet` of the F0, F1 and F2 launches (§13.18 items 4 and 5;
+   `cd backtest && uv run python -m twbacktest.chip_increment ...`, see [backtest/README.md](backtest/README.md) and
+   [docs/chip_increment_results.md](docs/chip_increment_results.md)).
 
 ### Shared infrastructure: RunPod account, dataset and Pod guards
 
@@ -6220,6 +6228,7 @@ Local scripts and backtest modules:
 | `uv run python -m twbacktest.futures_universe` | `--predictions` / `--model` in pairs, repeatable; `--prices` required; `--artifacts-root`; `--taifex-root DIR` default `<artifacts>/diagnostics/taifex-all`; `--min-volume X` near-month 20-session mean volume (standard contracts) for "liquid", default 100; `--lookback N` default 20; `--output-root` |
 | `uv run python -m twbacktest.futures_daytrade` | `--predictions` / `--model` in pairs, repeatable; `--prices PATH` optional (timing-noise statistic only); `--config PATH` default `config/futures_daytrade.json`; `--artifacts-root`; `--output-root` |
 | `uv run python -m twbacktest.exposure_diagnostics` | `--predictions`, `--targets` (the same run's `targets.parquet` with `residual_hNN`) and `--model` in triples, repeatable; `--prices` required; `--artifacts-root`; `--taifex-root`; `--reference PATH` company reference, default `configs/reference/tw_company_reference_20261022.csv`; `--min-volume X` default 100; `--lookback N` default 20; `--output-root` |
+| `uv run python -m twbacktest.chip_increment` | `--predictions`, `--targets`, `--model`, `--label` in quadruples, repeatable (the label names the run in the outputs); `--baseline` default `F0`; `--prices` required; `--artifacts-root`; `--taifex-root`; `--reference PATH` default as above; `--min-volume X` default 100; `--lookback N` default 20; `--output-root` |
 | `uv run python -m twbacktest.scenario_suite` | `--predictions` / `--model` in pairs, repeatable; `--prices` required; `--config PATH` default `config/scenario_suite.json` (which names the cost-profile file `config/cost_profiles.json`; `config/scenario_suite_v1.json` adds the `construction` block: `score_variants` v0 / v1, `leg_matching` none / momentum, `scenarios` and `multi_day.fixed`; `config/scenario_suite_v1_grid.json` computes the full TWSE and TPEX grid on the v1 score through `grid_score_variant` and `grid_markets`; `config/scenario_suite_v1_exec.json` adds the `execution` block and needs `--chip-data-root <tw_chip_data>/data` or the `TW_CHIP_DATA_ROOT` environment variable); every run also writes `yearly.csv` (per-year net return, Sharpe, drawdown); `--artifacts-root` (reads `diagnostics/taifex-tx`); `--output-root` default `../artifacts/diagnostics/backtest/scenario-suite-<time>/`. Six scenarios × retail / institution cost profiles, parameters selected on P1 then fixed |
 | `uv run python -m twbacktest.core_overlay` | `--predictions` / `--model` in pairs, repeatable; `--prices` required; `--chip-data-root <tw_chip_data>/data` (or the `TW_CHIP_DATA_ROOT` environment variable) required; `--config PATH` default `config/core_overlay.json` (its `suite_config` points at `scenario_suite_v1_exec.json`, which supplies the universe, signal, execution layer, periods and fixed band parameters; `core.splits` lists 0050's splits); `--artifacts-root` (reads `diagnostics/taifex-tx`); `--output-root` default `../artifacts/diagnostics/backtest/core-overlay-<time>/`. Full variant A (w, L, r_fin) grid and variant B, (w, L) selected on P1 by the IR against 0050, the H-G verdict, TW capital scenarios |
 | `uv run python -m twbacktest.reversal_exposure` | `--predictions` / `--model` in pairs, repeatable; `--targets` the same run's `targets.parquet` (one per model, optional); `--prices` required (volume read directly); `--cost-profiles` default `config/cost_profiles.json`; `--artifacts-root` only sets the default output directory; `--output-root` default `../artifacts/diagnostics/backtest/reversal-exposure-<time>/` |
