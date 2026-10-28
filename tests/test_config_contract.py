@@ -360,3 +360,24 @@ def test_training_resume_contract_binds_bounded_implementation_sources() -> None
         len(digest) == 64 and set(digest) <= set("0123456789abcdef")
         for digest in implementation["files"].values()
     )
+
+
+def test_stage_configs_read_the_holdout_end_from_the_pod_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """data.test_end follows STAGE1_TEST_END (the holdout end of the dataset selection), so
+    verify-stage1-data, preflight and training compare the dataset against the same fixed
+    split that stock-forecasting-prepare built; without it the production default holds."""
+    for name in ("stage1", "stage2"):
+        path = ROOT / f"configs/{name}_kronos_base_lora.yaml"
+        monkeypatch.delenv("STAGE1_TEST_END", raising=False)
+        assert ExperimentConfig.from_yaml(path).data.fixed_split == {
+            "train_end": "2025-06-01",
+            "validation_end": "2025-12-01",
+            "test_end": "2026-06-01",
+        }
+        monkeypatch.setenv("STAGE1_TEST_END", "2026-10-23")
+        assert ExperimentConfig.from_yaml(path).data.fixed_split["test_end"] == "2026-10-23"
+        monkeypatch.setenv("STAGE1_TEST_END", "2025-11-01")
+        with pytest.raises(ValidationError):
+            ExperimentConfig.from_yaml(path)

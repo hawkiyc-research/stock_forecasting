@@ -836,7 +836,9 @@ walk-forward 都算不到它們；`cpu prepare --forward` 的前瞻包只服務 
 
 3. **資料準備**（修訂 v1，沿用 v1 的 provider 快取，只抓新區間）：`bash scripts/runpod_workflow.sh cpu prepare`，
    Pod 內 `bash scripts/runpod_tmux_launch.sh cpu-prepare`。凍結的準備腳本不改；holdout 結束日經 Pod 環境變數
-   `STAGE1_TEST_END` 傳給 `stock-forecasting-prepare --test-end`。
+   `STAGE1_TEST_END` 傳給 `stock-forecasting-prepare --test-end`，兩個 stage 設定檔的 `data.test_end` 也讀同一個變數
+   （`${STAGE1_TEST_END:-2026-06-01}`），所以 `verify-stage1-data`、preflight 與訓練核對的固定切分和資料集一致。
+   設定檔因此跟著選擇走：改過 `--test-end` 之後一定要重新 `configure`，選擇裡記的設定檔 SHA-256 才會對得上。
 4. **特徵庫**：F0 與 F2 各一個 Pod（`features --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json`，
    以及 `--spec configs/features/alpha_chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data`）。
 5. **walk-forward**：F0 與 F2 各一個 Pod，指定延長的排程：
@@ -5307,7 +5309,10 @@ models, follow this channel; every step creates a new dataset identity and leave
 3. **Data preparation** (revision v1, reusing v1's provider cache, fetching only the new window):
    `bash scripts/runpod_workflow.sh cpu prepare`, then `bash scripts/runpod_tmux_launch.sh cpu-prepare` inside the
    Pod. The frozen preparation script is unchanged; the holdout end reaches `stock-forecasting-prepare --test-end`
-   through the Pod environment variable `STAGE1_TEST_END`.
+   through the Pod environment variable `STAGE1_TEST_END`, and both stage configs read `data.test_end` from the same
+   variable (`${STAGE1_TEST_END:-2026-06-01}`), so `verify-stage1-data`, preflight and training check the dataset
+   against the fixed split it was built with. The config therefore follows the selection: after changing
+   `--test-end`, run `configure` again so the config SHA-256 recorded in the selection matches.
 4. **Feature stores**: one Pod each for F0 and F2 (`features --labelVariant configs/labels/residual_v1a.json
    --spec configs/features/alpha_tw_v1.json`, and `--spec configs/features/alpha_chip_tw_v1.json --chipDataRoot
    /runpod-volume/datasets/tw-chip-data`).
