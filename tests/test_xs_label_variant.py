@@ -7,7 +7,6 @@ import json
 
 import numpy as np
 import pytest
-
 from test_residual_labels import _spec
 
 
