@@ -173,8 +173,8 @@ class ProjectNamingTests(unittest.TestCase):
         script = (ROOT / "scripts/runpod_tmux_launch.sh").read_text()
         sessions = re.findall(r"(?m)^[ \t]*SESSION_NAME=(\S+)[ \t]*$", script)
         roles = (
-            "cpu-prepare", "cpu-finalize", "cpu-research", "cpu-features", "cpu-lgbm", "xs-train",
-            "train", "baseline", "validation", "probe-scales", "export-predictions",
+            "cpu-prepare", "cpu-chip", "cpu-finalize", "cpu-research", "cpu-features", "cpu-lgbm",
+            "xs-train", "train", "baseline", "validation", "probe-scales", "export-predictions",
         )
         self.assertEqual(sorted(sessions), sorted(SLUG + "-" + role for role in roles))
 
