@@ -145,6 +145,16 @@ def run(
     return payload
 
 
+def _dataset_end_exclusive(config) -> str | None:
+    """The dataset request's end date from the dataset manifest, when it is readable."""
+    try:
+        manifest = json.loads(Path(config.data.manifest_path).read_text(encoding="utf-8"))
+        value = manifest.get("date_range", {}).get("end_exclusive")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return str(value) if value else None
+
+
 def main(argv: list[str] | None = None) -> int:
     from stock_forecasting.config import ExperimentConfig
 
@@ -161,7 +171,9 @@ def main(argv: list[str] | None = None) -> int:
     # months of samples through asset_market_session_gap (see data/calendar_audit.py).
     from stock_forecasting.data.calendar_audit import require_consistent_calendar
 
-    calendar_report = require_consistent_calendar(Path(config.data.raw_path))
+    calendar_report = require_consistent_calendar(
+        Path(config.data.raw_path), end_exclusive=_dataset_end_exclusive(config)
+    )
     print(json.dumps({"calendar_audit": calendar_report}, indent=2), flush=True)
     spec = load_spec(args.spec)
     label_variant = load_label_spec(args.label_variant) if args.label_variant else None
