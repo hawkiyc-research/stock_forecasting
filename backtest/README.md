@@ -388,6 +388,41 @@ uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1.jso
 uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exec.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
 
+### P3 前瞻回測：S-A 週頻多頭與最後選定（§13.20）
+
+`config/scenario_suite_v1_p3.json` 是 §13.20 的設定：在補充四的 S1／S2（V1、無配平、執行層、參數固定）之外加入
+**S-A `wk_long`**（`twbacktest.weekly_band`），期間 P1、P2、**P3 = [2026-06-01, 2026-10-23)**，`decision_periods`
+指定 `P1+P2` 的聯集只含 P1 與 P2（P3 只報點估計與區間，不進任何選擇或門檻）。S-A 的規則：每個 ISO 週的最後一個
+訊號日為再平衡日，以 V1 正交化的 h = 5 分數在流動性宇宙內排序，持股掉出前 m × K 才賣、空位依排名補進，
+每次再平衡最多換掉 `turnover_cap` × K（0.5）個部位，超過時只賣排名最差的；再平衡之間只持有（跌停擋住的賣單
+次日再試，停牌或下市的部位照各 band 引擎的規則在收盤出場，這類被迫出場與期初建倉的補位不計入上限）。
+不放空、不加期貨；成本檔、滑價敏感度與資本情境（封頂規則）同 S1。`weekly.grid`（K ∈ {30, 50} × m ∈ {2, 3}）
+依 `selection`（TWSE、P1、機構主要成本、分數位置、淨 Sharpe）選定後固定，`weekly.fixed` 可依 run 名稱直接給定。
+`benchmarks` 區塊加入對照欄：等權流動性宇宙（`universe_ew_*`）與 0050（`etf_0050_*`，`splits` 列出資料集未調整的
+分割），每一列都帶年化報酬、Sharpe 與最大回撤，`daily.csv` 也多出對應欄；S-A 的列另有 `weekly_turnover`（每次
+再平衡換掉的比例）、`rebalances` 與 `cap_hits`。`--label` 為每個預測檔指定輸出中的 run 名稱（F0、F2 兩個檔內的
+模型名相同，必須用它區分；`multi_day.fixed` 與 `weekly.fixed` 以這個名稱為鍵）。
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_p3.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<F0-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F0 --predictions ../artifacts/lgbm/<F2-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F2 --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+`twbacktest.strategy_decision` 讀上面的輸出目錄，套用 §13.20 第 5、6 項，不再模擬：**最後選定** = 機構主要成本、TW、
+分數位置、V1 下 P1+P2 淨 Sharpe 最高的（run, 策略）格（S1、S2、S-A 三選一）；**H-J** = 該格在 P3 的年化淨報酬 > 0
+且 P3 最大回撤不比 P1+P2 深，兩者成立狀態為 `paper_trading_candidate`，否則 `research`；另算 F2 − F0 同一策略、同一
+市場的每日淨報酬配對差（P1+P2 區塊 bootstrap 區間、P3 點估計），下界 > 0 才宣稱策略層有籌碼增量。規則與期間在
+`config/strategy_decision.json`；輸出 `report.json` 與雙語 `summary.md`，`cells` 列出選定格在每個成本檔、市場、期間的數字。
+
+```bash
+uv run python -m twbacktest.strategy_decision --suite ../artifacts/diagnostics/backtest/scenario-suite-<UTC 時間>-<隨機碼>
+```
+
+| 選項 | 說明 | 預設 |
+| --- | --- | --- |
+| `--suite` | `scenario_suite` 的輸出目錄（需有 `grid.csv`、`daily.csv`） | 必填 |
+| `--config` | 選定與確認規則 | `config/strategy_decision.json` |
+| `--output-root` | 輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/strategy-decision-<UTC 時間>-<隨機碼>` |
+
 ### 0050 核心加正交化多空疊加（§13.17 補充）
 
 `twbacktest.core_overlay` 把 §13.19 補充二的正交化多空（V1、無配平、固定 band 參數）疊在 0050 買進持有之上，
@@ -911,6 +946,51 @@ list alignment, terciles, probabilities and fees; `summary.md` gains an executio
 ```bash
 uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exec.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<launch-id>/predictions.parquet --model t-lgbm-alpha-residual_v1a --predictions ../artifacts/xs/<launch-id>/predictions.parquet --model t-xs-scratch --prices ../artifacts/datasets/<dataset>/raw/market.parquet
 ```
+
+### P3 forward backtest: the S-A weekly long band and the final selection (§13.20)
+
+`config/scenario_suite_v1_p3.json` is the §13.20 configuration: supplement 4's S1 / S2 (v1, no matching, execution
+layer, fixed parameters) plus **S-A `wk_long`** (`twbacktest.weekly_band`), over P1, P2 and **P3 = [2026-06-01,
+2026-10-23)**; `decision_periods` restricts the `P1+P2` union to P1 and P2 (P3 is reported with point estimates
+and intervals only and enters no selection or bar). The S-A rule: the last signal date of every ISO week is a
+rebalance date; the liquidity universe is ranked by the v1-orthogonalized h = 5 score, a holding leaves only
+when its rank falls out of the top m × K, empty slots are refilled best-first, and at most `turnover_cap` × K
+(0.5) positions are replaced per rebalance (when more names fall out, only the worst-ranked are sold). Between
+rebalances the book only carries its positions (a limit-down-blocked sale is retried at the next open; a halted
+or delisted name exits at the close as in every band engine here; those forced exits and the initial build are
+refilled outside the cap). No shorts, no futures; the cost profiles, slippage sensitivities and capital
+scenarios (cap-and-scale) are those of S1. `weekly.grid` (K ∈ {30, 50} × m ∈ {2, 3}) is selected once by
+`selection` (TWSE, P1, institution primary cost, fractional, net Sharpe) and then fixed; `weekly.fixed` pins K
+and m per run name. The `benchmarks` block adds comparison columns: the equal-weight liquidity universe
+(`universe_ew_*`) and 0050 (`etf_0050_*`, with `splits` for the splits the dataset does not adjust), each with
+annualized return, Sharpe and maximum drawdown, and `daily.csv` carries the series; S-A rows also report
+`weekly_turnover` (share of K replaced per rebalance), `rebalances` and `cap_hits`. `--label` names each
+prediction file's run in the outputs (the F0 and F2 files carry the same model name, so it is required to tell
+them apart; `multi_day.fixed` and `weekly.fixed` are keyed by it).
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_p3.json --chip-data-root ../../tw_chip_data/data --predictions ../artifacts/lgbm/<F0-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F0 --predictions ../artifacts/lgbm/<F2-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F2 --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+`twbacktest.strategy_decision` reads that output directory and applies §13.20 items 5 and 6 without simulating
+anything: the **final selection** is the (run, strategy) cell — S1, S2 or S-A — with the highest P1+P2 net Sharpe
+under the institution primary cost, TW, fractional capital and v1; **H-J** passes when that cell's P3 annualized
+net return is above zero and its P3 maximum drawdown is not deeper than P1+P2's (status
+`paper_trading_candidate`, otherwise `research`). It also computes the paired daily net difference F2 − F0 of
+the same strategy and market (P1+P2 block-bootstrap interval, P3 point estimate); a strategy-level chip increment
+is claimed only when the lower bound is above zero. Rules and periods live in `config/strategy_decision.json`;
+the output is `report.json` and a bilingual `summary.md`, with `cells` listing the selected cell under every
+profile, market and period.
+
+```bash
+uv run python -m twbacktest.strategy_decision --suite ../artifacts/diagnostics/backtest/scenario-suite-<UTC time>-<random>
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--suite` | A `scenario_suite` output directory (`grid.csv`, `daily.csv`) | required |
+| `--config` | Selection and confirmation rules | `config/strategy_decision.json` |
+| `--output-root` | Output directory, must not exist yet | `artifacts/diagnostics/backtest/strategy-decision-<UTC time>-<random>` |
 
 ### 0050 core plus orthogonalized long-short overlay (§13.17 supplement)
 

@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "name": "strategy-decision-p3",
+  "description": "Experiment protocol section 13.20 items 5 and 6, applied to a scenario_suite_v1_p3 output: the final (run, strategy) cell is the highest P1+P2 institution net Sharpe on TW at fractional capital among S1, S2 and S-A; H-J passes when the cell's P3 net return is positive and its P3 maximum drawdown is not deeper than P1+P2's. The chip increment at the strategy level is the paired F2 - F0 daily net difference (informational).",
+  "selection": {
+    "profile": "institution",
+    "market": "TW",
+    "capital": "fractional",
+    "period": "P1+P2",
+    "metric": "sharpe",
+    "scenarios": [
+      "md_ls",
+      "md_ls_tx",
+      "wk_long"
+    ],
+    "score_variant": "v1",
+    "leg_matching": "none"
+  },
+  "confirmation": {
+    "period": "P3"
+  },
+  "increment": {
+    "base": "F0",
+    "treat": "F2",
+    "bootstrap": {
+      "block": 21,
+      "replicates": 1000,
+      "seed": 11
+    }
+  },
+  "periods": {
+    "P1": [
+      "2023-01-02",
+      "2025-06-01"
+    ],
+    "P2": [
+      "2025-06-01",
+      "2026-06-01"
+    ],
+    "P3": [
+      "2026-06-01",
+      "2026-10-23"
+    ]
+  },
+  "decision_periods": [
+    "P1",
+    "P2"
+  ],
+  "annualization_days": 252
+}

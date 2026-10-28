@@ -16,6 +16,10 @@ constructions on the liquidity universe of each market:
 * S4 ``dt_ls_tx``: S3 plus a TX intraday overlay (open to settlement) sized by rolling beta.
 * S5 ``combo`` / S6 ``combo_tx``: half the capital in the multi-day book and half in the day
   trade book, without / with the TX overlays.
+* S-A ``wk_long`` (protocol 13.20): the weekly low-turnover long band of ``weekly_band``, built
+  only when the configuration has a ``weekly`` block; K and m are selected on the same market,
+  period and metric as S1, the score is the orthogonalized h = 5 score, and the equal-weight
+  universe and 0050 (``benchmarks`` block) are comparison columns.
 
 Every series is evaluated under every cost profile of ``cost_profiles.json`` (retail and
 institution, with slippage sensitivities), per market and for a 50/50 combination of the two
@@ -69,15 +73,19 @@ from twbacktest.tw_strategy import (
 from twbacktest.walkforward_data import (
     WalkForwardInputs,
     build_inputs,
+    etf_growth,
     load_predictions,
     load_prices,
 )
+from twbacktest.weekly_band import SCENARIO as WEEKLY
+from twbacktest.weekly_band import select_weekly, weekly_long_book
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 DEFAULT_CONFIG = CONFIG_DIR / "scenario_suite.json"
 DEFAULT_ARTIFACTS = Path(__file__).resolve().parents[2] / "artifacts"
 FRACTIONAL = "fractional"
-SCENARIOS = ("md_ls", "md_ls_tx", "dt_ls", "dt_ls_tx", "combo", "combo_tx")
+SCENARIOS = ("md_ls", "md_ls_tx", "dt_ls", "dt_ls_tx", "combo", "combo_tx")  # the 13.19 six
+ALL_SCENARIOS = (*SCENARIOS, WEEKLY)  # plus S-A, built only when the config asks for it
 SCENARIO_LABELS = {
     "md_ls": ("S1 短至中天期台股多空", "S1 multi-day stock long-short"),
     "md_ls_tx": ("S2 S1 + 台指期", "S2 S1 + TX overlay"),
@@ -85,6 +93,7 @@ SCENARIO_LABELS = {
     "dt_ls_tx": ("S4 S3 + 台指期", "S4 S3 + TX overlay"),
     "combo": ("S5 當沖 + 多日", "S5 day trade + multi-day"),
     "combo_tx": ("S6 S5 + 台指期", "S6 S5 + TX overlays"),
+    WEEKLY: ("S-A 週頻低換手多頭", "S-A weekly low-turnover long"),
 }
 MULTI_DAY = {"md_ls", "md_ls_tx", "combo", "combo_tx"}
 DAY_TRADE = {"dt_ls", "dt_ls_tx", "combo", "combo_tx"}
@@ -247,6 +256,7 @@ class MarketData:
     masks: dict[str, np.ndarray]
     features: dict[str, np.ndarray] | None = None  # trailing returns, beta, turnover spike
     borrow: BorrowData | None = None  # borrowability per row (supplement 4)
+    benchmarks: dict[str, np.ndarray] | None = None  # comparison series per interval (13.20)
 
 
 def _index_series(prices: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -322,12 +332,21 @@ def prepare_market(
                 notional[j] = settle * multiplier
     lot = float(load_profiles(config)["board_lot"])
     raw_open = inputs.raw_open_1 if inputs.raw_open_1 is not None else np.full(mask.size, np.nan)
+    benchmarks = None
+    bench_cfg = config.get("benchmarks")
+    if bench_cfg:
+        benchmarks = {"universe_ew": positions.equal_weight(groups, inputs.move)}
+        etf = bench_cfg.get("etf")
+        if etf:
+            benchmarks[str(etf.get("name", "etf_0050"))] = etf_growth(
+                prices, dates, str(etf["symbol"]), splits=etf.get("splits"))
     return MarketData(
         market=market, inputs=inputs, mask=mask, groups=groups, index_interval=index_interval,
         index_intraday=index_intraday, index_total_return=index_total, futures=futures,
         tx_intraday=tx_intraday, tx_notional_per_contract=notional, intraday=intraday,
-        lot_cost=raw_open * lot, masks=period_masks(dates[1:], config["periods"]),
-        features=features,
+        lot_cost=raw_open * lot,
+        masks=period_masks(dates[1:], config["periods"], config.get("decision_periods")),
+        features=features, benchmarks=benchmarks,
     )
 
 
@@ -773,6 +792,7 @@ def block_for(scenario: str, config: dict[str, Any]) -> int:
 def summarize_book(
     book: Book, scenario: str, config: dict[str, Any], masks: dict[str, np.ndarray],
     index_total: np.ndarray, shared: dict[str, Any],
+    benchmarks: dict[str, np.ndarray] | None = None,
 ) -> list[dict[str, Any]]:
     rows = []
     days = int(config["annualization_days"])
@@ -791,11 +811,17 @@ def summarize_book(
             f"{name}_net_annual": float(np.nanmean(series[mask])) * days
             for name, series in (book.legs or {}).items()
         }
+        comparison: dict[str, float] = {}
+        for name, series in (benchmarks or {}).items():
+            part = series[mask]
+            comparison[f"{name}_annual"] = float(np.nanmean(part)) * days
+            comparison[f"{name}_sharpe"] = stats.ratio(part, days)
+            comparison[f"{name}_max_drawdown"] = stats.max_drawdown(part)
         rows.append({
             **shared, "scenario": scenario, "period": period, **summary,
             "hit_rate": float(np.mean(book.net[mask] > 0)),
             "index_total_return_annual": float(np.nanmean(index)) * days,
-            **book.info, **legs,
+            **book.info, **legs, **comparison,
         })
     return rows
 
@@ -805,6 +831,7 @@ def scenario_books(
     *, md_params: tuple[int, int, int], fraction: float, participation_cap: float,
     score_variant: str = "v0", leg_matching: str = "none",
     execution: ExecutionSpec | None = None, cache: dict[tuple, Any] | None = None,
+    wk_params: tuple[int, int] | None = None, weekly: bool = True,
 ) -> dict[str, Book]:
     wanted = tuple(config.get("scenarios", SCENARIOS))
     h, k, buffer = md_params
@@ -814,13 +841,22 @@ def scenario_books(
                         leg_matching=leg_matching, execution=execution, cache=cache)
     md_tx = tx_overlay(md, data, profile, config, intraday=False)
     books["md_ls"], books["md_ls_tx"] = md, md_tx
+    weekly_cfg = config.get("weekly")
+    # S-A has one construction of its own (its score variant, no leg matching), so it is built
+    # once, under the combination whose labels match it.
+    if (WEEKLY in wanted and weekly and weekly_cfg is not None and wk_params is not None
+            and score_variant == str(weekly_cfg.get("score_variant", "v1"))
+            and leg_matching == "none"):
+        books[WEEKLY] = weekly_long_book(
+            data, config, profile, capital, k=wk_params[0], buffer=wk_params[1],
+            participation_cap=participation_cap, score_variant=score_variant, cache=cache)
     if any(name in wanted for name in DAY_TRADE):
         dt = day_trade_book(data, config, profile, capital, fraction=fraction,
                             participation_cap=participation_cap)
         dt_tx = tx_overlay(dt, data, profile, config, intraday=True)
         books["dt_ls"], books["dt_ls_tx"] = dt, dt_tx
         books["combo"], books["combo_tx"] = combine(md, dt, config), combine(md_tx, dt_tx, config)
-    return {name: books[name] for name in SCENARIOS if name in wanted and name in books}
+    return {name: books[name] for name in ALL_SCENARIOS if name in wanted and name in books}
 
 
 def combined_market(
@@ -830,7 +866,7 @@ def combined_market(
     if not spec or any(market not in books for market in spec["weights"]):
         return None
     out = {}
-    scenarios = [name for name in SCENARIOS if name in next(iter(books.values()))]
+    scenarios = [name for name in ALL_SCENARIOS if name in next(iter(books.values()))]
     for scenario in scenarios:
         net = sum(float(w) * books[m][scenario].net for m, w in spec["weights"].items())
         gross = sum(float(w) * books[m][scenario].gross for m, w in spec["weights"].items())
@@ -869,7 +905,7 @@ def _profile_rows(
     rows = []
     for scenario, book in books.items():
         rows.extend(summarize_book(book, scenario, config, data.masks, data.index_total_return,
-                                   shared))
+                                   shared, benchmarks=data.benchmarks))
     return rows
 
 
@@ -982,9 +1018,17 @@ def run(
     *,
     artifacts: Path,
     chip_data_root: Path | None = None,
+    labels: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Run the suite; ``labels`` names the runs in the outputs (default: the model names) so
+    two files carrying the same model name, such as F0 and F2, stay apart."""
     if len(predictions) != len(models) or not models:
         raise ValueError("Give one --model per --predictions file")
+    labels = list(models) if labels is None else list(labels)
+    if len(labels) != len(models):
+        raise ValueError("Give one --label per --predictions file, or none")
+    if len(set(labels)) != len(labels):
+        raise ValueError("Run labels must be unique")
     config = json.loads(config_path.read_text(encoding="utf-8"))
     profiles = load_profiles(config)
     participation_cap = float(profiles["participation_cap"])
@@ -1011,11 +1055,14 @@ def run(
     features_table = trailing_features(prices_path) if needs_features else None
     wanted = tuple(config.get("scenarios", SCENARIOS))
     fixed = config["multi_day"].get("fixed", {})
+    weekly_cfg = config.get("weekly")
+    if WEEKLY in wanted and weekly_cfg is None:
+        raise ValueError("scenario wk_long needs a weekly block in the configuration")
     all_rows: list[dict[str, Any]] = []
     selection: dict[str, Any] = {}
     daily_frames = []
-    for path, label in zip(predictions, models, strict=True):
-        frame = load_predictions(path, label)
+    for path, model, label in zip(predictions, models, labels, strict=True):
+        frame = load_predictions(path, model)
         inputs = build_inputs(frame, prices)
         intraday = intraday_returns(frame, prices)
         features = row_features(frame, features_table) if features_table is not None else None
@@ -1057,17 +1104,34 @@ def run(
         else:
             dt_rows, fraction, dt_choice = [], float(
                 config["day_trade"]["grid"]["fractions"][0]), {"skipped": True}
-        for row in grid_rows + dt_rows:
+        wk_rows: list[dict[str, Any]] = []
+        wk_params: tuple[int, int] | None = None
+        wk_choice: dict[str, Any] = {"skipped": True}
+        if WEEKLY in wanted:
+            wk_variant = str(weekly_cfg.get("score_variant", "v1"))
+            wk_fixed = weekly_cfg.get("fixed", {})
+            if label in wk_fixed:
+                wk_params = (int(wk_fixed[label]["k"]), int(wk_fixed[label]["buffer"]))
+                wk_choice = {"k": wk_params[0], "buffer": wk_params[1], "fixed": True}
+            else:
+                wk_rows, wk_params, wk_choice = select_weekly(
+                    chooser, config, selection_profile, participation_cap,
+                    score_variant=wk_variant, capital=Capital(FRACTIONAL, None, None),
+                    summarize=summarize_book)
+            wk_choice["score_variant"] = wk_variant
+            wk_choice["turnover_cap"] = float(weekly_cfg["turnover_cap"])
+        for row in grid_rows + dt_rows + wk_rows:
             row["model"] = label
             row.setdefault("score_variant", "v0")
             row.setdefault("leg_matching", "none")
-        all_rows.extend(grid_rows + dt_rows)
-        selection[label] = {"multi_day": md_choice, "day_trade": dt_choice}
+        all_rows.extend(grid_rows + dt_rows + wk_rows)
+        selection[label] = {"model": model, "multi_day": md_choice, "day_trade": dt_choice,
+                            "weekly": wk_choice}
         caches: dict[tuple, dict[tuple, Any]] = {}
         point = {
             "label": label, "markets": markets, "config": config, "md_params": md_params,
             "fraction": fraction, "participation_cap": participation_cap, "caches": caches,
-            "daily_frames": daily_frames,
+            "daily_frames": daily_frames, "wk_params": wk_params,
         }
         for (variant, matching), profile in itertools.product(combos, cost_profiles(profiles)):
             primary = is_primary(profile, profiles)
@@ -1090,7 +1154,7 @@ def run(
                     all_rows.extend(_evaluate_point(
                         profile, Capital(FRACTIONAL, None, None), variant=variant,
                         matching=matching, execution=spec, primary=True, stage="execution",
-                        **{**point, "daily_frames": None}))
+                        weekly=False, **{**point, "daily_frames": None}))
     grid = pd.DataFrame(all_rows)
     verdicts = attractiveness(grid, config)
     output_root.mkdir(parents=True, exist_ok=False)
@@ -1103,7 +1167,8 @@ def run(
         "kind": "scenario-suite-retail-vs-institution",
         "config": str(config_path),
         "cost_profiles": str(config["cost_profiles"]),
-        "predictions": {label: str(path) for path, label in zip(predictions, models, strict=True)},
+        "predictions": {label: {"path": str(path), "model": model}
+                        for path, model, label in zip(predictions, models, labels, strict=True)},
         "prices": str(prices_path),
         "selection": selection,
         "attractiveness": verdicts,
@@ -1142,6 +1207,8 @@ def _evaluate_point(
     primary: bool,
     stage: str,
     daily_frames: list[pd.DataFrame] | None,
+    wk_params: tuple[int, int] | None = None,
+    weekly: bool = True,
 ) -> list[dict[str, Any]]:
     """Every scenario of one (profile, capital, construction, execution point) on every market
     and on the combined market; appends the daily series of the primary fractional cells."""
@@ -1157,6 +1224,7 @@ def _evaluate_point(
             participation_cap=participation_cap, score_variant=variant,
             leg_matching=matching, execution=execution,
             cache=caches.setdefault((market, variant, matching), {}),
+            wk_params=wk_params, weekly=weekly,
         )
         books_by_market[market] = books
         market_rows = _profile_rows(label, market, profile, capital, books, data, config,
@@ -1176,12 +1244,28 @@ def _evaluate_point(
                   "slippage_multiplier": profile.slippage_multiplier,
                   "primary_slippage": primary, "capital": capital.name,
                   "capital_twd": capital.twd, "stage": stage, **extra}
+        benchmarks = combined_benchmarks(markets, config)
         for scenario, book in combined.items():
             rows.extend(summarize_book(book, scenario, config, first.masks, index_total,
-                                       shared))
+                                       shared, benchmarks=benchmarks))
         if daily_frames is not None and primary and capital.twd is None:
-            daily_frames.append(_daily_frame(label, name, profile, combined, first, extra))
+            daily_frames.append(_daily_frame(label, name, profile, combined, first, extra,
+                                             benchmarks=benchmarks))
     return rows
+
+
+def combined_benchmarks(
+    markets: dict[str, MarketData], config: dict[str, Any]
+) -> dict[str, np.ndarray] | None:
+    """The comparison series of the combined market: the weighted mean of the markets'."""
+    spec = config.get("combined_market")
+    if not spec or any(markets[m].benchmarks is None for m in spec["weights"]):
+        return None
+    names = set.intersection(*(set(markets[m].benchmarks) for m in spec["weights"]))
+    return {
+        name: sum(float(w) * markets[m].benchmarks[name] for m, w in spec["weights"].items())
+        for name in sorted(names)
+    }
 
 
 def yearly_summary(daily: pd.DataFrame, *, annualization_days: int) -> pd.DataFrame:
@@ -1213,14 +1297,17 @@ def yearly_summary(daily: pd.DataFrame, *, annualization_days: int) -> pd.DataFr
 
 
 def _daily_frame(label: str, market: str, profile: CostProfile, books: dict[str, Book],
-                 data: MarketData, extra: dict[str, Any] | None = None) -> pd.DataFrame:
+                 data: MarketData, extra: dict[str, Any] | None = None,
+                 benchmarks: dict[str, np.ndarray] | None = None) -> pd.DataFrame:
     dates = data.inputs.dates[1:].strftime("%Y-%m-%d")
+    comparison = data.benchmarks if benchmarks is None else benchmarks
     frames = []
     for scenario, book in books.items():
         frames.append(pd.DataFrame({
             "model": label, "market": market, "profile": profile.name, "scenario": scenario,
             "interval_start": dates, "net": book.net, "gross": book.gross,
             "index_total_return": data.index_total_return, **(extra or {}),
+            **(comparison or {}),
         }))
     return pd.concat(frames, ignore_index=True)
 
@@ -1244,11 +1331,16 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame, profiles: dict[
     lines = ["# 六情境回測摘要（散戶 vs 機構）/ Six-scenario summary (retail vs institution)", ""]
     for model, choice in report["selection"].items():
         md, dt = choice["multi_day"], choice["day_trade"]
-        lines.append(f"- {model}: h = {md.get('h')}, K = {md.get('k')}, m = {md.get('buffer')}; "
-                     f"q = {dt.get('fraction')}")
+        line = (f"- {model}: h = {md.get('h')}, K = {md.get('k')}, m = {md.get('buffer')}; "
+                f"q = {dt.get('fraction')}")
+        wk = choice.get("weekly") or {}
+        if "k" in wk:
+            line += (f"; S-A K = {wk['k']}, m = {wk['buffer']}, 週換手上限 / weekly cap "
+                     f"{wk.get('turnover_cap')}")
+        lines.append(line)
     lines.append("")
     lines.extend(header)
-    order = {name: i for i, name in enumerate(SCENARIOS)}
+    order = {name: i for i, name in enumerate(ALL_SCENARIOS)}
     final = final.assign(_order=final["scenario"].map(order))
     sort_keys = ["_order", "model", "market", "profile", "period"]
     for row in final.sort_values(sort_keys).itertuples():
@@ -1284,6 +1376,30 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame, profiles: dict[
                 f"{pct(row.short_net_annual_rep_max)} |"
             )
         lines.append("")
+    weekly = final[final["scenario"] == WEEKLY]
+    if not weekly.empty and "universe_ew_annual" in weekly.columns:
+        lines.append("## S-A 對照 / S-A comparison columns")
+        lines.append("")
+        lines.append("| 模型 | 市場 | 成本檔 | 期間 | S-A 年化淨報酬 | 等權宇宙 | 0050 "
+                     "| TAIEX 報酬指數 | S-A 最大回撤 | 0050 回撤 | 週換手 | 再平衡次數 "
+                     "| 觸頂次數 |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
+                     "| --- |")
+        etf = [c for c in weekly.columns if c.startswith("etf_") and c.endswith("_annual")]
+        etf_name = etf[0][: -len("_annual")] if etf else None
+        for row in weekly.sort_values(["model", "market", "profile", "period"]).itertuples():
+            record = row._asdict()
+            pct = runner.percent
+            etf_annual = pct(record[f"{etf_name}_annual"]) if etf_name else "n/a"
+            etf_dd = pct(record[f"{etf_name}_max_drawdown"]) if etf_name else "n/a"
+            lines.append(
+                f"| {row.model} | {row.market} | {row.profile} | {row.period} | "
+                f"{pct(row.net_return_annual)} | {pct(record['universe_ew_annual'])} | "
+                f"{etf_annual} | {pct(row.index_total_return_annual)} | "
+                f"{pct(row.max_drawdown)} | {etf_dd} | {pct(record['weekly_turnover'])} | "
+                f"{record['rebalances']:.0f} | {record['cap_hits']:.0f} |"
+            )
+        lines.append("")
     lines.append("## 吸引力門檻 / Attractiveness bar")
     lines.append("")
     for model, scenarios in report["attractiveness"].items():
@@ -1307,6 +1423,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="walk-forward predictions.parquet (repeat per model)")
     parser.add_argument("--model", action="append", required=True,
                         help="model name inside the matching --predictions file")
+    parser.add_argument("--label", action="append",
+                        help="run name in the outputs for the matching --predictions file "
+                             "(default: the model name); needed when two files share a model")
     parser.add_argument("--prices", type=Path, required=True, help="raw market.parquet")
     parser.add_argument("--artifacts-root", type=Path, default=DEFAULT_ARTIFACTS)
     parser.add_argument("--output-root", type=Path)
@@ -1319,7 +1438,8 @@ def main(argv: list[str] | None = None) -> int:
                                                                  "scenario-suite")
     report = run(args.config, args.predictions, args.model, args.prices, output_root,
                  artifacts=args.artifacts_root,
-                 chip_data_root=Path(args.chip_data_root) if args.chip_data_root else None)
+                 chip_data_root=Path(args.chip_data_root) if args.chip_data_root else None,
+                 labels=args.label)
     print(json.dumps({"output_root": str(output_root), "selection": report["selection"],
                       "attractiveness": report["attractiveness"]}, indent=2, ensure_ascii=False))
     return 0
