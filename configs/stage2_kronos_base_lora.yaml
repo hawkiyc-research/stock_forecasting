@@ -10,7 +10,7 @@ data:
   h_start: ${FIN_TS_H_START:-1}
   train_end: "2025-06-01"
   validation_end: "2025-12-01"
-  test_end: "2026-06-01"
+  test_end: "${STAGE1_TEST_END:-2026-06-01}"
   calibration_seed: 59
   benchmark_mapping_path: null
   forecast_horizon: 5
