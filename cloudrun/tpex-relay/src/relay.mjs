@@ -35,6 +35,46 @@ const ROUTES = Object.freeze({
     required: Object.freeze(["date", "response"]),
     dateParameters: Object.freeze(["date"]),
   }),
+  // tw_chip_data (protocol 13.18) chip and event tables; TPEx answers 403 to requests from
+  // outside Taiwan (verified from RunPod on 2026-10-28), so these go through the relay too.
+  "/www/zh-tw/bulletin/attention": Object.freeze({
+    required: Object.freeze(["startDate", "endDate", "response"]),
+    dateParameters: Object.freeze(["startDate", "endDate"]),
+  }),
+  "/www/zh-tw/bulletin/disposal": Object.freeze({
+    required: Object.freeze(["startDate", "endDate", "response"]),
+    dateParameters: Object.freeze(["startDate", "endDate"]),
+  }),
+  "/www/zh-tw/insti/qfiiStat": Object.freeze({
+    required: Object.freeze(["type", "date", "searchType", "response"]),
+    dateParameters: Object.freeze(["date"]),
+    fixedValues: Object.freeze({ type: "Daily" }),
+    enumValues: Object.freeze({ searchType: Object.freeze(["buy", "sell"]) }),
+  }),
+  "/www/zh-tw/insti/sitcStat": Object.freeze({
+    required: Object.freeze(["type", "date", "searchType", "response"]),
+    dateParameters: Object.freeze(["date"]),
+    fixedValues: Object.freeze({ type: "Daily" }),
+    enumValues: Object.freeze({ searchType: Object.freeze(["buy", "sell"]) }),
+  }),
+  "/www/zh-tw/margin/sbl": Object.freeze({
+    required: Object.freeze(["date", "response"]),
+    dateParameters: Object.freeze(["date"]),
+  }),
+  "/www/zh-tw/margin/mark": Object.freeze({
+    required: Object.freeze(["date", "response"]),
+    dateParameters: Object.freeze(["date"]),
+  }),
+  "/www/zh-tw/intraday/stat": Object.freeze({
+    required: Object.freeze(["type", "date", "response"]),
+    dateParameters: Object.freeze(["date"]),
+    fixedValues: Object.freeze({ type: "Daily" }),
+  }),
+  // TPEx OpenAPI company reference: no query at all; the body is a JSON array.
+  "/openapi/v1/mopsfin_t187ap03_O": Object.freeze({
+    required: Object.freeze([]),
+    dateParameters: Object.freeze([]),
+  }),
 });
 
 const DATE_PATTERN = /^[0-9]{4}\/[0-9]{2}\/[0-9]{2}$/;
@@ -146,7 +186,7 @@ function validatedUpstreamUrl(requestUrl) {
   if (requiredNames.some((name) => requestUrl.searchParams.getAll(name).length !== 1)) {
     return null;
   }
-  if (requestUrl.searchParams.get("response") !== "json") {
+  if (route.required.includes("response") && requestUrl.searchParams.get("response") !== "json") {
     return null;
   }
   if (
@@ -164,7 +204,14 @@ function validatedUpstreamUrl(requestUrl) {
     return null;
   }
   if (
-    requestUrl.pathname === "/www/zh-tw/bulletin/exDailyQ" &&
+    Object.entries(route.enumValues ?? {}).some(
+      ([name, values]) => !values.includes(requestUrl.searchParams.get(name)),
+    )
+  ) {
+    return null;
+  }
+  if (
+    route.required.includes("startDate") &&
     requestUrl.searchParams.get("startDate") > requestUrl.searchParams.get("endDate")
   ) {
     return null;
