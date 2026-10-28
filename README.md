@@ -819,8 +819,12 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    `lifecycle/research/features.json` 顯示有特徵建置 job 進行中時才保留）；沒有 `features-manifest.json` 且不在進行中的特徵建置
    launch；在錯誤特徵庫上訓練、或 `mean_validation_rank_ic` 恰為 0 的已完成 launch；**續跑掃描已經搆不到的**未完成 launch——
    lgbm 與 xs job 只從「最新的、有 `partial/` 且沒有 `results.json`」的 launch 接續，那一個 launch 不論是超時、容器重啟或當掉
-   都會保留，比它舊的未完成 launch 已被取代才會被搬走；沒有 `partial/` 又不在進行中的 launch 沒有東西可接續。`--apply` 會把
-   INVALID 的目錄整個搬到 `diagnostics/invalid/` 下的同一相對路徑（不刪除），搬之前先檢查所有目標都不存在，否則一個都不搬。
+   都會保留，比它舊的未完成 launch 已被取代才會被搬走；沒有 `partial/` 又不在進行中的 launch 沒有東西可接續；
+   **被取代的樣本宇宙**（`prepared/sample-universes/<key>/`，記錄的 `data_cleaning.json` 政策與目前的不同，例如補列
+   2026-07-10 休市日之前建的，或 bar store manifest 摘要已不是資料集目前的）連同建在它上面的特徵庫、標籤庫
+   （`identity.sample_universe`）與在那些 store 上訓練的 launch——所有讀取端都用目前政策重算 key，這些目錄不會再被讀到。
+   `--apply` 會把 INVALID 的目錄整個搬到 `diagnostics/invalid/` 下的同一相對路徑，搬之前先檢查所有目標都不存在，否則一個都
+   不搬；搬移不會釋放空間，要把空間還給 volume 用 `--apply --delete` 直接刪除（同一份清單，先用不帶參數的列表確認過再刪）。
 
 5. **F2 重複第 3、4 步**，`--spec configs/features/alpha_chip_tw_v1.json`。
 
@@ -5298,8 +5302,14 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    and xs jobs resume from the newest launch that has `partial/` and no `results.json`, so that one launch is kept
    whether it stopped by timeout, container restart or crash, and only older unfinished launches, already superseded,
    are moved; an unfinished launch without `partial/` that is not in flight has nothing to resume. `--apply` moves
-   each INVALID directory whole to the same relative path under `diagnostics/invalid/` (never deleted) and checks that
-   no target exists before the first move, otherwise it moves nothing.
+   each INVALID directory whole to the same relative path under `diagnostics/invalid/` and checks that no target
+   exists before the first move, otherwise it moves nothing.
+   A **superseded sample universe** (`prepared/sample-universes/<key>/` whose recorded `data_cleaning.json`
+   policy differs from the current one, for example one built before the 2026-07-10 closure was listed, or whose
+   bar-store manifest digest is no longer the dataset's) is INVALID together with the stores built on it
+   (`identity.sample_universe`) and the launches trained on those stores: every reader recomputes the key from
+   the current policy, so nothing reads them again. Moving frees no space; `--apply --delete` removes the same
+   list instead (check the plain listing first).
 
 5. **Repeat steps 3 and 4 for F2** with `--spec configs/features/alpha_chip_tw_v1.json`.
 

@@ -3,6 +3,8 @@
 Runs inside a RunPod Pod (or against any directory laid out like the volume) with the image's
 Python; only the standard library is used. It inspects the research layer only:
 
+* sample-universe indexes ``datasets/<dataset>/prepared/sample-universes/<key>/`` (built by
+  the first ``cpu-features`` on a dataset from the data-cleaning policy);
 * feature stores ``datasets/<dataset>/prepared/features/<identity>/`` and rank-label stores
   ``datasets/<dataset>/prepared/rank-labels/<identity>/`` (built by ``cpu-features``);
 * feature-build launches ``diagnostics/features/launch-*/``;
@@ -15,6 +17,12 @@ progress), GPU training runs (``savedModel``) or anything already under ``diagno
 A directory is INVALID (moved by ``--apply``) only with positive evidence that it is wrong or
 that nothing can ever continue from it:
 
+* a sample-universe index whose recorded data-cleaning policy is not the project's current
+  ``configs/data_cleaning.json`` (for example one built before a closure such as 2026-07-10
+  was listed) or whose bar-store manifest digest is not the dataset's current one: nothing
+  reads it again, because every reader recomputes the key from the current policy; and every
+  store built on such a universe (``identity.sample_universe``), together with the launches
+  trained on those stores;
 * a store whose manifest says ``ready`` but whose chip point-in-time mapping matched no symbol
   (``chip_coverage.symbols_with_margin`` or ``symbols_with_institutional`` is 0, the pre-fix
   unit bug: every chip column NaN), or whose manifest is not ``ready`` (the builders only ever
@@ -34,16 +42,20 @@ that nothing can ever continue from it:
   without ``partial/`` has nothing to resume and is kept only while its lifecycle marker names
   it as in flight.
 
-Nothing is deleted: ``--apply`` moves each INVALID directory to ``diagnostics/invalid/<same
-relative path>`` so the resume scans and the download scripts no longer see it. Without
-``--apply`` the script only prints what it would move. All targets are checked before the first
-move; an existing target aborts the run without moving anything.
+``--apply`` moves each INVALID directory to ``diagnostics/invalid/<same relative path>`` so
+the resume scans and the download scripts no longer see it; ``--apply --delete`` removes them
+instead, which is the only way to give the space back to the volume. Without ``--apply`` the
+script only prints what it would move. All targets are checked before the first move; an
+existing target aborts the run without moving anything.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import runpy
+import shutil
 import sys
 from pathlib import Path
 
@@ -58,6 +70,8 @@ LAUNCH_KINDS = {
 }
 FEATURES_LIFECYCLE = "lifecycle/research/features.json"
 FEATURES_LAUNCH_MANIFEST = "features-manifest.json"
+UNIVERSE_MANIFEST = "universe.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read_json(path: Path) -> dict | None:
@@ -93,8 +107,77 @@ def _entry(kind: str, path: Path, *, spec=None, state=None, detail="", reason=No
     }
 
 
-def stores(volume: Path) -> list[dict]:
-    """Every feature and rank-label store with its state, coverage and verdict."""
+def current_policy(project_root: Path = PROJECT_ROOT) -> dict | None:
+    """The project's data-cleaning policy (None when it cannot be loaded here)."""
+    try:
+        tools = runpy.run_path(str(project_root / "src/stock_forecasting/data_policy.py"))
+        return tools["load_data_policy"](project_root)
+    except Exception:  # the audit must still run without the policy
+        return None
+
+
+def _sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def universes(volume: Path, policy: dict | None) -> tuple[list[dict], dict[str, set[str]]]:
+    """Every sample-universe index with its verdict, and per dataset the keys still current.
+
+    A universe is superseded when its recorded policy differs from the current one or its
+    bar-store manifest digest is not the dataset's: every reader recomputes the key from the
+    current policy and bar store, so nothing reads a superseded index again.
+    """
+    features_state, _ = _lifecycle(volume, FEATURES_LIFECYCLE)
+    out: list[dict] = []
+    current: dict[str, set[str]] = {}
+    for root in sorted(volume.glob("datasets/*/prepared/sample-universes/*")):
+        if not root.is_dir():
+            continue
+        dataset = root.parents[2].name
+        current.setdefault(dataset, set())
+        payload = _read_json(root / UNIVERSE_MANIFEST)
+        reason = None
+        detail = ""
+        if payload is None:
+            state = "building" if features_state == "preparing" else "interrupted"
+            if features_state != "preparing":
+                reason = f"interrupted index build (no {UNIVERSE_MANIFEST})"
+            detail = "no manifest"
+        else:
+            state = str(payload.get("state") or "")
+            identity = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+            bar_manifest = root.parents[1] / "bar-store" / "bar-store.json"
+            bar_digest = _sha256_file(bar_manifest)
+            if policy is not None and identity.get("policy") != policy:
+                reason = "built under a superseded data-cleaning policy"
+            elif bar_digest is not None and identity.get("source_manifest_sha256") != bar_digest:
+                reason = "built from a superseded bar store"
+            elif state != "ready":
+                reason = f"manifest state is {state!r}, not ready"
+            audit = payload.get("audit") if isinstance(payload.get("audit"), dict) else {}
+            detail = " ".join(
+                f"{split}={entry.get('accepted')}" for split, entry in sorted(audit.items())
+                if isinstance(entry, dict)
+            )
+        if reason is None:
+            current[dataset].add(root.name)
+        out.append(_entry("sample-universe", root, state=state, detail=detail, reason=reason))
+    return out, current
+
+
+def stores(volume: Path, current_universes: dict[str, set[str]] | None = None) -> list[dict]:
+    """Every feature and rank-label store with its state, coverage and verdict.
+
+    ``current_universes`` (from ``universes``) maps a dataset to the sample-universe keys that
+    are still current; a store built on any other key is superseded.
+    """
     features_state, _ = _lifecycle(volume, FEATURES_LIFECYCLE)
     out = []
     for layout, (kind, manifest_name) in STORE_KINDS.items():
@@ -124,8 +207,14 @@ def stores(volume: Path) -> list[dict]:
             state = payload.get("state")
             reason = None
             detail = ""
+            dataset = root.parents[2].name
+            known = (current_universes or {}).get(dataset)
+            universe = identity.get("sample_universe")
             if state != "ready":
                 reason = f"manifest state is {state!r}, not ready"
+            elif known is not None and universe is not None and universe not in known:
+                reason = "built on a superseded sample universe"
+                detail = f"universe={str(universe)[:12]}"
             elif _is_chip_identity(identity):
                 coverage = payload.get("chip_coverage") or {}
                 margin = int(coverage.get("symbols_with_margin", 0) or 0)
@@ -198,7 +287,8 @@ def launches(volume: Path, invalid_store_roots: set[Path]) -> list[dict]:
             rank_ic = fits.get("mean_validation_rank_ic") if isinstance(fits, dict) else None
             reason = None
             if any(root_.name in invalid_names for root_ in feature_roots):
-                reason = "trained on a wrong feature store"
+                launch_state = "finished" if results is not None else "unfinished"
+                reason = "trained on a wrong or superseded feature store"
             elif results is not None:
                 launch_state = "finished"
                 if rank_ic is not None and float(rank_ic) == 0.0:
@@ -226,14 +316,20 @@ def launches(volume: Path, invalid_store_roots: set[Path]) -> list[dict]:
     return out
 
 
-def quarantine(volume: Path, entries: list[dict], apply: bool) -> list[tuple[Path, Path]]:
-    """Move every invalid entry under ``diagnostics/invalid/``; returns (source, target) pairs."""
+def quarantine(
+    volume: Path, entries: list[dict], apply: bool, *, delete: bool = False
+) -> list[tuple[Path, Path]]:
+    """Move every invalid entry under ``diagnostics/invalid/`` (or delete it with ``delete``);
+    returns (source, target) pairs."""
     moves = []
     for entry in entries:
         if entry["invalid"]:
             source = Path(entry["path"])
             moves.append((source, volume / "diagnostics" / "invalid" / source.relative_to(volume)))
-    if apply:
+    if apply and delete:
+        for source, _target in moves:
+            shutil.rmtree(source)
+    elif apply:
         existing = [target for _, target in moves if target.exists()]
         if existing:
             raise FileExistsError(f"quarantine target already exists: {existing[0]}")
@@ -261,26 +357,39 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--apply", action="store_true", help="move the wrong directories (default: only list)"
     )
+    parser.add_argument(
+        "--delete", action="store_true",
+        help="with --apply: delete the wrong directories instead of moving them (frees space)",
+    )
     args = parser.parse_args(argv)
+    if args.delete and not args.apply:
+        parser.error("--delete needs --apply")
     volume = args.volume.resolve()
     if not volume.is_dir():
         print(f"volume root is not a directory: {volume}", file=sys.stderr)
         return 2
-    store_entries = stores(volume)
+    universe_entries, current = universes(volume, current_policy())
+    store_entries = stores(volume, current)
     invalid_roots = {Path(s["path"]) for s in store_entries if s["invalid"]}
-    entries = store_entries + feature_launches(volume) + launches(volume, invalid_roots)
+    entries = (
+        universe_entries + store_entries + feature_launches(volume)
+        + launches(volume, invalid_roots)
+    )
     if not entries:
         print("No stores or research launches found")
         return 0
     _print_table(entries)
-    moves = quarantine(volume, entries, args.apply)
+    moves = quarantine(volume, entries, args.apply, delete=args.delete)
     if not moves:
         print("Nothing to quarantine")
         return 0
     for source, target in moves:
-        print(("moved " if args.apply else "would move ") + f"{source} -> {target}")
+        if args.apply and args.delete:
+            print(f"deleted {source}")
+        else:
+            print(("moved " if args.apply else "would move ") + f"{source} -> {target}")
     if not args.apply:
-        print("Re-run with --apply to move them")
+        print("Re-run with --apply to move them, or --apply --delete to remove them")
     return 0
 
 

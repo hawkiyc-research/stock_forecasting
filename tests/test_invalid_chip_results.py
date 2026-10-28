@@ -19,10 +19,15 @@ spec.loader.exec_module(module)
 DATASET = "ds"
 
 
-def _store(volume: Path, digest: str, *, chip: bool, margin: int, state="ready", layout="features"):
+def _store(
+    volume: Path, digest: str, *, chip: bool, margin: int, state="ready", layout="features",
+    universe: str | None = None,
+):
     root = volume / "datasets" / DATASET / "prepared" / layout / digest
     root.mkdir(parents=True)
     identity = {"spec": {"name": "chip_tw_v1" if chip else "alpha_tw_v1"}}
+    if universe is not None:
+        identity["sample_universe"] = universe
     payload = {"state": state, "identity": identity}
     if chip:
         identity["chip_data"] = {"manifests": {}}
@@ -33,6 +38,26 @@ def _store(volume: Path, digest: str, *, chip: bool, margin: int, state="ready",
     manifest = "features.json" if layout == "features" else "rank-labels.json"
     (root / manifest).write_text(json.dumps(payload))
     (root / "bucket-000.parquet").write_bytes(b"x")
+    return root
+
+
+def _bar_store(volume: Path) -> str:
+    manifest = volume / "datasets" / DATASET / "prepared" / "bar-store" / "bar-store.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({"kind": "symbol-oriented-ohlcv-bar-store"}))
+    return module._sha256_file(manifest)
+
+
+def _universe(volume: Path, key: str, policy: dict, bar_digest: str, state="ready") -> Path:
+    root = volume / "datasets" / DATASET / "prepared" / "sample-universes" / key
+    (root / "parts").mkdir(parents=True)
+    (root / "parts" / "0000.parquet").write_bytes(b"x")
+    payload = {
+        "state": state,
+        "identity": {"policy": policy, "source_manifest_sha256": bar_digest, "window_size": 128},
+        "audit": {"test": {"accepted": 10}},
+    }
+    (root / "universe.json").write_text(json.dumps(payload))
     return root
 
 
@@ -97,12 +122,53 @@ def volume(tmp_path: Path) -> Path:
 
 
 def _invalid_paths(volume: Path) -> set[Path]:
-    store_entries = module.stores(volume)
+    universe_entries, current = module.universes(volume, module.current_policy())
+    store_entries = module.stores(volume, current)
     invalid_roots = {Path(s["path"]) for s in store_entries if s["invalid"]}
     entries = (
-        store_entries + module.feature_launches(volume) + module.launches(volume, invalid_roots)
+        universe_entries + store_entries + module.feature_launches(volume)
+        + module.launches(volume, invalid_roots)
     )
     return {Path(e["path"]) for e in entries if e["invalid"]}
+
+
+def test_superseded_universes_and_everything_built_on_them(volume: Path, capsys) -> None:
+    policy = module.current_policy()
+    assert policy is not None and "2026-07-10" in policy["calendar_overrides"]["XTAI"]["closed"]
+    bar = _bar_store(volume)
+    old_policy = json.loads(json.dumps(policy))
+    old_policy["calendar_overrides"]["XTAI"]["closed"].remove("2026-07-10")
+    stale = _universe(volume, "u-old", old_policy, bar)
+    fresh = _universe(volume, "u-new", policy, bar)
+    other_bar = _universe(volume, "u-other", policy, "0" * 64)
+    old_store = _store(volume, "f-old", chip=False, margin=0, universe="u-old")
+    old_labels = _store(volume, "l-old", chip=False, margin=0, layout="rank-labels",
+                        universe="u-old")
+    new_store = _store(volume, "f-new", chip=False, margin=0, universe="u-new")
+    legacy = _store(volume, "f-legacy", chip=False, margin=0)  # no universe recorded: kept
+    trained_on_old = _launch(volume, "launch-1", old_store, 0.05, chip=False)
+    trained_on_new = _launch(volume, "launch-2", new_store, 0.05, chip=False)
+
+    invalid = _invalid_paths(volume)
+    assert {stale, other_bar, old_store, old_labels, trained_on_old} <= invalid
+    assert not ({fresh, new_store, legacy, trained_on_new} & invalid)
+
+    assert module.main(["--volume", str(volume)]) == 0
+    out = capsys.readouterr().out
+    assert "superseded data-cleaning policy" in out and "superseded bar store" in out
+    assert "superseded sample universe" in out and "would move" in out
+
+    assert module.main(["--volume", str(volume), "--apply", "--delete"]) == 0
+    assert not stale.exists() and not old_store.exists() and not trained_on_old.exists()
+    assert fresh.exists() and new_store.exists() and legacy.exists()
+    assert not (volume / "diagnostics" / "invalid").exists()
+    assert "deleted" in capsys.readouterr().out
+
+
+def test_delete_needs_apply(volume: Path) -> None:
+    volume.mkdir(parents=True)
+    with pytest.raises(SystemExit):
+        module.main(["--volume", str(volume), "--delete"])
 
 
 def test_wrong_stores_and_the_launches_built_on_them(volume: Path, capsys) -> None:

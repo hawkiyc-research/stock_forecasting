@@ -61,3 +61,19 @@ def test_markets_without_a_configured_calendar_are_skipped(tmp_path):
     raw = _raw(tmp_path, {"XX": days})
     report = calendar_audit.require_consistent_calendar(raw)
     assert report["XX"]["skipped"]
+
+
+def test_the_dataset_end_bounds_the_audit(tmp_path):
+    # Bars beyond the requested end are a ragged tail; a closure inside the range still counts.
+    days = [d for d in _sessions("2026-06-01", "2026-10-31") if d != "2026-10-23"]
+    raw = _raw(tmp_path, {"TWSE": days})
+    report = calendar_audit.audit_calendar(
+        calendar_audit.observed_trading_dates(raw), end_exclusive="2026-10-23")
+    assert report["TWSE"]["last"] < "2026-10-23"
+    assert report["TWSE"]["sessions_without_bars"] == []
+    assert calendar_audit.main(["--raw", str(raw), "--end-exclusive", "2026-10-23"]) == 0
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    gap = _raw(inside, {"TWSE": [d for d in days if d != "2026-10-01"]})
+    with pytest.raises(ValueError, match="2026-10-01"):
+        calendar_audit.require_consistent_calendar(gap, end_exclusive="2026-10-23")

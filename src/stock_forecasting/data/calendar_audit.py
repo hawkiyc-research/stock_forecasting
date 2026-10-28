@@ -47,14 +47,23 @@ def observed_trading_dates(raw_path: Path) -> dict[str, list[str]]:
 
 
 def audit_calendar(
-    observed: dict[str, list[str]], policy: dict[str, Any] | None = None
+    observed: dict[str, list[str]],
+    policy: dict[str, Any] | None = None,
+    *,
+    end_exclusive: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Per market: calendar sessions without any bar, and bars on days the calendar closes."""
+    """Per market: calendar sessions without any bar, and bars on days the calendar closes.
+
+    ``end_exclusive`` (the dataset request's end date) bounds the audited range: bars the raw
+    file may hold beyond the requested range are a ragged tail, not evidence either way.
+    """
     from stock_forecasting.data.sample_universe import market_sessions
 
     policy = policy or load_data_policy()
     report: dict[str, dict[str, Any]] = {}
     for market, days in sorted(observed.items()):
+        if end_exclusive is not None:
+            days = [day for day in days if day < end_exclusive]
         if not days:
             continue
         calendar = policy["calendars"].get(market)
@@ -98,10 +107,15 @@ def inconsistencies(report: dict[str, dict[str, Any]]) -> list[str]:
 
 
 def require_consistent_calendar(
-    raw_path: Path, policy: dict[str, Any] | None = None
+    raw_path: Path,
+    policy: dict[str, Any] | None = None,
+    *,
+    end_exclusive: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Audit ``raw_path`` and raise when the calendar and the data disagree."""
-    report = audit_calendar(observed_trading_dates(Path(raw_path)), policy)
+    report = audit_calendar(
+        observed_trading_dates(Path(raw_path)), policy, end_exclusive=end_exclusive
+    )
     problems = inconsistencies(report)
     if problems:
         raise ValueError(
@@ -114,8 +128,9 @@ def require_consistent_calendar(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw", type=Path, required=True, help="raw market.parquet")
+    parser.add_argument("--end-exclusive", help="dataset end date (YYYY-MM-DD, exclusive)")
     args = parser.parse_args(argv)
-    report = audit_calendar(observed_trading_dates(args.raw))
+    report = audit_calendar(observed_trading_dates(args.raw), end_exclusive=args.end_exclusive)
     print(json.dumps(report, indent=2))
     problems = inconsistencies(report)
     for line in problems:
