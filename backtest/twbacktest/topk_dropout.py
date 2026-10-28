@@ -121,13 +121,24 @@ def simulate_dropout(
     )
 
 
-def period_masks(interval_dates: pd.DatetimeIndex, periods: dict[str, list[str]]) -> dict:
+def period_masks(
+    interval_dates: pd.DatetimeIndex, periods: dict[str, list[str]],
+    decision: list[str] | None = None,
+) -> dict:
+    """Boolean masks per named period, plus the decision union ``P1+P2`` over ``decision``
+    (every period when None, so a forward period such as P3 stays out of the union only when
+    the configuration names the decision periods)."""
     masks = {}
     union = np.zeros(len(interval_dates), dtype=bool)
+    names = list(periods) if decision is None else list(decision)
+    unknown = [name for name in names if name not in periods]
+    if unknown:
+        raise ValueError(f"decision periods are not defined: {unknown}")
     for name, (start, end) in periods.items():
         mask = (interval_dates >= pd.Timestamp(start)) & (interval_dates < pd.Timestamp(end))
         masks[name] = mask.to_numpy() if hasattr(mask, "to_numpy") else np.asarray(mask)
-        union |= masks[name]
+        if name in names:
+            union |= masks[name]
     masks[DECISION_PERIOD] = union
     return masks
 
