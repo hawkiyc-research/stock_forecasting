@@ -299,7 +299,12 @@ request 估算；估算值不會阻止完整資料集執行。provider 對 2018 
   `calendar_overrides` 已補列 2016–2018 年八個週六交易日，並排除套件漏列的
   2022-02-04、2023-01-18、2024-10-31、2026-07-10 休市日（最後一天為巴威颱風、臺北市停止上班，
   集中與櫃買市場全日休市；少列一天休市會讓之後 128 個交易日內所有樣本窗被判定為
-  `asset_market_session_gap` 而全部丟棄，§13.20 的 P3 資料就是這樣在 2026-07 之後清空的）。依據包括
+  `asset_market_session_gap` 而全部丟棄，§13.20 的 P3 資料就是這樣在 2026-07 之後清空的）。
+  `stock-forecasting-build-features`（features Pod）在建任何 store 之前會先跑
+  `stock_forecasting.data.calendar_audit`：對每個市場比較原始 `market.parquet` 實際有行情的日期與
+  日曆交易日，任何「日曆有、資料沒有」或「資料有、日曆沒有」的日期都會列出並中止，提示核對交易所公告後
+  加入 `closed`／`open`；前瞻包（`cpu prepare --forward`）原本就會以官方交易日比對並記錄差異。
+  手動檢查：`poetry run python -m stock_forecasting.data.calendar_audit --raw <資料集>/raw/market.parquet`。依據包括
   [櫃買中心 2016 年日曆](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_105.htm)、
   [2017 年日曆](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_106.htm)、
   [證交所 2018 年日曆](https://www.twse.com.tw/staticFiles/product/publication/0001002657.pdf)、
@@ -4700,7 +4705,13 @@ Inference applies the same checks that depend only on past observations:
   the missing closures on 2022-02-04, 2023-01-18, 2024-10-31 and 2026-07-10 (the last one
   is Typhoon Bavi: Taipei City suspended work and both the TWSE and TPEx markets closed for
   the day; a closure missing from the list makes every 128-session window across it an
-  `asset_market_session_gap`, which is how the §13.20 P3 months after 2026-07 were emptied). Sources are
+  `asset_market_session_gap`, which is how the §13.20 P3 months after 2026-07 were emptied).
+  `stock-forecasting-build-features` (the features Pod) runs `stock_forecasting.data.calendar_audit`
+  before building any store: per market it compares the dates the raw `market.parquet` actually
+  traded with the calendar sessions, and any date present in one but not the other is listed and
+  stops the job, pointing at `closed` / `open` after the exchange announcement is checked; the forward
+  package (`cpu prepare --forward`) already compares official sessions and records the differences.
+  Manual check: `poetry run python -m stock_forecasting.data.calendar_audit --raw <dataset>/raw/market.parquet`. Sources are
   [TPEx 2016](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_105.htm),
   [TPEx 2017](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_106.htm),
   [TWSE 2018](https://www.twse.com.tw/staticFiles/product/publication/0001002657.pdf),

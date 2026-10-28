@@ -156,6 +156,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.chip_data_root is not None:
         os.environ["TW_CHIP_DATA_ROOT"] = str(args.chip_data_root)
     config = ExperimentConfig.from_yaml(args.experiment_config)
+    # Fail before any store is built when the pinned calendar lists a session the data never
+    # traded (an unlisted exchange closure) or misses a day it did: either one silently empties
+    # months of samples through asset_market_session_gap (see data/calendar_audit.py).
+    from stock_forecasting.data.calendar_audit import require_consistent_calendar
+
+    calendar_report = require_consistent_calendar(Path(config.data.raw_path))
+    print(json.dumps({"calendar_audit": calendar_report}, indent=2), flush=True)
     spec = load_spec(args.spec)
     label_variant = load_label_spec(args.label_variant) if args.label_variant else None
     payload = run(
