@@ -165,11 +165,18 @@ def test_sparse_multiyear_history_cannot_satisfy_a_128_session_context(pair):
 
 
 def test_taiwan_official_exceptional_sessions_are_not_asset_gaps():
-    sessions = market_sessions("XTAI", "2016-01-01", "2026-06-01")
+    sessions = market_sessions("XTAI", "2016-01-01", "2026-12-31")
     changes = load_data_policy()["calendar_overrides"]["XTAI"]
     assert all(pd.Timestamp(day, tz="UTC") in sessions for day in changes["open"])
     assert all(pd.Timestamp(day, tz="UTC") not in sessions for day in changes["closed"])
     assert pd.Timestamp("2025-02-08", tz="UTC") not in sessions
+    # The 2026-07-10 typhoon closure (Typhoon Bavi) is a session in exchange_calendars
+    # 4.13.2; without the override every 128-session window across it is rejected as an
+    # asset gap, which emptied the P3 months of the 13.20 dataset.
+    assert "2026-07-10" in changes["closed"]
+    assert pd.Timestamp("2026-07-10", tz="UTC") not in sessions
+    assert pd.Timestamp("2026-07-09", tz="UTC") in sessions
+    assert pd.Timestamp("2026-07-13", tz="UTC") in sessions
 
 
 def test_runtime_index_reuses_bars_and_keeps_full_deterministic_splits(tmp_path, pair):
