@@ -297,13 +297,16 @@ request 估算；估算值不會阻止完整資料集執行。provider 對 2018 
   對應 XTAI。不把週一至週五一律當交易日，也不把個股與 benchmark 同時缺資料
   誤當休市。日曆版本固定；臨時休市等差異須核對交易所公告，不自行補價格。
   `calendar_overrides` 已補列 2016–2018 年八個週六交易日，並排除套件漏列的
-  2022-02-04、2023-01-18、2024-10-31 休市日。依據包括
+  2022-02-04、2023-01-18、2024-10-31、2026-07-10 休市日（最後一天為巴威颱風、臺北市停止上班，
+  集中與櫃買市場全日休市；少列一天休市會讓之後 128 個交易日內所有樣本窗被判定為
+  `asset_market_session_gap` 而全部丟棄，§13.20 的 P3 資料就是這樣在 2026-07 之後清空的）。依據包括
   [櫃買中心 2016 年日曆](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_105.htm)、
   [2017 年日曆](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_106.htm)、
   [證交所 2018 年日曆](https://www.twse.com.tw/staticFiles/product/publication/0001002657.pdf)、
   [2022 年春節公告](https://www.twse.com.tw/staticFiles/news/news/tsecnews/ff8080817d22b9cb017e3336c4e203e3.pdf)、
   [櫃買中心 2023 年日曆副本](https://www.honsec.com.tw/uploads/images/112%E5%B9%B4%E6%9C%89%E5%83%B9%E8%AD%89%E5%88%B8%E6%AB%83%E6%AA%AF%E8%B2%B7%E8%B3%A3%E5%B8%82%E5%A0%B4%E9%96%8B%EF%BC%88%E4%BC%91%EF%BC%89%E5%B8%82%E6%97%A5%E6%9C%9F%E8%A1%A8.pdf)，
-  及 [2024-10-31 休市公告](https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69236c2e30192dd5179bc0327.pdf)。
+  [2024-10-31 休市公告](https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69236c2e30192dd5179bc0327.pdf)，
+  及 [2026-07-10 颱風休市報導](https://finance.ettoday.net/news/3198683)（證交所公告：巴威颱風、臺北市停止上班，7 月 10 日集中交易市場全日休市）。
 - **完整序列**：128 個 input bars 必須恰好是截至 `t` 的 128 個連續市場交易日；
   output 必須包含接續的 14 個市場交易日，即使 `h_start` 為 2 或 3 也相同。
   個股與 benchmark 都須完整對齊。缺一天就排除該 window；不 forward-fill、
@@ -4694,13 +4697,17 @@ Inference applies the same checks that depend only on past observations:
   asset and benchmark are not automatically holidays. Exceptional closures need
   exchange-announcement verification; prices are never fabricated.
   `calendar_overrides` includes eight Saturday sessions in 2016–2018 and removes
-  the missing closures on 2022-02-04, 2023-01-18, and 2024-10-31. Sources are
+  the missing closures on 2022-02-04, 2023-01-18, 2024-10-31 and 2026-07-10 (the last one
+  is Typhoon Bavi: Taipei City suspended work and both the TWSE and TPEx markets closed for
+  the day; a closure missing from the list makes every 128-session window across it an
+  `asset_market_session_gap`, which is how the §13.20 P3 months after 2026-07 were emptied). Sources are
   [TPEx 2016](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_105.htm),
   [TPEx 2017](https://wwwov.tpex.org.tw/storage/zh-tw/web/bulletin/trading_date/trading_date_106.htm),
   [TWSE 2018](https://www.twse.com.tw/staticFiles/product/publication/0001002657.pdf),
   [TWSE 2022 Lunar New Year](https://www.twse.com.tw/staticFiles/news/news/tsecnews/ff8080817d22b9cb017e3336c4e203e3.pdf),
   [TPEx 2023 calendar copy](https://www.honsec.com.tw/uploads/images/112%E5%B9%B4%E6%9C%89%E5%83%B9%E8%AD%89%E5%88%B8%E6%AB%83%E6%AA%AF%E8%B2%B7%E8%B3%A3%E5%B8%82%E5%A0%B4%E9%96%8B%EF%BC%88%E4%BC%91%EF%BC%89%E5%B8%82%E6%97%A5%E6%9C%9F%E8%A1%A8.pdf),
-  and the [2024-10-31 closure](https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69236c2e30192dd5179bc0327.pdf).
+  the [2024-10-31 closure](https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69236c2e30192dd5179bc0327.pdf),
+  and the [2026-07-10 typhoon closure report](https://finance.ettoday.net/news/3198683) (TWSE announcement: Typhoon Bavi, Taipei City suspended work, the market closed for the whole session of 10 July).
 - **Complete sequences:** inputs must be the exact 128 consecutive market sessions
   through `t`; outputs must cover the next 14 sessions even when `h_start` is 2 or 3.
   Both streams must align. A missing session excludes the window: no forward fill,
