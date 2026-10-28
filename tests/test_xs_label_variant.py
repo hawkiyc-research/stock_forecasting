@@ -8,7 +8,7 @@ import json
 import numpy as np
 import pytest
 
-from tests.test_residual_labels import _spec
+from test_residual_labels import _spec
 
 
 class _FakeCache:
