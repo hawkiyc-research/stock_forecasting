@@ -34,7 +34,9 @@ _PERSISTENT_ENVIRONMENT_KEYS = frozenset(
         "FIN_TS_FEATURE_MODE",
     }
 )
-_ISOLATED_ENVIRONMENT_PREFIXES = ("RUNPOD_", "WANDB_", "HF_", "AWS_")
+# STAGE1_* carries the Pod's dataset selection (dates, the holdout end that
+# stock-forecasting-prepare reads as its --test-end default); fixtures build their own.
+_ISOLATED_ENVIRONMENT_PREFIXES = ("RUNPOD_", "WANDB_", "HF_", "AWS_", "STAGE1_")
 
 
 @pytest.fixture(autouse=True)
