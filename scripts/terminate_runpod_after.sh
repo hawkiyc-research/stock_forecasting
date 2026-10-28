@@ -123,7 +123,7 @@ if [[ -n "${READY_FILE}" ]]; then
     fi
 fi
 case "${LIFECYCLE_KIND}" in
-    ""|stage1-cpu-preparation|stage1-mixed-finalization|stage1-training|stage1-validation|stage1-baseline|research-tw-information|research-features|research-lgbm|research-xs-train|forward-cpu-preparation) ;;
+    ""|stage1-cpu-preparation|stage1-mixed-finalization|stage1-training|stage1-validation|stage1-baseline|research-tw-information|research-features|research-lgbm|research-xs-train|research-chip-data|forward-cpu-preparation) ;;
     *)
         echo "Unsupported lifecycle marker key" >&2
         exit 2
@@ -328,6 +328,9 @@ raise SystemExit(0 if valid else 2)' \
                         ;;
                     research-xs-train)
                         expected_lifecycle_kind="research-xs-train"
+                        ;;
+                    research-chip-data)
+                        expected_lifecycle_kind="research-chip-data"
                         ;;
                     forward-cpu-preparation)
                         expected_lifecycle_kind="forward-cpu-preparation"

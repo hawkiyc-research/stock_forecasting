@@ -754,6 +754,37 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    結果的 launch 是結果，不是續跑來源），且只接受同一標籤變體**且同一特徵規格**的折（partial 內記錄特徵欄位摘要），
    所以 F0 的舊折不會被 F1／F2 誤用；錯誤的結果用下面的腳本搬走。
 
+   **籌碼資料在 Pod 上更新（§13.20，取代本機下載後再上傳）**：`tw_chip_data` 的抓取、整理、驗證改在 Pod 上跑。
+   探測結果（2026-10-28）：六個官方主機只有櫃買中心 `www.tpex.org.tw` 對非台灣 IP 回 403，其餘（證交所、公開資訊觀測站、
+   集保、ISIN、證交所 OpenAPI）直連可用；因此櫃買的 11 條路由走既有的 Cloud Run relay（已加進 `cloudrun/tpex-relay`，
+   需重新 `tpex-relay deploy`），其他直連。第一次啟用的三個步驟：
+
+   1. 把 `tw_chip_data` 的原始碼、`requirements-runpod.txt`（由 `uv.lock` 匯出）與 raw 層（一次性 tar 封存，約 1.1 GB，
+      之後 Pod 只抓新日期）傳上 volume：
+
+      ```bash
+      bash scripts/runpod_workflow.sh upload-chip-data /path/to/tw_chip_data/data --include-source --include-raw --apply
+      ```
+
+   2. 重新部署 relay（allowlist 多了籌碼路由；部署時會跑 relay 單元測試與 live verification）：
+
+      ```bash
+      bash scripts/runpod_workflow.sh tpex-relay deploy
+      ```
+
+   3. 之後每次 `cpu prepare`（台股 profile、資料集模式）在資料集準備成功後，同一個 Pod 會接著跑 `cpu-chip`：
+      在 volume 上建 `tw_chip_data` 自己的 venv（pandas 3，與本專案的 Poetry 環境分開）、從各資料集 manifest 的
+      最後日期往回 10 天抓到資料集結束日前一天、全部重新 curate、`calendar`／`derive`／`events`、寫 manifests、跑驗證套件；
+      失敗只標記 `lifecycle/research/chip-data.json` 為 failed，不影響已準備好的資料集。`cpu prepare --skipChip` 不接；
+      也可以單獨開一個 Pod：
+
+      ```bash
+      bash scripts/runpod_workflow.sh chip --maxRuntime 6h
+      ```
+
+      Pod 內 `bash scripts/runpod_tmux_launch.sh cpu-chip`。籌碼特徵庫（`features --spec ... --chipDataRoot ...`）讀的
+      仍是 `/runpod-volume/datasets/tw-chip-data`。
+
    **來源探測（把籌碼下載整合進 Pod 之前）**：`scripts/runpod_probe_chip_sources.py` 在 Pod 上用與 `tw_chip_data` 相同的
    URL、參數與標頭，對六個官方主機各表各打一次（含兩個已知結果的對照：證交所 `MI_INDEX` 直連可用、櫃買 `dailyQuotes`
    需要 relay），列出每張表 `ok`／`no_data`／`blocked`，並按主機判定 `direct` 或 `relay`；報告寫到
@@ -1711,7 +1742,8 @@ Pod 內以 `poetry run stock-forecasting-*` 執行，本機回測在 `backtest/`
 
 | 命令 | 參數、預設值與行為 |
 | --- | --- |
-| `upload-chip-data <tw_chip_data>/data [--apply]` | 把 `tw_chip_data` 的 curated 層（只含有 `_SUCCESS.json` 的分割）與 `manifests/*.json` 上傳到 volume 的 `datasets/tw-chip-data/`（Pod 內 `/runpod-volume/datasets/tw-chip-data`），上傳後逐檔核對大小；不帶 `--apply` 只列出清單。§13.18 籌碼規格的 features 與 lgbm 工作讀這裡 |
+| `upload-chip-data <tw_chip_data>/data [--include-raw] [--include-source] [--apply]` | 把 `tw_chip_data` 的 curated 層（只含有 `_SUCCESS.json` 的分割）與 `manifests/*.json` 上傳到 volume 的 `datasets/tw-chip-data/`（Pod 內 `/runpod-volume/datasets/tw-chip-data`），上傳後逐檔核對大小；不帶 `--apply` 只列出清單。§13.18 籌碼規格的 features 與 lgbm 工作讀這裡 |
+| `chip [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | 建立 `tw_chip_data` 更新的 CPU Pod（§13.20）：cpu-prep 角色、帶 TPEx relay secret，不需要 EODHD 配額。`--maxRuntime D` 預設 `6h`；`--cpuNumber N` 預設 `4`；`--cpuFlavor F` 預設 `cpu3g`。Pod 內以 `runpod_tmux_launch.sh cpu-chip` 啟動；標記 `lifecycle/research/chip-data.json`。`cpu prepare` 在台股 profile 的資料集模式會自動接著跑同一步驟，`--skipChip` 關閉 |
 | `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | 建立特徵庫與 rank 標籤的 CPU Pod，使用 active selection 的資料組；不抓行情、不需 secret 或 TPEx relay。`--maxRuntime D` 預設 `6h`；`--cpuNumber N` 預設 `16`（2／4／8／16／32）；`--cpuFlavor F` 預設 `cpu3g`。`--labelVariant`（別名 `--label-variant`）另建該規格的殘差化標籤庫（Pod 環境 `RUNPOD_LABEL_VARIANT`），規格必須是 `configs/labels/` 下已 commit 的檔案。`--spec` 改建另一個已 commit 的特徵規格（Pod 環境 `RUNPOD_FEATURE_SPEC`，預設 `alpha_tw_v1.json`），籌碼規格須同時給 `--chipDataRoot`（Pod 環境 `RUNPOD_CHIP_DATA_ROOT`，須在 `/runpod-volume` 下）。Pod 內以 `runpod_tmux_launch.sh cpu-features` 啟動，lifecycle 標記 `lifecycle/research/features.json` |
 | `download-features [LAUNCH_ID]` | 下載最新一次（或指定 `launch-...`）已結束的特徵工作，依 store manifest 的 SHA-256 核對後存於 `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`；仍在執行回傳 3、manifest 缺少回傳 4；`RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` 調整並行數 |
 | `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]` | 建立 B0 LightGBM walk-forward 的 CPU Pod，使用已建好的特徵庫與 rank 標籤。`--schedule` 指定 `configs/walk_forward/` 下的排程（預設 `tw_quarterly_v1.json`；`tw_quarterly_v2.json` 延到 2026-10-23、含 P3，需要 holdout 結束日到達該日的資料集，見「回測通道」節）；partial 折記錄排程與資料集摘要，不同排程或資料集的折不續跑。`--maxRuntime D` 預設 `24h`（上限，工作結束 Pod 即終止）；`--cpuNumber N` 預設 `16`；`--cpuFlavor F` 預設 `cpu3g`；`--labelVariant` 改在該殘差化標籤庫上訓練（模型名 `t-lgbm-alpha-<variant>`）；Pod 只從最新的未完成 launch（沒有 `results.json`）續跑，且只接受同一變體、同一特徵規格的折；`--spec` 與 `--chipDataRoot` 同 `features`，在該規格的特徵庫上訓練（store 必須已由同規格的 features 工作建好）。Pod 內以 `runpod_tmux_launch.sh cpu-lgbm` 啟動，標記 `lifecycle/research/lgbm.json` |
@@ -5179,6 +5211,40 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    folds of the same label variant **and the same feature spec** (the partial files record a digest of the feature
    columns), so F0's old folds are never reused for F1 / F2; wrong results are moved away with the script below.
 
+   **Updating the chip data on the Pod (§13.20, replacing the local download and upload)**: `tw_chip_data`'s fetch,
+   curation and validation now run on the Pod. Probe result (2026-10-28): of the six official hosts only TPEx
+   `www.tpex.org.tw` answers 403 to a non-Taiwan IP; TWSE, MOPS, TDCC, ISIN and the TWSE OpenAPI work directly. The
+   11 TPEx routes therefore go through the existing Cloud Run relay (added to `cloudrun/tpex-relay`, which needs a new
+   `tpex-relay deploy`); everything else is fetched directly. Three steps the first time:
+
+   1. Put the `tw_chip_data` source, its `requirements-runpod.txt` (exported from `uv.lock`) and the raw layer (one tar
+      archive of about 1.1 GB; afterwards the Pod fetches only new sessions) on the volume:
+
+      ```bash
+      bash scripts/runpod_workflow.sh upload-chip-data /path/to/tw_chip_data/data --include-source --include-raw --apply
+      ```
+
+   2. Redeploy the relay (its allowlist gained the chip routes; the deploy runs the relay unit tests and the live
+      verification):
+
+      ```bash
+      bash scripts/runpod_workflow.sh tpex-relay deploy
+      ```
+
+   3. From then on every `cpu prepare` of a Taiwan profile in dataset mode runs `cpu-chip` in the same Pod once the
+      dataset is ready: it builds `tw_chip_data`'s own venv on the volume (pandas 3, apart from the project's Poetry
+      environment), fetches from ten days before the last manifest date of each dataset through the day before the
+      data end, re-curates everything, runs `calendar` / `derive` / `events`, writes the manifests and runs the
+      validation suite; a failure only marks `lifecycle/research/chip-data.json` failed and leaves the prepared
+      dataset alone. `cpu prepare --skipChip` leaves it out; a Pod of its own also works:
+
+      ```bash
+      bash scripts/runpod_workflow.sh chip --maxRuntime 6h
+      ```
+
+      Inside the Pod: `bash scripts/runpod_tmux_launch.sh cpu-chip`. The chip feature stores (`features --spec ...
+      --chipDataRoot ...`) keep reading `/runpod-volume/datasets/tw-chip-data`.
+
    **Source probe (before the chip download moves onto the Pod)**: `scripts/runpod_probe_chip_sources.py` sends, from
    the Pod, one request per chip table with the same URL, parameters and headers as `tw_chip_data` (plus two controls
    with known answers: TWSE `MI_INDEX` works directly, TPEx `dailyQuotes` needs the relay), lists each table as
@@ -6282,7 +6348,8 @@ current entry point.
 
 | Command | Parameters, defaults and behavior |
 | --- | --- |
-| `upload-chip-data <tw_chip_data>/data [--apply]` | Upload the `tw_chip_data` curated layer (partitions carrying `_SUCCESS.json` only) and `manifests/*.json` to `datasets/tw-chip-data/` on the volume (`/runpod-volume/datasets/tw-chip-data` inside the Pod), verifying every file's size afterwards; without `--apply` it only lists the files. The §13.18 chip-spec features and lgbm jobs read from there |
+| `upload-chip-data <tw_chip_data>/data [--include-raw] [--include-source] [--apply]` | Upload the `tw_chip_data` curated layer (partitions carrying `_SUCCESS.json` only) and `manifests/*.json` to `datasets/tw-chip-data/` on the volume (`/runpod-volume/datasets/tw-chip-data` inside the Pod), verifying every file's size afterwards; without `--apply` it only lists the files. The §13.18 chip-spec features and lgbm jobs read from there |
+| `chip [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F]` | Create the CPU Pod of the `tw_chip_data` update (§13.20): cpu-prep role with the TPEx relay secret, no EODHD budget. `--maxRuntime D` defaults to `6h`, `--cpuNumber N` to `4`, `--cpuFlavor F` to `cpu3g`. Start inside the Pod with `runpod_tmux_launch.sh cpu-chip`; marker `lifecycle/research/chip-data.json`. `cpu prepare` of a Taiwan profile in dataset mode runs the same step afterwards unless `--skipChip` is given |
 | `features [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]` | Create the CPU Pod that builds the feature library and the rank labels on the active selection's dataset; no market download, no secret or TPEx relay. `--maxRuntime D` defaults to `6h`; `--cpuNumber N` to `16` (2 / 4 / 8 / 16 / 32); `--cpuFlavor F` to `cpu3g`. `--labelVariant` (alias `--label-variant`) also builds the residualized label store of that spec (Pod environment `RUNPOD_LABEL_VARIANT`); the spec must be a committed file under `configs/labels/`. `--spec` builds another committed feature spec instead (Pod environment `RUNPOD_FEATURE_SPEC`, default `alpha_tw_v1.json`); a chip spec also needs `--chipDataRoot` (Pod environment `RUNPOD_CHIP_DATA_ROOT`, under `/runpod-volume`). Start inside the Pod with `runpod_tmux_launch.sh cpu-features`; lifecycle marker `lifecycle/research/features.json` |
 | `download-features [LAUNCH_ID]` | Download the latest (or the given `launch-...`) finished feature job, verified against the store manifests' SHA-256, into `artifacts/features/<dataset>/{rank-labels,features}/<identity>/`; exits 3 while running and 4 when the manifest is missing; `RUNPOD_FEATURE_DOWNLOAD_WORKERS=1..4` sets the parallelism |
 | `lgbm [--maxRuntime D] [--cpuNumber N] [--cpuFlavor F] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]` | Create the CPU Pod of the B0 LightGBM walk-forward on the built feature library and rank labels. `--schedule` names a schedule under `configs/walk_forward/` (default `tw_quarterly_v1.json`; `tw_quarterly_v2.json` runs through 2026-10-23 with P3 and needs a dataset whose holdout end reaches that date, see the section "backtest channel"); partial folds record the schedule and dataset digest, so folds of another schedule or dataset are never resumed. `--maxRuntime D` defaults to `24h` (an upper bound; the Pod terminates when the job ends); `--cpuNumber N` to `16`; `--cpuFlavor F` to `cpu3g`; `--labelVariant` trains on that residualized store instead (model name `t-lgbm-alpha-<variant>`, the Pod resumes only from the newest unfinished launch (no `results.json`) and accepts only folds of the same variant and feature spec); `--spec` and `--chipDataRoot` as for `features`, training on that spec's store (which the same spec's features job must have built). Start inside the Pod with `runpod_tmux_launch.sh cpu-lgbm`; marker `lifecycle/research/lgbm.json` |

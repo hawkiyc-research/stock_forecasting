@@ -88,7 +88,7 @@ Usage:
   bash scripts/runpod_workflow.sh configure [SELECTION OPTIONS]
   bash scripts/runpod_workflow.sh selection show
   bash scripts/runpod_workflow.sh sync [--dry-run|--apply]
-  bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
+  bash scripts/runpod_workflow.sh cpu prepare [--interactive] [--max-api-calls N] [--eodhd-qps QPS] [--taiwan-qps QPS] [--maxRuntime DURATION] [--prepareReserve DURATION|auto] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--skipChip]
   bash scripts/runpod_workflow.sh cpu prepare --forward YYYY-MM-DD [--taiwan-qps QPS] [--maxRuntime DURATION] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh research tw-information [--maxRuntime DURATION] [--taiwan-qps QPS] [--eodhd-qps QPS] [--maxBackoff DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh readiness [--code-only|--gpu|--baseline [--experiment a-signal64|b-signal64|a-signal64-datemix|b-signal64-datemix]]
@@ -111,7 +111,8 @@ Usage:
   bash scripts/runpod_workflow.sh download-forward-package YYYY-MM-DD
   bash scripts/runpod_workflow.sh upload-forward-cache YYYY-MM-DD
   bash scripts/runpod_workflow.sh download-research [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh upload-chip-data <tw_chip_data>/data [--apply]
+  bash scripts/runpod_workflow.sh upload-chip-data <tw_chip_data>/data [--include-raw] [--include-source] [--apply]
+  bash scripts/runpod_workflow.sh chip [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
   bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]
@@ -202,6 +203,7 @@ case "${COMMAND}" in
         # the selected training dataset; dataset-only options are refused with it.
         cpu_forward_end=""
         cpu_dataset_option=""
+        cpu_skip_chip=0
         cpu_max_runtime_given=0
         if [[ $# -eq 0 ]]; then
             cpu_interactive=1
@@ -246,6 +248,13 @@ case "${COMMAND}" in
                     [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
                     cpu_taiwan_qps="$2"
                     shift 2
+                    ;;
+                --skipChip|--skip-chip)
+                    # Protocol 13.20: dataset preparation of a Taiwan profile updates the
+                    # tw_chip_data layers afterwards unless skipped.
+                    cpu_skip_chip=1
+                    cpu_dataset_option="$1"
+                    shift
                     ;;
                 --maxBackoff|--max-backoff)
                     [[ $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
@@ -307,6 +316,12 @@ case "${COMMAND}" in
         fi
         export RUNPOD_CPU_PREPARE_MODE=dataset
         unset RUNPOD_FORWARD_END
+        # The Pod creator turns this off for profiles without Taiwan data.
+        if [[ ${cpu_skip_chip} -eq 1 ]]; then
+            export RUNPOD_CHIP_DATA_PREPARE=0
+        else
+            export RUNPOD_CHIP_DATA_PREPARE=1
+        fi
         if [[ ${cpu_interactive} -eq 1 ]]; then
             cat >&2 <<'EOF'
 CPU preparation acquisition and resource configuration
@@ -637,6 +652,43 @@ EOF
         unset RUNPOD_CPU_MAX_API_CALLS RUNPOD_CPU_PREPARE_RESERVE_SECONDS
         unset RUNPOD_CPU_EODHD_QPS RUNPOD_CPU_TAIWAN_QPS RUNPOD_LAUNCH_SELECTION_FILE
         unset RUNPOD_CPU_PREPARE_MODE RUNPOD_FORWARD_END
+        exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
+        ;;
+    chip)
+        # tw_chip_data update on its own cpu-prep Pod (protocol 13.20): fetches the new
+        # sessions (TPEx through the relay), re-curates, derives, validates. The Pod carries
+        # the TPEx relay secret like a preparation Pod and needs no EODHD budget.
+        chip_max_runtime=6h
+        chip_cpu_number=4
+        chip_cpu_flavor=cpu3g
+        while [[ $# -gt 0 ]]; do
+            [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
+            case "$1" in
+                --maxRuntime|--max-runtime) chip_max_runtime="$2" ;;
+                --cpuNumber|--cpu-number) chip_cpu_number="$2" ;;
+                --cpuFlavor|--cpu-flavor) chip_cpu_flavor="$2" ;;
+                *)
+                    echo "Unknown chip option: $1" >&2
+                    usage
+                    exit 2
+                    ;;
+            esac
+            shift 2
+        done
+        runpod_validate_cpu_number "${chip_cpu_number}"
+        runpod_validate_cpu_flavor "${chip_cpu_flavor}"
+        chip_max_seconds="$(runpod_duration_seconds "${chip_max_runtime}" --maxRuntime)"
+        export RUNPOD_CPU_WORKFLOW=chip
+        export RUNPOD_CPU_PREPARE_MODE=dataset
+        export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${chip_max_seconds}"
+        export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((chip_max_seconds + 3600))"
+        export RUNPOD_CPU_VCPU_COUNT="${chip_cpu_number}"
+        export RUNPOD_CPU_FLAVOR_ID="${chip_cpu_flavor}"
+        unset RUNPOD_CPU_MAX_API_CALLS RUNPOD_CPU_PREPARE_RESERVE_SECONDS
+        unset RUNPOD_CPU_EODHD_QPS RUNPOD_CPU_TAIWAN_QPS RUNPOD_LAUNCH_SELECTION_FILE
+        unset RUNPOD_FORWARD_END RUNPOD_CHIP_DATA_PREPARE
+        unset RUNPOD_LABEL_VARIANT RUNPOD_FEATURE_SPEC RUNPOD_CHIP_DATA_ROOT
+        unset RUNPOD_WALK_FORWARD_SCHEDULE
         exec bash "${SCRIPT_DIR}/create_runpod_cpu_pod.sh"
         ;;
     xs-train)

@@ -54,6 +54,8 @@ GUARD_LIFECYCLE_KINDS = frozenset(
         "research-lgbm",
         # Cross-stock GPU experiments (protocol 13.13) use the gpu-train role.
         "research-xs-train",
+        # The tw_chip_data update (protocols 13.18 / 13.20) runs on the cpu-prep role.
+        "research-chip-data",
         # Forward input packages (protocol 13.8) are prepared apart from any training dataset.
         "forward-cpu-preparation",
     }
@@ -2136,6 +2138,7 @@ def command_write_state(arguments):
         "research-features": volume_root / "lifecycle" / "research" / "features.json",
         "research-lgbm": volume_root / "lifecycle" / "research" / "lgbm.json",
         "research-xs-train": volume_root / "lifecycle" / "research" / "xs-train.json",
+        "research-chip-data": volume_root / "lifecycle" / "research" / "chip-data.json",
         "forward-cpu-preparation": (
             volume_root / "lifecycle" / "forward" / "cpu-preparation.json"
         ),

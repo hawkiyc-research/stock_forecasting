@@ -122,6 +122,89 @@ test("forwards the institutional-trade and margin routes with fixed query values
   assert.equal(extraMarginParameter.status, 400);
 });
 
+test("forwards the tw_chip_data routes and rejects their malformed variants", async () => {
+  const routes = [
+    [
+      "https://relay.example/www/zh-tw/bulletin/attention" +
+        "?startDate=2026%2F10%2F01&endDate=2026%2F10%2F20&response=json",
+      "/www/zh-tw/bulletin/attention",
+      { startDate: "2026/10/01", endDate: "2026/10/20", response: "json" },
+    ],
+    [
+      "https://relay.example/www/zh-tw/bulletin/disposal" +
+        "?startDate=2026%2F10%2F01&endDate=2026%2F10%2F20&response=json",
+      "/www/zh-tw/bulletin/disposal",
+      { startDate: "2026/10/01", endDate: "2026/10/20", response: "json" },
+    ],
+    [
+      "https://relay.example/www/zh-tw/insti/qfiiStat" +
+        "?type=Daily&date=2014%2F06%2F02&searchType=buy&response=json",
+      "/www/zh-tw/insti/qfiiStat",
+      { type: "Daily", date: "2014/06/02", searchType: "buy", response: "json" },
+    ],
+    [
+      "https://relay.example/www/zh-tw/insti/sitcStat" +
+        "?type=Daily&date=2014%2F06%2F02&searchType=sell&response=json",
+      "/www/zh-tw/insti/sitcStat",
+      { type: "Daily", date: "2014/06/02", searchType: "sell", response: "json" },
+    ],
+    [
+      "https://relay.example/www/zh-tw/margin/sbl?date=2026%2F10%2F20&response=json",
+      "/www/zh-tw/margin/sbl",
+      { date: "2026/10/20", response: "json" },
+    ],
+    [
+      "https://relay.example/www/zh-tw/margin/mark?date=2026%2F10%2F20&response=json",
+      "/www/zh-tw/margin/mark",
+      { date: "2026/10/20", response: "json" },
+    ],
+    [
+      "https://relay.example/www/zh-tw/intraday/stat" +
+        "?type=Daily&date=2026%2F10%2F20&response=json",
+      "/www/zh-tw/intraday/stat",
+      { type: "Daily", date: "2026/10/20", response: "json" },
+    ],
+    ["https://relay.example/openapi/v1/mopsfin_t187ap03_O", "/openapi/v1/mopsfin_t187ap03_O", {}],
+  ];
+  for (const [url, pathname, parameters] of routes) {
+    let capturedUrl;
+    const body = pathname.startsWith("/openapi/") ? '[{"SecuritiesCompanyCode":"6274"}]' : '{"tables":[]}';
+    const response = await handleRequest(request(url), ENVIRONMENT, async (upstream) => {
+      capturedUrl = upstream;
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    assert.equal(response.status, 200, url);
+    assert.equal(await response.text(), body);
+    assert.equal(capturedUrl.origin, "https://www.tpex.org.tw");
+    assert.equal(capturedUrl.pathname, pathname);
+    assert.deepEqual(Object.fromEntries(capturedUrl.searchParams), parameters);
+  }
+
+  for (const url of [
+    "https://relay.example/www/zh-tw/bulletin/attention" +
+      "?startDate=2026%2F10%2F20&endDate=2026%2F10%2F01&response=json",
+    "https://relay.example/www/zh-tw/insti/qfiiStat" +
+      "?type=Daily&date=2014%2F06%2F02&searchType=all&response=json",
+    "https://relay.example/www/zh-tw/insti/sitcStat" +
+      "?type=Weekly&date=2014%2F06%2F02&searchType=buy&response=json",
+    "https://relay.example/www/zh-tw/intraday/stat?type=Daily&date=2026%2F10%2F20",
+    "https://relay.example/www/zh-tw/margin/mark?date=2026-10-20&response=json",
+    "https://relay.example/openapi/v1/mopsfin_t187ap03_O?response=json",
+    "https://relay.example/openapi/v1/holidaySchedule",
+  ]) {
+    let fetched = false;
+    const response = await handleRequest(request(url), ENVIRONMENT, async () => {
+      fetched = true;
+      return new Response("{}");
+    });
+    assert.equal(response.status, 400, url);
+    assert.equal(fetched, false, url);
+  }
+});
+
 test("follows a bounded same-origin redirect with its session cookie", async () => {
   const fetchedCookies = [];
   const response = await handleRequest(request(), ENVIRONMENT, async (url, options) => {

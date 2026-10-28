@@ -91,7 +91,7 @@ done
 
 if [[ $# -lt 1 || ( "$1" != "probe-scales" && "$1" != "export-signal-predictions" && $# -ne 1 \
     && ! ( "$1" == "verify-full-workflow" && $# -eq 2 && "$2" == "--regression-only" ) ) ]]; then
-    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|xs-train|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+    echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-chip|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|xs-train|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
     exit 2
 fi
 if [[ "${LOG_ROOT}" != "${NETWORK_VOLUME_ROOT}/logs" ]]; then
@@ -99,6 +99,13 @@ if [[ "${LOG_ROOT}" != "${NETWORK_VOLUME_ROOT}/logs" ]]; then
     exit 2
 fi
 bash "${SCRIPT_DIR}/verify_runpod_mounted_readiness.sh" --mount-only
+# After a successful dataset preparation of a Taiwan profile the runner updates the chip data
+# in the same Pod (protocol 13.20) when the Pod was created with RUNPOD_CHIP_DATA_PREPARE=1.
+CHAIN_CHIP_UPDATE=0
+if [[ "$1" == cpu-prepare && "${RUNPOD_CPU_PREPARE_MODE:-dataset}" == dataset \
+    && "${RUNPOD_CHIP_DATA_PREPARE:-0}" == 1 ]]; then
+    CHAIN_CHIP_UPDATE=1
+fi
 case "$1" in
     cpu-prepare)
         SESSION_NAME=stock-forecasting-cpu-prepare
@@ -125,6 +132,16 @@ case "$1" in
                 exit 2
                 ;;
         esac
+        ;;
+    cpu-chip)
+        # tw_chip_data update (protocols 13.18 / 13.20): cpu-prep role for the relay secret.
+        SESSION_NAME=stock-forecasting-cpu-chip
+        JOB_SCRIPT="${SCRIPT_DIR}/runpod_cpu_chip.sh"
+        JOB_ROLE=cpu-prep
+        MAX_RUNTIME_SECONDS="${RUNPOD_CPU_MAX_RUNTIME_SECONDS:-21600}"
+        JOB_TIMEOUT_GRACE_SECONDS=0
+        FAILURE_LIFECYCLE_MARKER="${NETWORK_VOLUME_ROOT}/lifecycle/research/chip-data.json"
+        FAILURE_LIFECYCLE_KIND=research-chip-data
         ;;
     cpu-finalize)
         SESSION_NAME=stock-forecasting-cpu-finalize
@@ -296,7 +313,7 @@ case "$1" in
         fi
         ;;
     *)
-        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|xs-train|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
+        echo "Usage: runpod_tmux_launch.sh cpu-prepare|cpu-chip|cpu-finalize|cpu-research|cpu-features|cpu-lgbm|xs-train|stage1-train|stage1-validate|baseline|probe-scales|export-signal-predictions [DIAGNOSTIC OPTIONS]" >&2
         exit 2
         ;;
 esac
@@ -436,6 +453,22 @@ mkdir -p "${JOB_DIR}"
     fi
     printf '\n'
     printf 'job_exit_code=$?\n'
+    if [[ ${CHAIN_CHIP_UPDATE} -eq 1 ]]; then
+        # The chip update inherits the remaining runtime; its failure is reported and leaves
+        # the prepared dataset, its status and its lifecycle untouched.
+        printf 'if [[ ${job_exit_code} -eq 0 ]]; then\n'
+        printf '  chip_budget=$((%d - SECONDS))\n' "${JOB_TIMEOUT_SECONDS}"
+        printf '  if [[ ${chip_budget} -gt 900 ]]; then\n'
+        printf '    printf '\''[%%s] dataset prepared; updating the chip data (cpu-chip)\\n'\'' "$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"\n'
+        printf '    RUNPOD_LAUNCH_ID=%q timeout --signal=TERM --kill-after=60 "${chip_budget}s" bash %q\n' \
+            "${LAUNCH_ID}-chip" "${SCRIPT_DIR}/runpod_cpu_chip.sh"
+        printf '    chip_exit_code=$?\n'
+        printf '    if [[ ${chip_exit_code} -ne 0 ]]; then printf '\''Chip-data update failed (exit %%s); the prepared dataset is unaffected; rerun runpod_tmux_launch.sh cpu-chip\\n'\'' "${chip_exit_code}" >&2; fi\n'
+        printf '  else\n'
+        printf '    printf '\''Skipping the chip-data update: only %%ss of runtime left; run cpu-chip on its own Pod\\n'\'' "${chip_budget}" >&2\n'
+        printf '  fi\n'
+        printf 'fi\n'
+    fi
     if [[ "${JOB_ROLE}" == "gpu-probe" ]]; then
         printf '  else job_exit_code=74; fi\n'
         printf 'fi\n'
