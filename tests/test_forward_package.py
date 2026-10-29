@@ -25,8 +25,10 @@ END = "2026-08-01"
 # A dividend inside the overlap windows, and one after 2026-06-01 that only the
 # forward fetch sees: it rescales every earlier adjusted price.
 EX_DATES = {"2026-01-15": 0.97, "2026-07-15": 0.98}
-# An unscheduled closure that the pinned calendar still lists as a session.
-CLOSED = "2026-07-10"
+# An unscheduled closure that the pinned calendar and the project's cleaning policy both
+# still list as a session (2026-07-10 is now a closure in configs/data_cleaning.json, so it
+# no longer serves as the "unknown closure" of this fixture).
+CLOSED = "2026-07-17"
 ADDITIONS = {"XTAI": {"open": [], "closed": [CLOSED]}}
 
 
