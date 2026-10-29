@@ -2,7 +2,7 @@
 
 ## 中文
 
-本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-29（§13.20 計分完成、§13.21 對沖補測完成）。
+本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-29（§13.20 計分完成、§13.21 對沖補測完成、§13.22 草案）。
 
 ### 現況
 
@@ -12,7 +12,7 @@
 
 | # | 步驟 | 依據 | 前置條件 | 訓練需求 | 產出 | 誰做 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **S2（市場中性多空＋期貨避險，F2）的新確認期登記**：§13.21 已補測「S-A 加 β 對沖」（台指期、放空 0050），對沖救不回多頭組合（Sharpe 砍半、P3 回撤仍 −18%），所以剩下的方向是以 S2 為主線、登記一段 2026-10-22 之後的確認期（長度與判定條件要先寫進 §13.22）；資料要等新月份的行情與籌碼進來 | §13.20 結果 (j)、§13.21 結果 (d) | 使用者決定是否登記；新資料 | 無（既有預測延伸需要新的 lgbm 折） | §13.22 登記 | 使用者決定；本專案登記 |
+| 1 | **S2（市場中性多空＋期貨避險，F2）的確認期 P4**：§13.22 草案已寫（2026-10-23 起 12 個月、6 個月期中只報不判、H-L = P4 淨報酬 > 0 且最大回撤不深於 −12.2%），待使用者確認生效。生效後每季一次：`configure --end/--test-end` 延到季末 → `cpu prepare` → `features` F0、F2 → `lgbm` F0、F2（`tw_quarterly_v3`，待建）→ 本機 `scenario_suite`（`periods` 加 P4）→ 累積，12 個月期滿才判定 | §13.22 | 使用者確認草案；新季度資料 | **RunPod CPU** 每季四到五個 Pod | 期中讀取、期滿判定、報告附錄 C | 使用者確認與啟動 Pod；本專案計分 |
 | 2 | **volume 清理**：下一個 Pod 一開始先 `python3 scripts/runpod_invalid_chip_results.py`，確認後 `--apply --delete`（被取代的樣本宇宙、舊 store、失敗 launch） | README「清掉錯誤與死掉的結果」 | 下一個 CPU Pod | 無 | 釋放空間 | 使用者在 Pod 上執行 |
 | 3 | **G2**：處置、注意首次公告、當沖比跳升三類事件的反轉步驟 0（事件研究模組） | §13.18 第 6 項 | 事件表已交付 | 無 | 事件研究模組、報告；決定 S-B 要不要實作 | 本專案 |
 | 4 | （使用者決定，暫不執行）分點購買：G1 已通過，但 2026-10-28 決定先不買付費資料 | §13.18 第 10 項 | — | — | 購買與否的紀錄 | 使用者決定 |
@@ -32,7 +32,7 @@
 
 ## English
 
-This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-29 (§13.20 scored, §13.21 hedge round done).
+This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-29 (§13.20 scored, §13.21 hedge round done, §13.22 draft).
 
 ### Where things stand
 
@@ -42,7 +42,7 @@ This file lists only the experiments and prerequisites **not yet done**, in exec
 
 | # | Step | Basis | Prerequisite | Training | Output | Who |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Register a new confirmation period for S2 (market-neutral L/S + futures hedge, F2)**: §13.21 tested the beta-hedged S-A (TX, short 0050) and the hedge does not rescue the long book (Sharpe halved, P3 drawdown still −18%), so the remaining direction is S2 as the main line with a confirmation period after 2026-10-22 (length and conditions written into §13.22 first); it needs new months of prices and chip data | §13.20 result (j), §13.21 result (d) | the user decides whether to register; new data | None (extending the predictions needs new lgbm folds) | §13.22 registration | the user decides; this project registers |
+| 1 | **Confirmation period P4 for S2 (market-neutral L/S + futures hedge, F2)**: the §13.22 draft is written (12 months from 2026-10-23, an interim reading at six months reported only, H-L = P4 net return > 0 and max drawdown not deeper than −12.2%), awaiting the user's confirmation. Once in force, once a quarter: `configure --end/--test-end` to the quarter end → `cpu prepare` → `features` F0, F2 → `lgbm` F0, F2 (`tw_quarterly_v3`, to be added) → local `scenario_suite` (`periods` plus P4) → accumulate; the one judgement after 12 months | §13.22 | the user confirms the draft; new quarterly data | **RunPod CPU**, four to five Pods a quarter | interim readings, the final judgement, report appendix C | the user confirms and launches Pods; this project scores |
 | 2 | **Volume cleanup**: at the start of the next Pod run `python3 scripts/runpod_invalid_chip_results.py`, check, then `--apply --delete` (superseded sample universes, old stores, failed launches) | README "Removing wrong and dead results" | the next CPU Pod | None | freed space | the user, on the Pod |
 | 3 | **G2**: reversal step 0 on 處置 announcements, first 注意 listings and day-trade-ratio jumps (event-study module) | §13.18 item 6 | Event tables delivered | None | Event-study module, report; decides whether S-B is built | This project |
 | 4 | (User decision, on hold) broker-branch purchase: G1 passed, but on 2026-10-28 the user decided not to buy paid data for now | §13.18 item 10 | — | — | Record of the decision | The user |
