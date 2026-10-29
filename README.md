@@ -145,7 +145,12 @@ flowchart TD
 原始 alpha 目標的 memmap，所有 fold、seed、消融與 D1 共用；殘差化變體的 rank 與殘差目標另寫在
 `xs-cache/<identity>/label-variants/<digest>/`，快取與 embedding 快取不重建。整個樣本表常駐 GPU 記憶體
 （放不下時留在 pinned host memory），每步一個（訊號日, 市場）群組，因此不使用 DataLoader worker；trainer
-已移除每步的主機同步點並使用 fused AdamW。
+已移除每步的主機同步點並使用 fused AdamW。2026-10-30 起每個群組會補零列到 `FIN_TS_XS_PAD_MULTIPLE`（CUDA 預設
+64）的倍數並以遮罩排除（補的列不進 z-score、不被注意、不進市場狀態平均、不進損失，真實列的分數與不補時相同，
+`tests/test_cross_stock.py` 驗證），形狀固定後模型以 `torch.compile(mode="reduce-overhead")` 重播 CUDA graph，
+省掉每步從 Python 發出數百個小核心的開銷（這是 GPU 利用率低的原因：每步的運算量遠小於發射開銷）；
+`FIN_TS_XS_COMPILE=0` 關閉編譯、`FIN_TS_XS_PAD_MULTIPLE=0` 關閉補列，編譯失敗會自動退回 eager 並記在
+`fits` 的 `execution` 欄。D1 的凍結編碼器 embedding 改用 pinned memory 非同步上傳與 `inference_mode`。
 
 <a id="current-evaluation-zh"></a>
 
@@ -629,7 +634,8 @@ manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-25
     標籤）＋ λ(1 − 當日橫斷面 Pearson 相關)，λ = 1。訓練參數在實作前固定：AdamW lr 5e-4、
     weight decay 1e-4、最多 20 epoch、以 fold validation 的每日 Rank IC 早停（patience 4）、
     gradient clip 1.0、CUDA 上 bf16 autocast；整個樣本表放進 GPU 記憶體（放不下時留在 pinned
-    host memory 逐 batch 搬），因此不使用 DataLoader worker。輸出與 B0 同格式，另加
+    host memory 逐 batch 搬），因此不使用 DataLoader worker；群組補列到固定大小並以 CUDA graph 重播
+    （`FIN_TS_XS_PAD_MULTIPLE`、`FIN_TS_XS_COMPILE`，見第 1 節）。輸出與 B0 同格式，另加
     `paired_vs_baseline`（D − B0 的配對 Rank IC 差與 block bootstrap 區間）與 H-A 判定，寫到
     `/runpod-volume/diagnostics/xs/<launch-id>/`，發布 `lifecycle/research/xs-train.json` 後 Pod
     自行終止。進度：
@@ -4562,7 +4568,15 @@ seed, ablation and D1 run; a residualized variant's ranks and residual targets l
 `xs-cache/<identity>/label-variants/<digest>/`, so neither the cache nor the embedding caches are rebuilt.
 The whole sample table stays in GPU memory (or in pinned host memory when it does not fit) and every step
 is one (signal date, market) group, so no DataLoader workers are involved; the trainer has no per-step
-host syncs and uses fused AdamW.
+host syncs and uses fused AdamW. Since 2026-10-30 every group is padded with masked rows up to a multiple of
+`FIN_TS_XS_PAD_MULTIPLE` (64 on CUDA by default; padded rows stay out of the z-score, the attention keys,
+the market-state mean and the loss, so real rows score exactly as without padding — verified in
+`tests/test_cross_stock.py`), and with static shapes the model runs under `torch.compile(mode="reduce-overhead")`,
+replaying CUDA graphs instead of launching a few hundred tiny kernels from Python at every step (the cause of
+the low GPU utilization: the compute per step is far smaller than the launch overhead). `FIN_TS_XS_COMPILE=0`
+disables compilation, `FIN_TS_XS_PAD_MULTIPLE=0` disables padding; a compile failure falls back to eager and is
+recorded in the `execution` column of `fits`. The D1 frozen-encoder embedding pass uses pinned asynchronous
+uploads under `inference_mode`.
 
 <a id="current-evaluation-en"></a>
 
@@ -5127,7 +5141,8 @@ the last 12 months of each window as validation) and come from
     decay 1e-4, at most 20 epochs, early stopping on the fold validation's daily Rank IC
     (patience 4), gradient clip 1.0, bf16 autocast on CUDA; the whole sample table lives in GPU
     memory (or pinned host memory gathered per batch when it does not fit), so no DataLoader
-    workers are involved. Outputs match B0's files, plus `paired_vs_baseline` (the D − B0 paired
+    workers are involved; groups are padded to fixed sizes and replayed as CUDA graphs
+    (`FIN_TS_XS_PAD_MULTIPLE`, `FIN_TS_XS_COMPILE`, see section 1). Outputs match B0's files, plus `paired_vs_baseline` (the D − B0 paired
     Rank IC difference with block-bootstrap intervals) and the H-A decision, under
     `/runpod-volume/diagnostics/xs/<launch-id>/`; the Pod publishes
     `lifecycle/research/xs-train.json` and terminates itself. To watch:

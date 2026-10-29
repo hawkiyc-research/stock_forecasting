@@ -153,8 +153,16 @@ class CrossStockModel(nn.Module):
         features: torch.Tensor | None = None,
         *,
         encoded: torch.Tensor | None = None,
+        valid: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Scores (S, horizons) for the S stocks of one signal date and market."""
+        """Scores (S, horizons) for the S stocks of one signal date and market.
+
+        ``valid`` (S,) bool marks the real rows when the group is padded to a fixed batch size
+        (static shapes let the trainer replay CUDA graphs). Padded rows carry NaN features and
+        labels, are left out of the NaN-aware cross-sectional z-score, are never attended to as
+        keys and do not enter the market-state mean, so every valid row's score equals the
+        unpadded computation.
+        """
         tokens = self.encode(windows, encoded)
         if self.config.feature_input:
             if features is None:
@@ -162,9 +170,14 @@ class CrossStockModel(nn.Module):
             side = self.feature_mlp(cross_sectional_zscore(features))
             tokens = self.fuse(torch.cat([tokens, side], dim=-1))
         if self.config.inter_stock_attention:
-            tokens = self.cross(tokens.unsqueeze(0)).squeeze(0)
+            padding = None if valid is None else (~valid).unsqueeze(0)
+            tokens = self.cross(tokens.unsqueeze(0), src_key_padding_mask=padding).squeeze(0)
         if self.config.market_gating:
-            state = tokens.mean(dim=0, keepdim=True)
+            if valid is None:
+                state = tokens.mean(dim=0, keepdim=True)
+            else:
+                weight = valid.to(tokens.dtype).unsqueeze(1)
+                state = (tokens * weight).sum(dim=0, keepdim=True) / weight.sum().clamp_min(1.0)
             tokens = tokens * self.gate(state)
         return self.head(self.norm(tokens))
 
