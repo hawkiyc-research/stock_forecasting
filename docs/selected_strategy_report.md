@@ -146,14 +146,14 @@ K、緩衝倍數等參數在樣本內的前段（2023-01 至 2025-05、上市、
 
 1. 樣本外只有 85 個交易日、一種市場狀態；通過或不通過都不能外推成長期結論。
 2. 樣本內的後段（2025-06 之後）在設計正交化時已經看過，所以樣本內的數字只是資訊，真正的檢驗只有樣本外那 85 天。
-3. 還原價只處理股息，不含分割、減資與面額變更；2023 年起有 109 檔出現過超過 25% 的單日跳動（樣本外期間 48 次、42 檔）。持股報酬用相鄰交易日的開盤價計算、停牌即出場，不受影響，但模型分數在事件前後會錯。修正版已寫好、尚未重訓。
+3. 還原價只處理股息，不含分割、減資與面額變更；2023 年起超過 25% 的單日跳動共 200 次、161 檔（樣本外期間 48 次、42 檔）。其中 103 次前面有停牌：樣本規則會把跨過缺口的窗排除、部位在停牌前出場，持股報酬不受影響；97 次沒有停牌（台股有 10% 漲跌幅，連續交易日不可能真的跳 25%，所以是還原價未處理的事件），這些檔當時的分數與持股報酬是錯的，落在事件後 60 個交易日內的預測列占 0.26%，粗估對整段回測的影響在每年 1 個百分點以內、方向不定。修正版已寫好、尚未重訓。
 4. 放空腿的借不到機率、召回機率與借券費分層是參數假設，不是實際成交紀錄。
 5. 籌碼只用免費官方資料；分點（券商）與集保資料沒有購買。
 6. 樣本外視窗含 2025 年 4 月急跌與 2026 年 7 月修正，不含 2022 年空頭。
 
 ### 10. 下一步
 
-1. 三個入選的市場中性策略一起進入 2026-10-23 起 12 個月的確認期（第 6 個月期中只讀不判）：每季把資料延到季末、重訓新增的那一季、累積每日淨報酬；期滿用事前寫好的兩條規則各自判定——淨報酬 > 0，且最大回撤不深於各自樣本內回撤的兩倍。通過的進模擬交易。
+1. 三個入選的市場中性策略一起進入 2026-10-23 起 12 個月的確認期（規則於 2026-10-29 定案並凍結；第 6 個月期中只讀不判）：每季把資料延到季末、重訓新增的那一季、累積每日淨報酬；期滿用事前寫好的兩條規則各自判定——淨報酬 > 0，且最大回撤不深於各自樣本內回撤的兩倍。通過的進模擬交易。
 2. 週頻多頭加 β 對沖已補測（附錄 B）：白名單內的工具救不回它，不再列為候選。
 3. 用修正分割與減資後的資料重訓，重算全部數字（另案）。
 
@@ -331,14 +331,14 @@ Constructions tried: six generations of strategy (daily rotation → hold buffer
 
 1. The out-of-sample window has only 85 sessions in one market regime; neither passing nor failing extrapolates to a long-run conclusion.
 2. The second in-sample segment (after 2025-06) had already been seen when the orthogonalization was designed, so in-sample figures are informational and the only real test is the 85 out-of-sample days.
-3. Adjusted prices carry dividends only, not splits, capital reductions or par-value changes; 109 stocks since 2023 show a single-day jump above 25% (48 events across 42 stocks inside the out-of-sample window). Position returns use adjacent sessions' opens and exit on halts, so they are unaffected, but model scores around the events are wrong. The correction is written but not yet retrained.
+3. Adjusted prices carry dividends only, not splits, capital reductions or par-value changes; 200 single-day jumps above 25% across 161 stocks since 2023 (48 events across 42 stocks inside the out-of-sample window). 103 of them follow a trading halt: the sample rule drops every window across the gap and positions exit before it, so position returns are unaffected. 97 have no halt (with Taiwan's 10% daily limit a genuine 25% move between consecutive sessions is impossible, so these are adjustments the data does not make); for those stocks the score and the position return at the time are wrong, 0.26% of prediction rows fall within 60 sessions after one, and the rough effect on the whole backtest is within one point a year, of either sign. The correction is written but not yet retrained.
 4. The short book's borrow-failure, recall and fee tiers are parameter assumptions, not actual fills.
 5. Chip data is limited to free official items; broker-branch and shareholder-dispersion data were not bought.
 6. The out-of-sample window contains the April 2025 crash and the July 2026 correction but not the 2022 bear market.
 
 ### 10. Next steps
 
-1. The three shortlisted market-neutral strategies enter a twelve-month confirmation period from 2026-10-23 together (an interim reading at six months, not judged): each quarter the data is extended to the quarter end, the new quarter's fold is trained, and the daily net returns accumulate; at the end each cell is judged by the two pre-registered conditions — net return > 0 and maximum drawdown not deeper than twice its own in-sample drawdown. Those that pass enter paper trading.
+1. The three shortlisted market-neutral strategies enter a twelve-month confirmation period from 2026-10-23 together (rules fixed and frozen on 2026-10-29; an interim reading at six months, not judged): each quarter the data is extended to the quarter end, the new quarter's fold is trained, and the daily net returns accumulate; at the end each cell is judged by the two pre-registered conditions — net return > 0 and maximum drawdown not deeper than twice its own in-sample drawdown. Those that pass enter paper trading.
 2. Beta-hedging the weekly long was tested (appendix B): the allowlisted instruments cannot rescue it, and it is no longer a candidate.
 3. Retrain on split- and capital-reduction-adjusted data and recompute every number (separately).
 
