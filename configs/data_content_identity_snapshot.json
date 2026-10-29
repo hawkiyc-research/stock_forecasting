@@ -1,19 +1,21 @@
 {
   "data_content_identity": {
-    "bar_store_materialization_digest": "e3376cabeb2a8111be03c6d543f17afb8cb7cf15579e5efd4cd27a8d418ccee5",
+    "schema_version": "data-content-identity-v2",
     "provider_materialization_digests": {
       "eodhd_us": "c1dd0fa79e541c36501719afc971608b15a198b3daf7ce6dcb06e7726c31e8a3",
       "massive_us": "010d8bc06662458703d6507a411c9d5041826b94a4a19a97ef409ca198428e2d",
-      "tpex_official": "635a0f37c956d820692a21d68c46c0d566ecb1e9cc508a8c6f7245189715469f",
-      "twse_official": "ead462d11fbbac1ac1e31e6c669167937eb3dcc19e70b221d11abdead17f052e"
+      "tpex_official": "5924cc119485159c1c9f2b889d0c1854cfff663cf53ee003686541bee607f3a2",
+      "twse_official": "035ce9f4d2452edb5a1f05e1b9dc441908f0386b81ce40539703be960dd42af3"
     },
     "raw_materialization_digest": "bda958e436455c2c051e621525df495f684767ff7c133dc9b3124d97c6e22578",
-    "schema_version": "data-content-identity-v2"
+    "bar_store_materialization_digest": "e3376cabeb2a8111be03c6d543f17afb8cb7cf15579e5efd4cd27a8d418ccee5"
   },
-  "data_pipeline_digest": "14cc0cfc5560725e6ced40391501dfdf0aa26483420031fca3e93d08d7151e55",
+  "data_pipeline_digest": "008b795b7604b1204716d61ec58a50628bd9fb95afa2a834ce6f050b149e9fad",
   "kind": "data-content-identity-snapshot",
-  "note": "Digests of the selected provider, raw-dataset and bar-store definitions (stock_forecasting.data.content_identity). They have been identical since v0.1.0; tests/test_full_workflow_control_plane.py fails when they drift, and a new dataset revision must accompany any intentional change.",
-  "recorded_at": "2026-10-22",
+  "note": "Digests of the selected provider, raw-dataset and bar-store definitions (stock_forecasting.data.content_identity). tests/test_full_workflow_control_plane.py fails when they drift, and a new dataset must accompany any intentional change. 2026-10-29: the twse_official and tpex_official digests changed because fetch_actions now takes the exchange's opening auction basis (TWSE 開盤競價基準 / TPEx 開始交易基準價) as the ex-day price factor whenever it differs from the theoretical reference price by more than tick rounding (0.5% of the prior close): for paid rights issues (有償現金增資) the basis stays at the prior close, and the reference price had printed a spurious drop (861 rows 2016-2026, 386 since 2023, median 1.9%, max 32%) into adjusted_close. Datasets prepared under the previous digest (dataset 98d284df..., experiments up to 13.21) stay valid for the experiments that used them; the next preparation produces a new dataset identity. snapshot_tag still names the Git tag whose CPU prepare/finalize scripts are byte-frozen.",
+  "recorded_at": "2026-10-29",
   "schema_version": 1,
-  "snapshot_tag": "v0.1.0"
+  "snapshot_tag": "v0.1.0",
+  "previous_data_pipeline_digest": "14cc0cfc5560725e6ced40391501dfdf0aa26483420031fca3e93d08d7151e55",
+  "previous_recorded_at": "2026-10-22"
 }

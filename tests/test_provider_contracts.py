@@ -1856,3 +1856,126 @@ def test_cache_revision_is_part_of_resume_identity(tmp_path: Path) -> None:
 def test_massive_channel_is_reserved_but_typed() -> None:
     with pytest.raises(NotImplementedError, match="license"):
         MassiveProvider().discover(include_delisted=True)
+
+
+def test_twse_paid_rights_issue_uses_the_opening_basis_instead_of_the_reference_price() -> None:
+    class _ActionClient:
+        def get_json(
+            self,
+            endpoint: str,
+            *,
+            params: dict[str, Any],
+        ) -> tuple[Any, RequestRecord]:
+            if endpoint.endswith("TWT49UDetail"):
+                return (
+                    {
+                        "stat": "ok",
+                        "fields": [
+                            "股票代號",
+                            "股票名稱",
+                            "(每股配發現金股利)除息",
+                            "(增資配股) 除權",
+                            "A. 按普通股股東持股比例每千股無償配股",
+                            "C. (有償) 現金增資",
+                        ],
+                        "data": [
+                            [
+                                f"{params['STK_NO']} ",
+                                "fixture",
+                                "0 元/股",
+                                "",
+                                "0 股",
+                                "40,000,000 股",
+                            ]
+                        ],
+                    },
+                    _request("twse_official"),
+                )
+            return (
+                {
+                    "fields": [
+                        "資料日期",
+                        "股票代號",
+                        "股票名稱",
+                        "除權息前收盤價",
+                        "除權息參考價",
+                        "權值+息值",
+                        "權/息",
+                        "漲停價格",
+                        "跌停價格",
+                        "開盤競價基準",
+                        "減除股利參考價",
+                    ],
+                    "data": [
+                        # 2429 2024-07-02: paid rights issue, the basis stays at the prior close.
+                        ["113年07月02日", "2429", "銘旺科", "38.90", "29.15", "9.743493", "權",
+                         "42.75", "26.25", "38.90", "38.90"],
+                        # plain cash dividend: the basis is the reference price rounded to the tick.
+                        ["105年05月11日", "2430", "燦坤", "25.60", "24.38", "1.22", "息",
+                         "26.80", "21.95", "24.40", "24.40"],
+                        # rights issue plus a cash dividend: the basis carries the dividend only.
+                        ["113年05月30日", "2543", "皇昌", "59.50", "48.42", "11.08", "權息",
+                         "56.95", "43.60", "51.80", "51.80"],
+                    ],
+                },
+                _request("twse_official"),
+            )
+
+    fetched = TWSEProvider(_ActionClient()).fetch_actions(start="2016-01-01", end="2024-12-31")
+    by_symbol = fetched.frame.set_index("symbol")
+
+    assert by_symbol.loc["2429.TW", "price_factor"] == pytest.approx(1.0)
+    assert by_symbol.loc["2429.TW", "source"] == "twse_twt49u_opening_basis"
+    assert by_symbol.loc["2430.TW", "price_factor"] == pytest.approx(24.38 / 25.60)
+    assert by_symbol.loc["2430.TW", "source"] == "twse_twt49u"
+    assert by_symbol.loc["2543.TW", "price_factor"] == pytest.approx(51.80 / 59.50)
+    assert by_symbol.loc["2543.TW", "source"] == "twse_twt49u_opening_basis"
+    assert fetched.metadata["opening_basis_rows"] == 2
+
+
+def test_twse_actions_without_the_basis_column_fall_back_to_the_reference_price() -> None:
+    payload = {
+        "fields": ["資料日期", "股票代號", "除權息前收盤價", "除權息參考價", "權/息"],
+        "data": [["113年07月02日", "0050", "38.90", "29.15", "息"]],
+    }
+
+    fetched = TWSEProvider(_StubClient(payload)).fetch_actions(start="2024-01-01", end="2024-12-31")
+
+    assert fetched.frame.loc[0, "price_factor"] == pytest.approx(29.15 / 38.90)
+    assert fetched.frame.loc[0, "source"] == "twse_twt49u"
+    assert fetched.metadata["opening_basis_rows"] == 0
+
+
+def test_tpex_paid_rights_issue_uses_the_opening_basis_instead_of_the_reference_price() -> None:
+    payload = {
+        "fields": [
+            "除權息日期",
+            "代號",
+            "名稱",
+            "除權息前收盤價",
+            "除權息參考價",
+            "權/息",
+            "漲停價",
+            "跌停價",
+            "開始交易基準價",
+            "每仟股無償配股",
+            "現金增資股數",
+        ],
+        "data": [
+            # 4188 2024-07-01: paid rights issue at 23 against a 27.60 close, basis = prior close.
+            ["113/07/01", "4188", "安克", "27.60", "26.87", "除權", "30.35", "24.20", "27.60",
+             "0.00000000", "10000000"],
+            # plain cash dividend, basis = reference rounded to the tick.
+            ["113/07/01", "3373", "熱映", "27.00", "26.00", "除息", "28.60", "23.40", "26.00",
+             "0.00000000", "0"],
+        ],
+    }
+
+    fetched = TPExProvider(_StubClient(payload)).fetch_actions(start="2024-07-01", end="2024-07-31")
+    by_symbol = fetched.frame.set_index("symbol")
+
+    assert by_symbol.loc["4188.TWO", "price_factor"] == pytest.approx(1.0)
+    assert by_symbol.loc["4188.TWO", "source"] == "tpex_exdailyq_opening_basis"
+    assert by_symbol.loc["3373.TWO", "price_factor"] == pytest.approx(26.0 / 27.0)
+    assert by_symbol.loc["3373.TWO", "source"] == "tpex_exdailyq"
+    assert fetched.metadata["opening_basis_rows"] == 1
