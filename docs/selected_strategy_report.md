@@ -18,9 +18,9 @@
 | 成本 | 機構（手續費 0.03%、滑價 0.05%、借券費分層）與散戶（手續費 0.0855%、滑價 0.1% 到 0.2%）兩檔並列；放空受可借券名單、交易所限額與借不到機率限制 |
 | 樣本內 | 2023-01 至 2026-05（約 790 個交易日），用來選參數 |
 | 樣本外 | 2026-06 至 2026-10（85 個交易日），事前登記只看一次 |
-| 選定結果 | 價量＋籌碼模型 × 週頻低換手多頭：樣本內年化淨報酬 +51.8%（95% 區間 +26.1% 到 +77.7%）、淨 Sharpe 2.38、最大回撤 −22.6% |
-| 樣本外 | 年化淨報酬 +3.5%、最大回撤 −25.7%。事前登記的確認條件有兩條：淨報酬為正（成立）、回撤不比樣本內深（**不成立**） |
-| 結論 | **確認未通過，策略維持研究狀態，沒有進入模擬交易。** 原因是 2026 年 7 月一次 −17% 的市場修正直接打在 100% 多頭的策略上；同一窗口市場中性的多空策略 +23% 到 +34%、回撤 −6% 到 −9%，但依事前規則不能事後改選 |
+| 選定結果 | 原本登記的規則（樣本內淨 Sharpe 最高的一格）選出價量＋籌碼模型 × 週頻低換手多頭（Sharpe 2.38、年化 +51.8%、回撤 −22.6%）。事後修正為門檻篩選（三段期間 Sharpe 各 ≥ 1.5、區間下界 > 0）後入選三個：價量＋籌碼 × 多空＋期貨避險（1.98）、價量 × 多空＋期貨避險（1.78）、價量＋籌碼 × 多日多空（1.57）；週頻多頭因前段 Sharpe 只有 1.44 落選 |
+| 樣本外 | 原選定的週頻多頭：年化 +3.5%、回撤 −25.7%，確認條件「淨報酬為正」成立、「回撤不比樣本內深」**不成立**。門檻入選的三個：多空＋期貨避險（價量＋籌碼）+34.1%、Sharpe 2.19、回撤 −8.1%；多空＋期貨避險（價量）+27.5%、1.74、−6.3%；多日多空（價量＋籌碼）+30.9%、2.01、−8.6%——全部為正、回撤都在樣本內的兩倍以內，但只有價量版的多空＋避險完全不比樣本內深 |
+| 結論 | **依事前登記的規則，確認未通過，沒有策略進入模擬交易。** 單一最高格選到的是靠 2025 年下半年多頭行情衝高的策略，7 月一次 −17% 的修正就把它打掉；門檻篩選留下的三個市場中性策略在同一窗口 +27% 到 +34%、回撤 −6% 到 −9%。因為門檻規則是看了樣本外之後才改的，它的結果只作資訊；三個入選策略一起進入下一段 12 個月的確認期（第 10 節） |
 
 這份報告的價值不在「找到一個會賺錢的策略」，而在整個流程：嚴格的時間點資料、不重複使用測試資料、把成本與執行限制寫進回測、事前登記判定規則、結果不好也照實報告。
 
@@ -72,40 +72,50 @@ K、緩衝倍數等參數在樣本內的前段（2023-01 至 2025-05、上市、
 
 ### 7. 結果
 
-#### 7.1 樣本內（2023-01 至 2026-05，機構成本，上市與上櫃各半）
+#### 7.1 樣本內：全部六個候選
 
-| 模型 | 策略 | 淨 Sharpe | 年化淨報酬 | 95% 區間 | 最大回撤 |
-| --- | --- | --- | --- | --- | --- |
-| **價量＋籌碼** | **週頻多頭** | **2.38** | +51.8% | [+26.1%, +77.7%] | −22.6% |
-| 價量 | 週頻多頭 | 2.07 | +35.5% | [+17.2%, +54.7%] | −18.7% |
-| 價量＋籌碼 | 多空＋期貨避險 | 1.98 | +25.4% | [+13.9%, +38.0%] | −6.1% |
-| 價量 | 多空＋期貨避險 | 1.78 | +24.3% | [+10.4%, +38.0%] | −8.5% |
-| 價量＋籌碼 | 多日多空 | 1.57 | +19.1% | [+7.5%, +31.8%] | −8.4% |
-| 價量 | 多日多空 | 1.44 | +18.3% | [+3.6%, +32.2%] | −10.2% |
+六個候選 = 兩個模型 × 三種策略，機構成本、上市上櫃各半、分數位置。Sharpe 分三段看，因為這正是策略會不會「只在某種行情賺」的證據。
 
-對照：同期等權持有流動性宇宙年化 +31.5%（回撤 −18.7%）、0050 +48.3%（回撤 −25.2%）、加權報酬指數 +38.3%。多空策略的 +19% 到 +25% 是市場中性的報酬，不該直接與指數相比；週頻多頭是 100% 多頭，贏等權宇宙、輸 0050。
+| 模型 | 策略 | 2023-01 至 2025-05 Sharpe（年化淨報酬） | 2025-06 至 2026-05 Sharpe（年化淨報酬） | 全樣本內 Sharpe | 全樣本內年化淨報酬 [95% 區間] | 全樣本內最大回撤 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 價量＋籌碼 | 週頻多頭 | 1.44（+27.6%） | 4.13（+111.2%） | 2.38 | +51.8% [+26.1%, +77.7%] | −22.6% |
+| 價量 | 週頻多頭 | 1.44（+23.2%） | 3.39（+65.6%） | 2.07 | +35.5% [+17.2%, +54.7%] | −18.7% |
+| 價量＋籌碼 | 多空＋期貨避險 | 1.88（+22.0%） | 2.21（+33.7%） | 1.98 | +25.4% [+13.9%, +38.0%] | −6.1% |
+| 價量 | 多空＋期貨避險 | 1.57（+21.5%） | 2.29（+31.2%） | 1.78 | +24.3% [+10.4%, +38.0%] | −8.5% |
+| 價量＋籌碼 | 多日多空 | 1.51（+16.7%） | 1.71（+25.1%） | 1.57 | +19.1% [+7.5%, +31.8%] | −8.4% |
+| 價量 | 多日多空 | 1.32（+16.6%） | 1.74（+22.5%） | 1.44 | +18.3% [+3.6%, +32.2%] | −10.2% |
 
-**事前登記的選定規則**（機構成本、兩市場各半、樣本內淨 Sharpe 最高）選出**價量＋籌碼模型 × 週頻低換手多頭**。它的每日換手約 6%、年成本拖累約 7%；散戶成本下年化 +47.0%、Sharpe 2.17。逐年：2023 +38.2%、2024 +35.1%、2025 +27.9%、2026 至 10 月初 +93.1%。
+對照：同期等權持有流動性宇宙年化 +31.5%（回撤 −18.7%）、0050 +48.3%（回撤 −25.2%）、加權報酬指數 +38.3%。多空策略的 +19% 到 +25% 是市場中性的報酬，不該直接與指數相比；週頻多頭是 100% 多頭。
 
-#### 7.2 樣本外確認（2026-06-01 至 2026-10-02，85 個交易日）
+看這張表就看得出問題：兩個週頻多頭的全樣本內 Sharpe 最高，但幾乎全靠 2025 年 6 月之後的多頭行情（Sharpe 3.4 到 4.1），前段只有 1.44；三個多空策略在兩段期間的 Sharpe 都在 1.5 到 2.3 之間，報酬低但穩。
 
-事前登記的確認條件：(i) 樣本外年化淨報酬 > 0；(ii) 樣本外最大回撤不比樣本內深。兩者都成立才進入模擬交易。
+#### 7.2 兩種選定規則
 
-| 項目 | 選定策略（價量＋籌碼 × 週頻多頭） |
-| --- | --- |
-| 年化淨報酬 | +3.5%（95% 區間 −110.8% 到 +110.6%；85 天的區間必然很寬） |
-| 最大回撤 | **−25.7%**（高點 7 月 3 日、低點 7 月 29 日），樣本內為 −22.6% |
-| 各月 | 6 月 +9.7%、7 月 −19.5%、8 月 +8.6%、9 月 +2.4% |
-| 同期市場 | 7 月等權流動性宇宙 −17.0%、0050 −6.5%；整段等權宇宙 +12.1%、0050 +25.8% |
-| 判定 | (i) 成立、(ii) 不成立 → **未通過** |
+- **原本事前登記的規則**：全樣本內淨 Sharpe 最高的一格 → 選出價量＋籌碼模型 × 週頻低換手多頭（2.38）。
+- **修正後的規則**（看過樣本外結果後、由研究負責人指示修改，所以對這一段樣本外是事後規則，照實揭露；之後的確認期從一開始就用它）：三段期間的淨 Sharpe **各自 ≥ 1.5**，且全樣本內淨報酬區間下界 > 0。門檻取 1.5 的理由：業界常用的 1.0 六格全過、沒有篩選作用；2.0 沒有任何一格每段都過；1.5 是「每一段都明顯高於 1」的最低半格，不是對樣本外結果調出來的。→ 入選三格：價量＋籌碼 × 多空＋期貨避險、價量 × 多空＋期貨避險、價量＋籌碼 × 多日多空。兩個週頻多頭（前段 1.44）與價量 × 多日多空（前段 1.32）落選。
 
-**為什麼會這樣**：這個策略 100% 多頭、beta 接近 1，回撤由市場決定；85 天的確認期剛好包含一次 −17% 的修正，用「回撤不更深」當條件幾乎必然失敗。同一窗口裡，市場中性的多空加期貨避險策略（價量＋籌碼）+34.1%、回撤 −8.1%，上市市場甚至 +72.6%（區間 +27.0% 到 +120.7%）。但選定規則是事前寫死的，**不能因為結果不好就換一個格子**；這正是事前登記存在的意義。
+#### 7.3 樣本外（2026-06-01 至 2026-10-02，85 個交易日）：全部六格
 
-#### 7.3 籌碼資料到底有沒有用
+事前登記的確認條件：(i) 樣本外年化淨報酬 > 0；(ii) 樣本外最大回撤不比樣本內深。另加一個對照讀法：(ii′) 回撤在樣本內的兩倍以內——樣本內的放空腿是五次隨機重複的平均，平均會壓低回撤，所以「不更深」偏嚴。
 
-- 排序層：有。加入籌碼後 5 到 10 日排序能力的增量 +0.017，區間不跨 0。
-- 策略層：只對多頭有用。週頻多頭加籌碼後樣本內年化多 +16.3%（區間 +5.5% 到 +27.7%）；多空策略只多 +0.8% 到 +1.0%（區間跨 0），因為放空腿沒有從籌碼得到好處。
-- 樣本外：加籌碼的多頭在 7 月跌得更深（−19.5% 對 −8.5%），這是籌碼特徵偏好近期強勢股的代價。
+| 模型 | 策略 | 入選 | 樣本外年化淨報酬 [95% 區間] | Sharpe | 樣本外最大回撤 | 樣本內最大回撤 | (i) | (ii) 不更深 | (ii′) 兩倍內 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 價量＋籌碼 | 週頻多頭（原選定） | 否 | +3.5% [−110.8%, +110.6%] | 0.08 | −25.7% | −22.6% | ✓ | ✗ | ✓ |
+| 價量 | 週頻多頭 | 否 | +27.5% [−38.3%, +101.1%] | 1.05 | −14.8% | −18.7% | ✓ | ✓ | ✓ |
+| 價量＋籌碼 | 多空＋期貨避險 | **是** | +34.1% [−19.0%, +90.1%] | 2.19 | −8.1% | −6.1% | ✓ | ✗ | ✓ |
+| 價量 | 多空＋期貨避險 | **是** | +27.5% [−16.9%, +67.1%] | 1.74 | −6.3% | −8.5% | ✓ | ✓ | ✓ |
+| 價量＋籌碼 | 多日多空 | **是** | +30.9% [−25.9%, +90.0%] | 2.01 | −8.6% | −8.4% | ✓ | ✗ | ✓ |
+| 價量 | 多日多空 | 否 | +23.3% [−23.4%, +64.5%] | 1.50 | −6.9% | −10.2% | ✓ | ✓ | ✓ |
+
+各月（機構、兩市場各半）：7 月等權流動性宇宙 −17.0%、0050 −6.5%；原選定的週頻多頭 −19.5%，價量＋籌碼的多空＋期貨避險 +15.6%。
+
+#### 7.4 怎麼讀
+
+- **依事前規則，確認未通過，沒有策略進入模擬交易**：規則選出的週頻多頭是 100% 多頭、beta 接近 1，回撤由市場決定；85 天裡一次 −17% 的修正就讓「回撤不更深」失敗。這個結果照實記錄，不能事後換格。
+- **門檻篩選留下的是另一類策略**：三個市場中性的多空版本在前後兩段的 Sharpe 都穩在 1.5 到 2.3，樣本外 +27% 到 +34%、回撤 −6% 到 −9%，而且是在多頭策略賠錢的那個 7 月賺的。它們的樣本外數字區間很寬（±50 到 ±60 個百分點），85 天分不出好壞，但「回撤在可控範圍」這件事已經和週頻多頭明顯不同。
+- **報酬與穩定的取捨**：週頻多頭樣本內年化 +52%、回撤 −23%，多空＋期貨避險 +25%、回撤 −6%。前者在多頭行情裡會大贏，碰到修正會回吐四分之一；後者什麼行情都賺得慢但賠得少。哪一個「比較好」取決於能承受多大的回撤，不是一個 Sharpe 數字能決定的，這也是改用門檻篩選的原因。
+- **籌碼資料的角色**：排序層有增量（+0.017）；策略層只對多頭有增量（+16.3%／年），對多空幾乎沒有（+0.8% 到 +1.0%，區間跨 0）——放空腿沒有從籌碼得到好處。所以在入選的三個候選裡，價量＋籌碼版比價量版的優勢不大。
+- **下一步**：三個入選策略一起進入 2026-10-23 起 12 個月的確認期（第 10 節），各自判定。
 
 ### 8. 樣本是怎麼用的：洩漏與設計偏誤的交代
 
@@ -143,9 +153,9 @@ K、緩衝倍數等參數在樣本內的前段（2023-01 至 2025-05、上市、
 
 ### 10. 下一步
 
-1. 週頻多頭加 beta 對沖或波動目標，讓回撤不由市場決定——這是新的策略，參數要重新在樣本內前段選定，再用新的樣本外期間確認。
-2. 或者以市場中性的多空加避險為主線，重新登記一段夠長的確認期。
-3. 用修正分割與減資後的資料重訓，重算全部數字。
+1. 三個入選的市場中性策略一起進入 2026-10-23 起 12 個月的確認期（第 6 個月期中只讀不判）：每季把資料延到季末、重訓新增的那一季、累積每日淨報酬；期滿用事前寫好的兩條規則各自判定——淨報酬 > 0，且最大回撤不深於各自樣本內回撤的兩倍。通過的進模擬交易。
+2. 週頻多頭加 β 對沖已補測（附錄 B）：白名單內的工具救不回它，不再列為候選。
+3. 用修正分割與減資後的資料重訓，重算全部數字（另案）。
 
 ### 附錄 B：補充回測——幫週頻多頭加上 β 對沖（2026-10-29）
 
@@ -193,9 +203,9 @@ This report documents an end-to-end quantitative research cycle: a cross-section
 | Costs | Institution (commission 0.03%, slippage 0.05%, tiered borrow fees) and retail (commission 0.0855%, slippage 0.1% to 0.2%) side by side; shorts limited by the borrowable list, exchange quotas and borrow-failure probabilities |
 | In-sample | 2023-01 to 2026-05 (about 790 sessions), used for parameter selection |
 | Out-of-sample | 2026-06 to 2026-10 (85 sessions), pre-registered and read once |
-| Selected | Price-volume + chip model × weekly low-turnover long: in-sample annualized net return +51.8% (95% interval +26.1% to +77.7%), net Sharpe 2.38, maximum drawdown −22.6% |
-| Out-of-sample | Annualized net return +3.5%, maximum drawdown −25.7%. The two pre-registered confirmation conditions: positive net return (holds), drawdown not deeper than in-sample (**fails**) |
-| Conclusion | **Confirmation not passed; the strategy stays in research and does not enter paper trading.** A −17% market correction in July 2026 landed on a 100% long book; the market-neutral strategies made +23% to +34% with −6% to −9% drawdowns in the same window, but the pre-registered rule does not allow a change of pick after the fact |
+| Selected | The originally registered rule (the single cell with the highest in-sample net Sharpe) picked the price-volume + chip model × weekly low-turnover long (Sharpe 2.38, +51.8% a year, drawdown −22.6%). The rule was amended afterwards to a threshold shortlist (Sharpe ≥ 1.5 in each of three periods, lower bound > 0), which keeps three cells: price-volume + chip × L/S + futures hedge (1.98), price-volume × L/S + futures hedge (1.78), price-volume + chip × multi-day long-short (1.57); the weekly long drops out on its first-segment Sharpe of 1.44 |
+| Out-of-sample | The originally selected weekly long: +3.5% a year, drawdown −25.7%; "positive net return" holds, "drawdown not deeper than in-sample" **fails**. The three shortlisted cells: L/S + futures hedge (price-volume + chip) +34.1%, Sharpe 2.19, drawdown −8.1%; L/S + futures hedge (price-volume) +27.5%, 1.74, −6.3%; multi-day long-short (price-volume + chip) +30.9%, 2.01, −8.6% — all positive, all within twice their in-sample drawdown, but only the price-volume L/S + hedge is strictly no deeper than in-sample |
+| Conclusion | **Under the pre-registered rule the confirmation is not passed and no strategy enters paper trading.** The single-argmax rule picked a strategy that rode the late-2025 bull market; one −17% correction in July knocked it out. The three market-neutral strategies kept by the threshold rule made +27% to +34% with −6% to −9% drawdowns in the same window. Because the threshold rule was changed after the out-of-sample result was seen, its result is informational; the three shortlisted strategies enter the next twelve-month confirmation period together (section 10) |
 
 The value of this work is the process rather than a winning strategy: strict point-in-time data, no reuse of test data, costs and execution limits inside the backtest, decision rules registered before scoring, and an honest report when the answer is no.
 
@@ -247,40 +257,50 @@ Slippage at 0× and 2× and capital scenarios of NT$300M and NT$1B (no position 
 
 ### 7. Results
 
-#### 7.1 In-sample (2023-01 to 2026-05, institution costs, TWSE and TPEX half each)
+#### 7.1 In-sample: all six candidates
 
-| Model | Strategy | Net Sharpe | Net return (annual) | 95% interval | Max drawdown |
-| --- | --- | --- | --- | --- | --- |
-| **Price-volume + chip** | **Weekly long** | **2.38** | +51.8% | [+26.1%, +77.7%] | −22.6% |
-| Price-volume | Weekly long | 2.07 | +35.5% | [+17.2%, +54.7%] | −18.7% |
-| Price-volume + chip | L/S + futures hedge | 1.98 | +25.4% | [+13.9%, +38.0%] | −6.1% |
-| Price-volume | L/S + futures hedge | 1.78 | +24.3% | [+10.4%, +38.0%] | −8.5% |
-| Price-volume + chip | Multi-day long-short | 1.57 | +19.1% | [+7.5%, +31.8%] | −8.4% |
-| Price-volume | Multi-day long-short | 1.44 | +18.3% | [+3.6%, +32.2%] | −10.2% |
+Six candidates = two models × three strategies, institution costs, TWSE and TPEX half each, fractional capital. Sharpe is shown for both in-sample segments, because that is the evidence of whether a strategy earns only in one kind of market.
 
-Benchmarks over the same window: equal-weight holding of the liquidity universe +31.5% a year (drawdown −18.7%), 0050 +48.3% (drawdown −25.2%), TAIEX total-return index +38.3%. The long-short strategies' +19% to +25% is market-neutral return and should not be compared with an index; the weekly long is 100% long, beats the equal-weight universe and trails 0050.
+| Model | Strategy | 2023-01 to 2025-05 Sharpe (net return a year) | 2025-06 to 2026-05 Sharpe (net return a year) | All in-sample Sharpe | All in-sample net return [95% interval] | All in-sample max drawdown |
+| --- | --- | --- | --- | --- | --- | --- |
+| Price-volume + chip | Weekly long | 1.44 (+27.6%) | 4.13 (+111.2%) | 2.38 | +51.8% [+26.1%, +77.7%] | −22.6% |
+| Price-volume | Weekly long | 1.44 (+23.2%) | 3.39 (+65.6%) | 2.07 | +35.5% [+17.2%, +54.7%] | −18.7% |
+| Price-volume + chip | L/S + futures hedge | 1.88 (+22.0%) | 2.21 (+33.7%) | 1.98 | +25.4% [+13.9%, +38.0%] | −6.1% |
+| Price-volume | L/S + futures hedge | 1.57 (+21.5%) | 2.29 (+31.2%) | 1.78 | +24.3% [+10.4%, +38.0%] | −8.5% |
+| Price-volume + chip | Multi-day long-short | 1.51 (+16.7%) | 1.71 (+25.1%) | 1.57 | +19.1% [+7.5%, +31.8%] | −8.4% |
+| Price-volume | Multi-day long-short | 1.32 (+16.6%) | 1.74 (+22.5%) | 1.44 | +18.3% [+3.6%, +32.2%] | −10.2% |
 
-The **pre-registered selection rule** (institution costs, both markets half each, highest in-sample net Sharpe) selects **the price-volume + chip model × weekly low-turnover long**. Its daily turnover is about 6% and its cost drag about 7% a year; under retail costs it returns +47.0% a year with a Sharpe of 2.17. By year: 2023 +38.2%, 2024 +35.1%, 2025 +27.9%, 2026 to early October +93.1%.
+Benchmarks over the same window: equal-weight holding of the liquidity universe +31.5% a year (drawdown −18.7%), 0050 +48.3% (drawdown −25.2%), TAIEX total-return index +38.3%. The long-short strategies' +19% to +25% is market-neutral return and should not be compared with an index; the weekly long is 100% long.
 
-#### 7.2 Out-of-sample confirmation (2026-06-01 to 2026-10-02, 85 sessions)
+The table shows the problem at a glance: the two weekly longs have the highest all-in-sample Sharpe, but almost all of it comes from the bull market after June 2025 (Sharpe 3.4 to 4.1) while the first segment is only 1.44; the three long-short strategies sit between 1.5 and 2.3 in both segments, lower return but steady.
 
-Pre-registered confirmation conditions: (i) out-of-sample annualized net return > 0; (ii) out-of-sample maximum drawdown not deeper than in-sample. Both must hold for paper trading.
+#### 7.2 Two selection rules
 
-| Item | Selected strategy (price-volume + chip × weekly long) |
-| --- | --- |
-| Net return (annual) | +3.5% (95% interval −110.8% to +110.6%; an 85-day interval is necessarily wide) |
-| Maximum drawdown | **−25.7%** (peak 3 July, trough 29 July) against −22.6% in-sample |
-| By month | June +9.7%, July −19.5%, August +8.6%, September +2.4% |
-| Market over the same window | equal-weight universe −17.0% and 0050 −6.5% in July; whole window: equal-weight universe +12.1%, 0050 +25.8% |
-| Verdict | (i) holds, (ii) fails → **not passed** |
+- **The rule registered in advance**: the single cell with the highest all-in-sample net Sharpe → price-volume + chip model × weekly low-turnover long (2.38).
+- **The amended rule** (changed at the research lead's instruction after the out-of-sample result was seen, hence post hoc for this window and disclosed as such; the next confirmation period uses it from the start): net Sharpe **≥ 1.5 in each of the three periods**, and the all-in-sample net-return lower bound > 0. Why 1.5: the common industry bar of 1.0 lets all six cells through and screens nothing; 2.0 lets none through in every segment; 1.5 is the lowest half-step that demands "clearly above 1 in every segment" and was not tuned on the out-of-sample result. → Three cells: price-volume + chip × L/S + futures hedge, price-volume × L/S + futures hedge, price-volume + chip × multi-day long-short. The two weekly longs (first segment 1.44) and price-volume × multi-day long-short (1.32) drop out.
 
-**Why it turned out this way**: the strategy is 100% long with a beta near one, so its drawdown is the market's; the 85-day window happened to contain a −17% correction, and a "no deeper drawdown" condition almost cannot survive that. In the same window the market-neutral long-short with futures hedge (price-volume + chip) made +34.1% with an −8.1% drawdown, and +72.6% on TWSE alone (interval +27.0% to +120.7%). But the selection rule was fixed in advance, and **a bad outcome is not a reason to pick a different cell** — that is exactly what pre-registration is for.
+#### 7.3 Out-of-sample (2026-06-01 to 2026-10-02, 85 sessions): all six cells
 
-#### 7.3 Is the chip data useful?
+Pre-registered confirmation conditions: (i) out-of-sample annualized net return > 0; (ii) out-of-sample maximum drawdown not deeper than in-sample. A second reading is added for context: (ii′) drawdown within twice the in-sample value — the in-sample short book is the average of five random replicates, which damps drawdowns, so "not deeper" is on the strict side.
 
-- At the ranking level: yes. Adding chip data raises the 5- to 10-day ranking skill by +0.017 with an interval clear of zero.
-- At the strategy level: only for the long book. The weekly long earns +16.3% a year more with chip data in-sample (interval +5.5% to +27.7%); the long-short books gain only +0.8% to +1.0% (intervals spanning zero), because the short book gets nothing from the chip features.
-- Out of sample: the chip-driven long book fell harder in July (−19.5% vs −8.5%), the price of the chip features' preference for recent winners.
+| Model | Strategy | Shortlisted | Out-of-sample net return [95% interval] | Sharpe | Out-of-sample max drawdown | In-sample max drawdown | (i) | (ii) not deeper | (ii′) within 2× |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Price-volume + chip | Weekly long (original pick) | no | +3.5% [−110.8%, +110.6%] | 0.08 | −25.7% | −22.6% | ✓ | ✗ | ✓ |
+| Price-volume | Weekly long | no | +27.5% [−38.3%, +101.1%] | 1.05 | −14.8% | −18.7% | ✓ | ✓ | ✓ |
+| Price-volume + chip | L/S + futures hedge | **yes** | +34.1% [−19.0%, +90.1%] | 2.19 | −8.1% | −6.1% | ✓ | ✗ | ✓ |
+| Price-volume | L/S + futures hedge | **yes** | +27.5% [−16.9%, +67.1%] | 1.74 | −6.3% | −8.5% | ✓ | ✓ | ✓ |
+| Price-volume + chip | Multi-day long-short | **yes** | +30.9% [−25.9%, +90.0%] | 2.01 | −8.6% | −8.4% | ✓ | ✗ | ✓ |
+| Price-volume | Multi-day long-short | no | +23.3% [−23.4%, +64.5%] | 1.50 | −6.9% | −10.2% | ✓ | ✓ | ✓ |
+
+By month (institution, both markets): in July the equal-weight liquidity universe lost −17.0% and 0050 −6.5%; the originally selected weekly long lost −19.5%, the price-volume + chip L/S + futures hedge made +15.6%.
+
+#### 7.4 How to read it
+
+- **Under the pre-registered rule the confirmation is not passed and no strategy enters paper trading**: the selected weekly long is 100% long with a beta near one, so its drawdown is the market's, and one −17% correction in 85 days breaks "no deeper drawdown". The outcome is recorded as it is; the cell cannot be swapped after the fact.
+- **The threshold rule keeps a different kind of strategy**: the three market-neutral long-short versions hold Sharpe 1.5 to 2.3 in both segments and return +27% to +34% out of sample with −6% to −9% drawdowns — earned in the very July when the long strategy lost. Their out-of-sample intervals are wide (±50 to ±60 points) and 85 days cannot rank them, but "drawdown under control" already separates them from the weekly long.
+- **Return versus stability**: the weekly long makes +52% a year in-sample with a −23% drawdown; the L/S + futures hedge +25% with −6%. The first wins big in a bull market and gives a quarter back in a correction; the second earns slowly in any market and loses little. Which is "better" depends on the drawdown one can carry, not on a single Sharpe figure — which is why the selection moved to a threshold shortlist.
+- **The role of chip data**: an increment at the ranking level (+0.017); at the strategy level only on the long book (+16.3% a year), almost none on the long-short books (+0.8% to +1.0%, intervals spanning zero) — the short book gains nothing from it. Among the three shortlisted cells the chip model's edge over the price-volume model is therefore small.
+- **Next**: the three shortlisted strategies enter the twelve-month confirmation period from 2026-10-23 together (section 10), each judged on its own.
 
 ### 8. How the samples were used: leakage and design bias, stated plainly
 
@@ -318,9 +338,9 @@ Constructions tried: six generations of strategy (daily rotation → hold buffer
 
 ### 10. Next steps
 
-1. The weekly long with a beta hedge or a volatility target, so the drawdown is not the market's — a new strategy whose parameters must be re-selected on the first in-sample segment and confirmed on a new out-of-sample window.
-2. Or make the market-neutral long-short with futures hedge the main line and register a confirmation period long enough to judge.
-3. Retrain on split- and capital-reduction-adjusted data and recompute every number.
+1. The three shortlisted market-neutral strategies enter a twelve-month confirmation period from 2026-10-23 together (an interim reading at six months, not judged): each quarter the data is extended to the quarter end, the new quarter's fold is trained, and the daily net returns accumulate; at the end each cell is judged by the two pre-registered conditions — net return > 0 and maximum drawdown not deeper than twice its own in-sample drawdown. Those that pass enter paper trading.
+2. Beta-hedging the weekly long was tested (appendix B): the allowlisted instruments cannot rescue it, and it is no longer a candidate.
+3. Retrain on split- and capital-reduction-adjusted data and recompute every number (separately).
 
 ### Appendix B: a follow-up backtest — beta-hedging the weekly long (29 October 2026)
 

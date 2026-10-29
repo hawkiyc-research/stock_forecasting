@@ -11,6 +11,11 @@ pre-registered rules without re-running any simulation:
   the same profile, (i) the annualized net return is above zero and (ii) the maximum drawdown
   is not deeper than the decision period's. Both hold: the strategy may enter paper trading;
   otherwise it stays in research, with no re-selection.
+* **Threshold shortlist** (the amended rule of protocol 13.20, supplement 1; the ``shortlist``
+  block): instead of one argmax cell, every candidate whose net Sharpe reaches ``sharpe_min`` in
+  each listed period and whose decision-period net-return lower bound is above
+  ``lower_bound_above`` is shortlisted, and the confirmation is read for each of them. The
+  argmax ``selection`` is still reported as the original pre-registered rule's outcome.
 * **Chip increment at the strategy level** (informational): for every strategy and market,
   the paired daily net difference between the treatment run (F2) and the base run (F0) under
   the selection profile, with the block-bootstrap interval over the decision period and the
@@ -141,6 +146,9 @@ def confirm(grid: pd.DataFrame, config: dict[str, Any], chosen: dict[str, Any]) 
     # Drawdowns are negative numbers: "not deeper" means not more negative.
     drawdown_ok = bool(np.isfinite(forward_dd) and np.isfinite(decision_dd)
                        and forward_dd >= decision_dd)
+    multiple = float(check.get("drawdown_multiple", 1.0))
+    within_multiple = bool(np.isfinite(forward_dd) and np.isfinite(decision_dd)
+                           and forward_dd >= multiple * decision_dd)
     passed = positive and drawdown_ok
     return {
         "period": check["period"], "evaluated": True,
@@ -153,10 +161,59 @@ def confirm(grid: pd.DataFrame, config: dict[str, Any], chosen: dict[str, Any]) 
         "max_drawdown": forward_dd, "decision_max_drawdown": decision_dd,
         "days": int(forward_row["days"]),
         "positive_return": positive, "drawdown_not_deeper": drawdown_ok,
+        "drawdown_multiple": multiple, "drawdown_within_multiple": within_multiple,
+        "passed_within_multiple": positive and within_multiple,
         "passed": passed,
         "status": ("informational" if check.get("informational")
                    else ("paper_trading_candidate" if passed else "research")),
     }
+
+
+# --------------------------------------------------------------------------- shortlist
+
+
+def shortlist(grid: pd.DataFrame, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every candidate cell with its per-period metrics and the threshold verdicts.
+
+    ``config["shortlist"]``: ``periods`` (each must reach ``sharpe_min`` net Sharpe),
+    ``lower_bound_period`` / ``lower_bound_above`` (the net-return 95% lower bound) and the
+    optional ``positive_period`` (net return > 0 there). Sorted by the decision-period Sharpe.
+    """
+    rule = config["selection"]
+    spec = config["shortlist"]
+    cells = _cells(grid, rule)
+    periods = list(spec["periods"])
+    out = []
+    for (model, scenario), rows in cells.groupby(["model", "scenario"]):
+        by_period = {str(r.period): r for r in rows.itertuples()}
+        metrics = {}
+        for period, r in by_period.items():
+            metrics[period] = {
+                "sharpe": float(r.sharpe), "net_return_annual": float(r.net_return_annual),
+                "net_excess_annual_low": float(r.net_excess_annual_low),
+                "net_excess_annual_high": float(r.net_excess_annual_high),
+                "max_drawdown": float(r.max_drawdown), "days": int(r.days),
+            }
+        sharpe_ok = all(
+            period in metrics and np.isfinite(metrics[period]["sharpe"])
+            and metrics[period]["sharpe"] >= float(spec["sharpe_min"]) for period in periods
+        )
+        lb_period = spec.get("lower_bound_period", rule["period"])
+        lb = metrics.get(lb_period, {}).get("net_excess_annual_low", float("nan"))
+        lower_ok = bool(np.isfinite(lb) and lb > float(spec.get("lower_bound_above", 0.0)))
+        positive_period = spec.get("positive_period")
+        positive_ok = True
+        if positive_period:
+            value = metrics.get(positive_period, {}).get("net_return_annual", float("nan"))
+            positive_ok = bool(np.isfinite(value) and value > 0)
+        out.append({
+            "model": str(model), "scenario": str(scenario), "periods": metrics,
+            "sharpe_each_period_ok": sharpe_ok, "lower_bound_ok": lower_ok,
+            "positive_period_ok": positive_ok,
+            "shortlisted": sharpe_ok and lower_ok and positive_ok,
+        })
+    out.sort(key=lambda c: -c["periods"].get(rule["period"], {}).get("sharpe", float("-inf")))
+    return out
 
 
 # --------------------------------------------------------------------------- increment
@@ -221,6 +278,11 @@ def run(suite_root: Path, config_path: Path, output_root: Path) -> dict[str, Any
         "selection": chosen, "confirmation": verdict, "cells": table,
         "increment": increments,
     }
+    if "shortlist" in config:
+        candidates = shortlist(grid, config)
+        for cell in candidates:
+            cell["confirmation"] = confirm(grid, config, cell)
+        report["shortlist"] = {"rule": config["shortlist"], "candidates": candidates}
     output_root.mkdir(parents=True, exist_ok=False)
     (output_root / "report.json").write_text(
         json.dumps(runner.clean(report), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -251,6 +313,31 @@ def summary_markdown(report: dict[str, Any], config: dict[str, Any]) -> str:
                      f"{num(item[chosen['metric']])} | {pct(item['net_return_annual'])} | "
                      f"{pct(item['max_drawdown'])} |")
     lines.append("")
+    if report.get("shortlist"):
+        spec = report["shortlist"]["rule"]
+        lines.append("## 門檻篩選 / Threshold shortlist")
+        lines.append("")
+        lb_period = spec.get("lower_bound_period", rule["period"])
+        lines.append(f"- 規則 / rule: 淨 Sharpe ≥ {spec['sharpe_min']} in each of "
+                     f"{', '.join(spec['periods'])}; {lb_period} 淨報酬區間下界 > "
+                     f"{spec.get('lower_bound_above', 0.0)}")
+        header = ("| 模型 | 策略 | " + " | ".join(f"{p} Sharpe" for p in spec["periods"])
+                  + " | 下界 | 入選 | P3 淨報酬 | P3 回撤 | 樣本內回撤 | (i) | (ii) 不更深 "
+                  "| (ii) 倍數內 |")
+        lines.append(header)
+        lines.append("| " + " | ".join(["---"] * (header.count("|") - 1)) + " |")
+        for c in report["shortlist"]["candidates"]:
+            v = c.get("confirmation", {})
+            sharpes = " | ".join(
+                num(c["periods"].get(p, {}).get("sharpe")) for p in spec["periods"])
+            lb = c["periods"].get(lb_period, {}).get("net_excess_annual_low")
+            lines.append(
+                f"| {c['model']} | {_label(c['scenario'])} | {sharpes} | {pct(lb)} | "
+                f"{'是 / yes' if c['shortlisted'] else '否 / no'} | "
+                f"{pct(v.get('net_return_annual'))} | {pct(v.get('max_drawdown'))} | "
+                f"{pct(v.get('decision_max_drawdown'))} | {v.get('positive_return')} | "
+                f"{v.get('drawdown_not_deeper')} | {v.get('drawdown_within_multiple')} |")
+        lines.append("")
     lines.append("## H-J（P3 確認）/ H-J (P3 confirmation)")
     lines.append("")
     if not verdict.get("evaluated"):

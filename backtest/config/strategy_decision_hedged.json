@@ -19,7 +19,8 @@
   "confirmation": {
     "period": "P3",
     "informational": true,
-    "note": "P3 was seen when section 13.21 was registered; the H-J conditions are described, not judged."
+    "note": "P3 was seen when section 13.21 was registered; the H-J conditions are described, not judged.",
+    "drawdown_multiple": 2.0
   },
   "increment": {
     "base": "F0",

@@ -290,3 +290,42 @@ def test_hedged_weekly_suite_and_informational_decision(tmp_path):
     assert verdict["selection"]["scenario"] in {"wk_long", "wk_long_tx", "wk_long_etf"}
     assert verdict["confirmation"]["status"] == "informational"
     assert verdict["confirmation"]["note"]
+
+
+def test_threshold_shortlist_keeps_consistent_cells_and_reads_both_drawdown_rules():
+    base = {"stage": "final", "primary_slippage": True, "capital": "fractional",
+            "profile": "institution", "market": "TW", "score_variant": "v1",
+            "leg_matching": "none", "net_excess_annual_high": 0.3, "turnover": 0.03,
+            "cost_drag_annual": 0.05, "hit_rate": 0.5, "days": 100,
+            "index_total_return_annual": 0.1}
+    cells = {  # (model, scenario): per-period (sharpe, net, lower bound, mdd)
+        ("F2", "wk_long"): {"P1": (1.4, 0.3, 0.05, -0.2), "P2": (4.0, 1.1, 0.6, -0.1),
+                            "P1+P2": (2.4, 0.5, 0.26, -0.22), "P3": (0.1, 0.03, -1.1, -0.26)},
+        ("F2", "md_ls_tx"): {"P1": (1.9, 0.22, 0.08, -0.06), "P2": (2.2, 0.34, 0.08, -0.06),
+                             "P1+P2": (2.0, 0.25, 0.14, -0.061), "P3": (2.2, 0.34, -0.19, -0.081)},
+        ("F0", "md_ls"): {"P1": (1.3, 0.17, -0.01, -0.1), "P2": (1.7, 0.22, -0.05, -0.08),
+                          "P1+P2": (1.4, 0.18, 0.04, -0.10), "P3": (1.5, 0.23, -0.23, -0.07)},
+    }
+    rows = []
+    for (model, scenario), periods in cells.items():
+        for period, (sh, net, lb, dd) in periods.items():
+            rows.append({**base, "model": model, "scenario": scenario, "period": period,
+                         "sharpe": sh, "net_return_annual": net, "net_excess_annual_low": lb,
+                         "max_drawdown": dd})
+    grid = pd.DataFrame(rows)
+    config = json.loads(sd.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    assert config["shortlist"]["sharpe_min"] == 1.5
+    assert config["confirmation"]["drawdown_multiple"] == 2.0
+    candidates = sd.shortlist(grid, config)
+    by = {(c["model"], c["scenario"]): c for c in candidates}
+    # The argmax cell (Sharpe 2.4 over P1+P2) is NOT shortlisted: its P1 Sharpe is 1.4 < 1.5.
+    assert by[("F2", "wk_long")]["shortlisted"] is False
+    assert by[("F2", "wk_long")]["sharpe_each_period_ok"] is False
+    assert by[("F2", "md_ls_tx")]["shortlisted"] is True
+    assert by[("F0", "md_ls")]["shortlisted"] is False  # P1 1.3 < 1.5
+    first = next(iter(candidates))
+    assert (first["model"], first["scenario"]) == ("F2", "wk_long")  # sorted by P1+P2 Sharpe
+    verdict = sd.confirm(grid, config, {"model": "F2", "scenario": "md_ls_tx"})
+    # Strict H-J fails on -8.1% vs -6.1%; within the 2x multiple (-12.2%) it passes.
+    assert verdict["drawdown_not_deeper"] is False and verdict["drawdown_within_multiple"] is True
+    assert verdict["passed"] is False and verdict["passed_within_multiple"] is True

@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "name": "strategy-decision-p3",
-  "description": "Experiment protocol section 13.20 items 5 and 6, applied to a scenario_suite_v1_p3 output: the final (run, strategy) cell is the highest P1+P2 institution net Sharpe on TW at fractional capital among S1, S2 and S-A; H-J passes when the cell's P3 net return is positive and its P3 maximum drawdown is not deeper than P1+P2's. The chip increment at the strategy level is the paired F2 - F0 daily net difference (informational).",
+  "description": "Experiment protocol section 13.20 items 5 and 6 plus supplement 1, applied to a scenario_suite_v1_p3 output: the original argmax rule (highest P1+P2 institution net Sharpe on TW at fractional capital among S1, S2 and S-A) is still reported; the amended rule shortlists every cell whose net Sharpe reaches 1.5 in P1, P2 and P1+P2 and whose P1+P2 lower bound is above zero, and reads H-J for each of them (strict 'not deeper' and the 2x multiple). The chip increment at the strategy level is the paired F2 - F0 daily net difference (informational).",
   "selection": {
     "profile": "institution",
     "market": "TW",
@@ -17,7 +17,8 @@
     "leg_matching": "none"
   },
   "confirmation": {
-    "period": "P3"
+    "period": "P3",
+    "drawdown_multiple": 2.0
   },
   "increment": {
     "base": "F0",
@@ -46,5 +47,15 @@
     "P1",
     "P2"
   ],
-  "annualization_days": 252
+  "annualization_days": 252,
+  "shortlist": {
+    "periods": [
+      "P1",
+      "P2",
+      "P1+P2"
+    ],
+    "sharpe_min": 1.5,
+    "lower_bound_period": "P1+P2",
+    "lower_bound_above": 0.0
+  }
 }
