@@ -2,6 +2,10 @@
 
 ## 中文
 
+### 未發布（2026-10-29 之後）
+
+- 台股還原價：`TWSEProvider`／`TPExProvider` 的 `fetch_actions` 在除權日「開盤競價基準／開始交易基準價」與「除權息參考價」相差超過前收 0.5% 時改用基準價作價格因子（有償現金增資的基準價停在前收，參考價會製造不存在的跳動；2016 年起 861 列、誤差中位數 1.9%、最大 32%），`source` 加 `_opening_basis`、metadata 加 `opening_basis_rows`；`twse_official`／`tpex_official` 內容識別碼與 `configs/data_content_identity_snapshot.json` 更新，既有資料集不變，下一次資料準備產生新的資料集身分。發現、量化與對 §13.20 數字的敏感度見協定 §13.20 補充三。
+
 ### v0.4.0 2026-10-25
 
 - 台股橫斷面排序主線（協定 §13.12–§13.17）完成並結案：B0 LightGBM 基線、D0 跨股票 transformer 與消融 A1、
@@ -146,6 +150,10 @@
 資料不納入 Git，須以 run ID、checkpoint 與各自 manifest 追溯。
 
 ## English
+
+### Unreleased (after 2026-10-29)
+
+- Taiwan adjusted prices: `fetch_actions` of `TWSEProvider` / `TPExProvider` uses the exchange's opening basis (開盤競價基準 / 開始交易基準價) as the ex-day price factor whenever it differs from the reference price by more than 0.5% of the prior close (for paid rights issues the basis stays at the prior close and the reference price invented a jump; 861 rows since 2016, median error 1.9%, largest 32%); `source` gains `_opening_basis`, metadata gains `opening_basis_rows`; the `twse_official` / `tpex_official` content identities and `configs/data_content_identity_snapshot.json` are updated, existing datasets are unchanged and the next data preparation gets a new dataset identity. Finding, quantification and the sensitivity of the §13.20 numbers: protocol §13.20 supplement 3.
 
 ### v0.4.0 2026-10-25
 

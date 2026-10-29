@@ -37,6 +37,7 @@
 | 訓練方式 | 每季重新訓練、訓練資料從 2016 年起擴張、截止於預測季前 15 個交易日、最後 12 個月為驗證；2023 年第一季到 2026 年第四季共 16 折 |
 | 樣本內 | 前段 2023-01-02 至 2025-05-31、後段 2025-06-01 至 2026-05-31（後段在設計正交化時已看過） |
 | 樣本外 | 2026-06-01 至 2026-10-02（85 個開盤到開盤區間；最後 14 個交易日沒有標籤就沒有預測） |
+| 資料更正（2026-10-29） | 發現有償現金增資的還原價錯誤，集中在樣本外期間；同一組預測改用修正價重算，三個入選策略的樣本外年化淨報酬從 +34.1%／+27.5%／+30.9% 降為 +14.7%／+19.4%／+13.7%，仍為正；本報告的樣本外數字應視為偏高（第 9 節 (a)） |
 | 宇宙 | 只含股票；前 20 日成交金額中位數上市 ≥ 3,000 萬、上櫃 ≥ 1,000 萬；收盤價 ≥ 10 元 |
 | 成本 | 機構：手續費 0.03%、滑價 0.05%、借券費依規模 1.5%／3%／6%；散戶：手續費 0.0855%、滑價 0.1%／0.2%、融券手續費 0.08%；證交稅 0.3%；滑價 0／1／2 倍敏感度 |
 | 資金情境 | 分數位置；機構 3 億與 10 億（單一標的名目 ≤ 20 日成交金額中位數的 5%，超出留現金） |
@@ -559,6 +560,7 @@ The report records the whole path: what each stage did, why it failed, what was 
 | Training | retrained every quarter, expanding from 2016, training data ending 15 sessions before the predicted quarter, last 12 months as validation; 16 folds from 2023Q1 to 2026Q4 |
 | In-sample | first segment 2023-01-02 to 2025-05-31, second segment 2025-06-01 to 2026-05-31 (the second had been seen when the orthogonalization was designed) |
 | Out-of-sample | 2026-06-01 to 2026-10-02 (85 open-to-open intervals; the last 14 sessions have no labels and therefore no predictions) |
+| Data correction (2026-10-29) | An adjusted-price error on paid rights issues was found, concentrated in the out-of-sample window; re-running the same predictions on corrected prices lowers the three shortlisted strategies' out-of-sample annual net return from +34.1% / +27.5% / +30.9% to +14.7% / +19.4% / +13.7%, still positive; the out-of-sample figures in this report should be read as overstated (section 9, item (a)) |
 | Universe | stocks only; 20-day median dollar volume ≥ NT$30M (TWSE) / NT$10M (TPEX); close ≥ NT$10 |
 | Costs | institution: commission 0.03%, slippage 0.05%, borrow fee 1.5% / 3% / 6% by size; retail: commission 0.0855%, slippage 0.1% / 0.2%, margin short fee 0.08%; transaction tax 0.3%; slippage × 0 / 1 / 2 sensitivities |
 | Capital | fractional; institution NT$300M and NT$1B (no position above 5% of the name's 20-day median dollar volume, the rest in cash) |
