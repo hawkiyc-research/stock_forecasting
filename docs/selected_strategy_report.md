@@ -34,7 +34,7 @@
 
 ### 3. 資料與防止偷看未來的規則
 
-- **價量**：2016-01-01 起全部上市、上櫃股票的開高低收量；還原價只處理股息（分割與減資的調整已實作但尚未用於本輪，見第 8 節限制）。
+- **價量**：2016-01-01 起全部上市、上櫃股票的開高低收量；還原價只處理股息（分割與減資的調整已實作但尚未用於本輪，見第 9 節限制）。
 - **籌碼**：來自另一個資料專案的 12 個官方品項。每一列都記錄「什麼時候公布」，模型在訊號日 t 只能用 t 收盤後、次日開盤前已公布的資料。
 - **交易日曆**：使用固定版本的交易所日曆，臨時休市（例如 2026-07-10、2026-10-23 兩次颱風休市）核對交易所公告後補列；資料與日曆不一致時流程會自動中止並列出日期。
 - **樣本規則**：每個樣本要有連續 128 個交易日的輸入與接續 14 個交易日的輸出，缺一天就排除；流動性門檻（前 60 日成交金額中位數）只用過去資料計算。
@@ -107,7 +107,32 @@ K、緩衝倍數等參數在樣本內的前段（2023-01 至 2025-05、上市、
 - 策略層：只對多頭有用。週頻多頭加籌碼後樣本內年化多 +16.3%（區間 +5.5% 到 +27.7%）；多空策略只多 +0.8% 到 +1.0%（區間跨 0），因為放空腿沒有從籌碼得到好處。
 - 樣本外：加籌碼的多頭在 7 月跌得更深（−19.5% 對 −8.5%），這是籌碼特徵偏好近期強勢股的代價。
 
-### 8. 限制（事前聲明，不是事後找理由）
+### 8. 樣本是怎麼用的：洩漏與設計偏誤的交代
+
+「污染」有兩種，分開交代。
+
+**(1) 資料洩漏（未來資訊進到特徵、標籤、訓練或策略輸入）：沒有。** 每個特徵只用訊號日之前的資料；籌碼只用訊號日次日開盤前已公布的列；標籤的市值代理是過去 20 日成交金額；每一季的模型只用該季開始前 15 個交易日以前的資料訓練，提早停止只看訓練窗內最後 12 個月；策略用的 beta、動能、流動性都是往回看的視窗；交易日曆與資料不一致時流程會中止。樣本外期間（2026-06 至 10 月）的資料在所有模型、特徵、策略與判定規則凍結之後（10 月 28 日）才下載；樣本內的「全樣本內」統計明確排除樣本外。
+
+**(2) 設計層的選擇偏誤（研究者看了結果之後決定下一步）：有，列表如下。** 這不是洩漏，而是任何「先用歷史找策略、再做樣本外」的流程都會有的性質；業界處理它的方式是把樣本內數字打折、只信樣本外、再加一段模擬交易。
+
+| 決定 | 日期 | 做決定時已看過的結果 | 受影響的數字 |
+| --- | --- | --- | --- |
+| 183 欄價量特徵、LightGBM 超參數 | 10-22 | 無（事前固定） | — |
+| 改用殘差化標籤（扣市場、市值、產業） | 10-23 | 原始標籤在樣本內後段（2025-06 後）的失效 | 兩個模型的樣本內排序能力 |
+| 分數對 beta 與動能的正交化 | 10-25 | 多空策略在後段的虧損與暴露診斷 | 多日多空、多空＋避險的樣本內 |
+| 放空執行層（名單、限額、借不到機率） | 10-26 | 樣本內全段 | 同上（方向是讓數字更保守） |
+| 67 欄籌碼特徵 | 10-26 | 價量模型的樣本內結果；特徵內容依文獻設計，沒有對後段調整 | 價量＋籌碼模型的樣本內 |
+| 週頻多頭的設計（週頻、5 日分數、純多頭、換手上限） | 10-25 登記、10-28 實作 | 後段的多頭行情與多空策略的結果 | 週頻多頭的樣本內，尤其後段 +65% 到 +111% |
+| 各策略的 K、m（與多空的 h） | 計分時 | 只用樣本內前段（2023-01 至 2025-05）選 | 對參數而言後段未看過；對設計而言不是 |
+| 選定規則與確認條件 | 10-28 | 登記時未看樣本外，也未看重訓後的樣本內格子 | — |
+
+試過的建構：策略層六代（每日換股 → 緩衝區 → 殘差標籤 → 正交化 → 執行層 → 週頻多頭）、兩個模型、三個市場，最後六格候選。選定格的樣本內 Sharpe 2.38 是在這些嘗試之後的最大值，**樣本內數字要打折看**；樣本外那 85 天是唯一一次性的檢驗，而它沒有通過。
+
+**(3) 樣本外的獨立性有一個例外，照實交代。** 2026-06-01 至 09-24 這段資料在 10 月 20 日對更早的基礎模型訊號做過一次前瞻檢驗（結果：排序能力為正、所有區間跨 0），之後才有本報告的模型與策略。那次檢驗沒有被用來做任何設計決策，但無法證明研究者對那段行情的印象沒有影響後續。嚴格的說法是：樣本外對本報告的模型與策略是未看過的，不是從未被任何分析碰過的。另外，前四個階段反覆使用過的固定測試集（2025-12 至 2026-05）早已失去樣本外身分，本報告只把它當作歷史。
+
+**(4) 一個小的事後成分。** 殘差化用 2026 年 10 月的公司產業分類快照套到整段歷史；分類變更與已下市公司（歸入「未知」類）帶有輕微的事後與存活者成分，只影響產業虛擬變數。
+
+### 9. 限制（事前聲明，不是事後找理由）
 
 1. 樣本外只有 85 個交易日、一種市場狀態；通過或不通過都不能外推成長期結論。
 2. 樣本內的後段（2025-06 之後）在設計正交化時已經看過，所以樣本內的數字只是資訊，真正的檢驗只有樣本外那 85 天。
@@ -116,7 +141,7 @@ K、緩衝倍數等參數在樣本內的前段（2023-01 至 2025-05、上市、
 5. 籌碼只用免費官方資料；分點（券商）與集保資料沒有購買。
 6. 樣本外視窗含 2025 年 4 月急跌與 2026 年 7 月修正，不含 2022 年空頭。
 
-### 9. 下一步
+### 10. 下一步
 
 1. 週頻多頭加 beta 對沖或波動目標，讓回撤不由市場決定——這是新的策略，參數要重新在樣本內前段選定，再用新的樣本外期間確認。
 2. 或者以市場中性的多空加避險為主線，重新登記一段夠長的確認期。
@@ -171,7 +196,7 @@ Can daily price-volume data and public chip data produce a stock-selection strat
 
 ### 3. Data and the rules against look-ahead
 
-- **Prices**: OHLCV of every TWSE and TPEX stock from 2016-01-01; adjusted prices carry dividends only (split and capital-reduction adjustments are implemented but not yet used in this round, see section 8).
+- **Prices**: OHLCV of every TWSE and TPEX stock from 2016-01-01; adjusted prices carry dividends only (split and capital-reduction adjustments are implemented but not yet used in this round, see section 9).
 - **Chip data**: 12 official items from a separate data project. Every row records when it was published; on signal date t the model may only use rows published after t's close and before the next open.
 - **Trading calendar**: a pinned exchange-calendar release, with unscheduled closures (for example the typhoon closures of 2026-07-10 and 2026-10-23) added after checking the exchange announcements; the pipeline stops and lists the dates whenever the data and the calendar disagree.
 - **Sample rule**: every sample needs 128 consecutive sessions of input and the following 14 sessions of output; a single missing session excludes it. The liquidity screen (60-session median dollar volume) uses past data only.
@@ -244,7 +269,32 @@ Pre-registered confirmation conditions: (i) out-of-sample annualized net return 
 - At the strategy level: only for the long book. The weekly long earns +16.3% a year more with chip data in-sample (interval +5.5% to +27.7%); the long-short books gain only +0.8% to +1.0% (intervals spanning zero), because the short book gets nothing from the chip features.
 - Out of sample: the chip-driven long book fell harder in July (−19.5% vs −8.5%), the price of the chip features' preference for recent winners.
 
-### 8. Limitations (stated in advance, not found afterwards)
+### 8. How the samples were used: leakage and design bias, stated plainly
+
+"Contamination" means two different things; they are accounted for separately.
+
+**(1) Data leakage (future information reaching features, labels, training or strategy inputs): none.** Every feature uses data before the signal date; chip rows are used only once published before the next open; the label's size proxy is trailing 20-day dollar volume; each quarter's model is trained on data ending 15 sessions before the quarter, with early stopping on the last 12 months inside the training window; the strategies' beta, momentum and liquidity are trailing windows; the pipeline stops when the trading calendar and the data disagree. The out-of-sample data (June to October 2026) was downloaded on 28 October, after every model, feature, strategy and decision rule had been frozen; the "all in-sample" statistics explicitly exclude it.
+
+**(2) Design-level selection bias (the researcher deciding the next step after seeing results): present, listed below.** This is not leakage; it is a property of every "design on history, then test out of sample" process. The industry handles it by discounting in-sample numbers, trusting only the out-of-sample test, and adding a paper-trading period.
+
+| Decision | Date | Results already seen when it was made | Figures affected |
+| --- | --- | --- | --- |
+| 183 price-volume features, LightGBM hyperparameters | 22 Oct | none (fixed in advance) | — |
+| Residualized labels (net of market, size, industry) | 23 Oct | the raw labels' failure in the second in-sample segment (after June 2025) | both models' in-sample ranking skill |
+| Orthogonalizing the score to beta and momentum | 25 Oct | the long-short strategies' second-segment losses and the exposure diagnostic | in-sample multi-day long-short and L/S + hedge |
+| Short execution layer (lists, quotas, failure draws) | 26 Oct | the whole in-sample | same (it makes the numbers more conservative) |
+| 67 chip features | 26 Oct | the price-volume model's in-sample results; feature content from the literature, not tuned to the second segment | the price-volume + chip model's in-sample |
+| Design of the weekly long (weekly, 5-day score, long only, turnover cap) | registered 25 Oct, built 28 Oct | the second segment's bull market and the long-short results | the weekly long's in-sample, especially the second segment's +65% to +111% |
+| Each strategy's K and m (and the long-short h) | at scoring | the first in-sample segment only (2023-01 to 2025-05) | the second segment is unseen for the parameters, not for the design |
+| Selection rule and confirmation conditions | 28 Oct | neither the out-of-sample window nor the retrained in-sample cells | — |
+
+Constructions tried: six generations of strategy (daily rotation → hold buffer → residual labels → orthogonalization → execution layer → weekly long), two models, three markets, six final candidate cells. The selected cell's in-sample Sharpe of 2.38 is the maximum after those attempts, so **in-sample figures must be discounted**; the 85 out-of-sample days are the only one-shot test, and it did not pass.
+
+**(3) One exception to the out-of-sample window's independence, stated as it is.** The data from 2026-06-01 to 09-24 had been used once, on 20 October, for a forward test of earlier foundation-model signals (result: positive ranking skill, every interval spanning zero); this report's models and strategies came afterwards. That test informed no design decision, but it cannot be proven that the researcher's impression of that period had no influence. The precise statement is: the out-of-sample window is unseen for this report's models and strategies, not untouched by any analysis. The fixed test set reused across the first four stages (2025-12 to 2026-05) had long lost its out-of-sample status and is treated here as history only.
+
+**(4) One small ex-post element.** The residualization applies an October 2026 snapshot of company industry classes to the whole history; reclassifications and delisted companies (assigned to an "unknown" class) carry a slight ex-post and survivorship element, affecting the industry dummies only.
+
+### 9. Limitations (stated in advance, not found afterwards)
 
 1. The out-of-sample window has only 85 sessions in one market regime; neither passing nor failing extrapolates to a long-run conclusion.
 2. The second in-sample segment (after 2025-06) had already been seen when the orthogonalization was designed, so in-sample figures are informational and the only real test is the 85 out-of-sample days.
@@ -253,7 +303,7 @@ Pre-registered confirmation conditions: (i) out-of-sample annualized net return 
 5. Chip data is limited to free official items; broker-branch and shareholder-dispersion data were not bought.
 6. The out-of-sample window contains the April 2025 crash and the July 2026 correction but not the 2022 bear market.
 
-### 9. Next steps
+### 10. Next steps
 
 1. The weekly long with a beta hedge or a volatility target, so the drawdown is not the market's — a new strategy whose parameters must be re-selected on the first in-sample segment and confirmed on a new out-of-sample window.
 2. Or make the market-neutral long-short with futures hedge the main line and register a confirmation period long enough to judge.
