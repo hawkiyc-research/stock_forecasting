@@ -215,3 +215,78 @@ def test_decision_rules_on_a_synthetic_grid(tmp_path):
     deeper = sd.confirm(grid, config, {"model": "F2", "scenario": "wk_long"})
     assert deeper["positive_return"] is True and deeper["drawdown_not_deeper"] is False
     assert deeper["passed"] is False
+
+
+def test_etf_short_overlay_hedges_the_book_and_charges_the_short(tmp_path):
+    from dataclasses import replace
+
+    from tests.test_scenario_suite import _tiny_market
+    base = _tiny_market(tmp_path / "etf")
+    rng = np.random.default_rng(3)
+    etf = rng.normal(0.0, 0.01, 40)
+    gross = 2.0 * etf  # the book moves twice as much as the ETF: beta 2 once estimated
+    data = replace(base, benchmarks={"etf_0050": etf})
+    config = json.loads(ss.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    config["hedge"] = {"etf": {"name": "etf_0050", "tax": 0.001}}
+    config["tx"]["beta_min_observations"] = 3
+    profile = ss._primary_profile(json.loads((ss.CONFIG_DIR / "cost_profiles.json").read_text()),
+                                  "institution")
+    book = ss.Book(net=gross - 0.0001, gross=gross.copy(), info={"turnover": 0.01},
+                   legs={"long": gross - 0.0001})
+    hedged = ss.etf_short_overlay(book, data, profile, config)
+    beta = ss.rolling_beta(gross, etf, window=60, min_obs=3)
+    assert beta[:3].tolist() == [0.0, 0.0, 0.0] and beta[10] == pytest.approx(2.0)
+    # Before beta is estimable nothing is hedged and nothing is charged.
+    assert hedged.net[:3] == pytest.approx(book.net[:3])
+    # Once beta = 2 the hedge leg's gross return is -2 x the ETF return.
+    assert (hedged.gross - gross)[10:] == pytest.approx(-2.0 * etf[10:])
+    # Costs: the short is opened on the first hedged day (entry rate on 2 units of notional)
+    # and carries the borrow fee every day it is held; nothing more while beta is constant.
+    slip = profile.slippage[0]
+    entry = profile.commission + slip + 0.001 + profile.short_entry_fee
+    first = int(np.flatnonzero(beta != 0)[0])
+    fees = (hedged.gross - hedged.net) - (book.gross - book.net)
+    assert fees[first] == pytest.approx(2.0 * entry + 2.0 * profile.borrow_fee_daily)
+    assert fees[first + 5] == pytest.approx(2.0 * profile.borrow_fee_daily)
+    assert hedged.info["hedge"] == "etf_0050" and hedged.info["beta_abs_mean"] > 1.0
+    assert "etf_short" in hedged.legs
+    # Without the benchmark series the overlay refuses rather than hedging nothing.
+    with pytest.raises(ValueError, match=r"hedge\.etf\.name"):
+        ss.etf_short_overlay(book, base, profile, config)
+
+
+def test_hedged_weekly_suite_and_informational_decision(tmp_path):
+    predictions_path, prices_path, artifacts = _fixture(tmp_path)
+    config = json.loads((ss.CONFIG_DIR / "scenario_suite_v1_p3_hedged.json").read_text("utf-8"))
+    config["cost_profiles"] = str(ss.CONFIG_DIR / "cost_profiles.json")
+    config["markets"]["TWSE"]["min_dollar_volume"] = 1_000_000
+    config["markets"]["TPEX"]["min_dollar_volume"] = 1_000_000
+    config["weekly"]["fixed"] = {"F0": {"k": 4, "buffer": 2}, "F2": {"k": 4, "buffer": 2}}
+    config["benchmarks"]["etf"] = {"name": "etf_0050", "symbol": "1102.TW"}
+    config["bootstrap"]["replicates"] = 50
+    config["periods"] = {"P1": ["2023-01-02", "2025-06-01"], "P2": ["2025-06-01", "2025-12-01"],
+                         "P3": ["2025-12-01", "2026-06-01"]}
+    path = tmp_path / "hedged.json"
+    path.write_text(json.dumps(config))
+    output = tmp_path / "hedged"
+    report = ss.run(path, [predictions_path, predictions_path], ["good", "good"], prices_path,
+                    output, artifacts=artifacts, labels=["F0", "F2"])
+    grid = pd.read_csv(output / "grid.csv")
+    assert set(grid["scenario"]) == {"wk_long", "wk_long_tx", "wk_long_etf"}
+    assert report["selection"]["F0"]["weekly"]["fixed"] is True
+    etf_rows = grid[(grid["scenario"] == "wk_long_etf") & (grid["stage"] == "final")]
+    assert etf_rows["beta_abs_mean"].notna().all() and (etf_rows["hedge"] == "etf_0050").all()
+    assert etf_rows["hedge_fees_annual"].gt(0).all()
+    tx_rows = grid[(grid["scenario"] == "wk_long_tx") & (grid["stage"] == "final")]
+    assert tx_rows["tx_fees_annual"].notna().all()
+    summary = (output / "summary.md").read_text(encoding="utf-8")
+    assert "wk_long_etf" in summary and "wk_long_tx" in summary
+    decision_config = json.loads(
+        (ss.CONFIG_DIR / "strategy_decision_hedged.json").read_text(encoding="utf-8"))
+    decision_config["periods"] = config["periods"]
+    decision_path = tmp_path / "decision_hedged.json"
+    decision_path.write_text(json.dumps(decision_config))
+    verdict = sd.run(output, decision_path, tmp_path / "decision-hedged")
+    assert verdict["selection"]["scenario"] in {"wk_long", "wk_long_tx", "wk_long_etf"}
+    assert verdict["confirmation"]["status"] == "informational"
+    assert verdict["confirmation"]["note"]

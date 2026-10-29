@@ -423,6 +423,25 @@ uv run python -m twbacktest.strategy_decision --suite ../artifacts/diagnostics/b
 | `--config` | 選定與確認規則 | `config/strategy_decision.json` |
 | `--output-root` | 輸出目錄，必須尚不存在 | `artifacts/diagnostics/backtest/strategy-decision-<UTC 時間>-<隨機碼>` |
 
+### 週頻多頭的 β 對沖：台指期與放空 0050（§13.21）
+
+`config/scenario_suite_v1_p3_hedged.json` 只算 S-A 與它的兩個對沖版本（K、m 以 `weekly.fixed` 固定為 §13.20 的選定值，
+不含股票放空執行層）：`wk_long_tx`（S-A-TX，`tx_overlay` 套在 S-A 上：名目 −β × 資本，β 為 S-A 毛報酬對指數前 60 個區間的
+滾動 β，台指期結算價對結算價、換月與每邊成本同 S2）與 `wk_long_etf`（S-A-ETF，`scenario_suite.etf_short_overlay`：放空
+`hedge.etf.name` 指定的 `benchmarks` 序列（0050 的開盤到開盤還原報酬），β 對該 ETF 本身估計、每日重設；空單建立付手續費、
+滑價、`hedge.etf.tax`（ETF 證交稅 0.1%）與成本檔的融券手續費，回補付手續費與滑價，每日借券費 = 成本檔借券年費／252 × |名目|；
+不設名單與限額）。每一列多 `hedge`、`beta_mean`、`beta_abs_mean`、`hedge_fees_annual`（ETF）或 `tx_fees_annual`（TX）。
+`strategy_decision --config config/strategy_decision_hedged.json` 在三個版本中依同一選定規則選一格，但 `confirmation.informational`
+為 true：H-J 兩條件只描述不判定（P3 在登記本節時已看過），狀態一律 `informational`。
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_p3_hedged.json --predictions ../artifacts/lgbm/<F0-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F0 --predictions ../artifacts/lgbm/<F2-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F2 --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+```bash
+uv run python -m twbacktest.strategy_decision --config config/strategy_decision_hedged.json --suite ../artifacts/diagnostics/backtest/scenario-suite-<UTC 時間>-<隨機碼>
+```
+
 ### 0050 核心加正交化多空疊加（§13.17 補充）
 
 `twbacktest.core_overlay` 把 §13.19 補充二的正交化多空（V1、無配平、固定 band 參數）疊在 0050 買進持有之上，
@@ -991,6 +1010,29 @@ uv run python -m twbacktest.strategy_decision --suite ../artifacts/diagnostics/b
 | `--suite` | A `scenario_suite` output directory (`grid.csv`, `daily.csv`) | required |
 | `--config` | Selection and confirmation rules | `config/strategy_decision.json` |
 | `--output-root` | Output directory, must not exist yet | `artifacts/diagnostics/backtest/strategy-decision-<UTC time>-<random>` |
+
+### Beta-hedging the weekly long: TAIEX futures and a short 0050 position (§13.21)
+
+`config/scenario_suite_v1_p3_hedged.json` computes S-A and its two hedged versions only (K and m pinned by
+`weekly.fixed` to the §13.20 selection, no stock-short execution layer): `wk_long_tx` (S-A-TX, `tx_overlay` applied
+to S-A: notional −β × capital, β the trailing 60-interval rolling beta of S-A's gross return on the index, TAIEX
+futures settlement to settlement with rolls and per-side costs as in S2) and `wk_long_etf` (S-A-ETF,
+`scenario_suite.etf_short_overlay`: a short position in the `benchmarks` series named by `hedge.etf.name`, 0050's
+open-to-open adjusted return, β estimated on the ETF itself and reset daily; opening the short pays commission,
+slippage, `hedge.etf.tax` (the 0.1% ETF transaction tax) and the profile's margin-short fee, covering pays commission
+and slippage, and the profile's annual borrow fee / 252 accrues daily on the notional; no list or quota limit). Every
+row carries `hedge`, `beta_mean`, `beta_abs_mean` and `hedge_fees_annual` (ETF) or `tx_fees_annual` (TX).
+`strategy_decision --config config/strategy_decision_hedged.json` picks one of the three versions by the same
+selection rule, but with `confirmation.informational` true: the two H-J conditions are described, not judged (P3 had
+been seen when the section was registered), and the status is always `informational`.
+
+```bash
+uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_p3_hedged.json --predictions ../artifacts/lgbm/<F0-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F0 --predictions ../artifacts/lgbm/<F2-launch>/predictions.parquet --model t-lgbm-alpha-residual_v1a --label F2 --prices ../artifacts/datasets/<dataset>/raw/market.parquet
+```
+
+```bash
+uv run python -m twbacktest.strategy_decision --config config/strategy_decision_hedged.json --suite ../artifacts/diagnostics/backtest/scenario-suite-<UTC time>-<random>
+```
 
 ### 0050 core plus orthogonalized long-short overlay (§13.17 supplement)
 

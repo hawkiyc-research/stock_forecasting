@@ -80,12 +80,15 @@ from twbacktest.walkforward_data import (
 from twbacktest.weekly_band import SCENARIO as WEEKLY
 from twbacktest.weekly_band import select_weekly, weekly_long_book
 
+WEEKLY_TX = "wk_long_tx"  # S-A plus the TX overlay (protocol 13.21, S-A-TX)
+WEEKLY_ETF = "wk_long_etf"  # S-A plus a short 0050 hedge (protocol 13.21, S-A-ETF)
+
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 DEFAULT_CONFIG = CONFIG_DIR / "scenario_suite.json"
 DEFAULT_ARTIFACTS = Path(__file__).resolve().parents[2] / "artifacts"
 FRACTIONAL = "fractional"
 SCENARIOS = ("md_ls", "md_ls_tx", "dt_ls", "dt_ls_tx", "combo", "combo_tx")  # the 13.19 six
-ALL_SCENARIOS = (*SCENARIOS, WEEKLY)  # plus S-A, built only when the config asks for it
+ALL_SCENARIOS = (*SCENARIOS, WEEKLY, WEEKLY_TX, WEEKLY_ETF)  # S-A and its hedges, on request
 SCENARIO_LABELS = {
     "md_ls": ("S1 短至中天期台股多空", "S1 multi-day stock long-short"),
     "md_ls_tx": ("S2 S1 + 台指期", "S2 S1 + TX overlay"),
@@ -94,6 +97,8 @@ SCENARIO_LABELS = {
     "combo": ("S5 當沖 + 多日", "S5 day trade + multi-day"),
     "combo_tx": ("S6 S5 + 台指期", "S6 S5 + TX overlays"),
     WEEKLY: ("S-A 週頻低換手多頭", "S-A weekly low-turnover long"),
+    WEEKLY_TX: ("S-A-TX 週頻多頭 + 台指期對沖", "S-A-TX weekly long + TX hedge"),
+    WEEKLY_ETF: ("S-A-ETF 週頻多頭 + 放空 0050", "S-A-ETF weekly long + short 0050"),
 }
 MULTI_DAY = {"md_ls", "md_ls_tx", "combo", "combo_tx"}
 DAY_TRADE = {"dt_ls", "dt_ls_tx", "combo", "combo_tx"}
@@ -762,6 +767,49 @@ def tx_overlay(
     return Book(net=book.net + pnl - fees, gross=book.gross + pnl, info=info, legs=legs)
 
 
+def etf_short_overlay(
+    book: Book, data: MarketData, profile: CostProfile, config: dict[str, Any]
+) -> Book:
+    """Add a short position in an ETF of -beta x capital (protocol 13.21, S-A-ETF).
+
+    ``beta`` is the book's trailing rolling beta on the ETF's own open-to-open return (the
+    ``benchmarks`` series named by ``hedge.etf.name``), reset daily. Opening more short pays
+    commission, slippage, the ETF transaction tax and the profile's margin-short fee;
+    covering pays commission and slippage; the profile's borrow fee accrues daily on the
+    notional. The ETF is assumed lendable without a list or quota limit (0050).
+    """
+    hedge = config.get("hedge", {}).get("etf")
+    if hedge is None or data.benchmarks is None or hedge["name"] not in data.benchmarks:
+        raise ValueError("the ETF hedge needs hedge.etf.name and the matching benchmarks series")
+    tx_cfg = config["tx"]
+    series = np.asarray(data.benchmarks[hedge["name"]], dtype=np.float64)
+    beta = rolling_beta(
+        book.gross, series, window=int(tx_cfg["beta_window"]),
+        min_obs=int(tx_cfg["beta_min_observations"]),
+    )
+    notional = -beta
+    growth = np.where(np.isfinite(series), series, 0.0)
+    pnl = notional * growth
+    previous = np.concatenate(([0.0], notional[:-1]))
+    delta = notional - previous
+    sold = np.maximum(-delta, 0.0)  # more short sold at this open
+    covered = np.maximum(delta, 0.0)  # short covered at this open
+    slip = float(profile.slippage[0])
+    entry_rate = profile.commission + slip + float(hedge["tax"]) + profile.short_entry_fee
+    exit_rate = profile.commission + slip
+    fees = sold * entry_rate + covered * exit_rate + np.abs(notional) * profile.borrow_fee_daily
+    info = {
+        **book.info,
+        "hedge": hedge["name"],
+        "beta_mean": float(beta.mean()),
+        "beta_abs_mean": float(np.abs(beta).mean()),
+        "hedge_notional_mean": float(np.abs(notional).mean()),
+        "hedge_fees_annual": float(fees.mean()) * int(config["annualization_days"]),
+    }
+    legs = {**(book.legs or {}), "etf_short": pnl - fees}
+    return Book(net=book.net + pnl - fees, gross=book.gross + pnl, info=info, legs=legs)
+
+
 def combine(md: Book, dt: Book, config: dict[str, Any]) -> Book:
     weights = config["combination"]
     w_md, w_dt = float(weights["multi_day_weight"]), float(weights["day_trade_weight"])
@@ -850,6 +898,10 @@ def scenario_books(
         books[WEEKLY] = weekly_long_book(
             data, config, profile, capital, k=wk_params[0], buffer=wk_params[1],
             participation_cap=participation_cap, score_variant=score_variant, cache=cache)
+        if WEEKLY_TX in wanted:
+            books[WEEKLY_TX] = tx_overlay(books[WEEKLY], data, profile, config, intraday=False)
+        if WEEKLY_ETF in wanted:
+            books[WEEKLY_ETF] = etf_short_overlay(books[WEEKLY], data, profile, config)
     if any(name in wanted for name in DAY_TRADE):
         dt = day_trade_book(data, config, profile, capital, fraction=fraction,
                             participation_cap=participation_cap)
@@ -874,11 +926,15 @@ def combined_market(
                                 for m, w in spec["weights"].items())}
         for key in ("beta_mean", "beta_abs_mean", "tx_notional_mean", "names_mean",
                     "holding_mean", "liquidity_blocked_share", "liquidity_capped_share",
-                    "deployed_share"):
+                    "deployed_share", "weekly_turnover", "hedge_notional_mean",
+                    "hedge_fees_annual", "tx_fees_annual"):
             values = [books[m][scenario].info.get(key) for m in spec["weights"]]
             if all(v is not None for v in values):
                 info[key] = sum(float(w) * v for v, w in zip(values, spec["weights"].values(),
                                                               strict=True))
+        hedges = {books[m][scenario].info.get("hedge") for m in spec["weights"]}
+        if len(hedges) == 1 and None not in hedges:
+            info["hedge"] = hedges.pop()
         legs = None
         parts = [books[m][scenario].legs for m in spec["weights"]]
         if all(part is not None for part in parts) and parts:
@@ -1376,24 +1432,25 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame, profiles: dict[
                 f"{pct(row.short_net_annual_rep_max)} |"
             )
         lines.append("")
-    weekly = final[final["scenario"] == WEEKLY]
+    weekly = final[final["scenario"].isin([WEEKLY, WEEKLY_TX, WEEKLY_ETF])]
     if not weekly.empty and "universe_ew_annual" in weekly.columns:
         lines.append("## S-A 對照 / S-A comparison columns")
         lines.append("")
-        lines.append("| 模型 | 市場 | 成本檔 | 期間 | S-A 年化淨報酬 | 等權宇宙 | 0050 "
-                     "| TAIEX 報酬指數 | S-A 最大回撤 | 0050 回撤 | 週換手 | 再平衡次數 "
+        lines.append("| 情境 | 模型 | 市場 | 成本檔 | 期間 | 年化淨報酬 | 等權宇宙 | 0050 "
+                     "| TAIEX 報酬指數 | 最大回撤 | 0050 回撤 | 週換手 | 再平衡次數 "
                      "| 觸頂次數 |")
         lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
-                     "| --- |")
+                     "| --- | --- |")
         etf = [c for c in weekly.columns if c.startswith("etf_") and c.endswith("_annual")]
         etf_name = etf[0][: -len("_annual")] if etf else None
-        for row in weekly.sort_values(["model", "market", "profile", "period"]).itertuples():
+        for row in weekly.sort_values(["scenario", "model", "market", "profile",
+                                       "period"]).itertuples():
             record = row._asdict()
             pct = runner.percent
             etf_annual = pct(record[f"{etf_name}_annual"]) if etf_name else "n/a"
             etf_dd = pct(record[f"{etf_name}_max_drawdown"]) if etf_name else "n/a"
             lines.append(
-                f"| {row.model} | {row.market} | {row.profile} | {row.period} | "
+                f"| {row.scenario} | {row.model} | {row.market} | {row.profile} | {row.period} | "
                 f"{pct(row.net_return_annual)} | {pct(record['universe_ew_annual'])} | "
                 f"{etf_annual} | {pct(row.index_total_return_annual)} | "
                 f"{pct(row.max_drawdown)} | {etf_dd} | {pct(record['weekly_turnover'])} | "
