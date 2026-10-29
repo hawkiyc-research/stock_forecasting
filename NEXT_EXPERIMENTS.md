@@ -2,60 +2,86 @@
 
 ## 中文
 
-本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-29（§13.20 計分完成、§13.21 對沖補測完成、§13.22 草案）。
+本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-30（§13.23 全線重訓登記）。
 
 ### 現況
 
-§13.20 已計分（2026-10-29）：F0／F2 在延長資料集（到 2026-10-23）的 16 折 walk-forward 上重訓，一致性檢查通過；選定規則（機構主要成本、TW、分數位置、P1 ∪ P2 淨 Sharpe 最高）選出 **F2 × S-A**（Sharpe 2.38、+51.8%／年），但 P3（2026-06-01 至 10-02 的 85 個區間）確認 **H-J 未通過**——淨報酬 +3.5% > 0 成立、最大回撤 −25.7% 比 P1 ∪ P2 的 −22.6% 深不成立（7 月一次 −17% 的市場修正打在 100% 多頭上）。依登記不重選、不改建構，**沒有策略進入試運行**。市場中性的 S2（F2）同窗口 +34.1%、回撤 −8.1%，但也因回撤比 P1 ∪ P2 深而過不了 (ii)。籌碼在策略層只對多頭 band 有增量（S-A F2 − F0 +16.3% [+5.5%, +27.7%]），對多空沒有。兩份報告：`docs/research_full_report.md`、`docs/selected_strategy_report.md`。
+2026-10-29 發現 v1 還原價對有償現金增資套錯（§13.20 補充三）：同一組預測改用修正價重算，三個入選格的樣本外年化淨報酬從 +34.1%／+27.5%／+30.9% 降為 +14.7%／+19.4%／+13.7%；所有已出的模型分數仍帶著這個錯誤。2026-10-30 使用者決定全線重訓（§13.23）：v2 分支已合併、資料修訂可用 `--dataset-revision v1*`／`v2*` 切換（共用 provider 快取）、除權息因子修正已在 master；資料集用 **v1.1**（只套除權息因子）、停牌排除規則不變、P3 仍為樣本外；§13.22 的確認期在任何讀數出現前作廢。下面是 Pod 與本機的執行順序，每一步都要等前一步結束（features 與 lgbm Pod 在 volume 上互斥）。
 
 ### 執行順序
 
-| # | 步驟 | 依據 | 前置條件 | 訓練需求 | 產出 | 誰做 |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | **三個入選格（F2 × S2、F0 × S2、F2 × S1）的確認期 P4**：§13.20 補充一把選定規則改成門檻篩選（三段 Sharpe 各 ≥ 1.5、下界 > 0），§13.22 已改為三格一起、各自判定（2026-10-23 起 12 個月、6 個月期中只報不判、H-L = P4 淨報酬 > 0 且最大回撤不深於 −12.2%），2026-10-29 生效（設定檔 SHA-256 已凍結）；§13.20 補充三的除權息因子修正自第一次季度重訓起生效，第 6 項的修訂待使用者同意。每季一次：`configure --end/--test-end` 延到季末 → `cpu prepare` → `features` F0、F2 → `lgbm` F0、F2（`tw_quarterly_v3`，待建）→ 本機 `scenario_suite`（`periods` 加 P4）→ 累積，12 個月期滿才判定 | §13.22 | 新季度資料 | **RunPod CPU** 每季四到五個 Pod | 期中讀取、期滿判定、報告附錄 C | 使用者確認與啟動 Pod；本專案計分 |
-| 2 | **volume 清理**：下一個 Pod 一開始先 `python3 scripts/runpod_invalid_chip_results.py`，確認後 `--apply --delete`（被取代的樣本宇宙、舊 store、失敗 launch） | README「清掉錯誤與死掉的結果」 | 下一個 CPU Pod | 無 | 釋放空間 | 使用者在 Pod 上執行 |
-| 3 | **G2**：處置、注意首次公告、當沖比跳升三類事件的反轉步驟 0（事件研究模組） | §13.18 第 6 項 | 事件表已交付 | 無 | 事件研究模組、報告；決定 S-B 要不要實作 | 本專案 |
-| 4 | （使用者決定，暫不執行）分點購買：G1 已通過，但 2026-10-28 決定先不買付費資料 | §13.18 第 10 項 | — | — | 購買與否的紀錄 | 使用者決定 |
-| 5 | （使用者決定）資料集 v2（分割與減資調整）重訓：§13.20 補充二已逐項核對：v1 自 2023 年起的 100 次 >25% 跳動沒有一次進入訓練、分數或任一策略損益（樣本規則 128+14 個交易日無缺口把停牌前後整段排除），目前規則下 v2 重訓預期為無差異重現，只在放寬缺口規則、加長視窗或需要跨停牌還原序列時才需要；程式已完成（分支 `claude/dataset-v2-corporate-actions-20261026`，合併到 master 只有本檔一處衝突，需重算 `configs/data_content_identity_snapshot.json`）；v2 的 provider 快取修訂與資料集修訂綁在一起，整批重抓 API 之前要先拆開 | §13.17 補充結果 (h)、§13.20 第 9 項 | 使用者決定 | **RunPod CPU**：prepare → features F0、F2 → lgbm F0、F2 | v2 資料集與 v1 對 v2 比較 | 使用者決定；本專案計分 |
-| 6 | （使用者決定）D0 在 F2 特徵上重訓 | §13.18 第 3 項 | 使用者決定 | **RunPod GPU**：`xs-train` | D0 F2 預測 | 本專案寫程式；使用者啟動 Pod |
+| # | 步驟 | 命令 | 誰做 |
+| --- | --- | --- | --- |
+| 1 | **同步程式到 volume**（volume 上沒有 Pod 時） | `bash scripts/runpod_workflow.sh sync --apply` | 使用者 |
+| 2 | **新的選擇**（資料修訂 v1.1，結束日與 holdout 結束日 2026-10-23） | `bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --dataset-revision v1.1 --start 2016-01-01 --end 2026-10-23 --test-end 2026-10-23 --universe all` | 使用者 |
+| 3 | **建立資料準備 Pod**，SSH 進去後**先清空 volume**（先看計畫，再刪；保留 api-cache、tw-chip-data 與各 launch 的結果檔），再啟動準備工作 | `bash scripts/runpod_workflow.sh cpu prepare --max-api-calls 1 --taiwan-qps 0.5 --maxRuntime 24h --prepareReserve 2h --maxBackoff 1m` → Pod 內：`cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py` → 確認列表後 `cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py --apply --confirm RESET` → `bash scripts/runpod_tmux_launch.sh cpu-prepare` | 使用者 |
+| 4 | **特徵庫 (a)**：rank 標籤（B0 用） | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --spec configs/features/alpha_tw_v1.json` | 使用者 |
+| 5 | **特徵庫 (b)**：變體 A（F0、D0、D1 用） | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json` | 使用者 |
+| 6 | **特徵庫 (c)**：變體 B | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1b.json --spec configs/features/alpha_tw_v1.json` | 使用者 |
+| 7 | **特徵庫 (d)**：F2（價量＋籌碼） | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data` | 使用者 |
+| 8 | **B0**（rank 標籤） | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json` | 使用者 |
+| 9 | **變體 A = F0** | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json` | 使用者 |
+| 10 | **變體 B** | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1b.json --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json` | 使用者 |
+| 11 | **F2** | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data --schedule configs/walk_forward/tw_quarterly_v2.json` | 使用者 |
+| 12 | **D0**（GPU；配對基線自動取第 9 步的 launch） | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-scratch --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | 使用者 |
+| 13 | **D1 Kronos-small**（GPU） | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-kronos-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | 使用者 |
+| 14 | **D1 Chronos-2-small**（GPU） | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-chronos2-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | 使用者 |
+| 15 | **下載**：每個 lgbm launch 一次 `download-lgbm`、每個 xs launch 一次 `download-research <launch-id>` | `bash scripts/runpod_workflow.sh download-lgbm`、`bash scripts/runpod_workflow.sh download-research launch-...` | 使用者 |
+| 16 | **本機回測與判定**（§13.23 第 4、5 項）：模型層表、`scenario_suite`（F0、F2 全套件；B0、變體 B、D0、D1 對照）、門檻篩選、P3 驗證 H-M、F2 − F0 增量 | 本機 `backtest/.venv`，命令由本專案給 | 本專案 |
+| 17 | **報告**：新的完整研究報告與入選策略報告（Markdown + Word），舊報告封存到 `reports/deprecated/` 並建索引 | — | 本專案 |
+| 18 | 通過 H-M 的格進入確認期 P4'（§13.23 第 5 項；季度延伸需先建 `configs/walk_forward/tw_quarterly_v3.json`） | — | 本專案登記、使用者啟動 Pod |
 
-### 訓練需求說明
+### 注意
 
-第 1 項是純回測，在本機跑（S2 用現有的 F2 預測；S-A 的對沖版只加台指期腿）。第 5 項要重做資料準備、特徵庫與兩個模型的 16 折重訓（四到五個 CPU Pod）；第 6 項要一個 GPU Pod。第 3 項不需要訓練。
+- 第 3 步的清空腳本只在使用者確認列表後才刪；`--apply` 沒有 `--confirm RESET` 不會執行。刪除後 `lifecycle/` 的舊指標會指向不存在的路徑，腳本會列出；第 2 步的新選擇與第 3 步的準備會重新發布。
+- 第 4 到 11 步的 Pod 在 volume 上互斥，一次一個；第 12 到 14 步各一台 GPU Pod。所有 Pod 一律 `--maxRuntime 24h`。
+- 沒有 Pod 會重抓 API：v1.1 與舊的 v1 共用同一個 provider 快取（快取修訂固定 `v1`）；`cpu prepare` 的 `--max-api-calls 1` 只限制 EODHD，台股 profile 不用它。
 
 ### 目前不做的事
 
-- 以「勝過 0050 買進持有」作為任何階段的門檻（2026-10-26 決定；§13.17 補充到此結束，不在 P3 重算）。
-- 購買集保（只在 S-C 進入實作時）；分點由第 4 項決定。
-- 把 F2 × S-A 或 F2 × S2 當成可用策略：H-J 未通過，兩者都是研究狀態；不重選 band 參數（固定為 §13.19／§13.20 的選定值）。
-- 推送分支：master 的 v0.3.0、v0.4.0 標籤待使用者看過 README 與報告後決定。
+- 消融 A1–A4 不重做（使用者未列）；`v2*`（減資、面額變更、ETF 分割）不在這條線使用，只保留切換能力。
+- 以「勝過 0050 買進持有」作為任何階段的門檻；購買集保或分點資料（G1 通過但 2026-10-28 決定不買）。
+- 推送分支：待使用者核准。
 
 ## English
 
-This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-29 (§13.20 scored, §13.21 hedge round done, §13.22 draft).
+This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-30 (§13.23 full retrain registered).
 
 ### Where things stand
 
-§13.20 is scored (2026-10-29): F0 / F2 were retrained on the extended dataset (to 2026-10-23) over the 16-fold walk-forward and the consistency check passed; the selection rule (institution primary cost, TW, fractional, highest P1 ∪ P2 net Sharpe) picks **F2 × S-A** (Sharpe 2.38, +51.8% a year), but the P3 confirmation (85 intervals, 2026-06-01 to 10-02) **fails H-J**: net return +3.5% > 0 holds, the −25.7% maximum drawdown deeper than P1 ∪ P2's −22.6% fails (July's −17% market correction landed on a 100% long book). As registered there is no re-selection and no construction change: **no strategy enters paper trading**. The market-neutral S2 (F2) made +34.1% with a −8.1% drawdown in the same window but also fails (ii) against its −6.1%. At the strategy level the chip features add only to the long band (S-A F2 − F0 +16.3% [+5.5%, +27.7%]), not to the long-short books. Reports: `docs/research_full_report.md`, `docs/selected_strategy_report.md`.
+On 2026-10-29 v1's adjusted prices were found wrong for paid rights issues (§13.20 supplement 3): re-running the same predictions on corrected prices lowers the three shortlisted cells' out-of-sample annual net return from +34.1% / +27.5% / +30.9% to +14.7% / +19.4% / +13.7%, and every published model score still carries the error. On 2026-10-30 the user ordered a full retrain (§13.23): the v2 branch is merged, the data revision is selectable with `--dataset-revision v1*` / `v2*` (one shared provider cache), and the ex-rights fix is on master; the dataset is **v1.1** (ex-rights factors only), the halt-exclusion rule is unchanged, P3 stays out of sample, and §13.22's confirmation period is void before any reading. Below is the Pod and local order; every step waits for the previous one (features and lgbm Pods are exclusive on the volume).
 
 ### Execution order
 
-| # | Step | Basis | Prerequisite | Training | Output | Who |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Confirmation period P4 for the three shortlisted cells (F2 × S2, F0 × S2, F2 × S1)**: §13.20 supplement 1 changed the selection rule to a threshold shortlist (Sharpe ≥ 1.5 in each of three periods, lower bound > 0), and §13.22 takes the three cells together, each judged on its own (12 months from 2026-10-23, an interim reading at six months reported only, H-L = P4 net return > 0 and max drawdown not deeper than −12.2%), in force since 2026-10-29 (config SHA-256 frozen); the ex-rights factor fix of §13.20 supplement 3 applies from the first quarterly refresh, the amendment of item 6 awaits the user's consent. Once a quarter: `configure --end/--test-end` to the quarter end → `cpu prepare` → `features` F0, F2 → `lgbm` F0, F2 (`tw_quarterly_v3`, to be added) → local `scenario_suite` (`periods` plus P4) → accumulate; the one judgement after 12 months | §13.22 | new quarterly data | **RunPod CPU**, four to five Pods a quarter | interim readings, the final judgement, report appendix C | the user confirms and launches Pods; this project scores |
-| 2 | **Volume cleanup**: at the start of the next Pod run `python3 scripts/runpod_invalid_chip_results.py`, check, then `--apply --delete` (superseded sample universes, old stores, failed launches) | README "Removing wrong and dead results" | the next CPU Pod | None | freed space | the user, on the Pod |
-| 3 | **G2**: reversal step 0 on 處置 announcements, first 注意 listings and day-trade-ratio jumps (event-study module) | §13.18 item 6 | Event tables delivered | None | Event-study module, report; decides whether S-B is built | This project |
-| 4 | (User decision, on hold) broker-branch purchase: G1 passed, but on 2026-10-28 the user decided not to buy paid data for now | §13.18 item 10 | — | — | Record of the decision | The user |
-| 5 | (User decision) dataset v2 (split and capital-reduction adjustments) retraining: §13.20 supplement 2 checked item by item: none of v1's 100 jumps above 25% since 2023 enters training, scores or any strategy's P&L (the 128 + 14 gap-free sample rule drops every sample around a halt), so under the current rules a v2 retrain is expected to reproduce v1 without a difference and is needed only if the gap rule is relaxed, windows get longer or adjusted prices are needed across halts; code done (branch `claude/dataset-v2-corporate-actions-20261026`; merging into master conflicts only in this file and needs `configs/data_content_identity_snapshot.json` regenerated); v2 ties the provider-cache revision to the dataset revision, so decouple them before a full API re-download | §13.17 supplement result (h), §13.20 item 9 | User decision | **RunPod CPU**: prepare → features F0, F2 → lgbm F0, F2 | The v2 dataset and the v1-vs-v2 comparison | The user decides; this project scores |
-| 6 | (User decision) retrain D0 on the F2 features | §13.18 item 3 | User decision | **RunPod GPU**: `xs-train` | D0 F2 predictions | This project writes the code; the user launches the Pod |
+| # | Step | Command | Who |
+| --- | --- | --- | --- |
+| 1 | **Sync the code to the volume** (no Pod on the volume) | `bash scripts/runpod_workflow.sh sync --apply` | the user |
+| 2 | **New selection** (data revision v1.1, data and holdout end 2026-10-23) | `bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --dataset-revision v1.1 --start 2016-01-01 --end 2026-10-23 --test-end 2026-10-23 --universe all` | the user |
+| 3 | **Create the preparation Pod**, SSH in, **clear the volume first** (plan, then delete; api-cache, tw-chip-data and every launch's result files stay), then start the preparation job | `bash scripts/runpod_workflow.sh cpu prepare --max-api-calls 1 --taiwan-qps 0.5 --maxRuntime 24h --prepareReserve 2h --maxBackoff 1m` → inside the Pod: `cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py` → after checking the list `cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py --apply --confirm RESET` → `bash scripts/runpod_tmux_launch.sh cpu-prepare` | the user |
+| 4 | **Feature store (a)**: rank labels (for B0) | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --spec configs/features/alpha_tw_v1.json` | the user |
+| 5 | **Feature store (b)**: variant A (F0, D0, D1) | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json` | the user |
+| 6 | **Feature store (c)**: variant B | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1b.json --spec configs/features/alpha_tw_v1.json` | the user |
+| 7 | **Feature store (d)**: F2 (price-volume + chip) | `bash scripts/runpod_workflow.sh features --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data` | the user |
+| 8 | **B0** (rank labels) | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json` | the user |
+| 9 | **Variant A = F0** | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json` | the user |
+| 10 | **Variant B** | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1b.json --spec configs/features/alpha_tw_v1.json --schedule configs/walk_forward/tw_quarterly_v2.json` | the user |
+| 11 | **F2** | `bash scripts/runpod_workflow.sh lgbm --maxRuntime 24h --labelVariant configs/labels/residual_v1a.json --spec configs/features/alpha_chip_tw_v1.json --chipDataRoot /runpod-volume/datasets/tw-chip-data --schedule configs/walk_forward/tw_quarterly_v2.json` | the user |
+| 12 | **D0** (GPU; the paired baseline is step 9's launch, picked automatically) | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-scratch --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | the user |
+| 13 | **D1 Kronos-small** (GPU) | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-kronos-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | the user |
+| 14 | **D1 Chronos-2-small** (GPU) | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-chronos2-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | the user |
+| 15 | **Download**: one `download-lgbm` per lgbm launch, one `download-research <launch-id>` per xs launch | `bash scripts/runpod_workflow.sh download-lgbm`, `bash scripts/runpod_workflow.sh download-research launch-...` | the user |
+| 16 | **Local backtests and verdicts** (§13.23 items 4 and 5): model-level tables, `scenario_suite` (full suite on F0 and F2; B0, variant B, D0, D1 as references), threshold shortlist, P3 verification H-M, F2 − F0 increment | local `backtest/.venv`, commands given by this project | this project |
+| 17 | **Reports**: new full research report and selected-strategy report (Markdown + Word); old reports archived under `reports/deprecated/` with an index | — | this project |
+| 18 | Cells passing H-M enter the confirmation period P4' (§13.23 item 5; the quarterly extension needs `configs/walk_forward/tw_quarterly_v3.json` first) | — | registered by this project, Pods launched by the user |
 
-### Training notes
+### Notes
 
-Step 1 is pure backtesting on the local machine (S2 uses the existing F2 predictions; the hedged S-A only adds a TX leg). Step 5 redoes data preparation, the feature stores and both models' 16-fold retraining (four to five CPU Pods); step 6 needs one GPU Pod. Step 3 needs no training.
+- Step 3's reset script deletes only after the user has checked the list; `--apply` without `--confirm RESET` does nothing. Afterwards old `lifecycle/` markers point at deleted paths, which the script lists; step 2's selection and step 3's preparation republish them.
+- The Pods of steps 4 to 11 are exclusive on the volume, one at a time; steps 12 to 14 are one GPU Pod each. Every Pod runs with `--maxRuntime 24h`.
+- No Pod re-downloads the API: v1.1 shares the provider cache with the old v1 (cache revision fixed at `v1`); `--max-api-calls 1` on `cpu prepare` limits EODHD only, which the Taiwan profile does not use.
 
 ### Not being done now
 
-- "Beating 0050 buy-and-hold" as a bar at any stage (decided 2026-10-26; the §13.17 supplement ends there and is not recomputed on P3).
-- Buying shareholder-dispersion data (only when S-C enters implementation); the broker-branch decision is step 4.
-- Treating F2 × S-A or F2 × S2 as a usable strategy: H-J failed and both stay in research status; no re-selection of the band parameters (fixed at the §13.19 / §13.20 values).
-- Pushing branches: the v0.3.0 and v0.4.0 tags on master wait for the user's review of the README and the reports.
+- The ablations A1–A4 are not redone (not on the user's list); `v2*` (capital reductions, par-value changes, ETF splits) is not used on this line, only the switch is kept.
+- "Beating 0050 buy-and-hold" as a bar at any stage; buying shareholder-dispersion or broker-branch data (G1 passed, but on 2026-10-28 the user decided not to buy).
+- Pushing branches: awaits the user's approval.

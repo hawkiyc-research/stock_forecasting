@@ -4,6 +4,7 @@
 
 ### 未發布（2026-10-26 之後）
 
+- 2026-10-30：資料修訂可切換——`configure --dataset-revision v1*`／`v2*` 經 `stock_forecasting.dataset_identity.dataset_revision_policy` 決定台股還原價的公司行動範圍（`v1*` 只套除權息因子，`v2*` 再疊加減資、面額變更、ETF 分割），所有 label 共用 provider 快取（快取修訂固定 `v1`），provider checkpoint 與資料集 namespace 依 label 區分；`TWSEProvider`／`TPExProvider` 建構時帶 `corporate_actions`。新增 `scripts/runpod_volume_reset.py`（重建前清空 volume，保留 api-cache、籌碼資料與各 launch 的結果檔）。協定 §13.23 登記全線重訓（資料集 v1.1；B0、變體 A／B、F2、D0、D1）。
 - 台股資料管線：`TWSEProvider`／`TPExProvider` 的 `fetch_actions` 另讀取 TWSE 減資（`TWTAUU`）、變更面額（`TWTB8U`）、
   ETF 分割（`TWTCAU`）與 TPEx 減資（`revivt`）恢復買賣參考價表，加上整理的櫃買變更面額表，以恢復買賣日的
   `參考價 / 停止買賣前收盤價` 作價格因子，與除權息因子一起累乘到 `adjusted_close`；原始 OHLCV 不變。
@@ -160,6 +161,7 @@
 
 ### Unreleased (after 2026-10-26)
 
+- 2026-10-30: selectable data revision — `configure --dataset-revision v1*` / `v2*` decides, through `stock_forecasting.dataset_identity.dataset_revision_policy`, the corporate-action scope of Taiwan adjusted prices (`v1*` ex-dividend / ex-rights factors only, `v2*` plus capital reductions, par-value changes and ETF splits); every label shares the provider cache (cache revision fixed at `v1`) while provider checkpoints and dataset namespaces are per label; `TWSEProvider` / `TPExProvider` take `corporate_actions` at construction. New `scripts/runpod_volume_reset.py` (clears the volume before a rebuild, keeping the api-cache, the chip data and every launch's result files). Protocol §13.23 registers the full retrain (dataset v1.1; B0, variants A / B, F2, D0, D1).
 - Taiwan data pipeline: `fetch_actions` of `TWSEProvider` / `TPExProvider` also reads the TWSE capital-reduction
   (`TWTAUU`), par-value-change (`TWTB8U`) and ETF-split (`TWTCAU`) tables, the TPEx capital-reduction table
   (`revivt`) and a curated TPEx par-value table, takes `reference price / last close before the halt` on the

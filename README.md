@@ -820,6 +820,22 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    cd /runpod-volume/stock_forecasting && /usr/local/bin/python scripts/runpod_probe_chip_sources.py
    ```
 
+   **重建前清空 volume**（協定 §13.23，2026-10-30）：資料管線修正後要全部重做時，在 Pod 內先列計畫、確認後再刪：
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py
+   ```
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py --apply --confirm RESET
+   ```
+
+   刪除每個資料集 namespace 的 `raw/`、`prepared/`、provider checkpoint 與下載進度、`diagnostics/invalid/`、未完成的 launch、
+   已完成 launch 的 `partial/`、`forward/` 的快取與資料檔，以及任何位置的模型權重與快取張量（`*.pt`、`*.safetensors`、`*.bin`、
+   `*.ckpt`、`*.npy`、`*.npz`、`*.pkl` 等；LightGBM launch 本來就不存 booster）；保留 `api-cache/`（原始 provider 回應，各修訂共用）、
+   `tw-chip-data/`、每個 launch 的 `results.json`／`predictions.parquet`／manifest／logs、`lifecycle/`、`logs/`、`evaluations/`。
+   計畫與執行紀錄寫在 `diagnostics/volume-reset/<時間>/`。
+
    **清掉錯誤與死掉的結果**：每次開新 Pod、啟動 job 之前，先在 Pod 內列出 volume 上研究層的狀態，確認後再隔離：
 
    ```bash
@@ -5319,6 +5335,25 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    ```bash
    cd /runpod-volume/stock_forecasting && /usr/local/bin/python scripts/runpod_probe_chip_sources.py
    ```
+
+   **Clearing the volume before a rebuild** (protocol §13.23, 2026-10-30): when everything is redone after a
+   data-pipeline fix, list the plan inside the Pod first, check it, then delete:
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py
+   ```
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py --apply --confirm RESET
+   ```
+
+   It deletes every dataset namespace's `raw/`, `prepared/`, provider checkpoints and download progress,
+   `diagnostics/invalid/`, unfinished launches, the `partial/` directories of finished launches, the caches and data
+   files under `forward/`, and model weights or cached tensors anywhere (`*.pt`, `*.safetensors`, `*.bin`, `*.ckpt`,
+   `*.npy`, `*.npz`, `*.pkl`, ...; LightGBM launches never persist boosters); it keeps `api-cache/` (raw provider
+   responses, shared by every revision), `tw-chip-data/`, every launch's `results.json` / `predictions.parquet` /
+   manifests / logs, `lifecycle/`, `logs/` and `evaluations/`. The plan and the execution record go to
+   `diagnostics/volume-reset/<timestamp>/`.
 
    **Removing wrong and dead results**: at the start of every new Pod, before launching its job, list the state of
    the volume's research layer inside the Pod, check it, then quarantine:
