@@ -28,6 +28,7 @@ DATASET_STORAGE_PREPARATION_FIELDS = _DATASET_IDENTITY_CONTRACT[
     "DATASET_STORAGE_PREPARATION_FIELDS"
 ]
 dataset_request_identity_payload = _DATASET_IDENTITY_CONTRACT["dataset_request_identity_payload"]
+dataset_revision_policy = _DATASET_IDENTITY_CONTRACT["dataset_revision_policy"]
 DEFAULT_DATASET_STORAGE_PREPARATION = _DATASET_IDENTITY_CONTRACT[
     "DEFAULT_DATASET_STORAGE_PREPARATION"
 ]
@@ -648,6 +649,10 @@ def _build_selection(arguments: argparse.Namespace, project_root: Path) -> Dict[
     revision = getattr(arguments, "dataset_revision", "v1")
     if not isinstance(revision, str) or not REVISION_PATTERN.fullmatch(revision):
         _fail("dataset revision must be a safe 1-64 character label")
+    try:
+        dataset_revision_policy(revision)
+    except ValueError as error:
+        _fail(str(error))
     request = {
         "schema_version": DATASET_REQUEST_SCHEMA_VERSION,
         "profile": profile,
@@ -1279,7 +1284,11 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument(
         "--dataset-revision",
         default="v1",
-        help="Explicit revision label used to create a new immutable data namespace.",
+        help=(
+            "Revision label of the new immutable data namespace: v1 / v1.<n> = Taiwan prices "
+            "adjusted for ex-dividend and ex-rights events only; v2 / v2.<n> = plus capital "
+            "reductions, par-value changes and ETF splits. All labels share one provider cache."
+        ),
     )
     create.add_argument(
         "--start",

@@ -17,6 +17,7 @@ from stock_forecasting.data.providers import (
     ProviderAcquisitionError,
     ProviderRequestError,
 )
+from stock_forecasting.dataset_identity import dataset_revision_policy
 from stock_forecasting.dataset_profiles import PROFILE_DATASETS
 
 TEMPORARY_PROVIDER_EXIT_CODE = 75
@@ -70,10 +71,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--cache-revision",
+        "--dataset-revision",
+        dest="dataset_revision",
         default=os.environ.get("RUNPOD_DATASET_REVISION", "v1"),
         help=(
-            "Provider-cache schema/source revision. The v1 label preserves legacy "
-            "request hashes; later revisions are isolated from older responses."
+            "Dataset revision label (RUNPOD_DATASET_REVISION). v1 labels adjust Taiwan "
+            "prices for ex-dividend / ex-rights events only; v2 labels also compound "
+            "capital reductions, par-value changes and ETF splits. Every label shares the "
+            "v1 provider cache; see stock_forecasting.dataset_identity.dataset_revision_policy."
         ),
     )
     parser.add_argument("--selection-id", default=os.environ.get("RUNPOD_SELECTION_ID"))
@@ -157,6 +162,7 @@ def _default_manifest_root(output: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    revision_policy = dataset_revision_policy(args.dataset_revision)
     manifest_root = args.manifest_root or _default_manifest_root(args.output)
     raw_cache_root = args.raw_cache_root or manifest_root / "api-cache"
     options = IngestionOptions(
@@ -167,7 +173,9 @@ def main(argv: list[str] | None = None) -> int:
         manifest_root=manifest_root,
         raw_cache_root=raw_cache_root,
         provider_checkpoint_root=args.provider_checkpoint_root,
-        cache_revision=args.cache_revision,
+        cache_revision=revision_policy["cache_revision"],
+        dataset_revision=revision_policy["revision"],
+        corporate_actions=revision_policy["corporate_actions"],
         include_delisted=not args.exclude_delisted,
         explicit_us_symbols=tuple(args.symbols),
         explicit_us_etfs=tuple(args.etf_symbols),

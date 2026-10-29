@@ -89,7 +89,7 @@ flowchart LR
 
 | 項目 | 內容 |
 | --- | --- |
-| 資料組 | `configure --data-profile tw_only --start 2016-01-01`：台股上市與上櫃普通股（ETF 與指數只作基準與 0050 對照，不作為樣本），由凍結的 CPU prepare 腳本準備，還原權息；資料內容識別碼不變 |
+| 資料組 | `configure --data-profile tw_only --start 2016-01-01`：台股上市與上櫃普通股（ETF 與指數只作基準與 0050 對照，不作為樣本），由凍結的 CPU prepare 腳本準備，還原權息；資料內容識別碼不變（修訂 `v1`，只含股息）。2026-10-26 起資料管線另加入分割、減資與變更面額的調整（修訂 `v2`，新識別碼），P3 的新資料集採用，見 [公司行動調整報告](docs/corporate_action_adjustment.md) |
 | 樣本 | 每個（股票, 訊號日 t）一筆：t 收盤算訊號，t+1 開盤進場，第 h 個交易日收盤出場，h = 1…14 |
 | walk-forward | `configs/walk_forward/tw_quarterly_v1.json`：2023Q1–2026Q2 共 14 個季度 fold，每折訓練視窗的最後 12 個月為 validation（早停用），15 個交易日 embargo，每折從頭重訓；由 `stock_forecasting.walk_forward.quarterly_folds` 依台股交易日曆產生 |
 | 評估期間 | P1 = 2023-01 至 2025-05（562 個訊號日）、P2 = 2025-06 至 2026-05（215 日）；P1 ∪ P2 為判定期間，P3（2026-06 之後）保留為前瞻確認 |
@@ -205,6 +205,7 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | [§13.17 步驟 0 結果](docs/exposure_diagnostics_results.md) | 殘差 alpha 幅度對成本、兩個宇宙、停止規則 |
 | [§13.18 籌碼增量 G1／H-H 結果](docs/chip_increment_results.md) | F1／F2 對 F0 的配對差、H-H 與 G1 判定、強勢股子分析、分點購買的第一道門 |
 | [機構成本六情境結果](docs/institution_cost_scenarios_results.md) | 散戶對機構成本、六情境、多空各腿與 TX 腿、滑價敏感度、容量、吸引力門檻（§13.19）；補充一到四：反轉暴露診斷、正交化 band、逐年與全格子、可借券名單與借不到機率下的空頭腿 |
+| [分割、減資與面額變更的還原價調整](docs/corporate_action_adjustment.md) | 官方來源（TWSE TWTAUU／TWTB8U／TWTCAU、TPEx revivt、整理的櫃買面額表）、調整方法、2016 年起的偵測清單與官方公告對照（2023 年起 109 檔、停牌後 91.5% 對到）、0050 一拆四的驗證、RunPod 重建命令 |
 | [0050 核心加正交化多空疊加結果](docs/core_overlay_results.md) | §13.17 補充：0050 買進持有基準、變體 A（質押借款）與 B（台指期提供 β）全格子、選擇與 H-G、資本情境、多空腿執行層資訊、資料集分割未調整的發現；Word 版 `reports/core_overlay_results_20261026.docx` |
 | [Word 成果報告](reports/taiwan_rank_pipeline_results_20261025.docx) | 以上全部表格的雙語彙整，由 `scripts/build_results_report.py` 產生 |
 | [Word 六情境報告](reports/institution_cost_scenarios_20261025.docx) | §13.19 雙語報告的 Word 版，由 `scripts/build_scenario_report.py` 產生 |
@@ -289,6 +290,18 @@ request 估算；估算值不會阻止完整資料集執行。provider 對 2018 
 一律當成開市日。
 這可避免股票分割或除權息造成的人為跳空，同時維持下一日 raw open 的可交易 entry
 語意。
+
+台股的除權息表不含股票分割、減資與變更面額：這三類事件都是停止買賣數個交易日後以官方參考價
+恢復買賣。2026-10-26 起，兩個台灣 provider 的 `fetch_actions` 另讀取 TWSE 減資（`TWTAUU`）、
+變更面額（`TWTB8U`）、ETF 分割（`TWTCAU`）與 TPEx 減資（`revivt`）恢復買賣參考價表，以及
+`taiwan.py` 內整理的櫃買變更面額表，把 `參考價 / 停止買賣前收盤價` 當成恢復買賣日的價格因子、
+換股率的倒數當成股數乘數，與除權息因子一起累乘到 `adjusted_close` 與 `split_adjusted_volume`；
+原始 OHLCV 不動。這些復牌因子由資料集修訂 label 決定（`stock_forecasting.dataset_identity.dataset_revision_policy`）：
+`v1`、`v1.<n>` 只套除權息因子（`adjustment_source` 為 `twse_twt49u`、`tpex_exdailyq`），`v2`、`v2.<n>` 再疊加減資、
+變更面額與 ETF 分割（`twse_twt49u+twtauu+twtb8u+twtcau`、`tpex_exdailyq+revivt`）；兩種修訂共用同一個 provider 快取
+（快取修訂固定為 `v1`），只有資料集 namespace、provider checkpoint 與還原價不同，隨時可在 `configure` 用
+`--dataset-revision` 切換。已完成的實驗沿用各自當時的資料集。來源、驗證（0050 一拆四、
+2023 年起 109 檔個股的對照）與執行命令見 [公司行動調整報告](docs/corporate_action_adjustment.md)。
 
 #### 資料完整性、連續性與最低流動性
 
@@ -486,6 +499,9 @@ manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-25
 
 1. **建立 selection 並準備資料組**：與一般 CPU preparation 相同，profile 改為 `tw_only`、
    起點 2016-01-01。資料準備腳本維持凍結，沒有任何修改；已有同一 selection 的資料組時可略過。
+   §13.12–§13.22 的結果來自修訂 `v1`（只含除權息因子）；要含分割、減資與面額變更調整時在 `configure` 加
+   `--dataset-revision v2`（或 `v2.<n>`），其餘命令不變；兩種修訂共用 provider 快取，不需重抓 API。命令見
+   [公司行動調整報告](docs/corporate_action_adjustment.md) 第 6 節。
 
    ```bash
    bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --start 2016-01-01 --end 2026-06-01 --universe all
@@ -803,6 +819,22 @@ chip 的 67 欄，一個 store）。每一列只在 `available_at` 早於訊號�
    ```bash
    cd /runpod-volume/stock_forecasting && /usr/local/bin/python scripts/runpod_probe_chip_sources.py
    ```
+
+   **重建前清空 volume**（協定 §13.23，2026-10-30）：資料管線修正後要全部重做時，在 Pod 內先列計畫、確認後再刪：
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py
+   ```
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py --apply --confirm RESET
+   ```
+
+   刪除每個資料集 namespace 的 `raw/`、`prepared/`、provider checkpoint 與下載進度、`diagnostics/invalid/`、未完成的 launch、
+   已完成 launch 的 `partial/`、`forward/` 的快取與資料檔，以及任何位置的模型權重與快取張量（`*.pt`、`*.safetensors`、`*.bin`、
+   `*.ckpt`、`*.npy`、`*.npz`、`*.pkl` 等；LightGBM launch 本來就不存 booster）；保留 `api-cache/`（原始 provider 回應，各修訂共用）、
+   `tw-chip-data/`、每個 launch 的 `results.json`／`predictions.parquet`／manifest／logs、`lifecycle/`、`logs/`、`evaluations/`。
+   計畫與執行紀錄寫在 `diagnostics/volume-reset/<時間>/`。
 
    **清掉錯誤與死掉的結果**：每次開新 Pod、啟動 job 之前，先在 Pod 內列出 volume 上研究層的狀態，確認後再隔離：
 
@@ -1169,7 +1201,7 @@ mapping 也不能繞過此限制。這不保證涵蓋 provider 未回傳或帳�
 | --- | --- | --- |
 | `--stage` | `stage1`、`stage2` | 選擇固定的訓練 config。非互動模式必填 |
 | `--data-profile` | `tw_only`、`us_only_eodhd`、`us_tw_eodhd` | 決定實際使用的 provider 與市場組合。非互動模式必填 |
-| `--dataset-revision` | 1～64 字元；英數開頭，之後可用英數、`.`、`_`、`-`；預設 `v1` | provider 修訂歷史資料時，用新 label 強制建立新的 immutable dataset namespace |
+| `--dataset-revision` | `v1`、`v2`，或其後接 `.`、`-`、`_` 與後綴（例如 `v1.1`）；預設 `v1` | 決定台股還原價的公司行動範圍並建立新的 immutable dataset namespace：`v1*` 只套除權息因子，`v2*` 再疊加減資、變更面額與 ETF 分割；所有 label 共用同一個 provider 快取（快取修訂 `v1`），換 label 不會重抓 API |
 | `--start` | `YYYY-MM-DD`；預設 `2016-01-01` | 所有市場共用的 inclusive 起始日，須早於 `2025-06-01` 且留足 context 與 train 資料 |
 | `--end` | `YYYY-MM-DD`；無預設值 | 所有市場共用的 exclusive 結束日，須不早於 `--test-end`；超出 `--test-end` 的資料不會進入固定 train／validation／holdout |
 | `--test-end` | `YYYY-MM-DD`；預設 `2026-06-01` | holdout（test）切分的 exclusive 結束日，須晚於 `2025-12-01`。**回測通道**：把它往後移（例如 `2026-10-23`），`2026-06-01` 之後的交易日就進入 test 切分，特徵庫、標籤庫與 walk-forward（搭配 `lgbm --schedule`）才算得到這段；改變它就是新的資料集身分 |
@@ -1586,8 +1618,8 @@ attempt、已快取 response 數、此次 network request 數、可用的完整 
 不同，流程會 fail closed，避免混用不同 profile、日期或 universe。過小的
 `--max-api-calls` 會產生可續傳的 `waiting_for_budget`，不是失敗，也不要求重新
 `configure`；可用相同 selection 直接建立下一個 CPU Pod。401／403 或其他非暫時性
-設定錯誤才標記為 `failed`，應先修正 Secret。只有確實要建立新的
-provider 資料快照時才改 `--dataset-revision`，新 revision 不會沿用舊 snapshot cache。
+設定錯誤才標記為 `failed`，應先修正 Secret。要建立新的資料集 namespace（例如資料管線修正後重做）時改
+`--dataset-revision`（`v1.<n>` 或 `v2.<n>`）；新 label 沿用同一個 provider 快取，只重算還原價與後續產物。
 
 若狀態是 `waiting_for_budget`、`waiting_for_provider`、`waiting_for_resume`、
 `waiting_for_preparation`、`failed` 或 `timed_out`，用以下命令下載 CPU 紀錄；腳本會解析 lifecycle 中的
@@ -1905,7 +1937,7 @@ GPU train／validate 的 runtime 是**安全保存後停止的請求時間，不
 | `--raw-cache-root PATH` | 預設 `<manifest-root>/api-cache` |
 | `--provider-checkpoint-root PATH` | 預設 raw cache 同層的 `provider-checkpoints`；儲存可續傳 provider Parquet |
 | `--progress-path PATH` | 預設 `<manifest-root>/download-progress.json` |
-| `--cache-revision LABEL` | `RUNPOD_DATASET_REVISION`，否則 `v1`；隔離 provider cache 修訂 |
+| `--cache-revision LABEL`（別名 `--dataset-revision`） | `RUNPOD_DATASET_REVISION`，否則 `v1`；資料集修訂 label：`v1*` 只套除權息因子、`v2*` 再疊加復牌因子；provider 快取修訂一律 `v1`（共用） |
 | `--dataset-request-sha256 HASH`、`--selection-id ID`、`--selection-sha256 HASH`、`--launch-id ID` | workflow provenance；分別預設來自 `RUNPOD_DATASET_REQUEST_SHA256`、`RUNPOD_SELECTION_ID`、`RUNPOD_SELECTION_SHA256`、`RUNPOD_LAUNCH_ID`，未設定則無值；不要自行編造 |
 | `--max-api-calls N` | 此低階 CLI 預設 `100000`；只限制 EODHD 單次取得資料的 network attempts，含 retry |
 | `--eodhd-qps Q`、`--taiwan-qps Q` | 預設 `16`、`0.5`；每個 provider 的請求節流 |
@@ -4468,7 +4500,7 @@ flowchart LR
 
 | Item | Content |
 | --- | --- |
-| Dataset | `configure --data-profile tw_only --start 2016-01-01`: TWSE and TPEX common stocks (ETFs and indexes serve as benchmarks and the 0050 reference, not as samples), prepared by the frozen CPU-prepare scripts, dividend- and split-adjusted; the data content identity is unchanged |
+| Dataset | `configure --data-profile tw_only --start 2016-01-01`: TWSE and TPEX common stocks (ETFs and indexes serve as benchmarks and the 0050 reference, not as samples), prepared by the frozen CPU-prepare scripts, dividend-adjusted; the data content identity is unchanged (revision `v1`, dividends only). Since 2026-10-26 the data pipeline also adjusts for splits, capital reductions and par-value changes (revision `v2`, new identity), which P3's new dataset adopts; see the [corporate-action adjustment report](docs/corporate_action_adjustment.md) |
 | Samples | One row per (stock, signal date t): the signal is computed after the close of t, entry at the t+1 open, exit at the close of holding session h, h = 1…14 |
 | Walk-forward | `configs/walk_forward/tw_quarterly_v1.json`: 14 quarterly folds 2023Q1–2026Q2, the last 12 months of each training window as validation (for early stopping), a 15-session embargo, retrained from scratch per fold; generated by `stock_forecasting.walk_forward.quarterly_folds` on the Taiwan trading calendar |
 | Evaluation periods | P1 = 2023-01 to 2025-05 (562 signal dates), P2 = 2025-06 to 2026-05 (215 dates); P1 ∪ P2 is the decision period and P3 (after 2026-06) is reserved for forward confirmation |
@@ -4590,6 +4622,7 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | [§13.17 step 0 results](docs/exposure_diagnostics_results.md) | Residual alpha size against costs, both universes, stop rule |
 | [§13.18 chip increment G1 / H-H results](docs/chip_increment_results.md) | Paired F1 / F2 versus F0, the H-H and G1 verdicts, the recent-winner sub-analysis, the first gate for buying broker-branch data |
 | [Six scenarios under institution costs](docs/institution_cost_scenarios_results.md) | Retail vs institution costs, six scenarios, long / short / TX legs, slippage sensitivity, capacity, attractiveness bar (§13.19); supplements 1 to 4: reversal-exposure diagnostic, orthogonalized band, yearly and full grid, the short book under the borrowable lists and borrow-failure probabilities |
+| [Split, capital-reduction and par-value adjustment](docs/corporate_action_adjustment.md) | Official sources (TWSE TWTAUU / TWTB8U / TWTCAU, TPEx revivt, the curated TPEx par-value table), the method, the detection list since 2016 matched to official announcements (109 names since 2023, 91.5% of post-halt events matched), the 0050 1:4 verification, the RunPod rebuild commands |
 | [0050 core plus orthogonalized long-short overlay](docs/core_overlay_results.md) | §13.17 supplement: the 0050 buy-and-hold benchmark, the full grids of variant A (secured loan) and B (β from TX), selection and H-G, capital scenarios, execution-layer information of the legs, the unadjusted-split data finding; Word version `reports/core_overlay_results_20261026.docx` |
 | [Word results report](reports/taiwan_rank_pipeline_results_20261025.docx) | Every table above in one bilingual document, produced by `scripts/build_results_report.py` |
 | [Word six-scenario report](reports/institution_cost_scenarios_20261025.docx) | Word version of the §13.19 bilingual report, built by `scripts/build_scenario_report.py` |
@@ -4699,6 +4732,22 @@ official TWSE/TPEx ex-right/ex-dividend data and return indices. Existing monthl
 benchmark rows provide the actual trading sessions, so ordinary weekdays are
 not blindly treated as open sessions. This removes artificial corporate-action
 gaps while retaining the tradable next-day raw-open entry semantics.
+
+The Taiwan ex-dividend tables do not carry stock splits, capital reductions or par-value changes:
+all three halt the security for several sessions and resume it at an official reference price.
+Since 2026-10-26 both Taiwan providers' `fetch_actions` also read the TWSE capital-reduction
+(`TWTAUU`), par-value-change (`TWTB8U`) and ETF-split (`TWTCAU`) tables, the TPEx capital-reduction
+table (`revivt`) and the curated TPEx par-value table in `taiwan.py`, take `reference price / last
+close before the halt` as the price factor dated on the resumption session and the inverse share rate
+as the share multiplier, and compound them with the dividend factors into `adjusted_close` and
+`split_adjusted_volume`; raw OHLCV is untouched and `adjustment_source` reads
+`twse_twt49u+twtauu+twtb8u+twtcau` and `tpex_exdailyq+revivt`. Which factors apply is decided by the dataset
+revision label (`stock_forecasting.dataset_identity.dataset_revision_policy`): `v1` / `v1.<n>` apply ex-dividend
+and ex-rights factors only (`adjustment_source` `twse_twt49u`, `tpex_exdailyq`), `v2` / `v2.<n>` also compound
+capital reductions, par-value changes and ETF splits. Both share one provider cache (cache revision fixed at
+`v1`); only the dataset namespace, the provider checkpoints and the adjusted prices differ, so `configure
+--dataset-revision` switches between them at any time. Finished experiments keep the dataset they used. Sources, verification (the 0050 1:4 split, the
+109 names since 2023) and the commands are in the [corporate-action adjustment report](docs/corporate_action_adjustment.md).
 
 #### Data completeness, continuity and minimum liquidity
 
@@ -4933,7 +4982,11 @@ the last 12 months of each window as validation) and come from
 
 1. **Create the selection and prepare the dataset**: as for any CPU preparation, with the
    `tw_only` profile and a 2016-01-01 start. The preparation scripts stay frozen and unchanged;
-   skip this when the dataset of the same selection already exists.
+   skip this when the dataset of the same selection already exists. The §13.12–§13.19 results come
+   from revision `v1` (ex-dividend / ex-rights factors only); for split, capital-reduction and par-value
+   adjustments add `--dataset-revision v2` (or `v2.<n>`) to `configure`, everything else is unchanged, and
+   both revisions share the provider cache, so no API re-download; see section 6 of the
+   [corporate-action adjustment report](docs/corporate_action_adjustment.md).
 
    ```bash
    bash scripts/runpod_workflow.sh configure --stage stage1 --data-profile tw_only --start 2016-01-01 --end 2026-06-01 --universe all
@@ -5282,6 +5335,25 @@ as the short book's borrowable lists). F0 (`alpha_tw_v1`, `launch-20261023T10380
    ```bash
    cd /runpod-volume/stock_forecasting && /usr/local/bin/python scripts/runpod_probe_chip_sources.py
    ```
+
+   **Clearing the volume before a rebuild** (protocol §13.23, 2026-10-30): when everything is redone after a
+   data-pipeline fix, list the plan inside the Pod first, check it, then delete:
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py
+   ```
+
+   ```bash
+   cd /runpod-volume/stock_forecasting && python3 scripts/runpod_volume_reset.py --apply --confirm RESET
+   ```
+
+   It deletes every dataset namespace's `raw/`, `prepared/`, provider checkpoints and download progress,
+   `diagnostics/invalid/`, unfinished launches, the `partial/` directories of finished launches, the caches and data
+   files under `forward/`, and model weights or cached tensors anywhere (`*.pt`, `*.safetensors`, `*.bin`, `*.ckpt`,
+   `*.npy`, `*.npz`, `*.pkl`, ...; LightGBM launches never persist boosters); it keeps `api-cache/` (raw provider
+   responses, shared by every revision), `tw-chip-data/`, every launch's `results.json` / `predictions.parquet` /
+   manifests / logs, `lifecycle/`, `logs/` and `evaluations/`. The plan and the execution record go to
+   `diagnostics/volume-reset/<timestamp>/`.
 
    **Removing wrong and dead results**: at the start of every new Pod, before launching its job, list the state of
    the volume's research layer inside the Pod, check it, then quarantine:
@@ -5706,7 +5778,7 @@ All user-facing `configure` options are:
 | --- | --- | --- |
 | `--stage` | `stage1`, `stage2` | Select the fixed training config. Required in non-interactive mode |
 | `--data-profile` | `tw_only`, `us_only_eodhd`, `us_tw_eodhd` | Select the actual provider and market combination. Required in non-interactive mode |
-| `--dataset-revision` | 1-64 characters; start with an alphanumeric character, followed by alphanumerics, `.`, `_`, or `-`; default `v1` | Use a new label to force a new immutable dataset namespace after a provider revises historical data |
+| `--dataset-revision` | `v1`, `v2`, or either followed by `.`, `-` or `_` and a suffix (for example `v1.1`); default `v1` | Selects the corporate-action scope of Taiwan adjusted prices and creates a new immutable dataset namespace: `v1*` ex-dividend / ex-rights factors only, `v2*` plus capital reductions, par-value changes and ETF splits; every label shares one provider cache (cache revision `v1`), so changing the label never re-downloads. Use a new label to force a new immutable dataset namespace after a provider revises historical data |
 | `--start` | `YYYY-MM-DD`; default `2016-01-01` | Inclusive start shared by all markets; must precede `2025-06-01` and leave enough context/training history |
 | `--end` | `YYYY-MM-DD`; no default | Exclusive end shared by all markets; must not precede `--test-end`. Rows past `--test-end` never enter the fixed train/validation/holdout splits |
 | `--test-end` | `YYYY-MM-DD`; default `2026-06-01` | Exclusive end of the holdout (test) split; must follow `2025-12-01`. **The backtest channel**: moving it later (for example `2026-10-23`) puts the sessions after `2026-06-01` into the test split, so the feature store, the label store and the walk-forward (with `lgbm --schedule`) can score them; changing it creates a new dataset identity |
@@ -6195,8 +6267,9 @@ fails closed. An undersized `--max-api-calls` produces resumable
 `waiting_for_budget`, not failure; create another CPU Pod with the same selection.
 A 401/403 or other non-temporary configuration error produces `failed` and
 requires correcting the Secret. Change
-`--dataset-revision` only for an intentional new provider snapshot; a new
-revision does not reuse the old snapshot cache.
+`--dataset-revision` (`v1.<n>` or `v2.<n>`) when a new dataset namespace is
+wanted, for example after a data-pipeline fix; the new label reuses the same
+provider cache and only recomputes the adjusted prices and what follows.
 
 If the state is `waiting_for_budget`, `waiting_for_provider`,
 `waiting_for_resume`, `waiting_for_preparation`, `failed`, or `timed_out`, download CPU logs
@@ -6539,7 +6612,7 @@ All four Python CLIs accept `-h`/`--help`, still within the existing cloud envir
 | `--raw-cache-root PATH` | Defaults to `<manifest-root>/api-cache` |
 | `--provider-checkpoint-root PATH` | Defaults to `provider-checkpoints` beside the raw cache; stores resumable provider Parquet |
 | `--progress-path PATH` | Defaults to `<manifest-root>/download-progress.json` |
-| `--cache-revision LABEL` | `RUNPOD_DATASET_REVISION`, otherwise `v1`; isolates provider-cache revisions |
+| `--cache-revision LABEL` (alias `--dataset-revision`) | `RUNPOD_DATASET_REVISION`, otherwise `v1`; the dataset revision label: `v1*` ex-dividend / ex-rights factors only, `v2*` plus the resume-trading factors; the provider cache revision is always `v1` (shared) |
 | `--dataset-request-sha256 HASH`, `--selection-id ID`, `--selection-sha256 HASH`, `--launch-id ID` | Workflow provenance, respectively from `RUNPOD_DATASET_REQUEST_SHA256`, `RUNPOD_SELECTION_ID`, `RUNPOD_SELECTION_SHA256`, `RUNPOD_LAUNCH_ID`, or unset. Do not invent values |
 | `--max-api-calls N` | This low-level CLI defaults to `100000`; limits EODHD network attempts per acquisition, including retries |
 | `--eodhd-qps Q`, `--taiwan-qps Q` | `16`, `0.5`; provider request throttles |

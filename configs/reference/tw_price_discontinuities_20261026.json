@@ -1,0 +1,474 @@
+{
+  "market_parquet": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/datasets/53e3915b862ce81e24a9557d4e03a0814d7fe6b8c237ed26d3cb9bc62a10941b/raw/market.parquet",
+  "threshold": 0.25,
+  "scan_start": "2016-01-01",
+  "rows_scanned": 4411941,
+  "symbols_scanned": 2157,
+  "since_scan_start": {
+    "events": 568,
+    "symbols": 320,
+    "events_after_halt": 335,
+    "symbols_after_halt": 246,
+    "matched_events": 296,
+    "matched_share": 0.5211267605633803,
+    "matched_events_after_halt": 296,
+    "matched_share_after_halt": 0.8835820895522388,
+    "unmatched_after_halt": [
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2016-01-13",
+        "open_ratio": 0.7343589743589743
+      },
+      {
+        "symbol": "5455.TWO",
+        "resumption_date": "2016-01-21",
+        "open_ratio": 0.732
+      },
+      {
+        "symbol": "2429.TW",
+        "resumption_date": "2016-03-15",
+        "open_ratio": 1.2819089900110991
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2016-03-18",
+        "open_ratio": 0.7422680412371134
+      },
+      {
+        "symbol": "6103.TWO",
+        "resumption_date": "2016-05-18",
+        "open_ratio": 0.65
+      },
+      {
+        "symbol": "5348.TWO",
+        "resumption_date": "2016-08-15",
+        "open_ratio": 0.7354740061162078
+      },
+      {
+        "symbol": "2314.TW",
+        "resumption_date": "2016-09-29",
+        "open_ratio": 2.1653543307086616
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2016-11-11",
+        "open_ratio": 1.5595238095238095
+      },
+      {
+        "symbol": "3562.TWO",
+        "resumption_date": "2016-12-22",
+        "open_ratio": 1.2941176470588234
+      },
+      {
+        "symbol": "6222.TWO",
+        "resumption_date": "2017-01-09",
+        "open_ratio": 2.4444444444444446
+      },
+      {
+        "symbol": "5455.TWO",
+        "resumption_date": "2017-10-13",
+        "open_ratio": 0.731958762886598
+      },
+      {
+        "symbol": "1418.TW",
+        "resumption_date": "2017-11-28",
+        "open_ratio": 2.8030303030303028
+      },
+      {
+        "symbol": "3219.TWO",
+        "resumption_date": "2017-11-30",
+        "open_ratio": 1.3263473053892216
+      },
+      {
+        "symbol": "5468.TWO",
+        "resumption_date": "2018-04-24",
+        "open_ratio": 0.7000000000000001
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2018-09-07",
+        "open_ratio": 0.7307692307692307
+      },
+      {
+        "symbol": "1529.TW",
+        "resumption_date": "2018-12-24",
+        "open_ratio": 8.104166666666666
+      },
+      {
+        "symbol": "3219.TWO",
+        "resumption_date": "2019-01-04",
+        "open_ratio": 1.460093896713615
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2019-01-08",
+        "open_ratio": 1.3341584158415842
+      },
+      {
+        "symbol": "1475.TW",
+        "resumption_date": "2019-01-16",
+        "open_ratio": 1.3019801980198022
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2019-03-27",
+        "open_ratio": 0.7332185886402753
+      },
+      {
+        "symbol": "6131.TW",
+        "resumption_date": "2019-04-10",
+        "open_ratio": 0.25617977528089886
+      },
+      {
+        "symbol": "2323.TW",
+        "resumption_date": "2019-10-01",
+        "open_ratio": 1.4370546318289787
+      },
+      {
+        "symbol": "5345.TWO",
+        "resumption_date": "2019-10-01",
+        "open_ratio": 1.76039119804401
+      },
+      {
+        "symbol": "8067.TWO",
+        "resumption_date": "2019-12-05",
+        "open_ratio": 1.2957142857142858
+      },
+      {
+        "symbol": "6291.TWO",
+        "resumption_date": "2020-03-31",
+        "open_ratio": 1.2780082987551866
+      },
+      {
+        "symbol": "5205.TWO",
+        "resumption_date": "2020-07-02",
+        "open_ratio": 0.6616487455197133
+      },
+      {
+        "symbol": "6198.TWO",
+        "resumption_date": "2020-12-01",
+        "open_ratio": 2.6399999999999997
+      },
+      {
+        "symbol": "3073.TWO",
+        "resumption_date": "2021-02-19",
+        "open_ratio": 1.8127659574468087
+      },
+      {
+        "symbol": "5205.TWO",
+        "resumption_date": "2021-05-03",
+        "open_ratio": 2.005050505050505
+      },
+      {
+        "symbol": "5205.TWO",
+        "resumption_date": "2021-09-10",
+        "open_ratio": 0.6682027649769585
+      },
+      {
+        "symbol": "6172.TW",
+        "resumption_date": "2021-10-26",
+        "open_ratio": 0.7262313860252004
+      },
+      {
+        "symbol": "3067.TWO",
+        "resumption_date": "2021-12-17",
+        "open_ratio": 1.5230202578268879
+      },
+      {
+        "symbol": "6103.TWO",
+        "resumption_date": "2023-05-23",
+        "open_ratio": 1.4581105169340463
+      },
+      {
+        "symbol": "8101.TW",
+        "resumption_date": "2024-11-19",
+        "open_ratio": 5.499999999999999
+      },
+      {
+        "symbol": "2740.TWO",
+        "resumption_date": "2024-12-06",
+        "open_ratio": 1.3274509803921568
+      },
+      {
+        "symbol": "1538.TW",
+        "resumption_date": "2024-12-31",
+        "open_ratio": 1.5954415954415955
+      },
+      {
+        "symbol": "4806.TWO",
+        "resumption_date": "2025-10-07",
+        "open_ratio": 2.1828103683492497
+      },
+      {
+        "symbol": "2924.TWO",
+        "resumption_date": "2025-11-20",
+        "open_ratio": 1.3015873015873014
+      },
+      {
+        "symbol": "6236.TWO",
+        "resumption_date": "2025-12-26",
+        "open_ratio": 0.7423208191126279
+      }
+    ]
+  },
+  "since_2023": {
+    "events": 124,
+    "symbols": 109,
+    "events_after_halt": 82,
+    "symbols_after_halt": 75,
+    "matched_events": 75,
+    "matched_share": 0.6048387096774194,
+    "matched_events_after_halt": 75,
+    "matched_share_after_halt": 0.9146341463414634,
+    "unmatched_after_halt": [
+      {
+        "symbol": "6103.TWO",
+        "resumption_date": "2023-05-23",
+        "open_ratio": 1.4581105169340463
+      },
+      {
+        "symbol": "8101.TW",
+        "resumption_date": "2024-11-19",
+        "open_ratio": 5.499999999999999
+      },
+      {
+        "symbol": "2740.TWO",
+        "resumption_date": "2024-12-06",
+        "open_ratio": 1.3274509803921568
+      },
+      {
+        "symbol": "1538.TW",
+        "resumption_date": "2024-12-31",
+        "open_ratio": 1.5954415954415955
+      },
+      {
+        "symbol": "4806.TWO",
+        "resumption_date": "2025-10-07",
+        "open_ratio": 2.1828103683492497
+      },
+      {
+        "symbol": "2924.TWO",
+        "resumption_date": "2025-11-20",
+        "open_ratio": 1.3015873015873014
+      },
+      {
+        "symbol": "6236.TWO",
+        "resumption_date": "2025-12-26",
+        "open_ratio": 0.7423208191126279
+      }
+    ]
+  },
+  "etf_events": [
+    {
+      "symbol": "0050.TW",
+      "market": "TWSE",
+      "asset_type": "etf",
+      "resumption_date": "2025-06-18",
+      "previous_session": "2025-06-10",
+      "halt_sessions": 5,
+      "open_ratio": 0.2568956192536506,
+      "prior_open": 181.05082864162662,
+      "resumed_open": 46.51116474027725,
+      "resumed_volume": 252639825.0,
+      "matched_source": "twse_twtcau",
+      "official_price_factor": 0.2499867479,
+      "residual_ratio": 1.0276369504051244
+    },
+    {
+      "symbol": "0052.TW",
+      "market": "TWSE",
+      "asset_type": "etf",
+      "resumption_date": "2025-11-26",
+      "previous_session": "2025-11-18",
+      "halt_sessions": 5,
+      "open_ratio": 0.14274762961468632,
+      "prior_open": 241.90754245754246,
+      "resumed_open": 34.53172827172828,
+      "resumed_volume": 272824460.0,
+      "matched_source": "twse_twtcau",
+      "official_price_factor": 0.1428454953,
+      "residual_ratio": 0.9993148843433378
+    }
+  ],
+  "actions_csv": "configs/reference/tw_capital_actions_20261026.csv",
+  "events_csv": "/Users/hawkiyc/Documents/stock_forecasting/.claude/worktrees/interesting-stonebraker-8070b5/configs/reference/tw_price_discontinuities_20261026.csv",
+  "events_sha256": "e83a0b586ead3cfb22cc117c09a8a7abc13daf0ce94689f6694c4b5caf72a9fe",
+  "generated_at": "2026-10-26T12:50:41.569347+00:00",
+  "after_official_adjustment": {
+    "events": 260,
+    "symbols": 154,
+    "events_after_halt": 28,
+    "events_since_2023": 47,
+    "events_after_halt_since_2023": 5,
+    "remaining_after_halt": [
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2016-01-13",
+        "halt_sessions": 3,
+        "open_ratio": 0.7343589743589743
+      },
+      {
+        "symbol": "5455.TWO",
+        "resumption_date": "2016-01-21",
+        "halt_sessions": 2,
+        "open_ratio": 0.732
+      },
+      {
+        "symbol": "2429.TW",
+        "resumption_date": "2016-03-15",
+        "halt_sessions": 2,
+        "open_ratio": 1.281908990011099
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2016-03-18",
+        "halt_sessions": 16,
+        "open_ratio": 0.7422680412371134
+      },
+      {
+        "symbol": "6103.TWO",
+        "resumption_date": "2016-05-18",
+        "halt_sessions": 3,
+        "open_ratio": 0.6499999999999998
+      },
+      {
+        "symbol": "5906.TW",
+        "resumption_date": "2016-07-14",
+        "halt_sessions": 9,
+        "open_ratio": 0.3606825814089965
+      },
+      {
+        "symbol": "5348.TWO",
+        "resumption_date": "2016-08-15",
+        "halt_sessions": 2,
+        "open_ratio": 0.7354740061162078
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2016-11-11",
+        "halt_sessions": 7,
+        "open_ratio": 1.5595238095238095
+      },
+      {
+        "symbol": "3562.TWO",
+        "resumption_date": "2016-12-22",
+        "halt_sessions": 3,
+        "open_ratio": 1.2941176470588234
+      },
+      {
+        "symbol": "5455.TWO",
+        "resumption_date": "2017-10-13",
+        "halt_sessions": 2,
+        "open_ratio": 0.731958762886598
+      },
+      {
+        "symbol": "3219.TWO",
+        "resumption_date": "2017-11-30",
+        "halt_sessions": 2,
+        "open_ratio": 1.3263473053892216
+      },
+      {
+        "symbol": "5468.TWO",
+        "resumption_date": "2018-04-24",
+        "halt_sessions": 3,
+        "open_ratio": 0.7
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2018-09-07",
+        "halt_sessions": 2,
+        "open_ratio": 0.7307692307692307
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2019-01-08",
+        "halt_sessions": 13,
+        "open_ratio": 1.3341584158415842
+      },
+      {
+        "symbol": "1475.TW",
+        "resumption_date": "2019-01-16",
+        "halt_sessions": 2,
+        "open_ratio": 1.3019801980198022
+      },
+      {
+        "symbol": "910708.TW",
+        "resumption_date": "2019-03-27",
+        "halt_sessions": 43,
+        "open_ratio": 0.7332185886402753
+      },
+      {
+        "symbol": "6131.TW",
+        "resumption_date": "2019-04-10",
+        "halt_sessions": 218,
+        "open_ratio": 0.25617977528089886
+      },
+      {
+        "symbol": "5468.TWO",
+        "resumption_date": "2019-10-07",
+        "halt_sessions": 6,
+        "open_ratio": 1.259676754869673
+      },
+      {
+        "symbol": "6291.TWO",
+        "resumption_date": "2020-03-31",
+        "halt_sessions": 2,
+        "open_ratio": 1.2780082987551868
+      },
+      {
+        "symbol": "5205.TWO",
+        "resumption_date": "2020-07-02",
+        "halt_sessions": 3,
+        "open_ratio": 0.6616487455197133
+      },
+      {
+        "symbol": "3073.TWO",
+        "resumption_date": "2021-02-19",
+        "halt_sessions": 121,
+        "open_ratio": 1.8127659574468087
+      },
+      {
+        "symbol": "5205.TWO",
+        "resumption_date": "2021-09-10",
+        "halt_sessions": 28,
+        "open_ratio": 0.6682027649769585
+      },
+      {
+        "symbol": "6172.TW",
+        "resumption_date": "2021-10-26",
+        "halt_sessions": 3,
+        "open_ratio": 0.7262313860252004
+      },
+      {
+        "symbol": "6103.TWO",
+        "resumption_date": "2023-05-23",
+        "halt_sessions": 3,
+        "open_ratio": 1.4581105169340463
+      },
+      {
+        "symbol": "8101.TW",
+        "resumption_date": "2024-11-19",
+        "halt_sessions": 58,
+        "open_ratio": 5.499999999999999
+      },
+      {
+        "symbol": "2740.TWO",
+        "resumption_date": "2024-12-06",
+        "halt_sessions": 4,
+        "open_ratio": 1.327450980392157
+      },
+      {
+        "symbol": "2924.TWO",
+        "resumption_date": "2025-11-20",
+        "halt_sessions": 8,
+        "open_ratio": 1.3015873015873014
+      },
+      {
+        "symbol": "6236.TWO",
+        "resumption_date": "2025-12-26",
+        "halt_sessions": 37,
+        "open_ratio": 0.7423208191126279
+      }
+    ]
+  }
+}
