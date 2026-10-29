@@ -147,7 +147,20 @@ K、緩衝倍數等參數在樣本內的前段（2023-01 至 2025-05、上市、
 2. 或者以市場中性的多空加避險為主線，重新登記一段夠長的確認期。
 3. 用修正分割與減資後的資料重訓，重算全部數字。
 
-### 附錄：本文名稱與程式庫內部代號的對照
+### 附錄 B：補充回測——幫週頻多頭加上 β 對沖（2026-10-29）
+
+樣本外確認失敗後，做了一輪只動策略層、不動模型與資料的補充回測：在週頻低換手多頭上加一條每天重設的對沖腿，名目 = −β × 資本，β 用策略過去 60 個交易日對對沖工具的滾動回歸估計。對沖工具兩種：放空台指期，以及放空 0050（資料集白名單裡唯一同時有流動性與可借券的 ETF）。因為這個設計是看過樣本外結果之後才決定的，這一輪全部只作資訊，不能當成樣本外證據。
+
+| 版本（價量＋籌碼模型，機構成本，兩市場各半） | 樣本內年化淨報酬 | 95% 區間 | 淨 Sharpe | 樣本內最大回撤 | 樣本外年化淨報酬 | 樣本外最大回撤 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 週頻多頭（原版） | +51.8% | [+26.1%, +77.7%] | 2.38 | −22.6% | +3.5% | −25.7% |
+| 加台指期對沖 | +25.4% | [+7.5%, +45.6%] | 1.21 | −11.4% | −15.7% | −18.8% |
+| 加放空 0050 | +16.6% | [−1.2%, +33.6%] | 1.05 | −17.7% | −31.6% | −18.5% |
+| 對照：多空＋期貨避險 | +25.4% | [+13.9%, +38.0%] | 1.98 | −6.1% | +34.1% | −8.1% |
+
+結果：對沖把 Sharpe 砍掉一半、回撤只縮一部分，樣本外反而更差（7 月當月 −19.5% 變成 −13%）。原因是對沖到錯的風險：這個多頭組合接近等權、偏中小型股，對台積電主導的加權指數 β 只有 0.5 到 0.8；2026 年 7 月跌的是廣度（等權宇宙 −17%），不是權值股（0050 −6.5%）。用指數工具對沖等權組合，在權值股獨漲時付出大量成本、在廣度下跌時保護不到。這和研究歷程中「台指期對沖版失敗」、「0050 比所有策略都強」是同一件事的三個面向：這段期間台股多頭組合的風險在「等權對市值加權」的差距，不在指數 β。結論：白名單內的工具救不了純多頭策略；要控回撤，市場中性的多空策略（空頭腿本身就是等權的對沖）才是正確的主線。
+
+### 附錄 A：本文名稱與程式庫內部代號的對照
 
 | 本文名稱 | 程式庫代號 | 說明 |
 | --- | --- | --- |
@@ -309,7 +322,20 @@ Constructions tried: six generations of strategy (daily rotation → hold buffer
 2. Or make the market-neutral long-short with futures hedge the main line and register a confirmation period long enough to judge.
 3. Retrain on split- and capital-reduction-adjusted data and recompute every number.
 
-### Appendix: names used in this report and the code-base identifiers
+### Appendix B: a follow-up backtest — beta-hedging the weekly long (29 October 2026)
+
+After the out-of-sample confirmation failed, one more round was run that touches only the strategy layer, not the model or the data: a hedge leg reset daily at −β × capital on top of the weekly low-turnover long, β estimated by a trailing 60-day rolling regression of the strategy on the hedge instrument. Two instruments: short TAIEX futures, and a short position in 0050 (the only ETF on the dataset's allowlist that is both liquid and lendable). Because this design was decided after the out-of-sample result was known, the whole round is informational and cannot count as out-of-sample evidence.
+
+| Version (price-volume + chip model, institution costs, both markets) | In-sample net return (annual) | 95% interval | Net Sharpe | In-sample max drawdown | Out-of-sample net return (annual) | Out-of-sample max drawdown |
+| --- | --- | --- | --- | --- | --- | --- |
+| Weekly long (original) | +51.8% | [+26.1%, +77.7%] | 2.38 | −22.6% | +3.5% | −25.7% |
+| + TAIEX futures hedge | +25.4% | [+7.5%, +45.6%] | 1.21 | −11.4% | −15.7% | −18.8% |
+| + short 0050 | +16.6% | [−1.2%, +33.6%] | 1.05 | −17.7% | −31.6% | −18.5% |
+| Reference: long-short + futures hedge | +25.4% | [+13.9%, +38.0%] | 1.98 | −6.1% | +34.1% | −8.1% |
+
+Result: the hedge halves the Sharpe, removes only part of the drawdown, and makes the out-of-sample window worse (July's −19.5% becomes about −13%). The reason is that it hedges the wrong risk: the long book is near equal-weight and tilted to small and mid caps, so its beta on the TSMC-dominated cap-weighted index is only 0.5 to 0.8; and July 2026 was a breadth sell-off (equal-weight universe −17%) rather than a mega-cap one (0050 −6.5%). Hedging an equal-weight book with an index instrument pays heavily while the mega caps rally alone and fails to protect when breadth falls. This is the same fact as two earlier findings in the research history (the futures-hedged version failing, 0050 beating every strategy): over this period the risk of a long book in Taiwan sits in the equal-weight-versus-cap-weight spread, not in index beta. Conclusion: the allowlisted instruments cannot rescue a long-only strategy; for drawdown control the market-neutral long-short line, whose short book is itself an equal-weight hedge, is the right main line.
+
+### Appendix A: names used in this report and the code-base identifiers
 
 | Name in this report | Identifier | Meaning |
 | --- | --- | --- |

@@ -2,7 +2,7 @@
 
 ## 中文
 
-本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-29（§13.20 計分完成）。
+本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-10-29（§13.20 計分完成、§13.21 對沖補測完成）。
 
 ### 現況
 
@@ -12,7 +12,7 @@
 
 | # | 步驟 | 依據 | 前置條件 | 訓練需求 | 產出 | 誰做 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **（使用者決定方向）下一個策略實驗的登記**：(a) S-A 加 β 對沖（台指期）或波動目標，讓多頭 band 的回撤不由市場決定——新建構，參數要在 P1 選、P2 與 P3 只看；(b) 或以市場中性 S2（F2）為主線，重新登記一段 P3 之後的確認期（H-J 的回撤條件對 S2 在 7 月也過不了，確認期要夠長）。兩者都要先寫 §13.21 才能實作 | §13.20 結果 (j) | 使用者選 (a)／(b)／都不做 | 無（本機回測；S2 用現有預測） | 新章節登記、回測、報告更新 | 使用者決定；本專案登記與實作 |
+| 1 | **S2（市場中性多空＋期貨避險，F2）的新確認期登記**：§13.21 已補測「S-A 加 β 對沖」（台指期、放空 0050），對沖救不回多頭組合（Sharpe 砍半、P3 回撤仍 −18%），所以剩下的方向是以 S2 為主線、登記一段 2026-10-22 之後的確認期（長度與判定條件要先寫進 §13.22）；資料要等新月份的行情與籌碼進來 | §13.20 結果 (j)、§13.21 結果 (d) | 使用者決定是否登記；新資料 | 無（既有預測延伸需要新的 lgbm 折） | §13.22 登記 | 使用者決定；本專案登記 |
 | 2 | **volume 清理**：下一個 Pod 一開始先 `python3 scripts/runpod_invalid_chip_results.py`，確認後 `--apply --delete`（被取代的樣本宇宙、舊 store、失敗 launch） | README「清掉錯誤與死掉的結果」 | 下一個 CPU Pod | 無 | 釋放空間 | 使用者在 Pod 上執行 |
 | 3 | **G2**：處置、注意首次公告、當沖比跳升三類事件的反轉步驟 0（事件研究模組） | §13.18 第 6 項 | 事件表已交付 | 無 | 事件研究模組、報告；決定 S-B 要不要實作 | 本專案 |
 | 4 | （使用者決定，暫不執行）分點購買：G1 已通過，但 2026-10-28 決定先不買付費資料 | §13.18 第 10 項 | — | — | 購買與否的紀錄 | 使用者決定 |
@@ -32,7 +32,7 @@
 
 ## English
 
-This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-29 (§13.20 scored).
+This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-10-29 (§13.20 scored, §13.21 hedge round done).
 
 ### Where things stand
 
@@ -42,7 +42,7 @@ This file lists only the experiments and prerequisites **not yet done**, in exec
 
 | # | Step | Basis | Prerequisite | Training | Output | Who |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **(User decides the direction) registration of the next strategy experiment**: (a) S-A with a beta hedge (TX) or a volatility target, so the long band's drawdown is not the market's — a new construction whose parameters are selected on P1 with P2 and P3 only read; (b) or the market-neutral S2 (F2) as the main line with a re-registered confirmation period after P3 (H-J's drawdown condition also failed S2 in July, so the period must be long enough). Either one is written as §13.21 before any implementation | §13.20 result (j) | the user picks (a) / (b) / neither | None (local backtests; S2 uses the existing predictions) | new section, backtests, report updates | the user decides; this project registers and implements |
+| 1 | **Register a new confirmation period for S2 (market-neutral L/S + futures hedge, F2)**: §13.21 tested the beta-hedged S-A (TX, short 0050) and the hedge does not rescue the long book (Sharpe halved, P3 drawdown still −18%), so the remaining direction is S2 as the main line with a confirmation period after 2026-10-22 (length and conditions written into §13.22 first); it needs new months of prices and chip data | §13.20 result (j), §13.21 result (d) | the user decides whether to register; new data | None (extending the predictions needs new lgbm folds) | §13.22 registration | the user decides; this project registers |
 | 2 | **Volume cleanup**: at the start of the next Pod run `python3 scripts/runpod_invalid_chip_results.py`, check, then `--apply --delete` (superseded sample universes, old stores, failed launches) | README "Removing wrong and dead results" | the next CPU Pod | None | freed space | the user, on the Pod |
 | 3 | **G2**: reversal step 0 on 處置 announcements, first 注意 listings and day-trade-ratio jumps (event-study module) | §13.18 item 6 | Event tables delivered | None | Event-study module, report; decides whether S-B is built | This project |
 | 4 | (User decision, on hold) broker-branch purchase: G1 passed, but on 2026-10-28 the user decided not to buy paid data for now | §13.18 item 10 | — | — | Record of the decision | The user |

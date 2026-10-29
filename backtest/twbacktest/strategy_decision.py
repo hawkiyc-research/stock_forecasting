@@ -41,6 +41,8 @@ STRATEGY_LABELS = {
     "md_ls": ("S1 多日多空", "S1 multi-day long-short"),
     "md_ls_tx": ("S2 S1 + 台指期", "S2 S1 + TX overlay"),
     "wk_long": ("S-A 週頻低換手多頭", "S-A weekly low-turnover long"),
+    "wk_long_tx": ("S-A-TX 週頻多頭 + 台指期對沖", "S-A-TX weekly long + TX hedge"),
+    "wk_long_etf": ("S-A-ETF 週頻多頭 + 放空 0050", "S-A-ETF weekly long + short 0050"),
 }
 # Columns of a selected cell reported in the summary and the report.
 CELL_COLUMNS = (
@@ -48,6 +50,7 @@ CELL_COLUMNS = (
     "max_drawdown", "turnover", "cost_drag_annual", "hit_rate", "days",
     "index_total_return_annual", "h", "k", "buffer", "weekly_turnover",
     "liquidity_blocked_share", "ineligible_share", "borrow_failed_share",
+    "beta_mean", "beta_abs_mean", "hedge_fees_annual", "tx_fees_annual",
 )
 
 
@@ -141,6 +144,8 @@ def confirm(grid: pd.DataFrame, config: dict[str, Any], chosen: dict[str, Any]) 
     passed = positive and drawdown_ok
     return {
         "period": check["period"], "evaluated": True,
+        "informational": bool(check.get("informational", False)),
+        "note": check.get("note"),
         "net_return_annual": net,
         "net_excess_annual_low": float(forward_row["net_excess_annual_low"]),
         "net_excess_annual_high": float(forward_row["net_excess_annual_high"]),
@@ -149,7 +154,8 @@ def confirm(grid: pd.DataFrame, config: dict[str, Any], chosen: dict[str, Any]) 
         "days": int(forward_row["days"]),
         "positive_return": positive, "drawdown_not_deeper": drawdown_ok,
         "passed": passed,
-        "status": ("paper_trading_candidate" if passed else "research"),
+        "status": ("informational" if check.get("informational")
+                   else ("paper_trading_candidate" if passed else "research")),
     }
 
 

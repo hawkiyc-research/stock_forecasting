@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "name": "strategy-decision-p3-hedged-weekly-long",
+  "description": "Experiment protocol section 13.21 (informational): among the weekly long and its two hedged versions, the cell with the highest P1+P2 institution net Sharpe on TW at fractional capital; the H-J conditions are described for P3 but not judged, because P3 had been seen when the hedge was designed.",
+  "selection": {
+    "profile": "institution",
+    "market": "TW",
+    "capital": "fractional",
+    "period": "P1+P2",
+    "metric": "sharpe",
+    "scenarios": [
+      "wk_long",
+      "wk_long_tx",
+      "wk_long_etf"
+    ],
+    "score_variant": "v1",
+    "leg_matching": "none"
+  },
+  "confirmation": {
+    "period": "P3",
+    "informational": true,
+    "note": "P3 was seen when section 13.21 was registered; the H-J conditions are described, not judged."
+  },
+  "increment": {
+    "base": "F0",
+    "treat": "F2",
+    "bootstrap": {
+      "block": 21,
+      "replicates": 1000,
+      "seed": 11
+    }
+  },
+  "periods": {
+    "P1": [
+      "2023-01-02",
+      "2025-06-01"
+    ],
+    "P2": [
+      "2025-06-01",
+      "2026-06-01"
+    ],
+    "P3": [
+      "2026-06-01",
+      "2026-10-23"
+    ]
+  },
+  "decision_periods": [
+    "P1",
+    "P2"
+  ],
+  "annualization_days": 252
+}

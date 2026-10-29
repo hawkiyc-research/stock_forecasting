@@ -1,0 +1,186 @@
+{
+  "schema_version": "1.0",
+  "name": "scenario-suite-p3-hedged-weekly-long",
+  "description": "Experiment protocol section 13.21: the weekly low-turnover long (S-A, K and m fixed to the section 13.20 selection) alone and with a daily-reset beta hedge, either a TAIEX futures overlay (S-A-TX) or a short 0050 position (S-A-ETF, the only liquid and lendable ETF on the dataset's allowlist). No stock short book, so no execution layer. Periods P1, P2, P3 with the decision union P1+P2; P3 has been seen when this section was registered, so every number is informational. Run with one --label per predictions file (F0, F2).",
+  "cost_profiles": "cost_profiles.json",
+  "scenarios": [
+    "wk_long",
+    "wk_long_tx",
+    "wk_long_etf"
+  ],
+  "construction": {
+    "score_variants": [
+      "v1"
+    ],
+    "leg_matching": [
+      "none"
+    ]
+  },
+  "markets": {
+    "TWSE": {
+      "codes": [
+        "TWSE"
+      ],
+      "index": "TAIEX.TW",
+      "min_dollar_volume": 30000000
+    },
+    "TPEX": {
+      "codes": [
+        "TPEX"
+      ],
+      "index": "TPEX.TWO",
+      "min_dollar_volume": 10000000
+    }
+  },
+  "combined_market": {
+    "name": "TW",
+    "weights": {
+      "TWSE": 0.5,
+      "TPEX": 0.5
+    }
+  },
+  "universe": {
+    "liquidity_lookback_sessions": 20,
+    "min_close": 10,
+    "exclude_etf": true
+  },
+  "signal": {
+    "half_life_sessions": 3,
+    "max_gap_sessions": 5
+  },
+  "multi_day": {
+    "grid": {
+      "score_horizons": [
+        5,
+        10
+      ],
+      "k": [
+        30,
+        50
+      ],
+      "buffer_multiples": [
+        2,
+        3
+      ]
+    },
+    "fixed": {
+      "F0": {
+        "h": 10,
+        "k": 50,
+        "buffer": 3
+      },
+      "F2": {
+        "h": 10,
+        "k": 50,
+        "buffer": 3
+      }
+    },
+    "entry_cap_fraction": 0.1,
+    "bootstrap_block": 21
+  },
+  "weekly": {
+    "score_horizon": 5,
+    "score_variant": "v1",
+    "turnover_cap": 0.5,
+    "grid": {
+      "k": [
+        30,
+        50
+      ],
+      "buffer_multiples": [
+        2,
+        3
+      ]
+    },
+    "fixed": {
+      "F0": {
+        "k": 30,
+        "buffer": 2
+      },
+      "F2": {
+        "k": 30,
+        "buffer": 2
+      }
+    }
+  },
+  "benchmarks": {
+    "etf": {
+      "name": "etf_0050",
+      "symbol": "0050.TW",
+      "splits": [
+        {
+          "date": "2025-06-18",
+          "ratio": 4,
+          "note": "1:4 split; the dataset's adjusted_close carries dividends only"
+        }
+      ]
+    }
+  },
+  "day_trade": {
+    "horizon": 1,
+    "grid": {
+      "fractions": [
+        0.05,
+        0.1
+      ]
+    },
+    "bootstrap_block": 5
+  },
+  "combination": {
+    "multi_day_weight": 0.5,
+    "day_trade_weight": 0.5,
+    "bootstrap_block": 21
+  },
+  "price_limit": {
+    "open_gap": 0.095
+  },
+  "tx": {
+    "contract": "TX",
+    "root": "diagnostics/taifex-tx",
+    "multiplier": 200,
+    "beta_window": 60,
+    "beta_min_observations": 30
+  },
+  "annualization_days": 252,
+  "bootstrap": {
+    "replicates": 1000,
+    "seed": 11
+  },
+  "periods": {
+    "P1": [
+      "2023-01-02",
+      "2025-06-01"
+    ],
+    "P2": [
+      "2025-06-01",
+      "2026-06-01"
+    ],
+    "P3": [
+      "2026-06-01",
+      "2026-10-23"
+    ]
+  },
+  "decision_periods": [
+    "P1",
+    "P2"
+  ],
+  "selection": {
+    "market": "TWSE",
+    "period": "P1",
+    "profile": "institution",
+    "metric": "sharpe"
+  },
+  "attractiveness": {
+    "profile": "institution",
+    "period": "P1+P2",
+    "min_sharpe": 1.0,
+    "lower_bound_above": 0.0,
+    "require_positive_period": "P2"
+  },
+  "hedge": {
+    "etf": {
+      "name": "etf_0050",
+      "tax": 0.001
+    }
+  }
+}
