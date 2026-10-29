@@ -2,7 +2,8 @@
 
 The project's result reports are bilingual Markdown files (Chinese half, then English half). The
 builders turn their headings, paragraphs, bullets, numbered items, code blocks and pipe tables into
-WordprocessingML with a small fixed style set (landscape US Letter, wide report tables) and write a
+WordprocessingML with a small fixed style set (A4 portrait, report tables that shrink their font with the
+column count) and write a
 .docx package. ``markdown_to_xml`` converts one Markdown string; ``write_docx`` wraps the body XML
 into a package with the shared styles, numbering, settings and a page-numbered footer.
 """
@@ -19,12 +20,13 @@ W_NS = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
 )
-# Landscape US Letter, 0.5" margins: 14,400 DXA of text width for the wide backtest tables.
-PAGE_W, PAGE_H, MARGIN = 15840, 12240, 720
+# A4 portrait with 2 cm margins: 9,638 DXA of text width; the wide backtest tables shrink
+# their font with the column count instead of turning the page.
+PAGE_W, PAGE_H, MARGIN = 11906, 16838, 1134
 TABLE_WIDTH = PAGE_W - 2 * MARGIN
 SECT = (
     '<w:sectPr><w:footerReference w:type="default" r:id="rIdFooter"/>'
-    f'<w:pgSz w:w="{PAGE_W}" w:h="{PAGE_H}" w:orient="landscape"/>'
+    f'<w:pgSz w:w="{PAGE_W}" w:h="{PAGE_H}"/>'
     f'<w:pgMar w:top="{MARGIN}" w:right="{MARGIN}" w:bottom="{MARGIN}" w:left="{MARGIN}" '
     'w:header="360" w:footer="360" w:gutter="0"/><w:cols w:space="720"/></w:sectPr>'
 )
@@ -84,9 +86,10 @@ def table(headers: list[str], rows: list[list[str]]) -> str:
         longest = max(len(LINK.sub(r"\1", c)) for c in cells)
         lengths.append(min(max(longest, 6), 48))
     total = sum(lengths)
-    widths = [max(int(TABLE_WIDTH * length / total), 700) for length in lengths]
+    widths = [max(int(TABLE_WIDTH * length / total), 480) for length in lengths]
     widths[-1] += TABLE_WIDTH - sum(widths)
-    size = 16 if n <= 6 else (15 if n <= 9 else 14)  # half-points
+    # Half-points: 9 pt up to four columns, 8 pt up to six, 7 pt up to nine, 6 pt beyond.
+    size = 18 if n <= 4 else (16 if n <= 6 else (14 if n <= 9 else 12))
 
     def cell(text: str, width: int, header: bool) -> str:
         shade = '<w:shd w:val="clear" w:color="auto" w:fill="DCE6F1"/>' if header else ""
