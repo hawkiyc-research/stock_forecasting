@@ -285,7 +285,7 @@ volume 只依 split/share change 調整，不用現金股利調整。EODHD 保�
 history request 加一個 split-history request，兩者都可 cache／續傳，也會列入資訊性
 request 估算；估算值不會阻止完整資料集執行。provider 對 2018 年前下市商品的上述
 輔助覆蓋例外則依前述 warning 顯式保留。台股使用 TWSE/TPEx 官方除權息資料與官方
-報酬指數，並從既有月度官方 benchmark rows 取得實際交易日，不會把一般週一至週五
+報酬指數（除權日的價格因子以交易所的開盤競價基準為準：有償現金增資時基準價停在前收，與理論參考價相差超過前收 0.5% 就用基準價，否則用精確的參考價），並從既有月度官方 benchmark rows 取得實際交易日，不會把一般週一至週五
 一律當成開市日。
 這可避免股票分割或除權息造成的人為跳空，同時維持下一日 raw open 的可交易 entry
 語意。
@@ -4687,7 +4687,7 @@ multiplies that value by the split factor again. Model windows normalize each ve
 official total-return factor to `cutoff_at` before applying it to historical
 O/H/L/C, so future corporate actions cannot rewrite an after-close inference
 input. Volume is adjusted only for splits/share changes, never for cash
-dividends. EODHD retains `adjusted_close` and uses the per-symbol Historical
+dividends. Taiwan ex-day price factors follow the exchange's opening basis: for paid rights issues the basis stays at the prior close, so the basis is used whenever it differs from the theoretical reference price by more than 0.5% of the prior close, and the exact reference price otherwise. EODHD retains `adjusted_close` and uses the per-symbol Historical
 Splits API for every date range. EODHD lists that endpoint under EOD
 Historical Data — All World at one API call per request; the pipeline does not
 use `calendar/splits`, which belongs to Calendar-enabled products. Each symbol
