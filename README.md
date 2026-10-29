@@ -208,6 +208,8 @@ raw `market.parquet`；成本、資本情境與判定規則都在 `backtest/conf
 | [0050 核心加正交化多空疊加結果](docs/core_overlay_results.md) | §13.17 補充：0050 買進持有基準、變體 A（質押借款）與 B（台指期提供 β）全格子、選擇與 H-G、資本情境、多空腿執行層資訊、資料集分割未調整的發現；Word 版 `reports/core_overlay_results_20261026.docx` |
 | [Word 成果報告](reports/taiwan_rank_pipeline_results_20261025.docx) | 以上全部表格的雙語彙整，由 `scripts/build_results_report.py` 產生 |
 | [Word 六情境報告](reports/institution_cost_scenarios_20261025.docx) | §13.19 雙語報告的 Word 版，由 `scripts/build_scenario_report.py` 產生 |
+| [§13.20 完整研究報告](docs/research_full_report.md) | 實驗史 §13.1–§13.19、最終策略設計（S1／S2／S-A）、P1／P2／P3 回測全部表格、選定與 H-J、v1 資料集缺陷聲明、roadmap；Word 版 `reports/research_full_report_20261029.docx` |
+| [§13.20 選定模型與策略報告](docs/selected_strategy_report.md) | 精簡版：選定格 F2 × S-A、策略規則、成本、P1／P2／P3 回測、H-J 結論與限制；Word 版 `reports/selected_strategy_report_20261029.docx` |
 | [模型開發 roadmap](MODEL_DEVELOPMENT_ROADMAP.md) | 第 1 節結論、第 9 節研究帳本（含 §13.1–§13.11 的歷史實驗） |
 | [下一步實驗佇列](NEXT_EXPERIMENTS.md) | 只列尚未完成的實驗與前置工作，依執行順序，標明訓練需求；做完即移除 |
 
@@ -4591,6 +4593,8 @@ rules are written beforehand into `backtest/config/*.json`. Details in [backtest
 | [0050 core plus orthogonalized long-short overlay](docs/core_overlay_results.md) | §13.17 supplement: the 0050 buy-and-hold benchmark, the full grids of variant A (secured loan) and B (β from TX), selection and H-G, capital scenarios, execution-layer information of the legs, the unadjusted-split data finding; Word version `reports/core_overlay_results_20261026.docx` |
 | [Word results report](reports/taiwan_rank_pipeline_results_20261025.docx) | Every table above in one bilingual document, produced by `scripts/build_results_report.py` |
 | [Word six-scenario report](reports/institution_cost_scenarios_20261025.docx) | Word version of the §13.19 bilingual report, built by `scripts/build_scenario_report.py` |
+| [§13.20 full research report](docs/research_full_report.md) | Experiment history §13.1–§13.19, the final strategy design (S1 / S2 / S-A), every P1 / P2 / P3 backtest table, selection and H-J, the v1 dataset defect statement, roadmap; Word version `reports/research_full_report_20261029.docx` |
+| [§13.20 selected model and strategy report](docs/selected_strategy_report.md) | Short version: the selected cell F2 × S-A, strategy rules, costs, P1 / P2 / P3 backtests, the H-J verdict and limitations; Word version `reports/selected_strategy_report_20261029.docx` |
 | [Model development roadmap](MODEL_DEVELOPMENT_ROADMAP.md) | Section 1 conclusions and the section 9 research ledger (including the §13.1–§13.11 historical experiments) |
 | [Next experiments queue](NEXT_EXPERIMENTS.md) | Only the experiments and prerequisites not yet done, in execution order, with training needs; items are removed when finished |
 
