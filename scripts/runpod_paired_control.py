@@ -10,7 +10,7 @@ import re
 import runpy
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +137,19 @@ def publish(root: Path, path: Path) -> None:
     )
 
 
+def _complete_all(fn, jobs):
+    """Run ``fn`` over every job on two threads, wait for all, then raise the first failure.
+
+    ``Executor.map`` cancels the futures that have not started once an earlier one raises, so
+    a missing baseline on one task could leave the other task unchecked (and the outcome
+    dependent on thread timing); every child is always checked here.
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(fn, job) for job in jobs]
+        wait(futures)
+    return [future.result() for future in futures]
+
+
 def baseline_status(root: Path, plan: dict, *, require=False) -> dict:
     jobs = child_environments(root, plan)
     bucket = _bucket(root)
@@ -161,8 +174,7 @@ def baseline_status(root: Path, plan: dict, *, require=False) -> dict:
             raise ValueError(f"Invalid baseline completion result for {task}")
         return task, result
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = dict(pool.map(check, jobs))
+    results = dict(_complete_all(check, jobs))
     complete = all(item["complete"] for item in results.values())
     if require and not complete:
         raise ValueError("Both task baselines must be complete before paired training")
@@ -174,22 +186,19 @@ def preflight(root: Path, path: Path) -> dict:
     result = baseline_status(root, plan, require=plan["workflow"] == "train")
     mode = "--gpu" if plan["workflow"] == "train" else "--baseline"
     jobs = child_environments(root, plan)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        list(
-            pool.map(
-                lambda job: _run(
-                    root,
-                    [
-                        "bash",
-                        str(root / "scripts/verify_runpod_stage_readiness.sh"),
-                        mode,
-                        "--local-selection",
-                    ],
-                    job[1],
-                ),
-                jobs,
-            )
-        )
+    _complete_all(
+        lambda job: _run(
+            root,
+            [
+                "bash",
+                str(root / "scripts/verify_runpod_stage_readiness.sh"),
+                mode,
+                "--local-selection",
+            ],
+            job[1],
+        ),
+        jobs,
+    )
     print(
         "Paired preflight passed: both task baselines and current data rules checked.", flush=True
     )
