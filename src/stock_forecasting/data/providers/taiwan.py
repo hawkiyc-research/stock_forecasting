@@ -77,6 +77,38 @@ def _first_table(payload: Any) -> tuple[list[Any], list[list[Any]]]:
     raise ValueError("Official Taiwan response has no data table")
 
 
+def _optional_field_index(fields: list[Any], aliases: set[str]) -> int | None:
+    """Index of an optional column, None when the payload predates it."""
+    try:
+        return _field_index(fields, aliases)
+    except ValueError:
+        return None
+
+
+def _ex_rights_price_factor(
+    prior_close: float, reference_price: float, opening_basis: float | None
+) -> tuple[float, bool]:
+    """Price factor of one ex-rights / ex-dividend row and whether the opening basis was used.
+
+    Both exchanges publish two prices for the ex-day: the theoretical reference price
+    (除權息參考價) and the opening auction basis (TWSE 開盤競價基準 / TPEx 開始交易基準價) that
+    the session's limits are actually built from. For paid rights issues (有償現金增資) the
+    basis stays at the prior close while the reference price subtracts the rights value, so
+    the traded series has no mechanical drop and the reference price would print a spurious
+    jump into adjusted_close (2429.TW 2024-07-02: reference 29.15 against basis 38.90). When
+    the two differ by more than tick rounding (0.5% of the prior close) the basis is the
+    factor; otherwise the exact reference price keeps plain dividend arithmetic exact.
+    """
+    if (
+        opening_basis is not None
+        and np.isfinite(opening_basis)
+        and opening_basis > 0.0
+        and abs(opening_basis - reference_price) > 0.005 * prior_close
+    ):
+        return opening_basis / prior_close, True
+    return reference_price / prior_close, False
+
+
 def _is_no_data_payload(payload: Any) -> bool:
     """Recognize official empty-result responses without hiding schema drift."""
 
@@ -400,9 +432,11 @@ class TWSEProvider(_TaiwanMarketProvider):
             "reference_price": _field_index(fields, {"除權息參考價"}),
             "kind": _field_index(fields, {"權/息"}),
         }
+        basis_index = _optional_field_index(fields, {"開盤競價基準"})
         rows: list[dict[str, Any]] = []
         requests: list[RequestRecord] = [request]
         dropped = 0
+        opening_basis_rows = 0
         missing_share_multiplier_details = 0
         skipped_unsupported_action_rows = 0
         skipped_unsupported_action_types: Counter[str] = Counter()
@@ -465,7 +499,17 @@ class TWSEProvider(_TaiwanMarketProvider):
                     else:
                         missing_share_multiplier_details += 1
                         action_source = "twse_twt49u_price_only_missing_detail"
-            price_factor = reference_price / prior_close
+            opening_basis = (
+                _number(raw[basis_index])
+                if basis_index is not None and len(raw) > basis_index
+                else None
+            )
+            price_factor, used_basis = _ex_rights_price_factor(
+                prior_close, reference_price, opening_basis
+            )
+            if used_basis:
+                opening_basis_rows += 1
+                action_source += "_opening_basis"
             if not np.isfinite(price_factor) or price_factor <= 0.0:
                 dropped += 1
                 continue
@@ -484,6 +528,7 @@ class TWSEProvider(_TaiwanMarketProvider):
             metadata={
                 "corporate_actions": len(rows),
                 "dropped_rows": dropped,
+                "opening_basis_rows": opening_basis_rows,
                 "missing_share_multiplier_details": missing_share_multiplier_details,
                 "skipped_unsupported_action_rows": skipped_unsupported_action_rows,
                 "skipped_unsupported_action_types": dict(
@@ -566,8 +611,10 @@ class TPExProvider(_TaiwanMarketProvider):
             "reference_price": _field_index(fields, {"除權息參考價"}),
             "free_shares": _field_index(fields, {"每仟股無償配股"}),
         }
+        basis_index = _optional_field_index(fields, {"開始交易基準價"})
         rows: list[dict[str, Any]] = []
         dropped = 0
+        opening_basis_rows = 0
         skipped_unsupported_action_rows = 0
         skipped_unsupported_action_types: Counter[str] = Counter()
         for raw in data:
@@ -591,7 +638,15 @@ class TPExProvider(_TaiwanMarketProvider):
             ):
                 dropped += 1
                 continue
-            price_factor = reference_price / prior_close
+            opening_basis = (
+                _number(raw[basis_index])
+                if basis_index is not None and len(raw) > basis_index
+                else None
+            )
+            price_factor, used_basis = _ex_rights_price_factor(
+                prior_close, reference_price, opening_basis
+            )
+            opening_basis_rows += int(used_basis)
             if not np.isfinite(price_factor) or price_factor <= 0.0:
                 dropped += 1
                 continue
@@ -601,7 +656,7 @@ class TPExProvider(_TaiwanMarketProvider):
                     "symbol": f"{symbol_code}.TWO",
                     "price_factor": price_factor,
                     "share_multiplier": 1.0 + free_shares / 1000.0,
-                    "source": "tpex_exdailyq",
+                    "source": "tpex_exdailyq_opening_basis" if used_basis else "tpex_exdailyq",
                 }
             )
         return ProviderFetch(
@@ -610,6 +665,7 @@ class TPExProvider(_TaiwanMarketProvider):
             metadata={
                 "corporate_actions": len(rows),
                 "dropped_rows": dropped,
+                "opening_basis_rows": opening_basis_rows,
                 "skipped_unsupported_action_rows": skipped_unsupported_action_rows,
                 "skipped_unsupported_action_types": dict(
                     sorted(skipped_unsupported_action_types.items())
