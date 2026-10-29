@@ -4,6 +4,7 @@
 
 ### 未發布（2026-10-26 之後）
 
+- 2026-10-30：跨股模型訓練（`xs-train`）的 GPU 利用率：每個（訊號日, 市場）群組補遮罩列到 `FIN_TS_XS_PAD_MULTIPLE`（CUDA 預設 64）的倍數，模型 `forward` 接受 `valid` 遮罩（補列不進 z-score、注意力鍵、市場狀態平均與損失，真實列分數不變），形狀固定後以 `torch.compile(mode="reduce-overhead")` 重播 CUDA graph 取代每步數百次核心發射；`FIN_TS_XS_COMPILE=0` 退回 eager，編譯失敗自動退回並記錄在 `fits.execution`。凍結編碼器 embedding 改為 pinned 非同步上傳與 `inference_mode`。前向套件測試改用 2026-07-17 作未知休市日；配對預檢改為等兩個子檢查完成再拋錯。
 - 2026-10-30：資料修訂可切換——`configure --dataset-revision v1*`／`v2*` 經 `stock_forecasting.dataset_identity.dataset_revision_policy` 決定台股還原價的公司行動範圍（`v1*` 只套除權息因子，`v2*` 再疊加減資、面額變更、ETF 分割），所有 label 共用 provider 快取（快取修訂固定 `v1`），provider checkpoint 與資料集 namespace 依 label 區分；`TWSEProvider`／`TPExProvider` 建構時帶 `corporate_actions`。新增 `scripts/runpod_volume_reset.py`（重建前清空 volume，保留 api-cache、籌碼資料與各 launch 的結果檔）。協定 §13.23 登記全線重訓（資料集 v1.1；B0、變體 A／B、F2、D0、D1）。
 - 台股資料管線：`TWSEProvider`／`TPExProvider` 的 `fetch_actions` 另讀取 TWSE 減資（`TWTAUU`）、變更面額（`TWTB8U`）、
   ETF 分割（`TWTCAU`）與 TPEx 減資（`revivt`）恢復買賣參考價表，加上整理的櫃買變更面額表，以恢復買賣日的
@@ -161,6 +162,7 @@
 
 ### Unreleased (after 2026-10-26)
 
+- 2026-10-30: GPU utilization of cross-stock training (`xs-train`): every (signal date, market) group is padded with masked rows up to a multiple of `FIN_TS_XS_PAD_MULTIPLE` (64 on CUDA), the model's `forward` takes a `valid` mask (padded rows stay out of the z-score, the attention keys, the market-state mean and the loss, real rows score unchanged), and with static shapes the model runs under `torch.compile(mode="reduce-overhead")`, replaying CUDA graphs instead of launching hundreds of kernels per step; `FIN_TS_XS_COMPILE=0` keeps eager, a compile failure falls back automatically and is recorded in `fits.execution`. The frozen-encoder embedding pass uses pinned asynchronous uploads under `inference_mode`. The forward-package test uses 2026-07-17 as its unknown closure; the paired preflight waits for both child checks before raising.
 - 2026-10-30: selectable data revision — `configure --dataset-revision v1*` / `v2*` decides, through `stock_forecasting.dataset_identity.dataset_revision_policy`, the corporate-action scope of Taiwan adjusted prices (`v1*` ex-dividend / ex-rights factors only, `v2*` plus capital reductions, par-value changes and ETF splits); every label shares the provider cache (cache revision fixed at `v1`) while provider checkpoints and dataset namespaces are per label; `TWSEProvider` / `TPExProvider` take `corporate_actions` at construction. New `scripts/runpod_volume_reset.py` (clears the volume before a rebuild, keeping the api-cache, the chip data and every launch's result files). Protocol §13.23 registers the full retrain (dataset v1.1; B0, variants A / B, F2, D0, D1).
 - Taiwan data pipeline: `fetch_actions` of `TWSEProvider` / `TPExProvider` also reads the TWSE capital-reduction
   (`TWTAUU`), par-value-change (`TWTB8U`) and ETF-split (`TWTCAU`) tables, the TPEx capital-reduction table

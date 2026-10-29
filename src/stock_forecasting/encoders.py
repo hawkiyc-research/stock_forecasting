@@ -171,9 +171,20 @@ def ensure_embeddings(
     started = time.monotonic()
     pending = root / "embeddings.pending.npy"
     output = None
+    pinned = device.type == "cuda"
     for start in range(0, samples, batch_size):
         chunk = torch.from_numpy(np.ascontiguousarray(cache.windows[start : start + batch_size]))
-        values = encoder(chunk.to(device)).float().cpu().numpy().astype(np.float32)
+        if pinned:
+            # Pinned, asynchronous upload: the next chunk's copy overlaps the current forward.
+            chunk = chunk.pin_memory()
+        with torch.inference_mode():
+            values = (
+                encoder(chunk.to(device, non_blocking=pinned))
+                .float()
+                .cpu()
+                .numpy()
+                .astype(np.float32)
+            )
         if output is None:
             output = np.lib.format.open_memmap(
                 pending, mode="w+", dtype="float32", shape=(samples, values.shape[1])

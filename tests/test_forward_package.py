@@ -178,9 +178,13 @@ def test_forward_population_follows_the_registered_definition(stores):
         assert days[labels["metadata"]["symbol"] == symbol].equals(pd.DatetimeIndex(expected))
     assert set(labels["metadata"]["market"]) == {"TWSE", "TPEX"}
     assert stores["payload"]["calendar_additions"] == ADDITIONS
-    # Without the closure, every window over 2026-07-10 counts as a missing session.
+    # Without the closure in the calendar, every window that spans it is rejected as a
+    # missing market session; with the addition nothing is rejected for that reason.
     unadjusted = stores["unadjusted"]["populations"]
-    assert unadjusted["forward"]["samples"] < recorded // 2
+    gap = "asset_market_session_gap"
+    assert unadjusted["forward"]["samples"] < recorded
+    assert stores["payload"]["populations"]["forward"]["audit"].get(gap, 0) == 0
+    assert unadjusted["forward"]["audit"][gap] == recorded - unadjusted["forward"]["samples"]
     assert unadjusted["overlap"]["samples"] == stores["payload"]["populations"]["overlap"][
         "samples"
     ]

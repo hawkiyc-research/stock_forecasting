@@ -208,10 +208,51 @@ def resolve_device(requested: str | None = None) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def pad_multiple(device: torch.device) -> int:
+    """Batch-size bucket for one (date, market) group: ``FIN_TS_XS_PAD_MULTIPLE`` (default 64 on
+    CUDA, 0 = no padding elsewhere). Padding every group up to a multiple keeps the number of
+    distinct shapes small, which is what lets ``torch.compile`` replay CUDA graphs instead of
+    launching the model's few hundred tiny kernels from Python at every step."""
+    raw = os.environ.get("FIN_TS_XS_PAD_MULTIPLE")
+    if raw is None or raw.strip() == "":
+        return 64 if device.type == "cuda" else 0
+    value = int(raw)
+    if value < 0:
+        raise ValueError("FIN_TS_XS_PAD_MULTIPLE must be a non-negative integer")
+    return value
+
+
+def compile_mode(device: torch.device) -> str:
+    """``FIN_TS_XS_COMPILE``: ``1`` (default on CUDA) compiles the model with CUDA-graph replay
+    (``reduce-overhead``); ``0`` keeps eager execution."""
+    if device.type != "cuda":
+        return "eager"
+    if os.environ.get("FIN_TS_XS_COMPILE", "1").strip() == "0":
+        return "eager"
+    return "reduce-overhead"
+
+
+def maybe_compile(model: torch.nn.Module, device: torch.device) -> tuple[Any, str]:
+    """Return (callable module, mode); eager when compilation is off or unavailable."""
+    mode = compile_mode(device)
+    if mode == "eager":
+        return model, "eager"
+    try:
+        import torch._dynamo
+
+        torch._dynamo.config.cache_size_limit = max(
+            int(torch._dynamo.config.cache_size_limit), 64
+        )
+        return torch.compile(model, mode=mode, dynamic=False), mode
+    except Exception as error:  # pragma: no cover - depends on the Pod's torch build
+        return model, f"eager (compile unavailable: {error})"
+
+
 class TensorStore:
     """Hold the table's tensors on the GPU when they fit, else gather from pinned host memory."""
 
     def __init__(self, table: SampleTable, device: torch.device, *, headroom_bytes: int) -> None:
+        self.pad_multiple = pad_multiple(device)
         tensors = {"windows": table.windows, "features": table.features, "ranks": table.ranks}
         if table.encoded is not None:
             tensors["encoded"] = table.encoded
@@ -231,6 +272,7 @@ class TensorStore:
             "resident_on_device": self.resident,
             "device": str(device),
             "tensor_bytes": int(needed),
+            "pad_multiple": self.pad_multiple,
         }
         self.order: torch.Tensor | None = None
 
@@ -253,11 +295,38 @@ class TensorStore:
         return self.gather(torch.as_tensor(rows, dtype=torch.long))
 
     def group_batch(self, index: GroupIndex, group: int) -> dict[str, torch.Tensor]:
-        """Batch of one (date, market) group through the attached order."""
+        """Batch of one (date, market) group through the attached order, padded to the bucket."""
+        size = int(index.sizes[group])
         if self.order is None:
-            return self.batch(index.rows(group))
-        start = int(index.starts[group])
-        return self.gather(self.order[start : start + int(index.sizes[group])])
+            batch = self.batch(index.rows(group))
+        else:
+            start = int(index.starts[group])
+            batch = self.gather(self.order[start : start + size])
+        return self.pad(batch, size)
+
+    def pad(self, batch: dict[str, torch.Tensor], size: int) -> dict[str, torch.Tensor]:
+        """Append masked rows up to the next multiple of ``pad_multiple``; ``valid`` marks the
+        real rows. Padded features and ranks are NaN (left out of the z-score and the loss),
+        padded windows / embeddings are zeros (never attended to)."""
+        if self.pad_multiple <= 0:
+            return batch
+        padded = -(-size // self.pad_multiple) * self.pad_multiple
+        extra = padded - size
+        valid = torch.ones(padded, dtype=torch.bool, device=self.device)
+        if extra:
+            valid[size:] = False
+        out: dict[str, torch.Tensor] = {}
+        for key, value in batch.items():
+            if not extra:
+                out[key] = value
+                continue
+            fill_value = float("nan") if key in ("features", "ranks") else 0.0
+            fill = torch.full(
+                (extra, *value.shape[1:]), fill_value, dtype=value.dtype, device=value.device
+            )
+            out[key] = torch.cat([value, fill], dim=0)
+        out["valid"] = valid
+        return out
 
 
 def make_config(experiment: str, table: SampleTable) -> tuple[CrossStockConfig, float]:
@@ -281,11 +350,12 @@ def make_config(experiment: str, table: SampleTable) -> tuple[CrossStockConfig, 
     return config, lambda_corr
 
 
-def _forward(model: CrossStockModel, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+def _forward(model: Any, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     return model(
         batch.get("windows") if "encoded" not in batch else None,
         batch["features"],
         encoded=batch.get("encoded"),
+        valid=batch.get("valid"),
     )
 
 
@@ -296,17 +366,20 @@ def _predict(
     groups: np.ndarray,
     *,
     autocast: bool,
+    runner: Any = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Scores for every row of the groups; returns (rows, scores)."""
     model.eval()
+    runner = model if runner is None else runner
     rows_out, scores_out = [], []
     with torch.no_grad():
         for group in groups:
             batch = store.group_batch(index, int(group))
             with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
-                scores = _forward(model, batch)
+                scores = _forward(runner, batch)
             rows_out.append(index.rows(int(group)))
-            scores_out.append(scores.float())
+            # Drop the padded rows; clone because a CUDA-graph replay reuses the output buffer.
+            scores_out.append(scores[: int(index.sizes[int(group)])].float().clone())
     # A single device-to-host copy per call; per-group .cpu() calls serialized the GPU.
     return np.concatenate(rows_out), torch.cat(scores_out).cpu().numpy()
 
@@ -389,6 +462,10 @@ def train_fold(
         fused=store.device.type == "cuda",
     )
     autocast = store.device.type == "cuda"
+    # Padded groups have a handful of static shapes, so the compiled model replays CUDA graphs
+    # instead of launching every small kernel from Python: the steps are launch-bound, the
+    # model's compute per group being well under a millisecond on a data-centre GPU.
+    runner, execution_mode = maybe_compile(model, store.device)
     best_ic, best_epoch, best_state, bad_epochs, history = -np.inf, -1, None, 0, []
     for epoch in range(int(params["max_epochs"])):
         model.train()
@@ -401,8 +478,17 @@ def train_fold(
         for group in groups:
             batch = store.group_batch(index, int(group))
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
-                scores = _forward(model, batch)
+            try:
+                with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
+                    scores = _forward(runner, batch)
+            except Exception as error:  # pragma: no cover - compiler backend failures
+                if runner is model:
+                    raise
+                print(f"cross-stock: compiled run failed, back to eager: {error}", flush=True)
+                runner, execution_mode = model, f"eager (fallback: {type(error).__name__})"
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
+                    scores = _forward(runner, batch)
             loss, _parts = cross_sectional_loss(
                 scores, batch["ranks"], lambda_corr, check_labels=False
             )
@@ -412,7 +498,9 @@ def train_fold(
             loss_sum += loss.detach()
             steps += 1
         losses = [float(loss_sum) / max(steps, 1)]
-        rows, scores = _predict(model, store, index, plan.valid_groups, autocast=autocast)
+        rows, scores = _predict(
+            model, store, index, plan.valid_groups, autocast=autocast, runner=runner
+        )
         if not np.array_equal(rows, plan.valid_rows):
             raise RuntimeError("Validation rows changed order between planning and prediction")
         ic = _validation_ic(scores, plan.valid_alpha_ranks, plan.valid_codes, plan.valid_sizes)
@@ -428,7 +516,9 @@ def train_fold(
                 break
     if best_state is not None:
         model.load_state_dict(best_state)
-    rows, scores = _predict(model, store, index, plan.predict_groups, autocast=autocast)
+    rows, scores = _predict(
+        model, store, index, plan.predict_groups, autocast=autocast, runner=runner
+    )
     record = {
         "fold": plan.fold.index,
         "seed": seed,
@@ -441,6 +531,7 @@ def train_fold(
         "parameters": parameter_count(model),
         "seconds": time.monotonic() - started,
         "history": history,
+        "execution": {"mode": execution_mode, "pad_multiple": store.pad_multiple},
     }
     return rows, scores.astype(np.float32), record
 

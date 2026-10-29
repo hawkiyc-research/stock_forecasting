@@ -380,3 +380,63 @@ def test_label_variant_scores_the_residual_target_and_reports_seed_stability(
     assert standard["label_variant"] is None
     assert standard["cells_residual"] == [] and standard["fits"]["mean_epochs"] == 1.0
     assert not (tmp_path / "standard" / "daily_rank_ic_residual.parquet").exists()
+
+
+def test_padded_group_scores_match_the_unpadded_computation(monkeypatch) -> None:
+    """Padding a group to a bucket (masked rows) must not change any real row's score or loss."""
+    from stock_forecasting.cross_stock_training import TensorStore, compile_mode, pad_multiple
+
+    torch.manual_seed(1)
+    windows = torch.rand(50, 128, 5) * 100 + 1
+    features = torch.randn(50, 183)
+    features[3, 7] = float("nan")  # a missing feature on a real row stays masked as before
+    ranks = torch.randn(50, 14)
+    model = CrossStockModel(CrossStockConfig()).eval()
+    extra = 14
+    valid = torch.cat([torch.ones(50, dtype=torch.bool), torch.zeros(extra, dtype=torch.bool)])
+    padded_windows = torch.cat([windows, torch.zeros(extra, 128, 5)])
+    padded_features = torch.cat([features, torch.full((extra, 183), float("nan"))])
+    padded_ranks = torch.cat([ranks, torch.full((extra, 14), float("nan"))])
+    with torch.no_grad():
+        plain = model(windows, features)
+        padded = model(padded_windows, padded_features, valid=valid)
+    assert padded.shape == (64, 14)
+    assert torch.allclose(padded[:50], plain, atol=1e-5)
+    loss_plain, _ = cross_sectional_loss(plain, ranks, 1.0)
+    loss_padded, _ = cross_sectional_loss(padded, padded_ranks, 1.0)
+    assert torch.allclose(loss_plain, loss_padded, atol=1e-6)
+    # Cached-embedding variant (D1) takes the same mask.
+    cached = CrossStockModel(CrossStockConfig(encoder_dim=32)).eval()
+    encoded = torch.randn(50, 32)
+    with torch.no_grad():
+        plain = cached(None, features, encoded=encoded)
+        padded = cached(
+            None,
+            padded_features,
+            encoded=torch.cat([encoded, torch.zeros(extra, 32)]),
+            valid=valid,
+        )
+    assert torch.allclose(padded[:50], plain, atol=1e-5)
+
+    # The store pads group batches to the bucket and marks the real rows.
+    monkeypatch.setenv("FIN_TS_XS_PAD_MULTIPLE", "16")
+    sessions = _sessions()
+    table = table_from_caches({"train": _cache("train", sessions, 1, 12)})
+    index = build_group_index(table)
+    store = TensorStore(table, torch.device("cpu"), headroom_bytes=0)
+    store.attach_order(index.order)
+    batch = store.group_batch(index, 0)
+    size = int(index.sizes[0])
+    assert size == 12 and batch["windows"].shape[0] == 16 and batch["valid"].sum() == size
+    assert torch.isnan(batch["features"][size:]).all() and torch.isnan(batch["ranks"][size:]).all()
+    assert torch.equal(batch["windows"][:size], table.windows[index.rows(0)])
+    assert store.plan["pad_multiple"] == 16
+    monkeypatch.setenv("FIN_TS_XS_PAD_MULTIPLE", "0")
+    unpadded = TensorStore(table, torch.device("cpu"), headroom_bytes=0)
+    assert "valid" not in unpadded.group_batch(index, 0)
+    monkeypatch.delenv("FIN_TS_XS_PAD_MULTIPLE")
+    assert pad_multiple(torch.device("cpu")) == 0
+    assert compile_mode(torch.device("cpu")) == "eager"
+    monkeypatch.setenv("FIN_TS_XS_PAD_MULTIPLE", "-1")
+    with pytest.raises(ValueError):
+        pad_multiple(torch.device("cpu"))
