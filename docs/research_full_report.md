@@ -458,7 +458,7 @@
 
 #### 7.2 資料限制（事前聲明）
 
-(a) 還原價只處理股息，不含分割、減資與面額變更：2023 年起超過 25% 的單日還原開盤跳動共 200 次、161 檔（樣本外期間 48 次、42 檔）。其中 103 次前面有停牌：樣本規則會把跨過缺口的窗排除、部位在停牌前出場，持股報酬不受影響；97 次沒有停牌（台股有 10% 漲跌幅，連續交易日不可能真的跳 25%，所以是還原價未處理的事件），這些檔當時的訓練標籤、價格特徵、分數與持股報酬都是錯的，落在事件後 60 個交易日內的預測列占 0.26%，粗估對整段回測的影響在每年 1 個百分點以內、方向不定。修正版已實作但尚未重訓。
+(a) 還原價只處理股息，不含分割、減資與面額變更：2023 年起超過 25% 的單日還原開盤跳動共 100 次、91 檔（樣本外期間 19 次、19 檔）。其中 98 次前面有停牌：樣本規則要求訊號日前 128 個交易日與之後 14 個交易日都沒有缺口，所以停牌前後的樣本整段排除，價格特徵、訓練標籤、分數與持股報酬都碰不到跳動；另外 2 次是股息還原因子套錯日期，這 2 檔在事件前後都不在模型的樣本內。逐一核對後，這些事件沒有一次進入訓練或任一策略的損益。修正版已實作但尚未重訓；在目前的規則下預期不會改變結果。
 (b) 樣本內後段在設計正交化時已看過，樣本內數字只是資訊；真正的檢驗只有 85 天的樣本外。週頻多頭的參數在樣本內前段選定，但它的設計是在看過後段之後才定的（第 7.1 節）。
 (c) 樣本外只有 85 個交易日、一種市場狀態，區間寬 ±60 到 ±110 個百分點。
 (d) 籌碼特徵的公布時刻用保守規則（次日開盤前）；外資持股比例的 z 分數欄因資料來源問題恆為缺值。
@@ -978,7 +978,7 @@ Constructions tried: six generations of strategy, two models, three markets, six
 
 #### 7.2 Data limitations (stated in advance)
 
-(a) Adjusted prices carry dividends only, not splits, capital reductions or par-value changes: 200 single-day adjusted-open jumps above 25% across 161 stocks since 2023 (48 events across 42 stocks inside the out-of-sample window). 103 of them follow a trading halt: the sample rule drops every window across the gap and positions exit before it, so position returns are unaffected. 97 have no halt (with Taiwan's 10% daily limit a genuine 25% move between consecutive sessions is impossible, so these are adjustments the data does not make); for those stocks the training labels, price features, scores and position returns at the time are wrong, 0.26% of prediction rows fall within 60 sessions after one, and the rough effect on the whole backtest is within one point a year, of either sign. The correction is implemented but not yet retrained.
+(a) Adjusted prices carry dividends only, not splits, capital reductions or par-value changes: since 2023 there are 100 single-day adjusted-open jumps above 25% across 91 stocks (19 events, 19 stocks inside the out-of-sample window). 98 follow a trading halt: the sample rule requires 128 gap-free sessions before the signal date and 14 after it, so every sample around a halt is dropped and no price feature, training label, score or position return touches the jump; the other 2 are dividend factors applied on the wrong date, and neither stock was in the model's samples around its event. Checked one by one, none of these events enters training or any strategy's profit and loss. The correction is implemented but not retrained; under the current rules it is expected to leave the results unchanged.
 (b) The second in-sample segment had been seen when the orthogonalization was designed, so in-sample numbers are informational; the only real test is the 85 out-of-sample days. The weekly long's parameters were selected on the first segment, but its design was chosen after the second segment had been seen (section 7.1).
 (c) The out-of-sample window has 85 sessions in one market regime, with intervals ±60 to ±110 points wide.
 (d) Chip-feature publication times follow a conservative rule (before the next open); the foreign-holding z-score column is always missing because of a source issue.
