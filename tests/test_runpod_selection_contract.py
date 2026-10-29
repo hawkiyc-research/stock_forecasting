@@ -609,13 +609,13 @@ def test_explicit_revision_creates_a_new_dataset_namespace(tmp_path: Path) -> No
     project_root = _project_root(tmp_path)
     first = SELECTION._build_selection(_arguments(dataset_revision="v1"), project_root)
     revised = SELECTION._build_selection(
-        _arguments(dataset_revision="provider-refresh-20260814"),
+        _arguments(dataset_revision="v1-provider-refresh-20260814"),
         project_root,
     )
 
     assert first["dataset_request_sha256"] != revised["dataset_request_sha256"]
     exports = SELECTION._selection_exports(tmp_path / "selection.json", revised)
-    assert exports["RUNPOD_DATASET_REVISION"] == "provider-refresh-20260814"
+    assert exports["RUNPOD_DATASET_REVISION"] == "v1-provider-refresh-20260814"
 
 
 def test_tw_only_rejects_us_symbol_limit(tmp_path: Path) -> None:

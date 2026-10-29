@@ -311,6 +311,8 @@ class IngestionOptions:
     manifest_root: Path
     raw_cache_root: Path
     cache_revision: str = "v1"
+    dataset_revision: str = "v1"
+    corporate_actions: str = "dividends"
     include_delisted: bool = True
     explicit_us_symbols: tuple[str, ...] = ()
     explicit_us_etfs: tuple[str, ...] = ()
@@ -1259,6 +1261,8 @@ def _select_eodhd_materialization_universe(
 def _progress_identity(options: IngestionOptions) -> dict[str, Any]:
     identity: dict[str, Any] = {
         "cache_revision": options.cache_revision,
+        "dataset_revision": options.dataset_revision,
+        "corporate_actions": options.corporate_actions,
         "dataset_profile": options.profile,
         "selected_datasets": selected_datasets(options.profile),
         "date_range": {
@@ -1297,6 +1301,8 @@ def _provider_checkpoint_identity(
             "end_exclusive": options.end,
         },
     }
+    if provider in {"twse_official", "tpex_official"}:
+        materialization_request["corporate_actions"] = options.corporate_actions
     if provider == "eodhd":
         materialization_request["universe"] = {
             "mode": (
@@ -1375,6 +1381,10 @@ def ingest_daily_ohlcv(
         raise ValueError("max_api_calls must be positive")
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", options.cache_revision) is None:
         raise ValueError("cache_revision must be a safe 1-64 character label")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", options.dataset_revision) is None:
+        raise ValueError("dataset_revision must be a safe 1-64 character label")
+    if options.corporate_actions not in ("dividends", "full"):
+        raise ValueError("corporate_actions must be 'dividends' or 'full'")
     if not math.isfinite(options.max_backoff_seconds) or options.max_backoff_seconds <= 0.0:
         raise ValueError("max_backoff_seconds must be finite and positive")
     if options.workers < 1:
@@ -1587,7 +1597,9 @@ def ingest_daily_ohlcv(
                         transport=tpex_transport,
                         request_budget=request_budget,
                     )
-                    provider = provider_class(client)
+                    provider = provider_class(
+                        client, corporate_actions=options.corporate_actions
+                    )
                     action_fetch = _provider_data_call(
                         provider=provider_name,
                         operation="corporate_actions",
@@ -1895,6 +1907,8 @@ def ingest_daily_ohlcv(
         },
         "api_policy": {
             "cache_revision": options.cache_revision,
+            "dataset_revision": options.dataset_revision,
+            "corporate_actions": options.corporate_actions,
             "estimated_calls": estimated_calls,
             "estimated_calls_semantics": (
                 "informational_cache_agnostic_plan_with_official_trading_sessions_"

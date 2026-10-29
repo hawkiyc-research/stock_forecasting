@@ -257,6 +257,178 @@ def _unsupported_action_type(code: str) -> str:
     return "unsupported_symbol_code"
 
 
+_TPEX_DETAIL_SHARE_RATE = re.compile(r"每壹仟股換發新股票[^0-9]*([0-9]+(?:\.[0-9]+)?)")
+
+# TPEx par-value changes (變更股票面額). The TPEx website publishes these only as
+# per-company announcements, not as a queryable table, so the resumption dates
+# below come from the price-discontinuity scan of the official daily quotes
+# (first session after the 5-7 session share-exchange halt) and the par values
+# from the TPEx company basic data (configs/reference/tw_company_reference_*.csv).
+# The reference price on the first session equals the last close scaled by
+# new par / old par, so price_factor = new / old and share_multiplier = old / new.
+# Code, first session of the new shares, old par (TWD), new par (TWD).
+_TPEX_PAR_VALUE_CHANGES: tuple[tuple[str, str, float, float], ...] = (
+    ("6548", "2019-09-09", 10.0, 1.0),
+    ("6613", "2022-08-29", 10.0, 5.0),
+    ("6548", "2022-09-05", 1.0, 0.4),
+    ("5536", "2022-09-19", 10.0, 5.0),
+    ("3093", "2022-12-12", 10.0, 2.5),
+    ("6763", "2024-09-09", 10.0, 1.0),
+    ("8932", "2024-09-09", 10.0, 5.0),
+    ("5278", "2024-12-09", 10.0, 1.0),
+    ("5314", "2025-03-31", 10.0, 0.5),
+    ("8932", "2026-03-09", 5.0, 2.5),
+    ("8937", "2026-04-13", 10.0, 2.5),
+    ("3086", "2026-04-20", 10.0, 1.0),
+)
+
+
+def _tpex_par_value_action_rows(*, start: str, end: str) -> list[dict[str, Any]]:
+    """Return the curated TPEx par-value changes inside [start, end] as action rows."""
+
+    rows: list[dict[str, Any]] = []
+    for code, resumption_date, old_par, new_par in _TPEX_PAR_VALUE_CHANGES:
+        if resumption_date < start or resumption_date > end:
+            continue
+        if _asset_type(code, market="TPEX") is None:
+            continue
+        rows.append(
+            {
+                "timestamp": resumption_date,
+                "symbol": f"{code}.TWO",
+                "price_factor": new_par / old_par,
+                "share_multiplier": old_par / new_par,
+                "source": "tpex_par_value_reference",
+            }
+        )
+    return rows
+
+
+def _tpex_detail_number(detail: Any, pattern: re.Pattern[str]) -> float | None:
+    """Read one numeric field out of the HTML detail cell of a TPEx resumption row."""
+
+    match = pattern.search(str(detail))
+    return _number(match.group(1)) if match else None
+
+
+def _resumption_action_rows(
+    payload: Any,
+    *,
+    market: str,
+    suffix: str,
+    source: str,
+    date_aliases: set[str],
+    symbol_aliases: set[str],
+    prior_close_aliases: set[str],
+    reference_price_aliases: set[str],
+    share_rate_policy: str,
+    detail_aliases: set[str] | None = None,
+    kind_aliases: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Parse one official "resume trading at a reference price" table.
+
+    Capital reductions (cash refunds and loss-covering reductions), par-value
+    changes and ETF splits halt a security for several sessions and resume it
+    at an official reference price. The resumption date is the action date and
+    ``price_factor`` is reference / last close before the halt, exactly like
+    the ex-dividend tables, so ``apply_cumulative_adjustments`` multiplies every
+    earlier ``adjusted_close`` by it on top of the dividend factors.
+
+    ``share_rate_policy`` chooses the share multiplier (new shares per old share):
+
+    * ``"price_ratio"``: the official formula is reference = prior / rate, so
+      rate = prior / reference. Used for par-value changes, ETF splits and
+      loss-covering reductions.
+    * ``"tpex_detail"``: rate = 每壹仟股換發新股票 / 1000 from the detail cell;
+      rows without that field fall back to the price ratio and say so in
+      ``source``.
+
+    * ``"twse_reduction"``: loss-covering rows (彌補虧損) follow the price-ratio
+      formula; cash-refund rows (退還股款) cannot separate the refund from the
+      share rate without a detail page, so they use the price ratio and record
+      ``_share_rate_from_price`` in ``source``. The share multiplier only
+      scales ``split_adjusted_volume``, never prices.
+    """
+
+    fields, data = _first_table(payload)
+    indexes = {
+        "timestamp": _field_index(fields, date_aliases),
+        "symbol": _field_index(fields, symbol_aliases),
+        "prior_close": _field_index(fields, prior_close_aliases),
+        "reference_price": _field_index(fields, reference_price_aliases),
+    }
+    detail_index = (
+        _field_index(fields, detail_aliases) if detail_aliases is not None else None
+    )
+    kind_index = _field_index(fields, kind_aliases) if kind_aliases is not None else None
+    rows: list[dict[str, Any]] = []
+    counts: dict[str, Any] = {
+        "actions": 0,
+        "dropped_rows": 0,
+        "pending_rows": 0,
+        "share_rate_from_price": 0,
+        "skipped_unsupported_action_rows": 0,
+        "skipped_unsupported_action_types": Counter(),
+    }
+    for raw in data:
+        required_length = max(
+            index
+            for index in (*indexes.values(), detail_index, kind_index)
+            if index is not None
+        )
+        if len(raw) <= required_length:
+            counts["dropped_rows"] += 1
+            continue
+        symbol_code = str(raw[indexes["symbol"]]).strip().upper()
+        if _asset_type(symbol_code, market=market) is None:
+            counts["skipped_unsupported_action_rows"] += 1
+            counts["skipped_unsupported_action_types"][
+                _unsupported_action_type(symbol_code)
+            ] += 1
+            continue
+        prior_close = _number(raw[indexes["prior_close"]])
+        reference_price = _number(raw[indexes["reference_price"]])
+        if prior_close is None or reference_price is None:
+            # Announced resumptions list the prices only once they are known.
+            counts["pending_rows"] += 1
+            continue
+        if prior_close <= 0.0 or reference_price <= 0.0:
+            counts["dropped_rows"] += 1
+            continue
+        price_factor = reference_price / prior_close
+        if not np.isfinite(price_factor) or price_factor <= 0.0:
+            counts["dropped_rows"] += 1
+            continue
+        row_source = source
+        share_multiplier = prior_close / reference_price
+        if share_rate_policy == "tpex_detail":
+            detail = raw[detail_index] if detail_index is not None else ""
+            share_rate = _tpex_detail_number(detail, _TPEX_DETAIL_SHARE_RATE)
+            if share_rate is not None and share_rate > 0.0:
+                share_multiplier = share_rate / 1000.0
+            else:
+                counts["share_rate_from_price"] += 1
+                row_source = f"{source}_share_rate_from_price"
+        elif share_rate_policy == "twse_reduction":
+            kind = str(raw[kind_index]) if kind_index is not None else ""
+            if "退還" in kind:
+                counts["share_rate_from_price"] += 1
+                row_source = f"{source}_share_rate_from_price"
+        elif share_rate_policy != "price_ratio":
+            raise ValueError(f"Unsupported share-rate policy: {share_rate_policy}")
+        rows.append(
+            {
+                "timestamp": _gregorian_date(raw[indexes["timestamp"]]),
+                "symbol": f"{symbol_code}.{suffix}",
+                "price_factor": price_factor,
+                "share_multiplier": share_multiplier,
+                "source": row_source,
+            }
+        )
+    counts["actions"] = len(rows)
+    return rows, counts
+
+
 def _parse_quotes(
     payload: Any,
     *,
@@ -319,11 +491,49 @@ class _TaiwanMarketProvider:
     market: str
     suffix: str
     endpoint: str
-    action_adjustment_source: str
+    dividend_adjustment_source: str
+    full_adjustment_source: str
     aliases: dict[str, set[str]]
 
-    def __init__(self, client: CachedJsonClient) -> None:
+    def __init__(self, client: CachedJsonClient, *, corporate_actions: str = "dividends") -> None:
+        # "dividends" (dataset revision v1): ex-dividend / ex-rights factors only.
+        # "full" (dataset revision v2): plus capital reductions, par-value changes and
+        # ETF splits as resume-trading factors.
+        if corporate_actions not in ("dividends", "full"):
+            raise ValueError("corporate_actions must be 'dividends' or 'full'")
         self.client = client
+        self.corporate_actions = corporate_actions
+
+    @property
+    def action_adjustment_source(self) -> str:
+        if self.corporate_actions == "full":
+            return self.full_adjustment_source
+        return self.dividend_adjustment_source
+
+    def _resumption_actions(self, *, start: str, end: str) -> ProviderFetch:
+        """Resume-trading factors in the full mode; an empty fetch in the dividends mode."""
+
+        if self.corporate_actions == "full":
+            return self.fetch_resumption_actions(start=start, end=end)
+        return ProviderFetch(
+            frame=pd.DataFrame(
+                columns=["timestamp", "symbol", "price_factor", "share_multiplier", "source"]
+            ),
+            requests=(),
+            metadata={
+                "capital_reduction_actions": 0,
+                "par_value_change_actions": 0,
+                "etf_split_actions": 0,
+                "dropped_rows": 0,
+                "pending_rows": 0,
+                "share_rate_from_price": 0,
+                "skipped_unsupported_action_rows": 0,
+                "skipped_unsupported_action_types": Counter(),
+            },
+        )
+
+    def fetch_resumption_actions(self, *, start: str, end: str) -> ProviderFetch:
+        raise NotImplementedError
 
     def discover(
         self,
@@ -398,7 +608,13 @@ class TWSEProvider(_TaiwanMarketProvider):
     market = "TWSE"
     suffix = "TW"
     endpoint = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
-    action_adjustment_source = "twse_twt49u"
+    # Resume-trading reference prices: capital reductions (TWTAUU), par-value
+    # changes (TWTB8U) and ETF splits / reverse splits (TWTCAU).
+    capital_reduction_endpoint = "https://www.twse.com.tw/rwd/zh/reducation/TWTAUU"
+    par_value_change_endpoint = "https://www.twse.com.tw/rwd/zh/change/TWTB8U"
+    etf_split_endpoint = "https://www.twse.com.tw/rwd/zh/split/TWTCAU"
+    dividend_adjustment_source = "twse_twt49u"
+    full_adjustment_source = "twse_twt49u+twtauu+twtb8u+twtcau"
     aliases: ClassVar[dict[str, set[str]]] = {
         "symbol": {"證券代號"},
         "open": {"開盤價"},
@@ -414,6 +630,89 @@ class TWSEProvider(_TaiwanMarketProvider):
             "date": date.replace("-", ""),
             "type": "ALLBUT0999",
         }
+
+    def fetch_resumption_actions(self, *, start: str, end: str) -> ProviderFetch:
+        """Fetch capital reductions, par-value changes and ETF splits as action factors."""
+
+        params = {
+            "response": "json",
+            "startDate": start.replace("-", ""),
+            "endDate": end.replace("-", ""),
+        }
+        specs = (
+            (
+                self.capital_reduction_endpoint,
+                "twse_twtauu",
+                {"股票代號"},
+                "twse_reduction",
+                {"減資原因"},
+                "capital_reduction_actions",
+            ),
+            (
+                self.par_value_change_endpoint,
+                "twse_twtb8u",
+                {"股票代號"},
+                "price_ratio",
+                None,
+                "par_value_change_actions",
+            ),
+            (
+                self.etf_split_endpoint,
+                "twse_twtcau",
+                {"ETF代號"},
+                "price_ratio",
+                None,
+                "etf_split_actions",
+            ),
+        )
+        rows: list[dict[str, Any]] = []
+        requests: list[RequestRecord] = []
+        metadata: dict[str, Any] = {
+            "dropped_rows": 0,
+            "pending_rows": 0,
+            "share_rate_from_price": 0,
+            "skipped_unsupported_action_rows": 0,
+            "skipped_unsupported_action_types": Counter(),
+        }
+        for endpoint, source, symbol_aliases, policy, kind_aliases, key in specs:
+            payload, request = self.client.get_json(endpoint, params=params)
+            requests.append(request)
+            if _is_no_data_payload(payload):
+                metadata[key] = 0
+                continue
+            parsed, counts = _resumption_action_rows(
+                payload,
+                market=self.market,
+                suffix=self.suffix,
+                source=source,
+                date_aliases={"恢復買賣日期"},
+                symbol_aliases=symbol_aliases,
+                prior_close_aliases={"停止買賣前收盤價格"},
+                reference_price_aliases={"恢復買賣參考價"},
+                share_rate_policy=policy,
+                kind_aliases=kind_aliases,
+            )
+            rows.extend(parsed)
+            metadata[key] = counts["actions"]
+            for name in (
+                "dropped_rows",
+                "pending_rows",
+                "share_rate_from_price",
+                "skipped_unsupported_action_rows",
+            ):
+                metadata[name] += counts[name]
+            metadata["skipped_unsupported_action_types"].update(
+                counts["skipped_unsupported_action_types"]
+            )
+        metadata["skipped_unsupported_action_types"] = dict(
+            sorted(metadata["skipped_unsupported_action_types"].items())
+        )
+        metadata["corporate_actions"] = len(rows)
+        return ProviderFetch(
+            frame=pd.DataFrame(rows),
+            requests=tuple(requests),
+            metadata=metadata,
+        )
 
     def fetch_actions(self, *, start: str, end: str) -> ProviderFetch:
         payload, request = self.client.get_json(
@@ -522,15 +821,35 @@ class TWSEProvider(_TaiwanMarketProvider):
                     "source": action_source,
                 }
             )
+        resumption = self._resumption_actions(start=start, end=end)
+        requests.extend(resumption.requests)
+        skipped_unsupported_action_types.update(
+            resumption.metadata["skipped_unsupported_action_types"]
+        )
+        frame = pd.concat(
+            [pd.DataFrame(rows)] + ([resumption.frame] if len(resumption.frame) else []),
+            ignore_index=True,
+        )
         return ProviderFetch(
-            frame=pd.DataFrame(rows),
+            frame=frame,
             requests=tuple(requests),
             metadata={
-                "corporate_actions": len(rows),
-                "dropped_rows": dropped,
+                "corporate_actions": len(frame),
+                "ex_dividend_actions": len(rows),
+                "capital_reduction_actions": resumption.metadata["capital_reduction_actions"],
+                "par_value_change_actions": resumption.metadata["par_value_change_actions"],
+                "etf_split_actions": resumption.metadata["etf_split_actions"],
+                "pending_resumption_rows": resumption.metadata["pending_rows"],
+                "resumption_share_rate_from_price": resumption.metadata[
+                    "share_rate_from_price"
+                ],
+                "dropped_rows": dropped + resumption.metadata["dropped_rows"],
                 "opening_basis_rows": opening_basis_rows,
                 "missing_share_multiplier_details": missing_share_multiplier_details,
-                "skipped_unsupported_action_rows": skipped_unsupported_action_rows,
+                "skipped_unsupported_action_rows": (
+                    skipped_unsupported_action_rows
+                    + resumption.metadata["skipped_unsupported_action_rows"]
+                ),
                 "skipped_unsupported_action_types": dict(
                     sorted(skipped_unsupported_action_types.items())
                 ),
@@ -577,7 +896,11 @@ class TPExProvider(_TaiwanMarketProvider):
     market = "TPEX"
     suffix = "TWO"
     endpoint = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"
-    action_adjustment_source = "tpex_exdailyq"
+    # Resume-trading reference prices after capital reductions; the detail
+    # cell carries 每壹仟股換發新股票 (share rate) and 每股退還股款 (cash refund).
+    capital_reduction_endpoint = "https://www.tpex.org.tw/www/zh-tw/bulletin/revivt"
+    dividend_adjustment_source = "tpex_exdailyq"
+    full_adjustment_source = "tpex_exdailyq+revivt"
     aliases: ClassVar[dict[str, set[str]]] = {
         "symbol": {"代號", "證券代號"},
         "open": {"開盤", "開盤價"},
@@ -593,6 +916,59 @@ class TPExProvider(_TaiwanMarketProvider):
             "id": "",
             "response": "json",
         }
+
+    def fetch_resumption_actions(self, *, start: str, end: str) -> ProviderFetch:
+        """Fetch TPEx capital reductions as action factors."""
+
+        payload, request = self.client.get_json(
+            self.capital_reduction_endpoint,
+            params={
+                "startDate": start.replace("-", "/"),
+                "endDate": end.replace("-", "/"),
+                "response": "json",
+            },
+        )
+        if _is_no_data_payload(payload):
+            rows: list[dict[str, Any]] = []
+            counts: dict[str, Any] = {
+                "actions": 0,
+                "dropped_rows": 0,
+                "pending_rows": 0,
+                "share_rate_from_price": 0,
+                "skipped_unsupported_action_rows": 0,
+                "skipped_unsupported_action_types": Counter(),
+            }
+        else:
+            rows, counts = _resumption_action_rows(
+                payload,
+                market=self.market,
+                suffix=self.suffix,
+                source="tpex_revivt",
+                date_aliases={"恢復買賣日期"},
+                symbol_aliases={"股票代號", "代號"},
+                prior_close_aliases={"最後交易日之收盤價格"},
+                reference_price_aliases={"減資恢復買賣開始日參考價格"},
+                share_rate_policy="tpex_detail",
+                detail_aliases={"詳細資料"},
+            )
+        par_value_rows = _tpex_par_value_action_rows(start=start, end=end)
+        rows.extend(par_value_rows)
+        return ProviderFetch(
+            frame=pd.DataFrame(rows),
+            requests=(request,),
+            metadata={
+                "corporate_actions": len(rows),
+                "capital_reduction_actions": counts["actions"],
+                "par_value_change_actions": len(par_value_rows),
+                "dropped_rows": counts["dropped_rows"],
+                "pending_rows": counts["pending_rows"],
+                "share_rate_from_price": counts["share_rate_from_price"],
+                "skipped_unsupported_action_rows": counts["skipped_unsupported_action_rows"],
+                "skipped_unsupported_action_types": dict(
+                    sorted(counts["skipped_unsupported_action_types"].items())
+                ),
+            },
+        )
 
     def fetch_actions(self, *, start: str, end: str) -> ProviderFetch:
         payload, request = self.client.get_json(
@@ -659,14 +1035,32 @@ class TPExProvider(_TaiwanMarketProvider):
                     "source": "tpex_exdailyq_opening_basis" if used_basis else "tpex_exdailyq",
                 }
             )
+        resumption = self._resumption_actions(start=start, end=end)
+        skipped_unsupported_action_types.update(
+            resumption.metadata["skipped_unsupported_action_types"]
+        )
+        frame = pd.concat(
+            [pd.DataFrame(rows)] + ([resumption.frame] if len(resumption.frame) else []),
+            ignore_index=True,
+        )
         return ProviderFetch(
-            frame=pd.DataFrame(rows),
-            requests=(request,),
+            frame=frame,
+            requests=(request, *resumption.requests),
             metadata={
-                "corporate_actions": len(rows),
-                "dropped_rows": dropped,
+                "corporate_actions": len(frame),
+                "ex_dividend_actions": len(rows),
+                "capital_reduction_actions": resumption.metadata["capital_reduction_actions"],
+                "par_value_change_actions": resumption.metadata["par_value_change_actions"],
+                "pending_resumption_rows": resumption.metadata["pending_rows"],
+                "resumption_share_rate_from_price": resumption.metadata[
+                    "share_rate_from_price"
+                ],
+                "dropped_rows": dropped + resumption.metadata["dropped_rows"],
                 "opening_basis_rows": opening_basis_rows,
-                "skipped_unsupported_action_rows": skipped_unsupported_action_rows,
+                "skipped_unsupported_action_rows": (
+                    skipped_unsupported_action_rows
+                    + resumption.metadata["skipped_unsupported_action_rows"]
+                ),
                 "skipped_unsupported_action_types": dict(
                     sorted(skipped_unsupported_action_types.items())
                 ),

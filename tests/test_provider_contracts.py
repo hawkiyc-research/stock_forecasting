@@ -14,7 +14,7 @@ import pytest
 import requests
 
 from stock_forecasting.cli import download_market_data
-from stock_forecasting.data.adjustments import asof_adjusted_window
+from stock_forecasting.data.adjustments import asof_adjusted_window, normalize_action_frame
 from stock_forecasting.data.download_progress import DownloadProgress
 from stock_forecasting.data.ingestion import (
     IngestionOptions,
@@ -94,6 +94,40 @@ class _StubClient:
     ) -> tuple[Any, RequestRecord]:
         self.calls.append((endpoint, params))
         return self.payload, _request()
+
+
+_RESUMPTION_ENDPOINTS = ("TWTAUU", "TWTB8U", "TWTCAU", "revivt")
+_EMPTY_RESUMPTION_PAYLOAD: dict[str, Any] = {
+    "stat": "OK",
+    "fields": ["恢復買賣日期", "股票代號", "停止買賣前收盤價格", "恢復買賣參考價"],
+    "data": [],
+}
+
+
+def _is_resumption_endpoint(endpoint: str) -> bool:
+    return endpoint.endswith(_RESUMPTION_ENDPOINTS)
+
+
+class _RoutingClient:
+    """Serve one payload per endpoint suffix; unknown resumption tables are empty."""
+
+    def __init__(self, payloads: dict[str, Any]) -> None:
+        self.payloads = payloads
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_json(
+        self,
+        endpoint: str,
+        *,
+        params: dict[str, Any],
+    ) -> tuple[Any, RequestRecord]:
+        self.calls.append((endpoint, params))
+        for suffix, payload in self.payloads.items():
+            if endpoint.endswith(suffix):
+                return payload, _request()
+        if _is_resumption_endpoint(endpoint):
+            return _EMPTY_RESUMPTION_PAYLOAD, _request()
+        raise AssertionError(f"Unexpected endpoint {endpoint}")
 
 
 def test_raw_cache_identity_omits_api_token_and_reuses_response(tmp_path: Path) -> None:
@@ -1323,6 +1357,8 @@ def test_twse_historical_action_without_detail_keeps_price_factor_and_records_ga
         ) -> tuple[Any, RequestRecord]:
             del params
             self.calls.append(endpoint)
+            if _is_resumption_endpoint(endpoint):
+                return _EMPTY_RESUMPTION_PAYLOAD, _request("twse_official")
             if endpoint.endswith("TWT49UDetail"):
                 return {"stat": "無相關資料"}, _request("twse_official")
             return (
@@ -1340,9 +1376,13 @@ def test_twse_historical_action_without_detail_keeps_price_factor_and_records_ga
             )
 
     client = _ActionClient()
-    fetched = TWSEProvider(client).fetch_actions(start="2005-01-01", end="2005-12-31")
+    fetched = TWSEProvider(client, corporate_actions="full").fetch_actions(
+        start="2005-01-01", end="2005-12-31"
+    )
 
-    assert len(client.calls) == 2
+    # TWT49U, its detail, then the three resume-trading tables.
+    assert len(client.calls) == 5
+    assert len(fetched.frame) == 1
     assert fetched.frame.loc[0, "price_factor"] == pytest.approx(27.48 / 33.0)
     assert fetched.frame.loc[0, "share_multiplier"] == pytest.approx(1.0)
     assert fetched.frame.loc[0, "source"] == "twse_twt49u_price_only_missing_detail"
@@ -1358,6 +1398,8 @@ def test_twse_tdr_detail_without_the_common_share_field_is_nonfatal() -> None:
             params: dict[str, Any],
         ) -> tuple[Any, RequestRecord]:
             del params
+            if _is_resumption_endpoint(endpoint):
+                return _EMPTY_RESUMPTION_PAYLOAD, _request("twse_official")
             if endpoint.endswith("TWT49UDetail"):
                 return (
                     {
@@ -1407,6 +1449,8 @@ def test_twse_actions_skip_unsupported_symbols_before_detail_requests() -> None:
             *,
             params: dict[str, Any],
         ) -> tuple[Any, RequestRecord]:
+            if _is_resumption_endpoint(endpoint):
+                return _EMPTY_RESUMPTION_PAYLOAD, _request("twse_official")
             self.calls.append((endpoint, params))
             if endpoint.endswith("TWT49UDetail"):
                 free_shares = {
@@ -1463,7 +1507,9 @@ def test_twse_actions_skip_unsupported_symbols_before_detail_requests() -> None:
             )
 
     client = _ActionClient()
-    fetched = TWSEProvider(client).fetch_actions(start="2005-01-01", end="2005-12-31")
+    fetched = TWSEProvider(client, corporate_actions="full").fetch_actions(
+        start="2005-01-01", end="2005-12-31"
+    )
 
     assert len(client.calls) == 5
     assert [params["STK_NO"] for _, params in client.calls[1:]] == [
@@ -1518,7 +1564,7 @@ def test_tpex_actions_exclude_non_allowlisted_etfs_from_the_adjustment_frame() -
         ],
     }
 
-    fetched = TPExProvider(_StubClient(payload)).fetch_actions(
+    fetched = TPExProvider(_RoutingClient({"exDailyQ": payload})).fetch_actions(
         start="2026-01-01",
         end="2026-02-01",
     )
@@ -1979,3 +2025,315 @@ def test_tpex_paid_rights_issue_uses_the_opening_basis_instead_of_the_reference_
     assert by_symbol.loc["3373.TWO", "price_factor"] == pytest.approx(26.0 / 27.0)
     assert by_symbol.loc["3373.TWO", "source"] == "tpex_exdailyq"
     assert fetched.metadata["opening_basis_rows"] == 1
+
+_TWSE_REDUCTION_PAYLOAD: dict[str, Any] = {
+    "stat": "OK",
+    "fields": [
+        "恢復買賣日期",
+        "股票代號",
+        "名稱",
+        "停止買賣前收盤價格",
+        "恢復買賣參考價",
+        "漲停價格",
+        "跌停價格",
+        "開盤競價基準",
+        "除權參考價",
+        "減資原因",
+        "詳細資料",
+    ],
+    "data": [
+        # Loss-covering reduction: reference = prior / share rate.
+        [
+            "114/02/12", "2025", "千興", "10.50", "17.09", "18.75", "15.40", "17.10",
+            "--", "彌補虧損", "2025  ,20250204",
+        ],
+        # Cash refund: the share rate cannot be separated from the refund.
+        [
+            "114/06/23", "2371", "大同", "40.15", "41.73", "45.90", "37.60", "41.75",
+            "--", "退還股款", "2371  ,20250611",
+        ],
+        # Announced but not yet priced.
+        ["115/11/23", "1808", "潤隆", "-", "-", "-", "-", "-", "--", "退還股款", "1808  ,20261022"],
+        # Preferred shares are not training targets.
+        [
+            "114/03/03", "2881A", "富邦特", "60.00", "61.00", "67.10", "54.90", "61.00",
+            "--", "退還股款", "",
+        ],
+    ],
+}
+
+_TWSE_PAR_VALUE_PAYLOAD: dict[str, Any] = {
+    "stat": "OK",
+    "fields": [
+        "恢復買賣日期",
+        "股票代號",
+        "名稱",
+        "停止買賣前收盤價格",
+        "恢復買賣參考價",
+        "漲停價格",
+        "跌停價格",
+        "開盤競價基準",
+        "詳細資料",
+    ],
+    "data": [
+        [
+            "114/08/25", "2327", "國巨", "546.00", "136.50", "150.00", "123.00", "136.50",
+            "2327,20250814,20250825",
+        ],
+    ],
+}
+
+_TWSE_ETF_SPLIT_PAYLOAD: dict[str, Any] = {
+    "stat": "OK",
+    "fields": [
+        "恢復買賣日期",
+        "ETF代號",
+        "名稱",
+        "分割(反分割)",
+        "停止買賣前收盤價格",
+        "恢復買賣參考價",
+        "漲停價格",
+        "跌停價格",
+        "開盤競價基準",
+    ],
+    "data": [
+        [
+            "113/12/11", "00632R", "元大台灣50反1", "反分割", "3.28", "22.96", "25.25",
+            "20.67", "22.96",
+        ],
+        ["114/06/18", "0050", "元大台灣50", "分割", "188.65", "47.16", "51.85", "42.45", "47.16"],
+        ["114/11/26", "0052", "富邦科技", "分割", "245.30", "35.04", "38.54", "31.54", "35.04"],
+    ],
+}
+
+
+def test_twse_resumption_actions_cover_reductions_par_changes_and_etf_splits() -> None:
+    client = _RoutingClient(
+        {
+            "TWTAUU": _TWSE_REDUCTION_PAYLOAD,
+            "TWTB8U": _TWSE_PAR_VALUE_PAYLOAD,
+            "TWTCAU": _TWSE_ETF_SPLIT_PAYLOAD,
+        }
+    )
+
+    fetched = TWSEProvider(client).fetch_resumption_actions(
+        start="2016-01-01",
+        end="2026-12-31",
+    )
+
+    assert [endpoint.rsplit("/", 1)[1] for endpoint, _ in client.calls] == [
+        "TWTAUU",
+        "TWTB8U",
+        "TWTCAU",
+    ]
+    assert all(
+        params == {"response": "json", "startDate": "20160101", "endDate": "20261231"}
+        for _, params in client.calls
+    )
+    by_symbol = fetched.frame.set_index("symbol")
+    assert list(by_symbol.index) == ["2025.TW", "2371.TW", "2327.TW", "0050.TW", "0052.TW"]
+    assert str(by_symbol.loc["2025.TW", "timestamp"]) == "2025-02-12"
+    assert by_symbol.loc["2025.TW", "price_factor"] == pytest.approx(17.09 / 10.5)
+    assert by_symbol.loc["2025.TW", "share_multiplier"] == pytest.approx(10.5 / 17.09)
+    assert by_symbol.loc["2025.TW", "source"] == "twse_twtauu"
+    assert by_symbol.loc["2371.TW", "price_factor"] == pytest.approx(41.73 / 40.15)
+    assert by_symbol.loc["2371.TW", "source"] == "twse_twtauu_share_rate_from_price"
+    assert by_symbol.loc["2327.TW", "price_factor"] == pytest.approx(0.25)
+    assert by_symbol.loc["2327.TW", "share_multiplier"] == pytest.approx(4.0)
+    assert by_symbol.loc["2327.TW", "source"] == "twse_twtb8u"
+    assert str(by_symbol.loc["0050.TW", "timestamp"]) == "2025-06-18"
+    assert by_symbol.loc["0050.TW", "price_factor"] == pytest.approx(47.16 / 188.65)
+    assert by_symbol.loc["0050.TW", "share_multiplier"] == pytest.approx(4.0, rel=1e-3)
+    assert by_symbol.loc["0052.TW", "share_multiplier"] == pytest.approx(7.0, rel=1e-3)
+    assert set(by_symbol.loc[["0050.TW", "0052.TW"], "source"]) == {"twse_twtcau"}
+    assert fetched.metadata == {
+        "corporate_actions": 5,
+        "capital_reduction_actions": 2,
+        "par_value_change_actions": 1,
+        "etf_split_actions": 2,
+        "dropped_rows": 0,
+        "pending_rows": 1,
+        "share_rate_from_price": 1,
+        "skipped_unsupported_action_rows": 2,
+        "skipped_unsupported_action_types": {
+            "non_allowlisted_etf_code": 1,
+            "preferred_stock_code": 1,
+        },
+    }
+
+
+def test_twse_fetch_actions_appends_resumption_rows_to_ex_dividend_rows() -> None:
+    client = _RoutingClient(
+        {
+            "TWT49UDetail": {"stat": "無相關資料"},
+            "TWT49U": {
+                "fields": ["資料日期", "股票代號", "除權息前收盤價", "除權息參考價", "權/息"],
+                "data": [["114/06/18", "0050", "50.00", "49.00", "息"]],
+            },
+            "TWTAUU": _EMPTY_RESUMPTION_PAYLOAD,
+            "TWTB8U": _EMPTY_RESUMPTION_PAYLOAD,
+            "TWTCAU": _TWSE_ETF_SPLIT_PAYLOAD,
+        }
+    )
+
+    fetched = TWSEProvider(client, corporate_actions="full").fetch_actions(
+        start="2024-01-01", end="2026-01-01"
+    )
+
+    assert fetched.frame["source"].tolist() == ["twse_twt49u", "twse_twtcau", "twse_twtcau"]
+    assert len(fetched.requests) == 4
+    assert fetched.metadata["corporate_actions"] == 3
+    assert fetched.metadata["ex_dividend_actions"] == 1
+    assert fetched.metadata["etf_split_actions"] == 2
+    assert fetched.metadata["capital_reduction_actions"] == 0
+    assert fetched.metadata["skipped_unsupported_action_types"] == {
+        "non_allowlisted_etf_code": 1
+    }
+    # A dividend and a split on the same date multiply into one factor downstream.
+    merged = normalize_action_frame(fetched.frame)
+    same_day = merged[merged["symbol"] == "0050.TW"]
+    assert len(same_day) == 1
+    assert same_day.iloc[0]["price_factor"] == pytest.approx(0.98 * 47.16 / 188.65)
+    assert same_day.iloc[0]["share_multiplier"] == pytest.approx(4.0, rel=1e-3)
+    assert same_day.iloc[0]["source"] == "twse_twt49u+twse_twtcau"
+
+
+def test_tpex_resumption_actions_take_the_share_rate_from_the_detail_cell() -> None:
+    detail = (
+        "<table><tr><th>停止買賣日期:</th><td>114/01/02</td></tr>"
+        "<tr><th>每壹仟股換發新股票:</th><td>550.00000000&nbsp股</td></tr>"
+        "<tr><th>每股退還股款:</th><td>0.00000000&nbsp元/股</td></tr></table>"
+    )
+    payload = {
+        "tables": [
+            {
+                "fields": [
+                    "恢復買賣日期",
+                    "股票代號",
+                    "名稱",
+                    "最後交易日之收盤價格",
+                    "減資恢復買賣開始日參考價格",
+                    "漲停價格",
+                    "跌停價格",
+                    "開始交易基準價",
+                    "除權參考價",
+                    "減資原因",
+                    "詳細資料",
+                ],
+                "data": [
+                    [
+                        "1140113", "2740", "天蔥", "21.55", "39.18", "43.05", "35.30",
+                        "39.20", "0.00", "彌補虧損", detail,
+                    ],
+                    [
+                        "1050108", "3623", "富晶通", "43.80", "66.00", "72.60", "59.40",
+                        "66.00", "0.00", "現金減資", "",
+                    ],
+                    [
+                        "1140120", "00679B", "債券ETF", "30.00", "31.00", "34.10", "27.90",
+                        "31.00", "0.00", "彌補虧損", "",
+                    ],
+                ],
+            }
+        ],
+        "stat": "ok",
+    }
+    client = _RoutingClient({"revivt": payload})
+
+    fetched = TPExProvider(client).fetch_resumption_actions(
+        start="2016-01-01",
+        end="2026-12-31",
+    )
+
+    assert client.calls[0][1] == {
+        "startDate": "2016/01/01",
+        "endDate": "2026/12/31",
+        "response": "json",
+    }
+    by_symbol = fetched.frame.set_index("symbol")
+    par_changes = by_symbol[by_symbol["source"] == "tpex_par_value_reference"]
+    assert len(par_changes) == 12
+    assert par_changes.loc["6763.TWO", "price_factor"] == pytest.approx(0.1)
+    assert par_changes.loc["6763.TWO", "share_multiplier"] == pytest.approx(10.0)
+    assert str(par_changes.loc["6763.TWO", "timestamp"]) == "2024-09-09"
+    assert fetched.metadata["par_value_change_actions"] == 12
+    by_symbol = by_symbol[by_symbol["source"] != "tpex_par_value_reference"]
+    assert list(by_symbol.index) == ["2740.TWO", "3623.TWO"]
+    assert str(by_symbol.loc["2740.TWO", "timestamp"]) == "2025-01-13"
+    assert by_symbol.loc["2740.TWO", "price_factor"] == pytest.approx(39.18 / 21.55)
+    assert by_symbol.loc["2740.TWO", "share_multiplier"] == pytest.approx(0.55)
+    assert by_symbol.loc["2740.TWO", "source"] == "tpex_revivt"
+    assert str(by_symbol.loc["3623.TWO", "timestamp"]) == "2016-01-08"
+    assert by_symbol.loc["3623.TWO", "share_multiplier"] == pytest.approx(43.8 / 66.0)
+    assert by_symbol.loc["3623.TWO", "source"] == "tpex_revivt_share_rate_from_price"
+    assert fetched.metadata["capital_reduction_actions"] == 2
+    assert fetched.metadata["share_rate_from_price"] == 1
+    assert fetched.metadata["skipped_unsupported_action_types"] == {
+        "non_allowlisted_etf_code": 1
+    }
+
+
+def test_taiwan_resumption_actions_tolerate_official_empty_results() -> None:
+    client = _RoutingClient({"revivt": {"tables": [], "stat": "ok"}})
+
+    fetched = TPExProvider(client).fetch_resumption_actions(
+        start="2026-01-01",
+        end="2026-02-01",
+    )
+
+    assert fetched.frame.empty
+    assert fetched.metadata["capital_reduction_actions"] == 0
+    assert fetched.metadata["par_value_change_actions"] == 0
+
+
+def test_tpex_par_value_changes_are_curated_and_bounded_by_the_request_range() -> None:
+    client = _RoutingClient({"revivt": {"tables": [], "stat": "ok"}})
+
+    fetched = TPExProvider(client).fetch_resumption_actions(
+        start="2024-09-01",
+        end="2024-12-31",
+    )
+
+    assert fetched.frame["symbol"].tolist() == ["6763.TWO", "8932.TWO", "5278.TWO"]
+    assert fetched.frame["price_factor"].tolist() == pytest.approx([0.1, 0.5, 0.1])
+    assert fetched.frame["share_multiplier"].tolist() == pytest.approx([10.0, 2.0, 10.0])
+    assert set(fetched.frame["source"]) == {"tpex_par_value_reference"}
+
+
+def test_dividends_mode_never_requests_the_resume_trading_tables() -> None:
+    class _CountingClient:
+        def __init__(self) -> None:
+            self.endpoints: list[str] = []
+
+        def get_json(
+            self,
+            endpoint: str,
+            *,
+            params: dict[str, Any],
+        ) -> tuple[Any, RequestRecord]:
+            del params
+            self.endpoints.append(endpoint)
+            return (
+                {
+                    "fields": ["資料日期", "股票代號", "除權息前收盤價", "除權息參考價", "權/息"],
+                    "data": [["114年06月18日", "0050", "50.00", "49.00", "息"]],
+                },
+                _request("twse_official"),
+            )
+
+    client = _CountingClient()
+    provider = TWSEProvider(client)
+
+    assert provider.corporate_actions == "dividends"
+    assert provider.action_adjustment_source == "twse_twt49u"
+    fetched = provider.fetch_actions(start="2025-06-01", end="2025-06-30")
+
+    assert client.endpoints == ["https://www.twse.com.tw/rwd/zh/exRight/TWT49U"]
+    assert fetched.frame["source"].tolist() == ["twse_twt49u"]
+    assert fetched.metadata["capital_reduction_actions"] == 0
+    assert TWSEProvider(client, corporate_actions="full").action_adjustment_source == (
+        "twse_twt49u+twtauu+twtb8u+twtcau"
+    )
+    assert TPExProvider(client).action_adjustment_source == "tpex_exdailyq"
+    with pytest.raises(ValueError):
+        TWSEProvider(client, corporate_actions="splits")

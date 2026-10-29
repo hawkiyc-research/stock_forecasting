@@ -187,3 +187,35 @@ def dataset_request_identity_payload(payload: Mapping[str, Any]) -> dict[str, An
         "universe": payload.get("universe"),
         "storage_preparation": storage_preparation,
     }
+
+
+CORPORATE_ACTION_MODES = ("dividends", "full")
+PROVIDER_CACHE_REVISION = "v1"
+
+
+def dataset_revision_policy(revision: Any) -> dict[str, str]:
+    """Map a dataset revision label to the data semantics it selects.
+
+    ``v1`` labels (``v1``, ``v1.1``, ``v1-...``) adjust Taiwan prices for ex-dividend and
+    ex-rights events only (dataset revision v1); ``v2`` labels also compound capital
+    reductions, par-value changes and ETF splits as resume-trading factors (dataset
+    revision v2). The raw provider responses are the same for both, so every label shares
+    the ``v1`` provider cache and only the dataset namespace, the provider checkpoints and
+    the adjusted prices differ.
+    """
+
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("dataset revision label must be a non-empty string")
+    if revision == "v1" or revision.startswith(("v1.", "v1-", "v1_")):
+        mode = "dividends"
+    elif revision == "v2" or revision.startswith(("v2.", "v2-", "v2_")):
+        mode = "full"
+    else:
+        raise ValueError(
+            "dataset revision label must be v1, v2 or one of them followed by '.', '-' or '_'"
+        )
+    return {
+        "revision": revision,
+        "corporate_actions": mode,
+        "cache_revision": PROVIDER_CACHE_REVISION,
+    }

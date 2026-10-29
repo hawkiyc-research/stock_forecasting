@@ -2,8 +2,15 @@
 
 ## 中文
 
-### 未發布（2026-10-29 之後）
+### 未發布（2026-10-26 之後）
 
+- 台股資料管線：`TWSEProvider`／`TPExProvider` 的 `fetch_actions` 另讀取 TWSE 減資（`TWTAUU`）、變更面額（`TWTB8U`）、
+  ETF 分割（`TWTCAU`）與 TPEx 減資（`revivt`）恢復買賣參考價表，加上整理的櫃買變更面額表，以恢復買賣日的
+  `參考價 / 停止買賣前收盤價` 作價格因子，與除權息因子一起累乘到 `adjusted_close`；原始 OHLCV 不變。
+  `twse_official`／`tpex_official` 的資料內容識別碼與 `configs/data_content_identity_snapshot.json` 更新，新資料集需
+  `--dataset-revision v2`。新增 `scripts/fetch_tw_capital_actions.py`、`scripts/detect_tw_price_discontinuities.py`、
+  `configs/reference/tw_capital_actions_20261026.*`、`tw_price_discontinuities_20261026.*` 與
+  `docs/corporate_action_adjustment.md`（0050 一拆四與 2023 年起 109 檔的驗證）。
 - 台股還原價：`TWSEProvider`／`TPExProvider` 的 `fetch_actions` 在除權日「開盤競價基準／開始交易基準價」與「除權息參考價」相差超過前收 0.5% 時改用基準價作價格因子（有償現金增資的基準價停在前收，參考價會製造不存在的跳動；2016 年起 861 列、誤差中位數 1.9%、最大 32%），`source` 加 `_opening_basis`、metadata 加 `opening_basis_rows`；`twse_official`／`tpex_official` 內容識別碼與 `configs/data_content_identity_snapshot.json` 更新，既有資料集不變，下一次資料準備產生新的資料集身分。發現、量化與對 §13.20 數字的敏感度見協定 §13.20 補充三。
 
 ### v0.4.0 2026-10-25
@@ -151,8 +158,17 @@
 
 ## English
 
-### Unreleased (after 2026-10-29)
+### Unreleased (after 2026-10-26)
 
+- Taiwan data pipeline: `fetch_actions` of `TWSEProvider` / `TPExProvider` also reads the TWSE capital-reduction
+  (`TWTAUU`), par-value-change (`TWTB8U`) and ETF-split (`TWTCAU`) tables, the TPEx capital-reduction table
+  (`revivt`) and a curated TPEx par-value table, takes `reference price / last close before the halt` on the
+  resumption session as the price factor and compounds it with the ex-dividend factors into `adjusted_close`;
+  raw OHLCV is unchanged. The `twse_official` / `tpex_official` content identities and
+  `configs/data_content_identity_snapshot.json` are updated; new datasets need `--dataset-revision v2`. New:
+  `scripts/fetch_tw_capital_actions.py`, `scripts/detect_tw_price_discontinuities.py`,
+  `configs/reference/tw_capital_actions_20261026.*`, `tw_price_discontinuities_20261026.*` and
+  `docs/corporate_action_adjustment.md` (verification of 0050's 1:4 split and the 109 names since 2023).
 - Taiwan adjusted prices: `fetch_actions` of `TWSEProvider` / `TPExProvider` uses the exchange's opening basis (開盤競價基準 / 開始交易基準價) as the ex-day price factor whenever it differs from the reference price by more than 0.5% of the prior close (for paid rights issues the basis stays at the prior close and the reference price invented a jump; 861 rows since 2016, median error 1.9%, largest 32%); `source` gains `_opening_basis`, metadata gains `opening_basis_rows`; the `twse_official` / `tpex_official` content identities and `configs/data_content_identity_snapshot.json` are updated, existing datasets are unchanged and the next data preparation gets a new dataset identity. Finding, quantification and the sensitivity of the §13.20 numbers: protocol §13.20 supplement 3.
 
 ### v0.4.0 2026-10-25

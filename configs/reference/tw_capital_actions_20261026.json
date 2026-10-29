@@ -1,0 +1,56 @@
+{
+  "sources": [
+    "https://www.twse.com.tw/rwd/zh/reducation/TWTAUU?response=json&startDate=20160101&endDate=20261231",
+    "https://www.twse.com.tw/rwd/zh/change/TWTB8U?response=json&startDate=20160101&endDate=20261231",
+    "https://www.twse.com.tw/rwd/zh/split/TWTCAU?response=json&startDate=20160101&endDate=20261231",
+    "https://www.tpex.org.tw/www/zh-tw/bulletin/revivt?startDate=2016%2F01%2F01&endDate=2026%2F12%2F31&response=json"
+  ],
+  "range": {
+    "start": "2016-01-01",
+    "end": "2026-12-31"
+  },
+  "counts": {
+    "twse_official": {
+      "dropped_rows": 0,
+      "pending_rows": 2,
+      "share_rate_from_price": 162,
+      "skipped_unsupported_action_rows": 9,
+      "skipped_unsupported_action_types": {
+        "non_allowlisted_etf_code": 9
+      },
+      "capital_reduction_actions": 290,
+      "par_value_change_actions": 10,
+      "etf_split_actions": 2,
+      "corporate_actions": 302
+    },
+    "tpex_official": {
+      "corporate_actions": 241,
+      "capital_reduction_actions": 229,
+      "par_value_change_actions": 12,
+      "dropped_rows": 0,
+      "pending_rows": 0,
+      "share_rate_from_price": 0,
+      "skipped_unsupported_action_rows": 0,
+      "skipped_unsupported_action_types": {}
+    }
+  },
+  "rows": 543,
+  "rows_by_source": {
+    "tpex_par_value_reference": 12,
+    "tpex_revivt": 229,
+    "twse_twtauu": 128,
+    "twse_twtauu_share_rate_from_price": 162,
+    "twse_twtb8u": 10,
+    "twse_twtcau": 2
+  },
+  "columns": [
+    "timestamp",
+    "symbol",
+    "market",
+    "price_factor",
+    "share_multiplier",
+    "source"
+  ],
+  "sha256": "bb5b51829cd2c1df635e7e8a8818035d735dbb57e4b7410a70165d8ee89b474a",
+  "fetched_at": "2026-10-26T12:50:30.716573+00:00"
+}

@@ -4,18 +4,18 @@
     "provider_materialization_digests": {
       "eodhd_us": "c1dd0fa79e541c36501719afc971608b15a198b3daf7ce6dcb06e7726c31e8a3",
       "massive_us": "010d8bc06662458703d6507a411c9d5041826b94a4a19a97ef409ca198428e2d",
-      "tpex_official": "5924cc119485159c1c9f2b889d0c1854cfff663cf53ee003686541bee607f3a2",
-      "twse_official": "035ce9f4d2452edb5a1f05e1b9dc441908f0386b81ce40539703be960dd42af3"
+      "tpex_official": "bbeb189be7e203712dd26f816e0cae10f41ddeef3fcd00b5d3592c01fde6e5ed",
+      "twse_official": "0869fa5ecafbad7b8d1c8e7cb1bdb25a3b6ce2523532c109ba0729b33471055d"
     },
     "raw_materialization_digest": "bda958e436455c2c051e621525df495f684767ff7c133dc9b3124d97c6e22578",
     "bar_store_materialization_digest": "e3376cabeb2a8111be03c6d543f17afb8cb7cf15579e5efd4cd27a8d418ccee5"
   },
-  "data_pipeline_digest": "008b795b7604b1204716d61ec58a50628bd9fb95afa2a834ce6f050b149e9fad",
+  "data_pipeline_digest": "a3e0ad5b3831513734b6cb8f28f08d63d6f0d7fc5fc5340bf7b7ae1fcc5afa95",
   "kind": "data-content-identity-snapshot",
-  "note": "Digests of the selected provider, raw-dataset and bar-store definitions (stock_forecasting.data.content_identity). tests/test_full_workflow_control_plane.py fails when they drift, and a new dataset must accompany any intentional change. 2026-10-29: the twse_official and tpex_official digests changed because fetch_actions now takes the exchange's opening auction basis (TWSE 開盤競價基準 / TPEx 開始交易基準價) as the ex-day price factor whenever it differs from the theoretical reference price by more than tick rounding (0.5% of the prior close): for paid rights issues (有償現金增資) the basis stays at the prior close, and the reference price had printed a spurious drop (861 rows 2016-2026, 386 since 2023, median 1.9%, max 32%) into adjusted_close. Datasets prepared under the previous digest (dataset 98d284df..., experiments up to 13.21) stay valid for the experiments that used them; the next preparation produces a new dataset identity. snapshot_tag still names the Git tag whose CPU prepare/finalize scripts are byte-frozen.",
-  "recorded_at": "2026-10-29",
+  "note": "Digests of the selected provider, raw-dataset and bar-store definitions (stock_forecasting.data.content_identity). tests/test_full_workflow_control_plane.py fails when they drift, and a new dataset namespace must accompany any intentional change. 2026-10-30: the twse_official and tpex_official digests changed when the dataset-v2 branch (now selectable per dataset revision label: v1* = ex-dividend / ex-rights only, v2* = plus the resume-trading factors; dataset_identity.dataset_revision_policy) (capital reductions TWSE TWTAUU / TPEx revivt, par-value changes TWSE TWTB8U and the curated TPEx table, ETF splits TWSE TWTCAU as resume-trading price factors) was merged on top of the 2026-10-29 opening-basis fix for paid rights issues. Datasets prepared under earlier digests stay valid for the experiments that used them. snapshot_tag still names the Git tag whose CPU prepare/finalize scripts are byte-frozen.",
+  "recorded_at": "2026-10-30",
   "schema_version": 1,
   "snapshot_tag": "v0.1.0",
-  "previous_data_pipeline_digest": "14cc0cfc5560725e6ced40391501dfdf0aa26483420031fca3e93d08d7151e55",
-  "previous_recorded_at": "2026-10-22"
+  "previous_data_pipeline_digest": "3158ea82087398882bc5ca17b4e58a84d5d2a396f470908979b49346f63c0ba1",
+  "previous_recorded_at": "2026-10-26"
 }
