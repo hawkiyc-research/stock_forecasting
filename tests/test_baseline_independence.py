@@ -142,12 +142,15 @@ def fixture(selected):
         "date_range": request["date_range"],
         "training_security_scope": request["preparation"]["training_security_scope"],
     }
+    revision_policy = SELECTION["dataset_revision_policy"](request["revision"])
     download = {
         **common,
         "api_policy": {
             "symbol_limit": None,
             "include_delisted": request["universe"]["include_delisted_us"],
-            "cache_revision": request["revision"],
+            "cache_revision": revision_policy["cache_revision"],
+            "dataset_revision": revision_policy["revision"],
+            "corporate_actions": revision_policy["corporate_actions"],
         },
     }
     dataset = {

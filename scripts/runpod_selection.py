@@ -956,10 +956,23 @@ def _bind_marker(
         request["universe"]["include_delisted_us"],
         "download delisted-universe policy",
     )
+    # The revision label selects the corporate-action mode; every label shares the
+    # provider cache revision from the policy, so compare each field to its own contract.
+    revision_policy = dataset_revision_policy(request["revision"])
     _assert_equal(
         api_policy.get("cache_revision"),
-        request["revision"],
+        revision_policy["cache_revision"],
         "download provider-cache revision",
+    )
+    _assert_equal(
+        api_policy.get("dataset_revision"),
+        revision_policy["revision"],
+        "download dataset revision",
+    )
+    _assert_equal(
+        api_policy.get("corporate_actions"),
+        revision_policy["corporate_actions"],
+        "download corporate-action mode",
     )
     if request["universe"]["mode"] == "explicit":
         symbols = marker.get("symbols", {}).get("values")
