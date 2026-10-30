@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
+import json
 import shutil
 import tomllib
 from pathlib import Path
@@ -114,6 +115,16 @@ def _unbound_marker(selection: dict[str, object]) -> dict[str, object]:
     return marker
 
 
+def _download_revision_policy(revision: object) -> dict[str, str]:
+    """The api_policy revision fields the ingestion manifest records for a label."""
+    policy = SELECTION.dataset_revision_policy(revision)
+    return {
+        "cache_revision": policy["cache_revision"],
+        "dataset_revision": policy["revision"],
+        "corporate_actions": policy["corporate_actions"],
+    }
+
+
 def _write_download_manifest(
     volume_root: Path,
     marker: dict[str, object],
@@ -139,7 +150,7 @@ def _write_download_manifest(
             "api_policy": {
                 "symbol_limit": universe["symbol_limit"],
                 "include_delisted": universe["include_delisted_us"],
-                "cache_revision": request["revision"],
+                **_download_revision_policy(request["revision"]),
             },
         },
     )
@@ -182,6 +193,42 @@ def test_unbound_cpu_marker_is_validated_then_bound_to_the_selection(
     assert bound["selection_id"] == selection["selection_id"]
     assert bound["selection_sha256"] == selection["selection_sha256"]
     SELECTION._verify_marker(bound, selection)
+
+
+def test_binding_accepts_a_v1_sublabel_that_shares_the_provider_cache(tmp_path: Path) -> None:
+    """Dataset v1.1 (protocol 13.23) records cache_revision v1 and dataset_revision v1.1."""
+    project_root = _project_root(tmp_path)
+    selection = SELECTION._build_selection(_arguments(dataset_revision="v1.1"), project_root)
+    marker = _unbound_marker(selection)
+    volume_root = tmp_path / "volume"
+    _write_download_manifest(volume_root, marker, selection)
+    manifest_path = volume_root / str(marker["download_manifest"]["relative_path"])
+    api_policy = json.loads(manifest_path.read_text(encoding="utf-8"))["api_policy"]
+    assert api_policy["cache_revision"] == "v1"
+    assert api_policy["dataset_revision"] == "v1.1"
+    assert api_policy["corporate_actions"] == "dividends"
+
+    bound = SELECTION._bind_marker(marker, selection, volume_root=volume_root)
+
+    assert bound["requested_dataset"]["revision"] == "v1.1"
+    SELECTION._verify_marker(bound, selection)
+
+
+def test_binding_rejects_a_download_made_in_another_corporate_action_mode(
+    tmp_path: Path,
+) -> None:
+    project_root = _project_root(tmp_path)
+    selection = SELECTION._build_selection(_arguments(dataset_revision="v1.1"), project_root)
+    marker = _unbound_marker(selection)
+    volume_root = tmp_path / "volume"
+    _write_download_manifest(volume_root, marker, selection)
+    manifest_path = volume_root / str(marker["download_manifest"]["relative_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["api_policy"]["corporate_actions"] = "full"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(SELECTION.SelectionError, match="corporate-action mode"):
+        SELECTION._bind_marker(marker, selection, volume_root=volume_root)
 
 
 def test_binding_rejects_tampered_unbound_dataset_content(tmp_path: Path) -> None:

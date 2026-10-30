@@ -250,10 +250,13 @@ def verify_data(
         if download.get(field) != dataset.get(field):
             raise ValueError(f"Dataset download provenance mismatch: {field}")
     api = download.get("api_policy", {})
+    revision_policy = DATA["dataset_revision_policy"](request["revision"])
     for field, value in (
         ("symbol_limit", request["universe"]["symbol_limit"]),
         ("include_delisted", request["universe"]["include_delisted_us"]),
-        ("cache_revision", request["revision"]),
+        ("cache_revision", revision_policy["cache_revision"]),
+        ("dataset_revision", revision_policy["revision"]),
+        ("corporate_actions", revision_policy["corporate_actions"]),
     ):
         if api.get(field) != value:
             raise ValueError(f"Dataset data acquisition contract mismatch: {field}")
