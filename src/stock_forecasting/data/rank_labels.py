@@ -161,14 +161,8 @@ def _worker_count(requested: int | None, tasks: int, worker_bytes: int) -> tuple
     return count, plan
 
 
-def _bounded_map(
-    function, tasks, count, initializer=None, initargs=(), timeout=WORKER_TIMEOUT_SECONDS
-):
-    """Yield results in submission order with at most 2 * count pending tasks.
-
-    ``timeout`` bounds one task's wall time once it is the oldest pending task; callers
-    whose tasks legitimately run long (fold training) pass their own budget.
-    """
+def _bounded_map(function, tasks, count, initializer=None, initargs=()):
+    """Yield results in submission order with at most 2 * count pending tasks."""
     if count == 1:
         if initializer is not None:
             initializer(*initargs)
@@ -188,7 +182,7 @@ def _bounded_map(
                     pending.append(pool.apply_async(function, (task,)))
             if pending:
                 # Pool termination cancels and joins all children on timeout or error.
-                yield pending.pop(0).get(timeout=timeout)
+                yield pending.pop(0).get(timeout=WORKER_TIMEOUT_SECONDS)
 
 
 _SOURCE = None
