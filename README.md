@@ -582,7 +582,9 @@ manifest；CPU readiness 與訓練 preflight 會逐 shard 核對 size 與 SHA-25
    自行終止。訓練在有界的 spawn process pool 進行：worker 數取 `FIN_TS_LGBM_WORKERS`、可見
    CPU 除以 4、可用記憶體 40%（每 worker 估 2 GiB）與工作數的最小值，每個 worker 的 LightGBM
    執行緒數為 CPU 數除以 worker 數；每個 worker 以 memory map 讀取 fold 矩陣，不重複複製整個
-   訓練集。若 LightGBM 無法安裝，改用 scikit-learn 的 `HistGradientBoostingRegressor`，
+   訓練集。單一工作（一個 fold × 一段 horizon × 全部 seed）的存活上限為
+   `FIN_TS_LGBM_TASK_TIMEOUT_SECONDS`（預設 21600 秒），記錄在 `results.json` 的
+   `worker_plan.task_timeout_seconds`。若 LightGBM 無法安裝，改用 scikit-learn 的 `HistGradientBoostingRegressor`，
    `results.json` 的 `backend` 會註明。進度：
 
    ```bash
@@ -5081,7 +5083,9 @@ the last 12 months of each window as validation) and come from
    process pool: the worker count is the smallest of `FIN_TS_LGBM_WORKERS`, visible CPUs
    divided by 4, 40% of available memory at 2 GiB per worker, and the task count; each
    worker uses CPUs divided by workers LightGBM threads and memory-maps its fold matrices
-   instead of copying the training set. If LightGBM cannot be installed, scikit-learn's
+   instead of copying the training set. One task (one fold × one horizon chunk × every seed)
+   is bounded by `FIN_TS_LGBM_TASK_TIMEOUT_SECONDS` (default 21600 s), recorded as
+   `worker_plan.task_timeout_seconds` in `results.json`. If LightGBM cannot be installed, scikit-learn's
    `HistGradientBoostingRegressor` is used and `results.json` records the `backend`. To watch:
 
    ```bash
