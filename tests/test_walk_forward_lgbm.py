@@ -13,7 +13,6 @@ import pandas as pd
 import pytest
 
 import stock_forecasting.walk_forward_lgbm as module
-from stock_forecasting.data.rank_labels import _bounded_map
 from stock_forecasting.walk_forward import quarterly_folds
 from stock_forecasting.walk_forward_lgbm import (
     MODEL_NAME,
@@ -174,11 +173,19 @@ def _sleep_task(seconds: float) -> float:
     return seconds
 
 
-def test_bounded_map_uses_the_caller_timeout() -> None:
+def test_training_map_uses_the_task_timeout() -> None:
     # Two workers so the pool path (not the in-process shortcut) is exercised.
-    assert list(_bounded_map(_sleep_task, [0.0, 0.0], 2, timeout=60)) == [0.0, 0.0]
+    assert list(module._bounded_training_map(_sleep_task, [0.0, 0.0], 2, 60)) == [0.0, 0.0]
     with pytest.raises(multiprocessing.TimeoutError):
-        list(_bounded_map(_sleep_task, [5.0], 2, timeout=0.2))
+        list(module._bounded_training_map(_sleep_task, [5.0], 2, 0.2))
+
+
+def test_label_implementation_files_are_untouched_by_the_training_pool() -> None:
+    # data/rank_labels.py is byte-hashed into every label store identity (rank and
+    # residual); the training pool must not live there.
+    from stock_forecasting.data import rank_labels
+
+    assert "timeout" not in rank_labels._bounded_map.__code__.co_varnames
 
 
 def test_fold_masks_follow_the_schedule() -> None:

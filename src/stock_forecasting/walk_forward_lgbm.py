@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -434,6 +435,32 @@ def task_timeout_seconds() -> int:
     return value
 
 
+def _bounded_training_map(function, tasks, count: int, timeout: float):
+    """Yield results in submission order with at most 2 * count pending training tasks.
+
+    Same bounded spawn pool as ``rank_labels._bounded_map`` but with the training task
+    budget: that helper's 30-minute limit fits label buckets, not fold training. It is
+    kept here because ``data/rank_labels.py`` is byte-hashed into every label store
+    identity, so changing it would orphan the built stores.
+    """
+    if count == 1:
+        for task in tasks:
+            yield function(task)
+        return
+    with get_context("spawn").Pool(processes=count) as pool:
+        iterator, pending, exhausted = iter(tasks), [], False
+        while pending or not exhausted:
+            while not exhausted and len(pending) < 2 * count:
+                task = next(iterator, None)
+                if task is None:
+                    exhausted = True
+                else:
+                    pending.append(pool.apply_async(function, (task,)))
+            if pending:
+                # Pool termination cancels and joins all children on timeout or error.
+                yield pending.pop(0).get(timeout=timeout)
+
+
 def worker_plan(requested: int | None, tasks: int) -> tuple[int, dict[str, Any]]:
     """Bounded by the override, visible CPUs (4 threads each), memory and task count."""
     override = os.environ.get(WORKERS_ENV)
@@ -846,7 +873,7 @@ def run_walk_forward(
             )
     fold_records: dict[int, list[dict[str, Any]]] = {}
     results = (
-        _bounded_map(run_fold_task, tasks, count, timeout=plan["task_timeout_seconds"])
+        _bounded_training_map(run_fold_task, tasks, count, plan["task_timeout_seconds"])
         if tasks
         else ()
     )
