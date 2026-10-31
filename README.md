@@ -150,7 +150,9 @@ flowchart TD
 `tests/test_cross_stock.py` 驗證），形狀固定後模型以 `torch.compile(mode="reduce-overhead")` 重播 CUDA graph，
 省掉每步從 Python 發出數百個小核心的開銷（這是 GPU 利用率低的原因：每步的運算量遠小於發射開銷）；
 `FIN_TS_XS_COMPILE=0` 關閉編譯、`FIN_TS_XS_PAD_MULTIPLE=0` 關閉補列，編譯失敗會自動退回 eager 並記在
-`fits` 的 `execution` 欄。D1 的凍結編碼器 embedding 改用 pinned memory 非同步上傳與 `inference_mode`。
+`fits` 的 `execution` 欄。編譯產物（Inductor FX graph、Triton 核心與 autotune 結果）由 `runpod_gpu_xs.sh` 指到 volume 的
+`cache/torch-compile/`（`TORCHINDUCTOR_CACHE_DIR`、`TRITON_CACHE_DIR`、`TORCHINDUCTOR_FX_GRAPH_CACHE=1`），同型號 GPU 的下一台 Pod
+跳過冷編譯；CUDA graph 的捕捉仍是每個 process、每個模型實例各做一次。D1 的凍結編碼器 embedding 改用 pinned memory 非同步上傳與 `inference_mode`。
 
 <a id="current-evaluation-zh"></a>
 
@@ -4577,7 +4579,10 @@ the market-state mean and the loss, so real rows score exactly as without paddin
 replaying CUDA graphs instead of launching a few hundred tiny kernels from Python at every step (the cause of
 the low GPU utilization: the compute per step is far smaller than the launch overhead). `FIN_TS_XS_COMPILE=0`
 disables compilation, `FIN_TS_XS_PAD_MULTIPLE=0` disables padding; a compile failure falls back to eager and is
-recorded in the `execution` column of `fits`. The D1 frozen-encoder embedding pass uses pinned asynchronous
+recorded in the `execution` column of `fits`. Compile artifacts (Inductor FX graphs, Triton kernels, autotune
+results) are kept on the volume under `cache/torch-compile/` by `runpod_gpu_xs.sh` (`TORCHINDUCTOR_CACHE_DIR`,
+`TRITON_CACHE_DIR`, `TORCHINDUCTOR_FX_GRAPH_CACHE=1`), so the next Pod with the same GPU model skips the cold
+compile; CUDA-graph capture is still done once per process and model instance. The D1 frozen-encoder embedding pass uses pinned asynchronous
 uploads under `inference_mode`.
 
 <a id="current-evaluation-en"></a>

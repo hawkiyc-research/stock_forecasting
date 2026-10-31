@@ -37,6 +37,13 @@ XS_BASELINE_LAUNCH="${RUNPOD_XS_BASELINE_LAUNCH:-}"
 CACHE_ROOT="${CACHE_ROOT:-${NETWORK_VOLUME_ROOT}/cache}"
 export HF_HOME="${CACHE_ROOT}/huggingface"
 export HF_HUB_DISABLE_XET=1
+# torch.compile artifacts (Inductor FX graphs, Triton kernels, autotune results) live on
+# the volume instead of the container's /tmp, so a later Pod with the same GPU model and
+# torch build skips the cold compile; cache keys include the device name, so different
+# GPUs never share entries. CUDA-graph capture itself is per process and stays.
+export TORCHINDUCTOR_CACHE_DIR="${CACHE_ROOT}/torch-compile/inductor"
+export TRITON_CACHE_DIR="${CACHE_ROOT}/torch-compile/triton"
+export TORCHINDUCTOR_FX_GRAPH_CACHE=1
 export NETWORK_VOLUME_ROOT RUNPOD_VOLUME_ROOT="${NETWORK_VOLUME_ROOT}"
 export PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT RUNPOD_ROLE FEATURE_EXPERIMENT_CONFIG
 
@@ -203,7 +210,7 @@ printf 'Paired baseline: %s\n' "${BASELINE_ROOT}"
 printf '[%s] cross-stock experiment %s seeds %s labels %s: %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${XS_EXPERIMENT}" "${XS_SEEDS}" \
     "${LABEL_VARIANT:-standard}" "${DATA_ROOT}"
-mkdir -p "${HF_HOME}"
+mkdir -p "${HF_HOME}" "${TORCHINDUCTOR_CACHE_DIR}" "${TRITON_CACHE_DIR}"
 # A container restart loses the job but not the volume: reuse the newest UNFINISHED earlier
 # launch's folds (the trainer verifies label variant and feature spec before using them). A
 # launch that already wrote results.json is a result, never a resume source: resuming from one
