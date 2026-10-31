@@ -150,7 +150,11 @@ flowchart TD
 `tests/test_cross_stock.py` 驗證），形狀固定後模型以 `torch.compile(mode="reduce-overhead")` 重播 CUDA graph，
 省掉每步從 Python 發出數百個小核心的開銷（這是 GPU 利用率低的原因：每步的運算量遠小於發射開銷）；
 `FIN_TS_XS_COMPILE=0` 關閉編譯、`FIN_TS_XS_PAD_MULTIPLE=0` 關閉補列，編譯失敗會自動退回 eager 並記在
-`fits` 的 `execution` 欄。編譯產物（Inductor FX graph、Triton 核心與 autotune 結果）由 `runpod_gpu_xs.sh` 指到 volume 的
+`fits` 的 `execution` 欄。2026-11-01 起預設 `FIN_TS_XS_EXECUTION=step`：forward＋loss、backward、梯度裁剪＋fused AdamW
+三段各自編譯成 CUDA graph 重播，group batch 直接寫進每個 bucket 的靜態緩衝區（`mark_static_address`，重播不複製輸入），
+每步留給 Python 的只剩 gather、`zero_grad` 與 loss 累加；`model` 只編譯模型（10-30 的做法，loss、裁剪與 optimizer 仍是
+每步約 50 次 eager 發射，RTX PRO 4500 上利用率約 50%），`eager` 不編譯；某一級失敗會自動降一級並記在 `execution.mode`。
+編譯產物（Inductor FX graph、Triton 核心與 autotune 結果）由 `runpod_gpu_xs.sh` 指到 volume 的
 `cache/torch-compile/`（`TORCHINDUCTOR_CACHE_DIR`、`TRITON_CACHE_DIR`、`TORCHINDUCTOR_FX_GRAPH_CACHE=1`），同型號 GPU 的下一台 Pod
 跳過冷編譯；CUDA graph 的捕捉仍是每個 process、每個模型實例各做一次。D1 的凍結編碼器 embedding 改用 pinned memory 非同步上傳與 `inference_mode`。
 
@@ -4579,7 +4583,13 @@ the market-state mean and the loss, so real rows score exactly as without paddin
 replaying CUDA graphs instead of launching a few hundred tiny kernels from Python at every step (the cause of
 the low GPU utilization: the compute per step is far smaller than the launch overhead). `FIN_TS_XS_COMPILE=0`
 disables compilation, `FIN_TS_XS_PAD_MULTIPLE=0` disables padding; a compile failure falls back to eager and is
-recorded in the `execution` column of `fits`. Compile artifacts (Inductor FX graphs, Triton kernels, autotune
+recorded in the `execution` column of `fits`. Since 2026-11-01 the default is `FIN_TS_XS_EXECUTION=step`: forward + loss,
+backward, and gradient clipping + the fused AdamW update are three compiled regions replayed as CUDA graphs, and each
+group batch is written into that bucket's static buffers (`mark_static_address`, so replays copy no inputs), leaving
+only the gather, `zero_grad` and the loss accumulation to Python per step; `model` compiles the model alone (the
+2026-10-30 path, which left the loss, clipping and optimizer as ~50 eager launches per step and held an RTX PRO 4500 at
+~50% utilization); `eager` compiles nothing. A failing level falls back one level and is recorded in `execution.mode`.
+Compile artifacts (Inductor FX graphs, Triton kernels, autotune
 results) are kept on the volume under `cache/torch-compile/` by `runpod_gpu_xs.sh` (`TORCHINDUCTOR_CACHE_DIR`,
 `TRITON_CACHE_DIR`, `TORCHINDUCTOR_FX_GRAPH_CACHE=1`), so the next Pod with the same GPU model skips the cold
 compile; CUDA-graph capture is still done once per process and model instance. The D1 frozen-encoder embedding pass uses pinned asynchronous

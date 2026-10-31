@@ -440,3 +440,100 @@ def test_padded_group_scores_match_the_unpadded_computation(monkeypatch) -> None
     monkeypatch.setenv("FIN_TS_XS_PAD_MULTIPLE", "-1")
     with pytest.raises(ValueError):
         pad_multiple(torch.device("cpu"))
+
+
+def test_execution_mode_env_and_step_runner_eager_matches_a_manual_step(monkeypatch) -> None:
+    """``FIN_TS_XS_EXECUTION`` selects the step execution; the eager runner is one plain
+    forward / loss / backward / clip / fused-update step."""
+    from stock_forecasting.cross_stock_training import (
+        EXECUTION_ENV,
+        StepRunner,
+        TensorStore,
+        execution_mode,
+    )
+
+    monkeypatch.delenv(EXECUTION_ENV, raising=False)
+    monkeypatch.delenv("FIN_TS_XS_COMPILE", raising=False)
+    assert execution_mode(torch.device("cpu")) == "eager"
+    assert execution_mode(torch.device("cuda")) == "step"
+    monkeypatch.setenv(EXECUTION_ENV, "model")
+    assert execution_mode(torch.device("cuda")) == "model"
+    monkeypatch.setenv("FIN_TS_XS_COMPILE", "0")
+    assert execution_mode(torch.device("cuda")) == "eager"
+    monkeypatch.delenv("FIN_TS_XS_COMPILE")
+    monkeypatch.setenv(EXECUTION_ENV, "graph")
+    with pytest.raises(ValueError, match=EXECUTION_ENV):
+        execution_mode(torch.device("cuda"))
+    monkeypatch.delenv(EXECUTION_ENV)
+
+    monkeypatch.setenv("FIN_TS_XS_PAD_MULTIPLE", "16")
+    sessions = _sessions()
+    table = table_from_caches({"train": _cache("train", sessions, 3, 12)})
+    index = build_group_index(table)
+    store = TensorStore(table, torch.device("cpu"), headroom_bytes=0)
+    store.attach_order(index.order)
+    config, _lambda = make_config("t-xs-scratch", table)
+    torch.manual_seed(7)
+    model = CrossStockModel(config)
+    reference = CrossStockModel(config)
+    reference.load_state_dict(model.state_dict())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    runner = StepRunner(
+        model, optimizer, torch.device("cpu"), lambda_corr=1.0, gradient_clip=1.0, mode="eager"
+    )
+    with pytest.raises(ValueError):
+        StepRunner(
+            model, optimizer, torch.device("cpu"), lambda_corr=1.0, gradient_clip=1.0, mode="x"
+        )
+    model.eval()
+    reference.eval()  # no dropout, so both steps see the same forward
+    batch = store.group_batch(index, 0)
+    loss = runner.train_step(batch)
+    assert loss.ndim == 0 and not loss.requires_grad
+
+    ref_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-3, weight_decay=1e-4)
+    ref_optimizer.zero_grad(set_to_none=True)
+    scores = reference(batch["windows"], batch["features"], valid=batch["valid"])
+    ref_loss, _ = cross_sectional_loss(scores, batch["ranks"], 1.0, check_labels=False)
+    ref_loss.backward()
+    torch.nn.utils.clip_grad_norm_(reference.parameters(), 1.0)
+    ref_optimizer.step()
+    assert torch.allclose(loss, ref_loss.detach())
+    for (name, p), (ref_name, q) in zip(
+        model.named_parameters(), reference.named_parameters(), strict=True
+    ):
+        assert name == ref_name
+        assert torch.allclose(p, q, atol=1e-6), name
+    # Prediction goes through the same runner and drops nothing for the real rows.
+    with torch.no_grad():
+        predicted = runner.predict(batch)
+    assert predicted.shape[0] == batch["windows"].shape[0]
+    monkeypatch.delenv("FIN_TS_XS_PAD_MULTIPLE")
+
+
+def test_static_bucket_buffers_are_refilled_for_a_smaller_group(monkeypatch) -> None:
+    """A smaller group that lands in the bucket of an earlier, larger one must not inherit the
+    larger group's rows: its padding rows are NaN / zero and ``valid`` is false there."""
+    from stock_forecasting.cross_stock_training import TensorStore
+
+    monkeypatch.setenv("FIN_TS_XS_PAD_MULTIPLE", "32")
+    sessions = _sessions()
+    table = table_from_caches({"train": _cache("train", sessions, 5, 14)})
+    index = build_group_index(table)
+    # Shrink one group (its rows are a contiguous slice of the order) so two sizes share the
+    # 32 bucket.
+    small, large = 0, 1
+    index.sizes[small] -= 5
+    store = TensorStore(table, torch.device("cpu"), headroom_bytes=0)
+    store.attach_order(index.order)
+    big = store.group_batch(index, large)
+    assert big["windows"].shape[0] == 32 and int(big["valid"].sum()) == int(index.sizes[large])
+    smaller = store.group_batch(index, small)
+    size = int(index.sizes[small])
+    assert smaller is big  # the same static buffers
+    assert int(smaller["valid"].sum()) == size and not bool(smaller["valid"][size:].any())
+    assert torch.isnan(smaller["features"][size:]).all()
+    assert torch.isnan(smaller["ranks"][size:]).all()
+    assert not smaller["windows"][size:].any()
+    assert torch.equal(smaller["windows"][:size], table.windows[index.rows(small)])
+    monkeypatch.delenv("FIN_TS_XS_PAD_MULTIPLE")
