@@ -232,6 +232,26 @@ def compile_mode(device: torch.device) -> str:
     return "reduce-overhead"
 
 
+EXECUTION_ENV = "FIN_TS_XS_EXECUTION"
+EXECUTION_MODES = ("step", "model", "eager")
+
+
+def execution_mode(device: torch.device) -> str:
+    """How a training step runs on CUDA (``FIN_TS_XS_EXECUTION``): ``step`` (default) replays
+    forward + loss, backward, and gradient clipping + the fused AdamW update as CUDA graphs and
+    gathers every group into static per-bucket buffers, so a step leaves only the gather,
+    ``zero_grad`` and the loss accumulation to Python; ``model`` compiles the model alone (the
+    2026-10-30 path, which left the loss, clipping and optimizer as ~50 eager launches per step
+    and held an RTX PRO 4500 at ~50% utilization); ``eager`` compiles nothing.
+    ``FIN_TS_XS_COMPILE=0`` still means eager; off CUDA the mode is always eager."""
+    if device.type != "cuda" or os.environ.get("FIN_TS_XS_COMPILE", "1").strip() == "0":
+        return "eager"
+    raw = os.environ.get(EXECUTION_ENV, "step").strip().lower() or "step"
+    if raw not in EXECUTION_MODES:
+        raise ValueError(f"{EXECUTION_ENV} must be one of {', '.join(EXECUTION_MODES)}")
+    return raw
+
+
 def maybe_compile(model: torch.nn.Module, device: torch.device) -> tuple[Any, str]:
     """Return (callable module, mode); eager when compilation is off or unavailable."""
     mode = compile_mode(device)
@@ -240,9 +260,7 @@ def maybe_compile(model: torch.nn.Module, device: torch.device) -> tuple[Any, st
     try:
         import torch._dynamo
 
-        torch._dynamo.config.cache_size_limit = max(
-            int(torch._dynamo.config.cache_size_limit), 64
-        )
+        torch._dynamo.config.cache_size_limit = max(int(torch._dynamo.config.cache_size_limit), 64)
         return torch.compile(model, mode=mode, dynamic=False), mode
     except Exception as error:  # pragma: no cover - depends on the Pod's torch build
         return model, f"eager (compile unavailable: {error})"
@@ -275,6 +293,9 @@ class TensorStore:
             "pad_multiple": self.pad_multiple,
         }
         self.order: torch.Tensor | None = None
+        # Static per-bucket buffers (step execution): a group batch is written in place, so
+        # the compiled step sees the same addresses every time and replays without copies.
+        self._buckets: dict[int, dict[str, torch.Tensor]] = {}
 
     def attach_order(self, order: np.ndarray) -> None:
         """Keep the group row order where the gather runs, so a group batch is one slice and
@@ -295,14 +316,48 @@ class TensorStore:
         return self.gather(torch.as_tensor(rows, dtype=torch.long))
 
     def group_batch(self, index: GroupIndex, group: int) -> dict[str, torch.Tensor]:
-        """Batch of one (date, market) group through the attached order, padded to the bucket."""
+        """Batch of one (date, market) group through the attached order, padded to the bucket.
+
+        With the order on the same device as the tensors and padding on, the rows are gathered
+        straight into that bucket's static buffers (one ``index_select`` per tensor plus the
+        padding fills) and the same dict is returned every time: callers must consume it
+        before requesting the next group.
+        """
         size = int(index.sizes[group])
         if self.order is None:
-            batch = self.batch(index.rows(group))
-        else:
-            start = int(index.starts[group])
-            batch = self.gather(self.order[start : start + size])
-        return self.pad(batch, size)
+            return self.pad(self.batch(index.rows(group)), size)
+        start = int(index.starts[group])
+        rows = self.order[start : start + size]
+        if self.pad_multiple <= 0 or rows.device != self.device:
+            return self.pad(self.gather(rows), size)
+        padded = -(-size // self.pad_multiple) * self.pad_multiple
+        bucket = self._bucket(padded)
+        for key, value in self.tensors.items():
+            torch.index_select(value, 0, rows, out=bucket[key][:size])
+            if padded > size:
+                bucket[key][size:].fill_(float("nan") if key in ("features", "ranks") else 0.0)
+        valid = bucket["valid"]
+        valid[:size].fill_(True)
+        if padded > size:
+            valid[size:].fill_(False)
+        return bucket
+
+    def _bucket(self, padded: int) -> dict[str, torch.Tensor]:
+        bucket = self._buckets.get(padded)
+        if bucket is None:
+            bucket = {
+                key: torch.empty((padded, *value.shape[1:]), dtype=value.dtype, device=self.device)
+                for key, value in self.tensors.items()
+            }
+            bucket["valid"] = torch.empty(padded, dtype=torch.bool, device=self.device)
+            if self.device.type == "cuda":
+                # Tell CUDA-graph trees the addresses never change: no per-replay input copy.
+                from torch._dynamo import mark_static_address
+
+                for tensor in bucket.values():
+                    mark_static_address(tensor)
+            self._buckets[padded] = bucket
+        return bucket
 
     def pad(self, batch: dict[str, torch.Tensor], size: int) -> dict[str, torch.Tensor]:
         """Append masked rows up to the next multiple of ``pad_multiple``; ``valid`` marks the
@@ -359,24 +414,95 @@ def _forward(model: Any, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     )
 
 
+def _step_loss(model: Any, batch: dict[str, torch.Tensor], lambda_corr: float) -> torch.Tensor:
+    scores = _forward(model, batch)
+    loss, _parts = cross_sectional_loss(scores, batch["ranks"], lambda_corr, check_labels=False)
+    return loss
+
+
+class StepRunner:
+    """One training step or one prediction pass under an execution mode (``execution_mode``).
+
+    ``step``: forward + loss, backward, and clipping + fused AdamW are compiled with
+    ``reduce-overhead`` and replayed as CUDA graphs. ``model``: only the model is compiled.
+    ``eager``: nothing is. The model and optimizer objects are shared, so a runner can be
+    replaced by one in a cheaper mode mid-fold without losing training state.
+    """
+
+    def __init__(
+        self,
+        model: CrossStockModel,
+        optimizer: torch.optim.Optimizer,
+        device: torch.device,
+        *,
+        lambda_corr: float,
+        gradient_clip: float,
+        mode: str,
+    ) -> None:
+        if mode not in EXECUTION_MODES:
+            raise ValueError(f"Unknown execution mode: {mode}")
+        self.model, self.optimizer, self.device, self.mode = model, optimizer, device, mode
+        self.autocast = device.type == "cuda"
+        self._params = [p for p in model.parameters() if p.requires_grad]
+        self._clip = float(gradient_clip)
+        self._mark_step: Any = None
+
+        def loss_fn(batch: dict[str, torch.Tensor]) -> torch.Tensor:
+            return _step_loss(model, batch, lambda_corr)
+
+        self.loss_fn: Any = loss_fn
+        self.update_fn: Any = self._update
+        self.predict_fn: Any = model
+        if mode == "eager":
+            return
+        from torch._dynamo import config as dynamo_config
+
+        dynamo_config.cache_size_limit = max(int(dynamo_config.cache_size_limit), 64)
+        compiled_model = torch.compile(model, mode="reduce-overhead", dynamic=False)
+        self.predict_fn = compiled_model
+        if mode == "model":
+
+            def model_loss_fn(batch: dict[str, torch.Tensor]) -> torch.Tensor:
+                return _step_loss(compiled_model, batch, lambda_corr)
+
+            self.loss_fn = model_loss_fn
+            return
+        self.loss_fn = torch.compile(loss_fn, mode="reduce-overhead", dynamic=False)
+        self.update_fn = torch.compile(self._update, mode="reduce-overhead", dynamic=False)
+        self._mark_step = getattr(
+            getattr(torch, "compiler", None), "cudagraph_mark_step_begin", None
+        )
+
+    def _update(self) -> None:
+        torch.nn.utils.clip_grad_norm_(self._params, self._clip)
+        self.optimizer.step()
+
+    def train_step(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Forward, loss, backward, clip, update; returns the detached loss (no host sync)."""
+        if self._mark_step is not None:
+            self._mark_step()
+        self.optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.autocast):
+            loss = self.loss_fn(batch)
+        loss.backward()
+        self.update_fn()
+        return loss.detach()
+
+    def predict(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.autocast):
+            return _forward(self.predict_fn, batch)
+
+
 def _predict(
-    model: CrossStockModel,
-    store: TensorStore,
-    index: GroupIndex,
-    groups: np.ndarray,
-    *,
-    autocast: bool,
-    runner: Any = None,
+    runner: StepRunner, store: TensorStore, index: GroupIndex, groups: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """Scores for every row of the groups; returns (rows, scores)."""
-    model.eval()
-    runner = model if runner is None else runner
+    runner.model.eval()
     rows_out, scores_out = [], []
     with torch.no_grad():
         for group in groups:
             batch = store.group_batch(index, int(group))
-            with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
-                scores = _forward(runner, batch)
+            scores = runner.predict(batch)
             rows_out.append(index.rows(int(group)))
             # Drop the padded rows; clone because a CUDA-graph replay reuses the output buffer.
             scores_out.append(scores[: int(index.sizes[int(group)])].float().clone())
@@ -461,11 +587,27 @@ def train_fold(
         weight_decay=params["weight_decay"],
         fused=store.device.type == "cuda",
     )
-    autocast = store.device.type == "cuda"
-    # Padded groups have a handful of static shapes, so the compiled model replays CUDA graphs
+
+    def make_runner(mode: str) -> StepRunner:
+        return StepRunner(
+            model,
+            optimizer,
+            store.device,
+            lambda_corr=lambda_corr,
+            gradient_clip=params["gradient_clip"],
+            mode=mode,
+        )
+
+    # Padded groups have a handful of static shapes, so the compiled regions replay CUDA graphs
     # instead of launching every small kernel from Python: the steps are launch-bound, the
     # model's compute per group being well under a millisecond on a data-centre GPU.
-    runner, execution_mode = maybe_compile(model, store.device)
+    requested = execution_mode(store.device)
+    try:
+        runner = make_runner(requested)
+        execution_label = requested
+    except Exception as error:  # pragma: no cover - depends on the Pod's torch build
+        print(f"cross-stock: {requested} execution unavailable, eager: {error}", flush=True)
+        runner, execution_label = make_runner("eager"), f"eager (compile unavailable: {error})"
     best_ic, best_epoch, best_state, bad_epochs, history = -np.inf, -1, None, 0, []
     for epoch in range(int(params["max_epochs"])):
         model.train()
@@ -477,30 +619,27 @@ def train_fold(
         loss_sum, steps = torch.zeros((), device=store.device), 0
         for group in groups:
             batch = store.group_batch(index, int(group))
-            optimizer.zero_grad(set_to_none=True)
             try:
-                with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
-                    scores = _forward(runner, batch)
+                loss = runner.train_step(batch)
             except Exception as error:  # pragma: no cover - compiler backend failures
-                if runner is model:
+                if runner.mode == "eager":
                     raise
-                print(f"cross-stock: compiled run failed, back to eager: {error}", flush=True)
-                runner, execution_mode = model, f"eager (fallback: {type(error).__name__})"
-                optimizer.zero_grad(set_to_none=True)
-                with torch.autocast(store.device.type, dtype=torch.bfloat16, enabled=autocast):
-                    scores = _forward(runner, batch)
-            loss, _parts = cross_sectional_loss(
-                scores, batch["ranks"], lambda_corr, check_labels=False
-            )
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), params["gradient_clip"])
-            optimizer.step()
-            loss_sum += loss.detach()
+                # A failed step changed nothing the next attempt does not reset (grads are
+                # zeroed first; the fused update is one kernel), so redo it one mode down.
+                fallback = "model" if runner.mode == "step" else "eager"
+                print(
+                    f"cross-stock: {runner.mode} execution failed, back to {fallback}: {error}",
+                    flush=True,
+                )
+                execution_label = (
+                    f"{fallback} (fallback from {runner.mode}: {type(error).__name__})"
+                )
+                runner = make_runner(fallback)
+                loss = runner.train_step(batch)
+            loss_sum += loss
             steps += 1
         losses = [float(loss_sum) / max(steps, 1)]
-        rows, scores = _predict(
-            model, store, index, plan.valid_groups, autocast=autocast, runner=runner
-        )
+        rows, scores = _predict(runner, store, index, plan.valid_groups)
         if not np.array_equal(rows, plan.valid_rows):
             raise RuntimeError("Validation rows changed order between planning and prediction")
         ic = _validation_ic(scores, plan.valid_alpha_ranks, plan.valid_codes, plan.valid_sizes)
@@ -516,9 +655,7 @@ def train_fold(
                 break
     if best_state is not None:
         model.load_state_dict(best_state)
-    rows, scores = _predict(
-        model, store, index, plan.predict_groups, autocast=autocast, runner=runner
-    )
+    rows, scores = _predict(runner, store, index, plan.predict_groups)
     record = {
         "fold": plan.fold.index,
         "seed": seed,
@@ -531,7 +668,7 @@ def train_fold(
         "parameters": parameter_count(model),
         "seconds": time.monotonic() - started,
         "history": history,
-        "execution": {"mode": execution_mode, "pad_multiple": store.pad_multiple},
+        "execution": {"mode": execution_label, "pad_multiple": store.pad_multiple},
     }
     return rows, scores.astype(np.float32), record
 
