@@ -26,8 +26,8 @@
 | 12 | **D0**（GPU；配對基線自動取第 9 步的 launch） | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-scratch --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | 使用者 |
 | 13 | **D1 Kronos-small**（GPU） | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-kronos-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | 使用者 |
 | 14 | **D1 Chronos-2-small**（GPU） | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-chronos2-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | 使用者 |
-| 15 | **下載**：每個 lgbm launch 一次 `download-lgbm`、每個 xs launch 一次 `download-research <launch-id>` | `bash scripts/runpod_workflow.sh download-lgbm`、`bash scripts/runpod_workflow.sh download-research launch-...` | 使用者 |
-| 16 | **本機回測與判定**（§13.23 第 4、5 項）：模型層表、`scenario_suite`（F0、F2 全套件；B0、變體 B、D0、D1 對照）、門檻篩選、P3 驗證 H-M、F2 − F0 增量 | 本機 `backtest/.venv`，命令由本專案給 | 本專案 |
+| 15 | **下載**：每個 lgbm launch 一次 `download-lgbm`、每個 xs launch 一次 `download-xs <launch-id>` | `bash scripts/runpod_workflow.sh download-lgbm launch-...`、`bash scripts/runpod_workflow.sh download-xs launch-...` | 使用者 |
+| 16 | **本機回測與判定**（§13.23 第 4、5 項）：模型層表、`scenario_suite`（七個模型 × 三個策略 = 21 格全部跑完整套件，§13.23 補充一）、門檻篩選（模型層 Rank IC 只作資訊）、P3 驗證 H-M、F2 − F0 增量 | 本機 `backtest/.venv`，命令由本專案給 | 本專案 |
 | 17 | **報告**：新的完整研究報告與入選策略報告（Markdown + Word），舊報告封存到 `reports/deprecated/` 並建索引 | — | 本專案 |
 | 18 | 通過 H-M 的格進入確認期 P4'（§13.23 第 5 項；季度延伸需先建 `configs/walk_forward/tw_quarterly_v3.json`） | — | 本專案登記、使用者啟動 Pod |
 
@@ -69,8 +69,8 @@ On 2026-10-29 v1's adjusted prices were found wrong for paid rights issues (§13
 | 12 | **D0** (GPU; the paired baseline is step 9's launch, picked automatically) | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-scratch --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | the user |
 | 13 | **D1 Kronos-small** (GPU) | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-kronos-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | the user |
 | 14 | **D1 Chronos-2-small** (GPU) | `bash scripts/runpod_workflow.sh xs-train --experiment t-xs-chronos2-small --labelVariant configs/labels/residual_v1a.json --seed 42 --maxRuntime 24h` | the user |
-| 15 | **Download**: one `download-lgbm` per lgbm launch, one `download-research <launch-id>` per xs launch | `bash scripts/runpod_workflow.sh download-lgbm`, `bash scripts/runpod_workflow.sh download-research launch-...` | the user |
-| 16 | **Local backtests and verdicts** (§13.23 items 4 and 5): model-level tables, `scenario_suite` (full suite on F0 and F2; B0, variant B, D0, D1 as references), threshold shortlist, P3 verification H-M, F2 − F0 increment | local `backtest/.venv`, commands given by this project | this project |
+| 15 | **Download**: one `download-lgbm` per lgbm launch, one `download-xs <launch-id>` per xs launch | `bash scripts/runpod_workflow.sh download-lgbm launch-...`, `bash scripts/runpod_workflow.sh download-xs launch-...` | the user |
+| 16 | **Local backtests and verdicts** (§13.23 items 4 and 5): model-level tables, `scenario_suite` (all seven models × three strategies = 21 cells through the full suite, §13.23 supplement 1), threshold shortlist (model-level Rank IC informational only), P3 verification H-M, F2 − F0 increment | local `backtest/.venv`, commands given by this project | this project |
 | 17 | **Reports**: new full research report and selected-strategy report (Markdown + Word); old reports archived under `reports/deprecated/` with an index | — | this project |
 | 18 | Cells passing H-M enter the confirmation period P4' (§13.23 item 5; the quarterly extension needs `configs/walk_forward/tw_quarterly_v3.json` first) | — | registered by this project, Pods launched by the user |
 
