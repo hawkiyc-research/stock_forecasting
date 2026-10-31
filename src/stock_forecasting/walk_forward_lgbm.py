@@ -54,6 +54,9 @@ WORKERS_ENV = "FIN_TS_LGBM_WORKERS"
 WORKER_MEMORY_BYTES = 2 * 1024**3
 MEMORY_FRACTION = 0.4
 MAX_WORKERS = 16
+TASK_TIMEOUT_ENV = "FIN_TS_LGBM_TASK_TIMEOUT_SECONDS"
+# Wall-time budget of one training task (one fold, a chunk of horizons, every seed) once it
+# is the oldest pending task; a liveness guard, not a performance target.
 TASK_TIMEOUT_SECONDS = 6 * 3600
 # Fixed before training (protocol 13.13 item 1).
 LGBM_PARAMS = {
@@ -417,6 +420,20 @@ def backend_name() -> str:
     return "lightgbm"
 
 
+def task_timeout_seconds() -> int:
+    """Per-task wall-time budget: ``TASK_TIMEOUT_ENV`` (positive integer) or the default."""
+    override = os.environ.get(TASK_TIMEOUT_ENV)
+    if not override:
+        return TASK_TIMEOUT_SECONDS
+    try:
+        value = int(override)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"{TASK_TIMEOUT_ENV} must be a positive integer of seconds")
+    return value
+
+
 def worker_plan(requested: int | None, tasks: int) -> tuple[int, dict[str, Any]]:
     """Bounded by the override, visible CPUs (4 threads each), memory and task count."""
     override = os.environ.get(WORKERS_ENV)
@@ -443,6 +460,7 @@ def worker_plan(requested: int | None, tasks: int) -> tuple[int, dict[str, Any]]
         "memory_budget_bytes": memory,
         "per_worker_bytes": WORKER_MEMORY_BYTES,
         "tasks": tasks,
+        "task_timeout_seconds": task_timeout_seconds(),
     }
 
 
@@ -827,7 +845,12 @@ def run_walk_forward(
                 }
             )
     fold_records: dict[int, list[dict[str, Any]]] = {}
-    for result in _bounded_map(run_fold_task, tasks, count) if tasks else ():
+    results = (
+        _bounded_map(run_fold_task, tasks, count, timeout=plan["task_timeout_seconds"])
+        if tasks
+        else ()
+    )
+    for result in results:
         records.extend(result["records"])
         fold_records.setdefault(result["fold"], []).extend(result["records"])
         scores.setdefault(result["fold"], {}).update(result["predictions"])

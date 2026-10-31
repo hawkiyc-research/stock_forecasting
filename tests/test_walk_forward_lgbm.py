@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import multiprocessing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,9 +13,12 @@ import pandas as pd
 import pytest
 
 import stock_forecasting.walk_forward_lgbm as module
+from stock_forecasting.data.rank_labels import _bounded_map
 from stock_forecasting.walk_forward import quarterly_folds
 from stock_forecasting.walk_forward_lgbm import (
     MODEL_NAME,
+    TASK_TIMEOUT_ENV,
+    TASK_TIMEOUT_SECONDS,
     WORKERS_ENV,
     alpha_column,
     block_bootstrap_mean,
@@ -147,6 +151,36 @@ def test_worker_plan_is_bounded_by_cpus_memory_tasks_and_override(monkeypatch) -
         worker_plan(0, 196)
 
 
+def test_worker_plan_carries_the_task_timeout_and_its_override(monkeypatch) -> None:
+    monkeypatch.delenv(WORKERS_ENV, raising=False)
+    monkeypatch.delenv(TASK_TIMEOUT_ENV, raising=False)
+    monkeypatch.setattr(module, "detect_visible_cpu_count", lambda: 8)
+    monkeypatch.setattr(
+        module, "detect_available_memory", lambda: SimpleNamespace(available_bytes=64 * 1024**3)
+    )
+    assert worker_plan(None, 32)[1]["task_timeout_seconds"] == TASK_TIMEOUT_SECONDS == 6 * 3600
+    monkeypatch.setenv(TASK_TIMEOUT_ENV, "7200")
+    assert worker_plan(None, 32)[1]["task_timeout_seconds"] == 7200
+    for bad in ("0", "-5", "soon"):
+        monkeypatch.setenv(TASK_TIMEOUT_ENV, bad)
+        with pytest.raises(ValueError, match=TASK_TIMEOUT_ENV):
+            worker_plan(None, 32)
+
+
+def _sleep_task(seconds: float) -> float:
+    import time
+
+    time.sleep(seconds)
+    return seconds
+
+
+def test_bounded_map_uses_the_caller_timeout() -> None:
+    # Two workers so the pool path (not the in-process shortcut) is exercised.
+    assert list(_bounded_map(_sleep_task, [0.0, 0.0], 2, timeout=60)) == [0.0, 0.0]
+    with pytest.raises(multiprocessing.TimeoutError):
+        list(_bounded_map(_sleep_task, [5.0], 2, timeout=0.2))
+
+
 def test_fold_masks_follow_the_schedule() -> None:
     folds = quarterly_folds(_sessions(), SCHEDULE)
     assert [fold.name for fold in folds] == ["2024Q1", "2024Q2"]
@@ -249,13 +283,21 @@ def test_partial_folds_are_written_and_resumed(tmp_path: Path, monkeypatch) -> N
     # run names a context, so every fold is refitted (protocol 13.20 re-prepares the dataset).
     third = tmp_path / "third"
     results = run_walk_forward(
-        table, output_root=third, max_rounds=20, resume_root=first,
-        resume_context="tw_quarterly_v2|abc", **shared,
+        table,
+        output_root=third,
+        max_rounds=20,
+        resume_root=first,
+        resume_context="tw_quarterly_v2|abc",
+        **shared,
     )
     assert not any(info.get("resumed") for info in results["fold_rows"].values())
     fourth = tmp_path / "fourth"
     results = run_walk_forward(
-        table, output_root=fourth, max_rounds=2, resume_root=third,
-        resume_context="tw_quarterly_v2|abc", **shared,
+        table,
+        output_root=fourth,
+        max_rounds=2,
+        resume_root=third,
+        resume_context="tw_quarterly_v2|abc",
+        **shared,
     )
     assert all(info.get("resumed") for info in results["fold_rows"].values())
