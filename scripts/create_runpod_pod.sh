@@ -81,6 +81,7 @@ esac
 RUNPOD_XS_EXPERIMENT="${RUNPOD_XS_EXPERIMENT:-}"
 RUNPOD_XS_SEEDS="${RUNPOD_XS_SEEDS:-}"
 RUNPOD_LABEL_VARIANT="${RUNPOD_LABEL_VARIANT:-}"
+RUNPOD_WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE:-}"
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "xs" ]]; then
     if [[ ! "${RUNPOD_XS_EXPERIMENT}" =~ ^t-xs-[a-z0-9-]+$ ]]; then
         echo "RUNPOD_XS_EXPERIMENT must name a t-xs-* experiment" >&2
@@ -100,8 +101,21 @@ if [[ "${RUNPOD_GPU_WORKFLOW}" == "xs" ]]; then
             exit 2
         fi
     fi
+    if [[ -n "${RUNPOD_WALK_FORWARD_SCHEDULE}" ]]; then
+        if [[ ! "${RUNPOD_WALK_FORWARD_SCHEDULE}" =~ ^configs/walk_forward/[a-z0-9_]+\.json$ ]]; then
+            echo "RUNPOD_WALK_FORWARD_SCHEDULE must name a file under configs/walk_forward/" >&2
+            exit 2
+        fi
+        if [[ ! -f "${SCRIPT_DIR}/../${RUNPOD_WALK_FORWARD_SCHEDULE}" ]]; then
+            echo "RUNPOD_WALK_FORWARD_SCHEDULE is missing: ${RUNPOD_WALK_FORWARD_SCHEDULE}" >&2
+            exit 2
+        fi
+    fi
 elif [[ -n "${RUNPOD_LABEL_VARIANT}" ]]; then
     echo "RUNPOD_LABEL_VARIANT applies to the xs workflow only" >&2
+    exit 2
+elif [[ -n "${RUNPOD_WALK_FORWARD_SCHEDULE}" ]]; then
+    echo "RUNPOD_WALK_FORWARD_SCHEDULE applies to the xs workflow only" >&2
     exit 2
 fi
 runpod_validate_project_resource_name "${RUNPOD_POD_NAME}" RUNPOD_POD_NAME
@@ -556,6 +570,7 @@ POD_ENV_JSON="$(printf \
 POD_CREATE_JSON="$(RUNPOD_SCOPED_LIFECYCLE="${RUNPOD_SCOPED_LIFECYCLE}" RUNPOD_POD_NAME="${RUNPOD_POD_NAME}" \
     RUNPOD_GPU_WORKFLOW="${RUNPOD_GPU_WORKFLOW}" RUNPOD_XS_EXPERIMENT="${RUNPOD_XS_EXPERIMENT}" \
     RUNPOD_XS_SEEDS="${RUNPOD_XS_SEEDS}" RUNPOD_LABEL_VARIANT="${RUNPOD_LABEL_VARIANT}" \
+    RUNPOD_WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE}" \
     RUNPOD_GPU_ID="${RUNPOD_GPU_ID}" RUNPOD_GPU_COUNT="${RUNPOD_GPU_COUNT}" \
     RUNPOD_IMAGE="${RUNPOD_IMAGE}" RUNPOD_MIN_CUDA_VERSION="${RUNPOD_MIN_CUDA_VERSION}" \
     RUNPOD_CLOUD_TYPE="${RUNPOD_CLOUD_TYPE}" RUNPOD_DATACENTER_ID="${RUNPOD_DATACENTER_ID}" \
@@ -588,6 +603,8 @@ if os.environ.get("RUNPOD_GPU_WORKFLOW") == "xs":
     payload["env"]["RUNPOD_XS_SEEDS"] = os.environ["RUNPOD_XS_SEEDS"]
     if os.environ.get("RUNPOD_LABEL_VARIANT"):
         payload["env"]["RUNPOD_LABEL_VARIANT"] = os.environ["RUNPOD_LABEL_VARIANT"]
+    if os.environ.get("RUNPOD_WALK_FORWARD_SCHEDULE"):
+        payload["env"]["RUNPOD_WALK_FORWARD_SCHEDULE"] = os.environ["RUNPOD_WALK_FORWARD_SCHEDULE"]
 if os.environ.get("RUNPOD_PAIRED_PLAN_PATH"):
     payload["env"]["RUNPOD_PAIRED_PLAN_PATH"] = os.environ["RUNPOD_PAIRED_PLAN_PATH"]
     if os.environ.get("RUNPOD_PAIRED_ACTION"):
@@ -666,8 +683,9 @@ fi
 
 printf 'Created Pod: %s\n' "${POD_ID}"
 if [[ "${RUNPOD_GPU_WORKFLOW}" == "xs" ]]; then
-    printf 'Cross-stock experiment: %s (seeds %s, labels %s)\n' \
-        "${RUNPOD_XS_EXPERIMENT}" "${RUNPOD_XS_SEEDS}" "${RUNPOD_LABEL_VARIANT:-standard}"
+    printf 'Cross-stock experiment: %s (seeds %s, labels %s, schedule %s)\n' \
+        "${RUNPOD_XS_EXPERIMENT}" "${RUNPOD_XS_SEEDS}" "${RUNPOD_LABEL_VARIANT:-standard}" \
+        "${RUNPOD_WALK_FORWARD_SCHEDULE:-configs/walk_forward/tw_quarterly_v1.json}"
 fi
 printf 'Run ID: %s\n' "${WANDB_RUN_ID}"
 if [[ -n "${RUNPOD_TRAINING_SEED:-}" ]]; then

@@ -117,7 +117,7 @@ Usage:
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
   bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json]
+  bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json] [--schedule configs/walk_forward/NAME.json]
   bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
   bash scripts/runpod_workflow.sh volume-weights inventory|delete [OPTIONS]
   bash scripts/runpod_workflow.sh cpu-logs
@@ -698,6 +698,7 @@ EOF
         xs_max_runtime=24h
         xs_gpu_id="NVIDIA GeForce RTX 5090"
         xs_label_variant=""
+        xs_schedule=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
@@ -706,6 +707,7 @@ EOF
                 --maxRuntime|--max-runtime) xs_max_runtime="$2" ;;
                 --gpuId|--gpu-id) xs_gpu_id="$2" ;;
                 --labelVariant|--label-variant) xs_label_variant="$2" ;;
+                --schedule) xs_schedule="$2" ;;
                 *)
                     echo "Unknown xs-train option: $1" >&2
                     usage
@@ -735,6 +737,9 @@ EOF
         export RUNPOD_XS_EXPERIMENT="${xs_experiment}"
         export RUNPOD_XS_SEEDS="${xs_seeds[*]}"
         runpod_export_label_variant "${xs_label_variant}"
+        # Protocol 13.23: the walk-forward schedule (tw_quarterly_v2 for the campaign); the
+        # job script defaults to tw_quarterly_v1 when unset.
+        runpod_export_walk_forward_schedule "${xs_schedule}"
         exec env RUNPOD_GPU_WORKFLOW=xs bash "${SCRIPT_DIR}/create_runpod_pod.sh"
         ;;
     readiness)

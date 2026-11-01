@@ -366,6 +366,38 @@ class XsControlPlaneTests(unittest.TestCase):
             timeout=60,
         )
 
+    def test_xs_pod_carries_the_requested_walk_forward_schedule(self) -> None:
+        """--schedule reaches the Pod as RUNPOD_WALK_FORWARD_SCHEDULE; the job script defaults
+        to tw_quarterly_v1 and validates the override (it was hard-coded until 2026-11-01)."""
+        write_env(self.env_file, "RUNPOD_NETWORK_VOLUME_ID=fixture-volume\n")
+        result = self.command("xs-train", "--schedule", "configs/walk_forward/tw_quarterly_v2.json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        line = next(line for line in result.stdout.splitlines() if "--name" in line)
+        command = shlex.split(line.removeprefix("DRY RUN:"))
+        env = json.loads(command[command.index("--env") + 1])
+        self.assertEqual(
+            env["RUNPOD_WALK_FORWARD_SCHEDULE"], "configs/walk_forward/tw_quarterly_v2.json"
+        )
+        plain = self.command("xs-train")
+        line = next(line for line in plain.stdout.splitlines() if "--name" in line)
+        command = shlex.split(line.removeprefix("DRY RUN:"))
+        self.assertNotIn(
+            "RUNPOD_WALK_FORWARD_SCHEDULE", json.loads(command[command.index("--env") + 1])
+        )
+        for arguments in (
+            ("xs-train", "--schedule", "configs/walk_forward/missing.json"),
+            ("xs-train", "--schedule", "tests/test_walk_forward.py"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.command(*arguments).returncode, 2)
+        job = (ROOT / "scripts/runpod_gpu_xs.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE:-configs/walk_forward/'
+            'tw_quarterly_v1.json}"',
+            job,
+        )
+        self.assertIn("RUNPOD_WALK_FORWARD_SCHEDULE must name a file under", job)
+
     def test_xs_pod_carries_experiment_seeds_and_research_marker(self) -> None:
         write_env(self.env_file, "RUNPOD_NETWORK_VOLUME_ID=fixture-volume\n")
         result = self.command("xs-train", "--experiment", "t-xs-a2-mse-only", "--seed", "7")
