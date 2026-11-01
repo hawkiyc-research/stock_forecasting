@@ -1071,7 +1071,23 @@ def run_cross_stock(
         "seconds": time.monotonic() - started,
     }
     atomic_write_json(output_root / "results.json", results)
+    if resumed:
+        # The source keeps its partial/ and never gets a results.json, so without a stamp the
+        # GPU job would offer it as a resume source to every later launch.
+        atomic_write_json(
+            Path(resume_root) / RESUMED_INTO_NAME,
+            {
+                "resumed_into": output_root.name,
+                "experiment": experiment,
+                "label_variant": label_variant,
+                "fold_seeds": len(resumed),
+                "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+        )
     return results
+
+
+RESUMED_INTO_NAME = "resumed_into.json"
 
 
 def _xs_partial_name(fold_index: int, seed: int) -> str:

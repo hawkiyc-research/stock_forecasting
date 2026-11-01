@@ -214,11 +214,14 @@ mkdir -p "${HF_HOME}" "${TORCHINDUCTOR_CACHE_DIR}" "${TRITON_CACHE_DIR}"
 # A container restart loses the job but not the volume: reuse the newest UNFINISHED earlier
 # launch's folds (the trainer verifies label variant and feature spec before using them). A
 # launch that already wrote results.json is a result, never a resume source: resuming from one
-# would re-emit its predictions under a new launch id instead of training anything.
+# would re-emit its predictions under a new launch id instead of training anything. A launch
+# whose folds a later launch already absorbed carries resumed_into.json (the trainer writes it
+# next to the partial/ it read) and is skipped too: its partial/ never gains a results.json.
 RESUME_ROOT=""
 for resume_candidate in "${NETWORK_VOLUME_ROOT}/diagnostics/xs"/launch-*/partial; do
     # The glob stays literal when nothing matches; only real directories qualify.
-    if [[ -d "${resume_candidate}" && ! -f "$(dirname "${resume_candidate}")/results.json" ]]; then
+    if [[ -d "${resume_candidate}" && ! -f "$(dirname "${resume_candidate}")/results.json" \
+        && ! -f "$(dirname "${resume_candidate}")/resumed_into.json" ]]; then
         RESUME_ROOT="$(dirname "${resume_candidate}")"
     fi
 done
