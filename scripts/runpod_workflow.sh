@@ -117,7 +117,7 @@ Usage:
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
   bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json] [--schedule configs/walk_forward/NAME.json]
+  bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json] [--schedule configs/walk_forward/NAME.json] [--extendLaunch LAUNCH_ID]
   bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
   bash scripts/runpod_workflow.sh volume-weights inventory|delete [OPTIONS]
   bash scripts/runpod_workflow.sh cpu-logs
@@ -699,6 +699,7 @@ EOF
         xs_gpu_id="NVIDIA GeForce RTX 5090"
         xs_label_variant=""
         xs_schedule=""
+        xs_extend_launch=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
@@ -708,6 +709,7 @@ EOF
                 --gpuId|--gpu-id) xs_gpu_id="$2" ;;
                 --labelVariant|--label-variant) xs_label_variant="$2" ;;
                 --schedule) xs_schedule="$2" ;;
+                --extendLaunch|--extend-launch) xs_extend_launch="$2" ;;
                 *)
                     echo "Unknown xs-train option: $1" >&2
                     usage
@@ -740,6 +742,17 @@ EOF
         # Protocol 13.23: the walk-forward schedule (tw_quarterly_v2 for the campaign); the
         # job script defaults to tw_quarterly_v1 when unset.
         runpod_export_walk_forward_schedule "${xs_schedule}"
+        # 2026-11-01 rule: a finished launch's folds are reused wherever the schedule defines
+        # the same fold; only the folds the schedule adds (P3) are trained.
+        if [[ -n "${xs_extend_launch}" ]]; then
+            if [[ ! "${xs_extend_launch}" =~ ^launch-[A-Za-z0-9_-]{1,150}$ ]]; then
+                echo "--extendLaunch must be a launch-... ID" >&2
+                exit 2
+            fi
+            export RUNPOD_XS_EXTEND_LAUNCH="${xs_extend_launch}"
+        else
+            unset RUNPOD_XS_EXTEND_LAUNCH
+        fi
         exec env RUNPOD_GPU_WORKFLOW=xs bash "${SCRIPT_DIR}/create_runpod_pod.sh"
         ;;
     readiness)

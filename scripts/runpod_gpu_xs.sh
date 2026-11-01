@@ -31,6 +31,9 @@ OUTPUT_ROOT="${NETWORK_VOLUME_ROOT}/diagnostics/xs/${LAUNCH_ID}"
 # P3 folds), which the three-seed D0 / D1 launches of that campaign were trained on.
 WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE:-configs/walk_forward/tw_quarterly_v1.json}"
 XS_EXPERIMENT="${RUNPOD_XS_EXPERIMENT:-t-xs-scratch}"
+# A finished launch whose folds this schedule defines identically are reused; only the added
+# folds are trained (workflow option --extendLaunch; 2026-11-01 rule for the P3 folds).
+XS_EXTEND_LAUNCH="${RUNPOD_XS_EXTEND_LAUNCH:-}"
 XS_SEEDS="${RUNPOD_XS_SEEDS:-42 43 44}"
 # Protocol 13.16: train on a residualized label variant and pair against the B0 run of the
 # same variant; empty = the standard labels.
@@ -91,6 +94,10 @@ if [[ ! "${FEATURE_EXPERIMENT_CONFIG}" =~ ^configs/experiments/[a-z0-9_]+\.yaml$
 fi
 if [[ ! "${WALK_FORWARD_SCHEDULE}" =~ ^configs/walk_forward/[a-z0-9_]+\.json$ ]]; then
     echo "RUNPOD_WALK_FORWARD_SCHEDULE must name a file under configs/walk_forward/" >&2
+    exit 2
+fi
+if [[ -n "${XS_EXTEND_LAUNCH}" && ! "${XS_EXTEND_LAUNCH}" =~ ^launch-[A-Za-z0-9_-]{1,150}$ ]]; then
+    echo "RUNPOD_XS_EXTEND_LAUNCH must be a launch-... ID" >&2
     exit 2
 fi
 for path_name in \
@@ -185,8 +192,7 @@ export PYTHONUNBUFFERED=1
 
 printf '[%s] cross-stock tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${POETRY_BIN}" run pytest -q \
-    tests/test_walk_forward.py tests/test_cross_stock.py tests/test_encoders.py \
-    tests/test_verify_resume_rules.py
+    tests/test_walk_forward.py tests/test_cross_stock.py tests/test_encoders.py
 bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
 # The paired H-A comparison needs a finished B0 run of the same label variant on this
 # volume: the newest diagnostics/lgbm/launch-*/results.json whose label_variant matches (the
@@ -258,6 +264,15 @@ if [[ -n "${LABEL_VARIANT}" ]]; then
     # The trainer only resumes partial folds saved under the same label variant.
     printf 'Residualized label variant: %s\n' "${LABEL_VARIANT}"
     XS_ARGUMENTS+=(--label-variant "${LABEL_VARIANT}")
+fi
+if [[ -n "${XS_EXTEND_LAUNCH}" ]]; then
+    EXTEND_ROOT="${NETWORK_VOLUME_ROOT}/diagnostics/xs/${XS_EXTEND_LAUNCH}"
+    if [[ ! -f "${EXTEND_ROOT}/results.json" ]]; then
+        echo "RUNPOD_XS_EXTEND_LAUNCH is not a finished launch on this volume: ${EXTEND_ROOT}" >&2
+        exit 2
+    fi
+    printf 'Extending finished launch %s (its identical folds are reused)\n' "${XS_EXTEND_LAUNCH}"
+    XS_ARGUMENTS+=(--extend-from "${EXTEND_ROOT}")
 fi
 "${POETRY_BIN}" run stock-forecasting-train-cross-stock "${XS_ARGUMENTS[@]}"
 

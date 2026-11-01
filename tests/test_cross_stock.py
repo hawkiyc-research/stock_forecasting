@@ -654,3 +654,77 @@ def test_fold_trainer_reset_reuses_addresses_and_matches_a_fresh_model(monkeypat
     assert all(float(value.abs().sum()) == 0.0 for value in after)
     assert all(p.grad is None for p in trainer.model.parameters())
     monkeypatch.delenv("FIN_TS_XS_PAD_MULTIPLE")
+
+
+def test_extend_from_reuses_identical_folds_and_trains_only_the_added_ones(
+    tmp_path: Path,
+) -> None:
+    """A finished launch on a shorter schedule supplies every fold the longer schedule defines
+    identically (matched by dates, not by index or schedule name); only the added folds are
+    trained; provenance is recorded and the finished source is never stamped."""
+    sessions = pd.bdate_range("2023-01-02", "2024-09-27")
+    table = table_from_caches({"train": _cache("train", sessions, 5, 12)})
+    short = {**SCHEDULE, "name": "short"}
+    longer = {
+        **SCHEDULE,
+        "name": "longer",
+        "data_end": "2024-10-01",
+        "last_quarter": "2024Q3",
+        "periods": {**SCHEDULE["periods"], "P3": ["2024-07-01", "2024-10-01"]},
+    }
+    short_folds = quarterly_folds(sessions[sessions < "2024-07-01"], short)
+    long_folds = quarterly_folds(sessions, longer)
+    assert len(short_folds) == 2 and len(long_folds) == 3
+    shared = dict(
+        experiment="t-xs-a1-no-cross",
+        seeds=(1,),
+        min_group_size=5,
+        device="cpu",
+        max_groups_per_epoch=20,
+        params={"max_epochs": 2, "patience": 2},
+    )
+    first = tmp_path / "first"
+    run_cross_stock(
+        table,
+        folds=short_folds,
+        schedule=short,
+        output_root=first,
+        resume_context="short|ctx",
+        **shared,
+    )
+    extended = run_cross_stock(
+        table,
+        folds=long_folds,
+        schedule=longer,
+        output_root=tmp_path / "extended",
+        resume_context="longer|ctx",
+        extend_from=first,
+        **shared,
+    )
+    assert extended["extended_from"] == "first"
+    assert extended["resume"] == [{"root": "first", "keys": [[0, 1], [1, 1]]}]
+    assert extended["fits"]["count"] == 3
+    assert not (first / "resumed_into.json").exists()
+    a = pd.read_parquet(first / "predictions.parquet")
+    b = pd.read_parquet(tmp_path / "extended" / "predictions.parquet")
+    b = b[b["fold"] < 2].reset_index(drop=True)
+    pd.testing.assert_frame_equal(a.reset_index(drop=True), b)
+    # Another experiment, or an unfinished launch, is refused.
+    with pytest.raises(ValueError, match="trained"):
+        run_cross_stock(
+            table,
+            folds=long_folds,
+            schedule=longer,
+            output_root=tmp_path / "other",
+            extend_from=first,
+            **{**shared, "experiment": "t-xs-a4-no-gating"},
+        )
+    with pytest.raises(ValueError, match="finished"):
+        run_cross_stock(
+            table,
+            folds=long_folds,
+            schedule=longer,
+            output_root=tmp_path / "unfinished",
+            extend_from=tmp_path / "missing",
+            **shared,
+        )

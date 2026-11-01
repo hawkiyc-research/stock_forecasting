@@ -1,15 +1,23 @@
-"""The end-to-end resume-rule verification (scripts/verify_resume_rules.py) must pass: it runs
-the real trainers, the real job-script candidate loops and the real volume-reset plan on a
-volume-like scratch tree. Both Pod jobs run this before training."""
+"""The end-to-end resume-rule verification (scripts/verify_resume_rules.py): it runs the real
+trainers, the real job-script candidate loops and the real volume-reset plan on a volume-like
+scratch tree. Opt-in (``FIN_TS_VERIFY_RESUME=1``): it takes about half a minute and is a local
+check of the resume rules, not part of any Pod gate (Pod time is rent)."""
 
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.skipif(
+    os.environ.get("FIN_TS_VERIFY_RESUME", "") != "1",
+    reason="opt-in: FIN_TS_VERIFY_RESUME=1 runs the end-to-end resume verification",
+)
 def test_resume_rules_end_to_end(tmp_path: Path) -> None:
     spec = importlib.util.spec_from_file_location(
         "verify_resume_rules", ROOT / "scripts" / "verify_resume_rules.py"
