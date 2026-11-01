@@ -173,7 +173,8 @@ export PYTHONUNBUFFERED=1
 
 printf '[%s] walk-forward tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${POETRY_BIN}" run pytest -q \
-    tests/test_walk_forward.py tests/test_walk_forward_lgbm.py
+    tests/test_walk_forward.py tests/test_walk_forward_lgbm.py \
+    tests/test_verify_resume_rules.py
 
 printf '[%s] LightGBM walk-forward baseline: %s (schedule %s)\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}" "${WALK_FORWARD_SCHEDULE}"
