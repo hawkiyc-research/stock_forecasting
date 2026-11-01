@@ -33,6 +33,9 @@ def _volume(tmp_path: Path) -> Path:
     _write(finished / "partial" / "fold-01.parquet", b"q" * 200)
     unfinished = volume / "diagnostics" / "lgbm" / "launch-20261029T000000Z-2"
     _write(unfinished / "partial" / "fold-01.parquet", b"q" * 200)
+    absorbed = volume / "diagnostics" / "xs" / "launch-20261031T000000Z-4"
+    _write(absorbed / "partial" / "fold-00-seed-42.npz", b"z" * 200)
+    _write(absorbed / "resumed_into.json", b"{}")
     xs = volume / "diagnostics" / "xs" / "launch-20261023T000000Z-3"
     _write(xs / "results.json", b"{}")
     _write(xs / "checkpoints" / "fold-01.pt", b"w" * 400)
@@ -62,6 +65,8 @@ def test_plan_targets_superseded_data_and_weights_only(tmp_path: Path) -> None:
     assert f"datasets/{NS}/download-progress.json" in paths
     assert "diagnostics/lgbm/launch-20261028T000000Z-1/partial" in paths
     assert "diagnostics/lgbm/launch-20261029T000000Z-2" in paths
+    # A launch whose folds a later launch absorbed is part of that result's record: kept.
+    assert not any(path.startswith("diagnostics/xs/launch-20261031T000000Z-4") for path in paths)
     assert "diagnostics/xs/launch-20261023T000000Z-3/checkpoints/fold-01.pt" in paths
     assert "diagnostics/invalid" in paths
     assert "savedModel/run-1/checkpoint-000100/adapter.safetensors" in paths

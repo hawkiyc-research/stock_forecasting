@@ -209,40 +209,48 @@ class XsTmuxTests(unittest.TestCase):
         self.assertIn("RUNPOD_ROLE=gpu-train bash", job)
         self.assertIn("--baseline-root", job)
 
-    def test_job_resumes_only_from_an_unfinished_launch(self) -> None:
-        """A launch that wrote results.json is a result, never a resume source: the newest
-        unfinished launch wins even when finished launches are newer."""
+    def test_job_offers_every_unfinished_unstamped_launch(self) -> None:
+        """Every launch with a partial/ but no results.json and no resumed_into.json is a
+        candidate (the trainer picks by content); finished and absorbed launches never are."""
         job = (ROOT / "scripts/runpod_gpu_xs.sh").read_text(encoding="utf-8")
-        start = job.index('RESUME_ROOT=""\n')
+        start = job.index("RESUME_ROOTS=()\n")
         end = job.index("done\n", start) + len("done\n")
         loop = job[start:end]
         self.assertIn('! -f "$(dirname "${resume_candidate}")/results.json"', loop)
         self.assertIn('! -f "$(dirname "${resume_candidate}")/resumed_into.json"', loop)
+        self.assertIn('--resume-root "${resume_root}"', job)
         with tempfile.TemporaryDirectory() as tmp:
-            xs = Path(tmp, "diagnostics", "xs")
+            launches = Path(tmp, "diagnostics", "xs")
             for name, finished in (
                 ("launch-20261026T215000Z-1", True),
                 ("launch-20261027T010000Z-2", False),
                 ("launch-20261027T065055Z-3", True),
+                ("launch-20261027T068000Z-5", False),
             ):
-                (xs / name / "partial").mkdir(parents=True)
+                (launches / name / "partial").mkdir(parents=True)
                 if finished:
-                    (xs / name / "results.json").write_text("{}", encoding="utf-8")
-            (xs / "launch-20261027T070000Z-4").mkdir()  # no partial/ at all
-            # Newest but already absorbed by a later launch: skipped.
-            absorbed = xs / "launch-20261027T080000Z-5"
+                    (launches / name / "results.json").write_text("{}", encoding="utf-8")
+            (launches / "launch-20261027T070000Z-4").mkdir()  # no partial/ at all
+            absorbed = launches / "launch-20261027T080000Z-6"  # newest, already absorbed
             (absorbed / "partial").mkdir(parents=True)
             (absorbed / "resumed_into.json").write_text("{}", encoding="utf-8")
-            script = f'NETWORK_VOLUME_ROOT={shlex.quote(tmp)}\n{loop}printf "%s" "$RESUME_ROOT"\n'
+            script = (
+                f"NETWORK_VOLUME_ROOT={shlex.quote(tmp)}\n{loop}"
+                'printf "%s\\n" ${RESUME_ROOTS[@]+"${RESUME_ROOTS[@]}"}\n'
+            )
+            chosen = subprocess.run(
+                ["bash", "-c", script], check=True, capture_output=True, text=True
+            ).stdout.split()
+            self.assertEqual(
+                [Path(c) for c in chosen],
+                [launches / "launch-20261027T010000Z-2", launches / "launch-20261027T068000Z-5"],
+            )
+            for name in ("launch-20261027T010000Z-2", "launch-20261027T068000Z-5"):
+                (launches / name / "results.json").write_text("{}", encoding="utf-8")
             chosen = subprocess.run(
                 ["bash", "-c", script], check=True, capture_output=True, text=True
             ).stdout
-            self.assertEqual(Path(chosen), xs / "launch-20261027T010000Z-2")
-            (xs / "launch-20261027T010000Z-2" / "results.json").write_text("{}", encoding="utf-8")
-            chosen = subprocess.run(
-                ["bash", "-c", script], check=True, capture_output=True, text=True
-            ).stdout
-            self.assertEqual(chosen, "")  # every launch finished: a fresh run, no resume
+            self.assertEqual(chosen.split(), [])  # nothing to resume: a fresh run
 
     def test_job_refuses_another_role_experiment_seeds_dataset_or_config(self) -> None:
         script = ROOT / "scripts/runpod_gpu_xs.sh"

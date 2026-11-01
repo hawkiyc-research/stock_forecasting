@@ -28,6 +28,11 @@ from stock_forecasting.models.cross_stock import (
     cross_sectional_loss,
     parameter_count,
 )
+from stock_forecasting.resume_sources import (
+    resume_candidates,
+    resume_summary,
+    stamp_resume_source,
+)
 from stock_forecasting.walk_forward import Fold, assign_folds, fold_frame, period_of
 from stock_forecasting.walk_forward_lgbm import (
     BLOCK_LENGTHS,
@@ -876,13 +881,17 @@ def run_cross_stock(
     baseline_daily: pd.DataFrame | None = None,
     max_groups_per_epoch: int | None = None,
     headroom_bytes: int = 4 * 1024**3,
-    resume_root: Path | None = None,
+    resume_root: Path | list[Path] | None = None,
     baseline_model: str = BASELINE_MODEL,
     baseline_daily_residual: pd.DataFrame | None = None,
     label_variant: str | None = None,
+    resume_context: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold and seed; each finished (fold, seed) is written to ``output_root/partial``
-    immediately and reused from ``resume_root`` after a restart.
+    immediately and reused from ``resume_root`` (one or several earlier output roots) after a
+    restart. A partial is reused only when its experiment, label variant and ``resume_context``
+    (schedule, caches, encoder revisions; see ``xs_resume_context``) match and its prediction
+    rows are exactly this run's rows of that fold; every source used is stamped afterwards.
 
     With a label variant (``table.residual`` set, ``label_variant`` named) the scores are also
     evaluated against the residual targets (protocol 13.16) and, when
@@ -893,9 +902,6 @@ def run_cross_stock(
         raise ValueError("A label variant needs both the residual targets and its name")
     partial_root = output_root / "partial"
     partial_root.mkdir(parents=True, exist_ok=True)
-    resumed = _load_xs_partials(
-        resume_root, partial_root, experiment, folds, seeds, label_variant=label_variant
-    )
     params = {**TRAINING_PARAMS, **(params or {})}
     config, lambda_corr = make_config(experiment, table)
     index = build_group_index(table)
@@ -903,6 +909,21 @@ def run_cross_stock(
     store = TensorStore(table, torch_device, headroom_bytes=headroom_bytes)
     store.attach_order(index.order)
     plans = [plan_fold(table, index, fold, min_group_size=min_group_size) for fold in folds]
+    expected_rows = {
+        plan.fold.index: np.concatenate([index.rows(int(g)) for g in plan.predict_groups])
+        for plan in plans
+    }
+    resumed, contributions = _load_xs_partials(
+        resume_root,
+        partial_root,
+        experiment,
+        folds,
+        seeds,
+        label_variant=label_variant,
+        context=resume_context,
+        expected_rows=expected_rows,
+        horizons=len(table.horizons),
+    )
     records, scores = [], {}
     trainer: FoldTrainer | None = None
     for plan in plans:
@@ -940,6 +961,7 @@ def run_cross_stock(
                 values,
                 record,
                 label_variant=label_variant,
+                context=resume_context,
             )
             print(
                 json.dumps(
@@ -1069,34 +1091,22 @@ def run_cross_stock(
             "seconds": float(fits["seconds"].sum()) if len(fits) else 0.0,
         },
         "seconds": time.monotonic() - started,
-        # Provenance of a resumed run: which launch trained which fold-seeds.
-        "resume": (
-            {
-                "root": Path(resume_root).name,
-                "fold_seeds": sorted([fold, seed] for fold, seed in resumed),
-            }
-            if resumed
-            else None
-        ),
+        # Provenance of a resumed run: which launch trained which [fold, seed] keys.
+        "resume": resume_summary(contributions),
     }
     atomic_write_json(output_root / "results.json", results)
-    if resumed:
-        # The source keeps its partial/ and never gets a results.json, so without a stamp the
-        # GPU job would offer it as a resume source to every later launch.
-        atomic_write_json(
-            Path(resume_root) / RESUMED_INTO_NAME,
-            {
-                "resumed_into": output_root.name,
-                "experiment": experiment,
-                "label_variant": label_variant,
-                "fold_seeds": len(resumed),
-                "written_at": datetime.now(UTC).isoformat(timespec="seconds"),
-            },
+    for source, keys in contributions.items():
+        # The source keeps its partial/ and never gets a results.json of its own; the stamp
+        # keeps later jobs from offering it again and the volume reset from deleting it.
+        stamp_resume_source(
+            source,
+            resumed_into=output_root,
+            keys=keys,
+            experiment=experiment,
+            label_variant=label_variant,
+            context=resume_context,
         )
     return results
-
-
-RESUMED_INTO_NAME = "resumed_into.json"
 
 
 def _xs_partial_name(fold_index: int, seed: int) -> str:
@@ -1113,7 +1123,11 @@ def _save_xs_partial(
     record: dict[str, Any],
     *,
     label_variant: str | None = None,
+    context: str | None = None,
 ) -> None:
+    """Persist one finished (fold, seed). The experiment, label variant and context (schedule,
+    caches = dataset + feature spec, encoder revisions) are stored so a resume never mixes in
+    folds of another run; the rows are re-checked against the resuming run's fold."""
     pending = partial_root / (_xs_partial_name(fold_index, seed) + ".pending")
     with pending.open("wb") as stream:
         np.savez(
@@ -1123,48 +1137,87 @@ def _save_xs_partial(
             record=json.dumps(record),
             experiment=experiment,
             label_variant=label_variant or "",
+            context=context or "",
         )
         stream.flush()
         os.fsync(stream.fileno())
     pending.replace(partial_root / _xs_partial_name(fold_index, seed))
 
 
+def xs_resume_context(
+    schedule: dict, cache_roots: dict[str, str], encoder: dict[str, Any] | None
+) -> str:
+    """Schedule name, the three splits' cache digests (dataset, feature spec and group size
+    are in a cache's identity) and the encoder's resolved revisions: a partial belongs to one
+    such context and is never reused by a run of another."""
+    digests = [Path(cache_roots[split]).name[:16] for split in ("train", "validation", "test")]
+    parts = [str(schedule["name"]), *digests]
+    if encoder:
+        revisions = encoder.get("revisions") or {}
+        parts.append(f"{encoder.get('encoder')}@{'+'.join(sorted(map(str, revisions.values())))}")
+    return "|".join(parts)
+
+
 def _load_xs_partials(
-    resume_root: Path | None,
+    resume_root: Path | list[Path] | None,
     partial_root: Path,
     experiment: str,
     folds: list[Fold],
     seeds: tuple[int, ...],
+    *,
     label_variant: str | None = None,
-) -> dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]]:
-    """Finished (fold, seed) pairs of an earlier run of the same experiment and label variant.
-
-    Partials saved under another label variant (or by the standard labels when a variant is
-    asked for) are ignored.
+    context: str | None = None,
+    expected_rows: dict[int, np.ndarray] | None = None,
+    horizons: int | None = None,
+) -> tuple[
+    dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]],
+    dict[Path, list[list[int]]],
+]:
+    """Finished (fold, seed) pairs of earlier runs of this experiment, label variant and
+    context whose rows are exactly this run's rows; the newest candidate supplies a pair first.
+    Returns the pairs and, per source used, the [fold, seed] keys taken from it. Partials saved
+    under another label variant (or by the standard labels when a variant is asked for),
+    another context, or without a context when one is asked for, are ignored.
     """
-    if resume_root is None:
-        return {}
-    source = Path(resume_root) / "partial"
-    resumed = {}
-    for fold in folds:
-        for seed in seeds:
-            path = source / _xs_partial_name(fold.index, seed)
-            if not path.is_file():
-                continue
-            with np.load(path, allow_pickle=False) as payload:
-                if str(payload["experiment"]) != experiment:
+    resumed: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]] = {}
+    contributions: dict[Path, list[list[int]]] = {}
+    for source_root in resume_candidates(resume_root):
+        source = source_root / "partial"
+        for fold in folds:
+            for seed in seeds:
+                if (fold.index, seed) in resumed:
                     continue
-                stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
-                if stored != (label_variant or ""):
+                path = source / _xs_partial_name(fold.index, seed)
+                if not path.is_file():
                     continue
-                resumed[(fold.index, seed)] = (
-                    np.asarray(payload["rows"], dtype=np.int64),
-                    np.asarray(payload["values"], dtype=np.float32),
-                    json.loads(str(payload["record"])),
-                )
-            if path.resolve() != (partial_root / path.name).resolve():
-                (partial_root / path.name).write_bytes(path.read_bytes())
-    return resumed
+                with np.load(path, allow_pickle=False) as payload:
+                    if str(payload["experiment"]) != experiment:
+                        continue
+                    stored = (
+                        str(payload["label_variant"]) if "label_variant" in payload.files else ""
+                    )
+                    if stored != (label_variant or ""):
+                        continue
+                    stored_context = str(payload["context"]) if "context" in payload.files else ""
+                    if stored_context != (context or ""):
+                        continue
+                    rows = np.asarray(payload["rows"], dtype=np.int64)
+                    values = np.asarray(payload["values"], dtype=np.float32)
+                    if expected_rows is not None and not np.array_equal(
+                        rows, expected_rows[fold.index]
+                    ):
+                        continue
+                    if horizons is not None and values.shape != (len(rows), horizons):
+                        continue
+                    resumed[(fold.index, seed)] = (
+                        rows,
+                        values,
+                        json.loads(str(payload["record"])),
+                    )
+                contributions.setdefault(source_root, []).append([fold.index, seed])
+                if path.resolve() != (partial_root / path.name).resolve():
+                    (partial_root / path.name).write_bytes(path.read_bytes())
+    return resumed, contributions
 
 
 def write_xs_manifest(

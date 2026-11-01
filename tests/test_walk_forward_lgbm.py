@@ -286,6 +286,16 @@ def test_partial_folds_are_written_and_resumed(tmp_path: Path, monkeypatch) -> N
         "fold-00.npz",
         "fold-01.npz",
     ]
+    # Provenance in the result and a stamp in the source: the source keeps its partial/ and
+    # never gets a results.json, so the stamp is what keeps later Pod jobs from offering it.
+    assert results["resume"] == [{"root": "first", "keys": [0, 1]}]
+    stamp = json.loads((first / "resumed_into.json").read_text(encoding="utf-8"))
+    assert stamp["resumed_into"] == "second" and stamp["keys"] == [0, 1]
+    stamped = run_walk_forward(
+        table, output_root=tmp_path / "stamped", max_rounds=20, resume_root=first, **shared
+    )
+    assert stamped["resume"] is None
+    assert not any(info.get("resumed") for info in stamped["fold_rows"].values())
     # Folds saved under another context (schedule or dataset) are never reused: the third
     # run names a context, so every fold is refitted (protocol 13.20 re-prepares the dataset).
     third = tmp_path / "third"
@@ -308,3 +318,14 @@ def test_partial_folds_are_written_and_resumed(tmp_path: Path, monkeypatch) -> N
         **shared,
     )
     assert all(info.get("resumed") for info in results["fold_rows"].values())
+    assert results["resume"] == [{"root": "third", "keys": [0, 1]}]
+    # Several candidates: the newest launch name wins per fold; unusable ones are ignored.
+    fifth = run_walk_forward(
+        table,
+        output_root=tmp_path / "fifth",
+        max_rounds=2,
+        resume_root=[tmp_path / "missing", first, fourth],
+        resume_context="tw_quarterly_v2|abc",
+        **shared,
+    )
+    assert fifth["resume"] == [{"root": "fourth", "keys": [0, 1]}]

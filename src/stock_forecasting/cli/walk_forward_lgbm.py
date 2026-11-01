@@ -44,7 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, required=True, help="New directory.")
     parser.add_argument("--scratch", type=Path, help="Fold matrices (default: output root).")
     parser.add_argument(
-        "--resume-root", type=Path, help="Earlier output root whose partial folds are reused."
+        "--resume-root",
+        type=Path,
+        action="append",
+        help="Earlier output root whose partial folds are reused (repeatable: the trainer "
+        "takes, per fold, the newest candidate of the same labels, feature spec, schedule and "
+        "dataset, and stamps every source it used).",
     )
     parser.add_argument("--workers", type=int, help=f"Training processes, 1-{MAX_WORKERS}.")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS))
@@ -62,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=os.environ.get("TW_CHIP_DATA_ROOT") or None,
         help="tw_chip_data/data (curated layer) for chip feature specs (protocol 13.18); "
-             "defaults to $TW_CHIP_DATA_ROOT. Exported so the store identity can be resolved.",
+        "defaults to $TW_CHIP_DATA_ROOT. Exported so the store identity can be resolved.",
     )
     return parser
 
