@@ -1069,6 +1069,15 @@ def run_cross_stock(
             "seconds": float(fits["seconds"].sum()) if len(fits) else 0.0,
         },
         "seconds": time.monotonic() - started,
+        # Provenance of a resumed run: which launch trained which fold-seeds.
+        "resume": (
+            {
+                "root": Path(resume_root).name,
+                "fold_seeds": sorted([fold, seed] for fold, seed in resumed),
+            }
+            if resumed
+            else None
+        ),
     }
     atomic_write_json(output_root / "results.json", results)
     if resumed:

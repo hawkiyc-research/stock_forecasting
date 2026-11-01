@@ -264,6 +264,7 @@ def test_finished_fold_seeds_are_written_and_resumed(tmp_path: Path) -> None:
     assert results["fits"]["count"] == len(folds)
     # The consumed source is stamped so the GPU job never offers it again (it keeps its
     # partial/ and never gets a results.json of its own).
+    assert results["resume"] == {"root": "first", "fold_seeds": [[0, 1], [1, 1]]}
     stamp = json.loads((first / "resumed_into.json").read_text(encoding="utf-8"))
     assert stamp["resumed_into"] == "second"
     assert stamp["experiment"] == "t-xs-a1-no-cross"
@@ -277,6 +278,7 @@ def test_finished_fold_seeds_are_written_and_resumed(tmp_path: Path) -> None:
         **{**shared, "experiment": "t-xs-a4-no-gating"},
     )
     assert other["fits"]["mean_epochs"] == 1.0
+    assert other["resume"] is None
     assert stamp == json.loads((first / "resumed_into.json").read_text(encoding="utf-8"))
 
 
