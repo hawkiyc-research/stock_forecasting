@@ -25,7 +25,11 @@ CODE_MARKER="${LIFECYCLE_ROOT}/stage1/code.json"
 # One marker per volume, as for the research job; the guard checks its Pod ID.
 FEATURES_MARKER="${LIFECYCLE_ROOT}/research/xs-train.json"
 OUTPUT_ROOT="${NETWORK_VOLUME_ROOT}/diagnostics/xs/${LAUNCH_ID}"
-WALK_FORWARD_SCHEDULE="configs/walk_forward/tw_quarterly_v1.json"
+# The walk-forward schedule may be another file under configs/walk_forward/
+# (RUNPOD_WALK_FORWARD_SCHEDULE, workflow option --schedule); the campaign of protocol 13.23
+# runs on tw_quarterly_v2. Until 2026-11-01 this was fixed at tw_quarterly_v1 (14 folds, no
+# P3 folds), which the three-seed D0 / D1 launches of that campaign were trained on.
+WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE:-configs/walk_forward/tw_quarterly_v1.json}"
 XS_EXPERIMENT="${RUNPOD_XS_EXPERIMENT:-t-xs-scratch}"
 XS_SEEDS="${RUNPOD_XS_SEEDS:-42 43 44}"
 # Protocol 13.16: train on a residualized label variant and pair against the B0 run of the
@@ -83,6 +87,10 @@ if [[ "${DATA_ROOT%/*}" != "${NETWORK_VOLUME_ROOT}/datasets" \
 fi
 if [[ ! "${FEATURE_EXPERIMENT_CONFIG}" =~ ^configs/experiments/[a-z0-9_]+\.yaml$ ]]; then
     echo "FEATURE_EXPERIMENT_CONFIG must name a file under configs/experiments/" >&2
+    exit 2
+fi
+if [[ ! "${WALK_FORWARD_SCHEDULE}" =~ ^configs/walk_forward/[a-z0-9_]+\.json$ ]]; then
+    echo "RUNPOD_WALK_FORWARD_SCHEDULE must name a file under configs/walk_forward/" >&2
     exit 2
 fi
 for path_name in \
