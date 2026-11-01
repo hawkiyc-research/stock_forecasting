@@ -735,6 +735,14 @@ def train_fold(
         # Flat across fold-seeds when the static-address reuse works; growth means re-recording.
         execution["peak_allocated_bytes"] = int(torch.cuda.max_memory_allocated(store.device))
         execution["reserved_bytes"] = int(torch.cuda.memory_reserved(store.device))
+        # Device-level usage (driver view): memory held outside the PyTorch allocator — CUDA
+        # graph instantiations, compiled kernels — shows up here but not in reserved_bytes.
+        # 2026-11-01: nvidia-smi grew ~1.2 GB per fold on a 14-fold run while reserved_bytes
+        # stayed flat; the bucket count says whether that tracks the distinct padded shapes.
+        free, total = torch.cuda.mem_get_info(store.device)
+        execution["device_used_bytes"] = int(total - free)
+        execution["device_total_bytes"] = int(total)
+        execution["bucket_count"] = len(store._buckets)
     record = {
         "fold": plan.fold.index,
         "seed": seed,

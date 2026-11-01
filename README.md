@@ -156,7 +156,8 @@ flowchart TD
 每步約 50 次 eager 發射，RTX PRO 4500 上利用率約 50%），`eager` 不編譯；某一級失敗會自動降一級並記在 `execution.mode`。
 整個 run 只建一次模型與 optimizer（`FoldTrainer`），每個（fold, seed）把以該 seed 新建模型的參數原地複製進去、optimizer 狀態原地歸零，
 所以參數與狀態的位址固定，CUDA graph 不會為每個 fold 重錄（重錄會保留舊錄影的記憶體：Kronos 三 seed 曾在第 33 個 fold-seed OOM）；
-`fits.execution` 另記 `peak_allocated_bytes` 與 `reserved_bytes`，各 fold 應持平，持續上升就是重錄。
+`fits.execution` 另記 `peak_allocated_bytes` 與 `reserved_bytes`（PyTorch 配置器的峰值與保留量，各 fold 應持平，持續上升就是重錄）、
+`device_used_bytes`／`device_total_bytes`（驅動層的顯示卡用量，含配置器以外的 CUDA graph 與核心）與 `bucket_count`（至今出現的補齊形狀數）。
 編譯產物（Inductor FX graph、Triton 核心與 autotune 結果）由 `runpod_gpu_xs.sh` 指到 volume 的
 `cache/torch-compile/`（`TORCHINDUCTOR_CACHE_DIR`、`TRITON_CACHE_DIR`、`TORCHINDUCTOR_FX_GRAPH_CACHE=1`），同型號 GPU 的下一台 Pod
 跳過冷編譯；CUDA graph 的捕捉仍是每個 process、每個模型實例各做一次。D1 的凍結編碼器 embedding 改用 pinned memory 非同步上傳與 `inference_mode`。
@@ -4599,7 +4600,9 @@ One model and optimizer serve the whole run (`FoldTrainer`): every (fold, seed) 
 built under that seed into them in place and zeroes the optimizer state in place, so parameter and state addresses never
 change and the CUDA-graph trees never re-record per fold (re-recording keeps the earlier recordings' memory: the Kronos
 three-seed launch ran out of GPU memory at its 33rd fold-seed). `fits.execution` also records `peak_allocated_bytes` and
-`reserved_bytes`, which should stay flat across folds; growth means re-recording.
+`reserved_bytes` (the PyTorch allocator's peak and reserved sizes, which should stay flat across folds; growth means
+re-recording), `device_used_bytes` / `device_total_bytes` (the driver's view of the card, including CUDA graphs and
+kernels outside the allocator) and `bucket_count` (distinct padded shapes seen so far).
 Compile artifacts (Inductor FX graphs, Triton kernels, autotune
 results) are kept on the volume under `cache/torch-compile/` by `runpod_gpu_xs.sh` (`TORCHINDUCTOR_CACHE_DIR`,
 `TRITON_CACHE_DIR`, `TORCHINDUCTOR_FX_GRAPH_CACHE=1`), so the next Pod with the same GPU model skips the cold
