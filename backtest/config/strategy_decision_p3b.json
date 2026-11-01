@@ -1,0 +1,61 @@
+{
+  "schema_version": "1.0",
+  "name": "strategy-decision-p3b",
+  "description": "Experiment protocol section 13.23 supplement 2: strategy_decision.json with the report periods derived from the data end (P3 = [2026-07-01, 2026-10-23), P2 = the four quarters before it); rules, thresholds and the increment block are unchanged. Experiment protocol section 13.20 items 5 and 6 plus supplement 1, applied to a scenario_suite_v1_p3 output: the original argmax rule (highest P1+P2 institution net Sharpe on TW at fractional capital among S1, S2 and S-A) is still reported; the amended rule shortlists every cell whose net Sharpe reaches 1.5 in P1, P2 and P1+P2 and whose P1+P2 lower bound is above zero, and reads H-J for each of them (strict 'not deeper' and the 2x multiple). The chip increment at the strategy level is the paired F2 - F0 daily net difference (informational).",
+  "selection": {
+    "profile": "institution",
+    "market": "TW",
+    "capital": "fractional",
+    "period": "P1+P2",
+    "metric": "sharpe",
+    "scenarios": [
+      "md_ls",
+      "md_ls_tx",
+      "wk_long"
+    ],
+    "score_variant": "v1",
+    "leg_matching": "none"
+  },
+  "confirmation": {
+    "period": "P3",
+    "drawdown_multiple": 2.0
+  },
+  "increment": {
+    "base": "F0",
+    "treat": "F2",
+    "bootstrap": {
+      "block": 21,
+      "replicates": 1000,
+      "seed": 11
+    }
+  },
+  "periods": {
+    "P1": [
+      "2023-01-02",
+      "2025-07-01"
+    ],
+    "P2": [
+      "2025-07-01",
+      "2026-07-01"
+    ],
+    "P3": [
+      "2026-07-01",
+      "2026-10-23"
+    ]
+  },
+  "decision_periods": [
+    "P1",
+    "P2"
+  ],
+  "annualization_days": 252,
+  "shortlist": {
+    "periods": [
+      "P1",
+      "P2",
+      "P1+P2"
+    ],
+    "sharpe_min": 1.5,
+    "lower_bound_period": "P1+P2",
+    "lower_bound_above": 0.0
+  }
+}

@@ -51,6 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
         "takes, per fold, the newest candidate of the same labels, feature spec, schedule and "
         "dataset, and stamps every source it used).",
     )
+    parser.add_argument(
+        "--extend-from",
+        type=Path,
+        help="Finished launch of the same model and labels to carry on (2026-11-02 rule): folds "
+        "with the same training window are linked (same prediction window) or scored by their "
+        "saved models (another window); P3 folds without saved models, and new folds, are "
+        "trained; that launch is stamped superseded_by.json and loses its model files.",
+    )
     parser.add_argument("--workers", type=int, help=f"Training processes, 1-{MAX_WORKERS}.")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS))
     parser.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
@@ -144,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
         model_name=model_name,
         label_variant=variant_name,
         resume_context=resume_context(schedule, stores),
+        extend_from=args.extend_from,
+        feature_spec=str(spec.get("name") or args.spec.stem),
     )
     write_manifest(
         args.output_root,
@@ -164,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                 "folds": len(folds),
                 "horizons": horizons,
                 "seeds": list(args.seeds),
+                "model_folds": results["model_folds"],
                 "fits": results["fits"],
                 "cells": [
                     cell

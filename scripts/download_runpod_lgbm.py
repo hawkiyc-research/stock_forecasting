@@ -15,7 +15,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(1, str(Path(__file__).resolve().parent.parent / "src"))
 from download_runpod_features import LAUNCH_PATTERN, Reader, transfer_timeout
+
+from stock_forecasting.model_lineage import LINEAGE_NAME, REGISTRY_DIR, update_registry
 
 WORKFLOWS = {
     "lgbm": {
@@ -39,6 +42,8 @@ WORKFLOWS = {
 }
 MANIFEST_NAME = "walk-forward-manifest.json"
 FILE_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,80}")
+# Saved P3-fold models (2026-11-02 rule): models/fold-XX/<file>.
+MODEL_PATTERN = re.compile(r"models/fold-[0-9]{2}/[A-Za-z0-9_.-]{1,80}")
 
 
 def summary_lines(results: dict) -> list[str]:
@@ -119,10 +124,34 @@ def main(argv: list[str] | None = None) -> int:
         if not reader.download(f"{remote_root}/{launch_id}/{name}", local / name, entry["sha256"]):
             print(f"Missing on the volume: {name}", file=sys.stderr)
             return 4
+    models = manifest.get("models") or {}
+    if not isinstance(models, dict):
+        print("The walk-forward manifest lists models in an unsupported way", file=sys.stderr)
+        return 4
+    for name, entry in models.items():
+        if MODEL_PATTERN.fullmatch(name) is None or not isinstance(entry.get("sha256"), str):
+            print(f"The manifest names an unexpected model file: {name!r}", file=sys.stderr)
+            return 4
+        if not reader.download(f"{remote_root}/{launch_id}/{name}", local / name, entry["sha256"]):
+            print(f"Missing on the volume: {name}", file=sys.stderr)
+            return 4
     results = json.loads((local / "results.json").read_text(encoding="utf-8"))
-    print(f"Verified {len(manifest['files'])} files for {launch_id} under {local}")
+    print(
+        f"Verified {len(manifest['files'])} files and {len(models)} model files for "
+        f"{launch_id} under {local}"
+    )
     for line in summary_lines(results):
         print(line)
+    if (local / LINEAGE_NAME).is_file():
+        # The registry (committed with the repository) now points at this launch for its
+        # model; it says which launch holds each fold's predictions and models.
+        path, registry = update_registry(args.project_root / REGISTRY_DIR, local)
+        print(
+            f"Registry {path.relative_to(args.project_root)}: current launch "
+            f"{registry['current']['launch']}, model folds {registry['model_folds']}"
+        )
+    else:
+        print("No lineage.json: the launch predates the model rule; registry unchanged")
     return 0
 
 

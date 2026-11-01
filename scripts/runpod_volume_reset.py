@@ -17,14 +17,18 @@ What is DELETED (``--apply``):
   unfinished launch (no ``results.json`` / ``features-manifest.json``) entirely, and in a
   finished one its ``partial/`` resume directory — except a launch carrying
   ``resumed_into.json`` (a later launch absorbed its folds: part of that result's record,
-  kept whole);
+  kept whole) and except a launch another launch LINKS INTO (2026-11-02 rule: a launch
+  extended by ``--extendLaunch`` keeps its ``partial/`` because the successor's partials are
+  symbolic links to it; it carries ``superseded_by.json``). A superseded launch's leftover
+  ``models/`` files are deleted (the successor holds every model P3 needs);
 * ``forward/<date>/shared-cache/`` and every non-JSON file of ``forward/<date>/package/``
   (bars and caches of the forward pipeline);
 * model weights and cached tensors anywhere outside the protected roots: ``*.pt``, ``*.pth``,
   ``*.safetensors``, ``*.bin``, ``*.ckpt``, ``*.npy``, ``*.npz``, ``*.joblib``, ``*.pkl``,
   ``*.pickle``, LightGBM ``*.lgb`` / ``model*.txt`` (GPU checkpoints under ``savedModel/``,
-  baseline caches, cross-stock checkpoints). LightGBM launches never persisted boosters
-  (``walk_forward_lgbm`` keeps predictions only), so a LightGBM launch loses only ``partial/``.
+  baseline caches, cross-stock checkpoints) — EXCEPT the ``models/`` directory of a finished,
+  not superseded walk-forward launch (``diagnostics/lgbm``, ``diagnostics/xs``): since
+  2026-11-02 those are the saved P3-fold models of the current launch and part of the result.
 
 What is KEPT (never touched):
 
@@ -59,6 +63,9 @@ NAMESPACE = re.compile(r"^[0-9a-f]{64}$")
 LAUNCH_ROOTS = ("diagnostics/lgbm", "diagnostics/xs", "diagnostics/features")
 FINISHED_MARKERS = ("results.json", "features-manifest.json")
 RESUMED_INTO_MARKER = "resumed_into.json"
+SUPERSEDED_BY_MARKER = "superseded_by.json"
+MODELS_DIR = "models"
+WALK_FORWARD_ROOTS = ("diagnostics/lgbm", "diagnostics/xs")
 PROTECTED_DIRS = ("lifecycle", "logs", "evaluations")
 WEIGHT_SUFFIXES = (
     ".pt",
@@ -133,8 +140,42 @@ def plan_namespaces(volume: Path) -> list[dict]:
     return entries
 
 
+def linked_launches(volume: Path) -> set[Path]:
+    """Launch directories that another launch's ``partial/`` links into (2026-11-02 rule:
+    an extended launch's folds are symbolic links to the launch that trained them)."""
+    targets: set[Path] = set()
+    for relative in WALK_FORWARD_ROOTS:
+        root = volume / relative
+        if not root.is_dir():
+            continue
+        for link in root.glob("launch-*/partial/*"):
+            if not link.is_symlink():
+                continue
+            with contextlib.suppress(OSError):
+                targets.add(Path(os.path.realpath(link)).parent.parent)
+    return targets
+
+
+def is_current_walk_forward_launch(volume: Path, path: Path) -> bool:
+    """Whether ``path`` lies in a finished, not superseded launch under diagnostics/lgbm or
+    diagnostics/xs: its ``models/`` holds the saved P3-fold models and is never swept."""
+    try:
+        parts = path.relative_to(volume).parts
+    except ValueError:
+        return False
+    if len(parts) < 3 or "/".join(parts[:2]) not in WALK_FORWARD_ROOTS:
+        return False
+    launch = volume / parts[0] / parts[1] / parts[2]
+    return (
+        parts[2].startswith("launch-")
+        and (launch / "results.json").is_file()
+        and not (launch / SUPERSEDED_BY_MARKER).is_file()
+    )
+
+
 def plan_launches(volume: Path) -> list[dict]:
     entries: list[dict] = []
+    linked = linked_launches(volume)
     for relative in LAUNCH_ROOTS:
         root = volume / relative
         if not root.is_dir():
@@ -146,6 +187,15 @@ def plan_launches(volume: Path) -> list[dict]:
             if (launch / RESUMED_INTO_MARKER).is_file():
                 # A later launch absorbed its folds: it is part of that result's record
                 # (per-fold records, logs) and is kept whole.
+                continue
+            if (launch / SUPERSEDED_BY_MARKER).is_file() or launch.resolve() in linked:
+                # A later launch carries this one's folds through links into its partial/:
+                # the launch stays (results, partial); only leftover model files go.
+                models = launch / MODELS_DIR
+                if models.is_dir() and not models.is_symlink():
+                    entries.append(
+                        _entry(volume, models, "weights", "model files of a superseded launch")
+                    )
                 continue
             if not finished:
                 entries.append(
@@ -185,10 +235,26 @@ def plan_forward(volume: Path) -> list[dict]:
     return entries
 
 
+def is_carried_launch_partial(volume: Path, path: Path, linked: set[Path]) -> bool:
+    """Whether ``path`` is the ``partial/`` of a launch a later launch carries on (stamped
+    ``superseded_by.json`` or linked into): its .npz files are that successor's folds."""
+    if path.name != "partial":
+        return False
+    launch = path.parent
+    try:
+        parts = launch.relative_to(volume).parts
+    except ValueError:
+        return False
+    if len(parts) != 3 or "/".join(parts[:2]) not in WALK_FORWARD_ROOTS:
+        return False
+    return (launch / SUPERSEDED_BY_MARKER).is_file() or launch.resolve() in linked
+
+
 def plan_weights(volume: Path, planned: set[str]) -> list[dict]:
     """Weight and tensor files anywhere, except inside protected roots or already planned dirs."""
 
     entries: list[dict] = []
+    linked = linked_launches(volume)
     skip_prefixes = tuple(f"{p}/" for p in planned) + tuple(f"{d}/" for d in PROTECTED_DIRS)
     for root, dirs, files in os.walk(volume):
         current = Path(root)
@@ -201,6 +267,10 @@ def plan_weights(volume: Path, planned: set[str]) -> list[dict]:
             # A resume source a later launch absorbed: its partial/ (.npz) is that result's
             # per-fold record, kept whole.
             or (current / RESUMED_INTO_MARKER).is_file()
+            # The saved P3-fold models of a current walk-forward launch (2026-11-02 rule).
+            or (current.name == MODELS_DIR and is_current_walk_forward_launch(volume, current))
+            # The partial/ a later launch links into (its folds live there).
+            or is_carried_launch_partial(volume, current, linked)
         ):
             dirs[:] = []
             continue

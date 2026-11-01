@@ -34,8 +34,15 @@ class Fold:
 def load_schedule(path: str | Path = DEFAULT_SCHEDULE_PATH) -> dict:
     schedule = json.loads(Path(path).read_text(encoding="utf-8"))
     required = {
-        "schema", "name", "calendar", "train_start", "data_end", "first_quarter",
-        "last_quarter", "embargo_sessions", "validation_months", "periods",
+        "schema",
+        "name",
+        "calendar",
+        "train_start",
+        "data_end",
+        "first_quarter",
+        "last_quarter",
+        "embargo_sessions",
+        "validation_months",
     }
     if not required <= set(schedule) or schedule["schema"] != SCHEDULE_SCHEMA:
         raise ValueError("Walk-forward schedule is incomplete or uses an unsupported schema")
@@ -45,7 +52,38 @@ def load_schedule(path: str | Path = DEFAULT_SCHEDULE_PATH) -> dict:
         raise ValueError("validation_months must be a positive integer")
     pd.Period(schedule["first_quarter"], freq="Q")
     pd.Period(schedule["last_quarter"], freq="Q")
+    if "periods" not in schedule:
+        # 2026-11-02 rule: the report periods follow the data end, they are not hand-written.
+        schedule["periods"] = derive_periods(schedule)
+        schedule["periods_derived"] = True
+    elif not isinstance(schedule["periods"], dict) or not schedule["periods"]:
+        raise ValueError("periods must be a non-empty object or absent (derived)")
     return schedule
+
+
+def derive_periods(schedule: dict) -> dict[str, list[str]]:
+    """Report periods from ``data_end`` (the user's 2026-11-02 rule).
+
+    P3, the out-of-sample period, is the last complete calendar quarter before ``data_end``
+    plus whatever part of the current quarter the data covers: at least one quarter, under two
+    (data_end 2026-10-23 → P3 from 2026-07-01; 2027-01-01 → 2026Q4 only; 2027-03-08 → 2026Q4
+    plus 2027Q1 to 03-08). P2 is the four quarters before P3; P1 runs from the first fold's
+    quarter to P2. Every bound is a half-open ISO date.
+    """
+    data_end = pd.Timestamp(schedule["data_end"]).normalize()
+    last_day = pd.Period(data_end - pd.Timedelta(days=1), freq="Q")
+    complete = data_end >= (last_day + 1).start_time.normalize()
+    p3_start = (last_day if complete else last_day - 1).start_time.normalize()
+    p2_start = (pd.Period(p3_start, freq="Q") - 4).start_time.normalize()
+    p1_start = pd.Period(schedule["first_quarter"], freq="Q").start_time.normalize()
+    if not p1_start < p2_start:
+        raise ValueError("The schedule is too short for P1 before the four P2 quarters")
+    fmt = "%Y-%m-%d"
+    return {
+        "P1": [p1_start.strftime(fmt), p2_start.strftime(fmt)],
+        "P2": [p2_start.strftime(fmt), p3_start.strftime(fmt)],
+        "P3": [p3_start.strftime(fmt), data_end.strftime(fmt)],
+    }
 
 
 def quarterly_folds(sessions: pd.DatetimeIndex, schedule: dict) -> list[Fold]:

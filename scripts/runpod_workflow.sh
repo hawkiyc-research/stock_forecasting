@@ -115,7 +115,7 @@ Usage:
   bash scripts/runpod_workflow.sh chip [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR]
   bash scripts/runpod_workflow.sh features [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data]
   bash scripts/runpod_workflow.sh download-features [LAUNCH_ID]
-  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json]
+  bash scripts/runpod_workflow.sh lgbm [--maxRuntime DURATION] [--cpuNumber N] [--cpuFlavor FLAVOR] [--labelVariant configs/labels/NAME.json] [--spec configs/features/NAME.json] [--chipDataRoot /runpod-volume/datasets/tw-chip-data] [--schedule configs/walk_forward/NAME.json] [--extendLaunch LAUNCH_ID]
   bash scripts/runpod_workflow.sh download-lgbm [LAUNCH_ID]
   bash scripts/runpod_workflow.sh xs-train [--experiment t-xs-NAME] [--seed N ...] [--maxRuntime DURATION] [--gpuId GPU_ID] [--labelVariant configs/labels/NAME.json] [--schedule configs/walk_forward/NAME.json] [--extendLaunch LAUNCH_ID]
   bash scripts/runpod_workflow.sh download-xs [LAUNCH_ID]
@@ -619,6 +619,7 @@ EOF
         lgbm_spec=""
         lgbm_chip_root=""
         lgbm_schedule=""
+        lgbm_extend_launch=""
         while [[ $# -gt 0 ]]; do
             [[ "$1" != --* || $# -ge 2 ]] || { echo "$1 requires a value" >&2; exit 2; }
             case "$1" in
@@ -629,6 +630,7 @@ EOF
                 --spec) lgbm_spec="$2" ;;
                 --chipDataRoot|--chip-data-root) lgbm_chip_root="$2" ;;
                 --schedule) lgbm_schedule="$2" ;;
+                --extendLaunch|--extend-launch) lgbm_extend_launch="$2" ;;
                 *)
                     echo "Unknown lgbm option: $1" >&2
                     usage
@@ -644,6 +646,17 @@ EOF
         runpod_export_feature_spec "${lgbm_spec}"
         runpod_export_chip_data_root "${lgbm_chip_root}"
         runpod_export_walk_forward_schedule "${lgbm_schedule}"
+        # 2026-11-02 rule: a finished launch of the same model is carried on (its folds linked
+        # or scored by their saved models), only the folds P3 needs are trained and kept.
+        if [[ -n "${lgbm_extend_launch}" ]]; then
+            if [[ ! "${lgbm_extend_launch}" =~ ^launch-[A-Za-z0-9_-]{1,150}$ ]]; then
+                echo "--extendLaunch must be a launch-... ID" >&2
+                exit 2
+            fi
+            export RUNPOD_LGBM_EXTEND_LAUNCH="${lgbm_extend_launch}"
+        else
+            unset RUNPOD_LGBM_EXTEND_LAUNCH
+        fi
         export RUNPOD_CPU_WORKFLOW=lgbm
         export RUNPOD_CPU_MAX_RUNTIME_SECONDS="${lgbm_max_seconds}"
         export RUNPOD_CPU_HARD_LIMIT_SECONDS="$((lgbm_max_seconds + 3600))"

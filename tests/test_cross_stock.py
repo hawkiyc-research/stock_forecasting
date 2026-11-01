@@ -19,8 +19,15 @@ from stock_forecasting.cross_stock_training import (
     paired_comparison,
     plan_fold,
     run_cross_stock,
+    score_table_with_launch,
     table_from_caches,
     write_xs_manifest,
+)
+from stock_forecasting.model_lineage import (
+    SUPERSEDED_BY_NAME,
+    read_lineage,
+    read_model_manifest,
+    training_key,
 )
 from stock_forecasting.models.cross_stock import (
     CrossStockConfig,
@@ -656,12 +663,13 @@ def test_fold_trainer_reset_reuses_addresses_and_matches_a_fresh_model(monkeypat
     monkeypatch.delenv("FIN_TS_XS_PAD_MULTIPLE")
 
 
-def test_extend_from_reuses_identical_folds_and_trains_only_the_added_ones(
+def test_extend_from_links_identical_folds_keeps_weights_and_supersedes(
     tmp_path: Path,
 ) -> None:
     """A finished launch on a shorter schedule supplies every fold the longer schedule defines
-    identically (matched by dates, not by index or schedule name); only the added folds are
-    trained; provenance is recorded and the finished source is never stamped."""
+    identically (matched by the training window, not by index or schedule name): those folds
+    are linked, not copied; only the added fold is trained and, being P3, keeps its weights;
+    the source is stamped superseded and loses its weight files; the lineage records it."""
     sessions = pd.bdate_range("2023-01-02", "2024-09-27")
     table = table_from_caches({"train": _cache("train", sessions, 5, 12)})
     short = {**SCHEDULE, "name": "short"}
@@ -682,33 +690,64 @@ def test_extend_from_reuses_identical_folds_and_trains_only_the_added_ones(
         device="cpu",
         max_groups_per_epoch=20,
         params={"max_epochs": 2, "patience": 2},
+        resume_context="short|dataset-a",
+        feature_spec="spec_a",
     )
-    first = tmp_path / "first"
-    run_cross_stock(
-        table,
-        folds=short_folds,
-        schedule=short,
-        output_root=first,
-        resume_context="short|ctx",
-        **shared,
+    first = tmp_path / "launch-first"
+    results = run_cross_stock(table, folds=short_folds, schedule=short, output_root=first, **shared)
+    # No P3 in the short schedule: the last fold keeps its weights (2026-11-02 rule).
+    assert results["model_folds"] == [1]
+    manifest = read_model_manifest(first / "models" / "fold-01")
+    assert manifest is not None and list(manifest["files"]) == ["seed-1.pt"]
+    assert (
+        manifest["experiment"] == "t-xs-a1-no-cross" and manifest["files"]["seed-1.pt"]["seed"] == 1
     )
+    assert read_lineage(first)["key"] == "t-xs-a1-no-cross__standard__spec_a"
     extended = run_cross_stock(
         table,
         folds=long_folds,
         schedule=longer,
-        output_root=tmp_path / "extended",
-        resume_context="longer|ctx",
+        output_root=tmp_path / "launch-extended",
         extend_from=first,
-        **shared,
+        **{**shared, "resume_context": "longer|dataset-a"},
     )
-    assert extended["extended_from"] == "first"
-    assert extended["resume"] == [{"root": "first", "keys": [[0, 1], [1, 1]]}]
+    assert extended["extended_from"] == "launch-first" and extended["model_folds"] == [2]
+    assert extended["resume"] == [{"root": "launch-first", "keys": [[0, 1], [1, 1]]}]
     assert extended["fits"]["count"] == 3
     assert not (first / "resumed_into.json").exists()
+    for index in (0, 1):
+        link = tmp_path / "launch-extended" / "partial" / f"fold-0{index}-seed-1.npz"
+        assert link.is_symlink() and link.resolve() == (first / "partial" / link.name).resolve()
+    assert read_model_manifest(tmp_path / "launch-extended" / "models" / "fold-02") is not None
+    assert not (tmp_path / "launch-extended" / "models" / "fold-01").exists()
+    lineage = read_lineage(tmp_path / "launch-extended")
+    assert [lineage["folds"][str(i)]["how"] for i in range(3)] == ["linked", "linked", "trained"]
+    assert lineage["folds"]["0"]["predictions_launch"] == "launch-first"
+    assert lineage["folds"]["2"]["models"] == "models/fold-02" and lineage["p3"] == [
+        "2024-07-01",
+        "2024-10-01",
+    ]
+    stamp = json.loads((first / SUPERSEDED_BY_NAME).read_text(encoding="utf-8"))
+    assert stamp["superseded_by"] == "launch-extended" and stamp["folds"] == [0, 1]
+    assert stamp["pruned_models"] == [
+        "models/fold-01/model-manifest.json",
+        "models/fold-01/seed-1.pt",
+    ]
+    assert not (first / "models").exists() and (first / "partial" / "fold-00-seed-1.npz").is_file()
     a = pd.read_parquet(first / "predictions.parquet")
-    b = pd.read_parquet(tmp_path / "extended" / "predictions.parquet")
+    b = pd.read_parquet(tmp_path / "launch-extended" / "predictions.parquet")
     b = b[b["fold"] < 2].reset_index(drop=True)
     pd.testing.assert_frame_equal(a.reset_index(drop=True), b)
+    # Another dataset (context after the schedule name) is never carried on.
+    other = run_cross_stock(
+        table,
+        folds=long_folds,
+        schedule=longer,
+        output_root=tmp_path / "launch-other-data",
+        extend_from=tmp_path / "launch-extended",
+        **{**shared, "resume_context": "longer|dataset-b"},
+    )
+    assert other["resume"] is None and other["fits"]["count"] == 3
     # Another experiment, or an unfinished launch, is refused.
     with pytest.raises(ValueError, match="trained"):
         run_cross_stock(
@@ -728,3 +767,100 @@ def test_extend_from_reuses_identical_folds_and_trains_only_the_added_ones(
             extend_from=tmp_path / "missing",
             **shared,
         )
+
+
+def test_extend_from_scores_a_longer_window_with_the_saved_weights(tmp_path: Path) -> None:
+    """A fold whose training window matches but whose prediction window grew (a quarter cut at
+    the old data end, like 2026Q2 in tw_quarterly_v1) is scored by its saved weights, not
+    retrained: the rows both launches share carry identical scores."""
+    sessions = _sessions()
+    table = table_from_caches({"train": _cache("train", sessions, 5, 12)})
+    cut = {**SCHEDULE, "name": "cut", "data_end": "2024-06-01"}
+    cut_folds = quarterly_folds(sessions[sessions < "2024-06-01"], cut)
+    full_folds = quarterly_folds(sessions, SCHEDULE)
+    assert training_key(cut_folds[1]) == training_key(full_folds[1])
+    assert cut_folds[1].predict_end != full_folds[1].predict_end
+    shared = dict(
+        experiment="t-xs-a1-no-cross",
+        seeds=(1, 2),
+        min_group_size=5,
+        device="cpu",
+        max_groups_per_epoch=20,
+        params={"max_epochs": 2, "patience": 2},
+        resume_context="x|dataset-a",
+    )
+    first = tmp_path / "launch-cut"
+    run_cross_stock(table, folds=cut_folds, schedule=cut, output_root=first, **shared)
+    second = tmp_path / "launch-full"
+    results = run_cross_stock(
+        table,
+        folds=full_folds,
+        schedule={
+            **SCHEDULE,
+            "periods": {**SCHEDULE["periods"], "P3": ["2024-04-01", "2024-07-01"]},
+        },
+        output_root=second,
+        extend_from=first,
+        **shared,
+    )
+    lineage = read_lineage(second)
+    assert lineage["folds"]["0"]["how"] == "linked" and lineage["folds"]["1"]["how"] == "predicted"
+    assert lineage["folds"]["1"]["models_from"] == "launch-cut"
+    fits = pd.read_parquet(second / "fits.parquet")
+    assert (fits[fits["fold"] == 1]["epochs"] == 0).all()
+    assert results["model_folds"] == [1]
+    manifest = read_model_manifest(second / "models" / "fold-01")
+    assert manifest is not None and sorted(manifest["files"]) == ["seed-1.pt", "seed-2.pt"]
+    a = pd.read_parquet(first / "predictions.parquet")
+    b = pd.read_parquet(second / "predictions.parquet")
+    keys = ["symbol", "market", "signal_date", "model"]
+    a1 = a[a["fold"] == 1].set_index(keys).sort_index()
+    b1 = b[b["fold"] == 1].set_index(keys).sort_index()
+    assert len(b1) > len(a1)
+    score_columns = [c for c in a1.columns if c.startswith("score_")]
+    pd.testing.assert_frame_equal(b1.loc[a1.index, score_columns], a1[score_columns])
+    assert not (first / "models").exists()
+
+
+def test_saved_weights_score_dates_through_the_fold_selector(tmp_path: Path) -> None:
+    """score_table_with_launch reproduces the launch's own scores of its model fold on the
+    shared rows and ranks the ensemble per (date, market)."""
+    sessions = _sessions()
+    table = table_from_caches({"train": _cache("train", sessions, 5, 12)})
+    folds = quarterly_folds(sessions, SCHEDULE)
+    launch = tmp_path / "launch-scored"
+    run_cross_stock(
+        table,
+        experiment="t-xs-a1-no-cross",
+        folds=folds,
+        schedule={
+            **SCHEDULE,
+            "periods": {**SCHEDULE["periods"], "P3": ["2024-04-01", "2024-07-01"]},
+        },
+        output_root=launch,
+        seeds=(1, 2),
+        min_group_size=5,
+        device="cpu",
+        max_groups_per_epoch=20,
+        params={"max_epochs": 2, "patience": 2},
+    )
+    scores, record = score_table_with_launch(
+        table, launch, start="2024-05-01", end="2024-07-01", device="cpu"
+    )
+    assert set(record["folds_by_date"].values()) == {1}
+    predictions = pd.read_parquet(launch / "predictions.parquet")
+    keys = ["symbol", "market", "signal_date", "model"]
+    shared_rows = predictions[
+        (predictions["fold"] == 1) & (predictions["signal_date"] >= "2024-05-01")
+    ]
+    a = shared_rows.set_index(keys).sort_index()
+    b = scores.set_index(keys).sort_index().loc[a.index]
+    score_columns = [c for c in a.columns if c.startswith("score_")]
+    pd.testing.assert_frame_equal(b[score_columns], a[score_columns], check_exact=False, atol=1e-5)
+    ensemble = scores[scores["model"] == "t-xs-a1-no-cross"]
+    day = ensemble[ensemble["signal_date"] == ensemble["signal_date"].min()]
+    for market in ("TWSE", "TPEX"):
+        ranks = day[day["market"] == market]["rank_h05"].to_numpy()
+        assert sorted(ranks) == list(range(1, len(ranks) + 1))
+    with pytest.raises(ValueError, match="precedes"):
+        score_table_with_launch(table, launch, start="2024-02-01", end="2024-02-10", device="cpu")

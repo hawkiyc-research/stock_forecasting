@@ -34,6 +34,10 @@ OUTPUT_ROOT="${NETWORK_VOLUME_ROOT}/diagnostics/lgbm/${LAUNCH_ID}"
 # (RUNPOD_WALK_FORWARD_SCHEDULE, workflow option --schedule); its data_end must not exceed the
 # dataset's holdout end (configure --test-end).
 WALK_FORWARD_SCHEDULE="${RUNPOD_WALK_FORWARD_SCHEDULE:-configs/walk_forward/tw_quarterly_v1.json}"
+# 2026-11-02 rule: a finished launch of the same model to carry on (workflow option
+# --extendLaunch); its identical folds are linked, folds with saved models are re-scored, only
+# the folds P3 needs are trained and keep their models.
+LGBM_EXTEND_LAUNCH="${RUNPOD_LGBM_EXTEND_LAUNCH:-}"
 LGBM_SCRATCH_ROOT="${NETWORK_VOLUME_ROOT}/tmp/lgbm-${LAUNCH_ID}"
 export NETWORK_VOLUME_ROOT RUNPOD_VOLUME_ROOT="${NETWORK_VOLUME_ROOT}"
 export PROJECT_ROOT DATA_ROOT LOG_ROOT LIFECYCLE_ROOT RUNPOD_ROLE FEATURE_EXPERIMENT_CONFIG
@@ -70,6 +74,10 @@ if [[ ! "${FEATURE_SPEC}" =~ ^configs/features/[a-z0-9_]+\.json$ ]]; then
 fi
 if [[ ! "${WALK_FORWARD_SCHEDULE}" =~ ^configs/walk_forward/[a-z0-9_]+\.json$ ]]; then
     echo "RUNPOD_WALK_FORWARD_SCHEDULE must name a file under configs/walk_forward/" >&2
+    exit 2
+fi
+if [[ -n "${LGBM_EXTEND_LAUNCH}" && ! "${LGBM_EXTEND_LAUNCH}" =~ ^launch-[A-Za-z0-9_-]{1,150}$ ]]; then
+    echo "RUNPOD_LGBM_EXTEND_LAUNCH must be a launch-... ID" >&2
     exit 2
 fi
 if [[ -n "${CHIP_DATA_ROOT}" ]]; then
@@ -217,6 +225,19 @@ fi
 if [[ -n "${CHIP_DATA_ROOT}" ]]; then
     printf 'Feature spec %s with chip data root %s\n' "${FEATURE_SPEC}" "${CHIP_DATA_ROOT}"
     LGBM_ARGUMENTS+=(--chip-data-root "${CHIP_DATA_ROOT}")
+fi
+if [[ -n "${LGBM_EXTEND_LAUNCH}" ]]; then
+    EXTEND_ROOT="${NETWORK_VOLUME_ROOT}/diagnostics/lgbm/${LGBM_EXTEND_LAUNCH}"
+    if [[ ! -f "${EXTEND_ROOT}/results.json" ]]; then
+        echo "RUNPOD_LGBM_EXTEND_LAUNCH is not a finished launch on this volume: ${EXTEND_ROOT}" >&2
+        exit 2
+    fi
+    if [[ -f "${EXTEND_ROOT}/superseded_by.json" ]]; then
+        echo "RUNPOD_LGBM_EXTEND_LAUNCH was already superseded; extend its successor instead: ${EXTEND_ROOT}" >&2
+        exit 2
+    fi
+    printf 'Extending finished launch %s (its folds are linked or re-scored; P3 folds get models)\n' "${LGBM_EXTEND_LAUNCH}"
+    LGBM_ARGUMENTS+=(--extend-from "${EXTEND_ROOT}")
 fi
 "${POETRY_BIN}" run stock-forecasting-walk-forward-lgbm "${LGBM_ARGUMENTS[@]}"
 rm -rf "${LGBM_SCRATCH_ROOT}"

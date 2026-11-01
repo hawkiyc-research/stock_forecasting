@@ -21,6 +21,25 @@ import pandas as pd
 import torch
 
 from stock_forecasting.data.manifest import atomic_write_json, sha256_file
+from stock_forecasting.model_lineage import (
+    LINEAGE_NAME,
+    MODELS_DIR,
+    copy_fold_models,
+    fold_models_dir,
+    launch_models,
+    lineage_payload,
+    link_file,
+    model_fold_indexes,
+    owning_launch,
+    prediction_key,
+    prune_models,
+    read_model_manifest,
+    registry_key,
+    stamp_superseded,
+    training_key,
+    write_lineage,
+    write_model_manifest,
+)
 from stock_forecasting.models.cross_stock import (
     MODEL_SCHEMA,
     CrossStockConfig,
@@ -47,6 +66,7 @@ from stock_forecasting.walk_forward_lgbm import (
     fast_grouped_spearman,
     fold_masks,
     group_codes,
+    model_files,
     rank_column,
     residual_column,
     score_column,
@@ -895,6 +915,7 @@ def run_cross_stock(
     label_variant: str | None = None,
     resume_context: str | None = None,
     extend_from: Path | None = None,
+    feature_spec: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold and seed; each finished (fold, seed) is written to ``output_root/partial``
     immediately and reused from ``resume_root`` (one or several earlier output roots) after a
@@ -902,11 +923,14 @@ def run_cross_stock(
     (schedule, caches, encoder revisions; see ``xs_resume_context``) match and its prediction
     rows are exactly this run's rows of that fold; every source used is stamped afterwards.
 
-    ``extend_from`` names a FINISHED launch of the same experiment and label variant whose
-    folds are reused wherever this schedule defines the same fold (same dates) and the partial's
-    prediction rows are exactly this run's rows: only the folds the new schedule adds are
-    trained (2026-11-01 rule: a shortlisted 14-fold model gets its P3 folds without retraining
-    the 14; every fold's model is independent, so nothing else changes).
+    2026-11-02 rule: the folds the schedule's P3 needs keep their weights under
+    ``models/fold-XX/seed-N.pt`` (the best-epoch state, verified by reloading), every launch
+    writes ``lineage.json``, and ``extend_from`` names a FINISHED launch of the same experiment
+    and label variant whose folds are carried on instead of retrained (see
+    ``_load_xs_extension``: identical folds are linked, a fold with the same training window
+    but another prediction window is scored by its saved weights, P3 folds without saved
+    weights are trained); that launch is then stamped ``superseded_by.json`` and loses its
+    weight files.
 
     With a label variant (``table.residual`` set, ``label_variant`` named) the scores are also
     evaluated against the residual targets (protocol 13.16) and, when
@@ -928,15 +952,18 @@ def run_cross_stock(
         plan.fold.index: np.concatenate([index.rows(int(g)) for g in plan.predict_groups])
         for plan in plans
     }
-    resumed, contributions = _load_xs_extension(
+    model_folds = model_fold_indexes(folds, schedule)
+    resumed, contributions, fold_sources, to_predict = _load_xs_extension(
         extend_from,
-        partial_root,
+        output_root,
         experiment,
         folds,
         seeds,
         label_variant=label_variant,
         expected_rows=expected_rows,
         horizons=len(table.horizons),
+        context=resume_context,
+        model_folds=model_folds,
     )
     more, more_contributions = _load_xs_partials(
         resume_root,
@@ -948,10 +975,12 @@ def run_cross_stock(
         context=resume_context,
         expected_rows=expected_rows,
         horizons=len(table.horizons),
-        skip=set(resumed),
+        skip=set(resumed) | set(to_predict),
     )
     resumed.update(more)
     contributions.update(more_contributions)
+    for fold_index, _seed in more:
+        fold_sources.setdefault(fold_index, {"how": "resumed"})
     records, scores = [], {}
     trainer: FoldTrainer | None = None
     for plan in plans:
@@ -966,6 +995,46 @@ def run_cross_stock(
                 continue
             if trainer is None:
                 trainer = FoldTrainer(config, torch_device, lambda_corr=lambda_corr, params=params)
+            if (plan.fold.index, seed) in to_predict:
+                # Same training window as a fold of the extended launch: its saved weights
+                # score this run's rows (the prediction window changed); no retraining.
+                rows, values, record = predict_fold_with_weights(
+                    to_predict[(plan.fold.index, seed)],
+                    store,
+                    index,
+                    plan,
+                    seed=seed,
+                    trainer=trainer,
+                )
+                scores[(plan.fold.index, seed)] = (rows, values)
+                records.append(record)
+                _save_xs_partial(
+                    partial_root,
+                    experiment,
+                    plan.fold.index,
+                    seed,
+                    rows,
+                    values,
+                    record,
+                    label_variant=label_variant,
+                    context=resume_context,
+                )
+                if plan.fold.index in model_folds and seed == seeds[-1]:
+                    copy_fold_models(
+                        to_predict[(plan.fold.index, seed)].parent,
+                        fold_models_dir(output_root, plan.fold.index),
+                    )
+                print(
+                    json.dumps(
+                        {
+                            "fold": plan.fold.index,
+                            "seed": seed,
+                            "predicted_with_saved_weights": True,
+                        }
+                    ),
+                    flush=True,
+                )
+                continue
             rows, values, record = train_fold(
                 table,
                 index,
@@ -979,6 +1048,19 @@ def run_cross_stock(
                 trainer=trainer,
             )
             scores[(plan.fold.index, seed)] = (rows, values)
+            if plan.fold.index in model_folds:
+                # 2026-11-02 rule: the best-epoch weights of every P3 fold are part of the
+                # result; saved and read back before the (fold, seed) counts as done.
+                record["model_file"] = _save_xs_model(
+                    fold_models_dir(output_root, plan.fold.index),
+                    trainer.model,
+                    seed=seed,
+                    experiment=experiment,
+                    config=config,
+                    record=record,
+                    label_variant=label_variant,
+                    context=resume_context,
+                )
             records.append(record)
             _save_xs_partial(
                 partial_root,
@@ -1002,6 +1084,22 @@ def run_cross_stock(
                     }
                 ),
                 flush=True,
+            )
+        if (
+            plan.fold.index in model_folds
+            and read_model_manifest(fold_models_dir(output_root, plan.fold.index)) is None
+        ):
+            # Trained here (fully, or partly with weights copied from a resumed launch):
+            # the fold's manifest is written once every seed's weights are on disk.
+            _write_xs_model_manifest(
+                fold_models_dir(output_root, plan.fold.index),
+                plan.fold,
+                [r for r in records if r["fold"] == plan.fold.index],
+                experiment=experiment,
+                config=config,
+                label_variant=label_variant,
+                context=resume_context,
+                seeds=seeds,
             )
     horizons = table.horizons
     prediction_frames, target_frames = [], []
@@ -1122,8 +1220,44 @@ def run_cross_stock(
         # Provenance of a resumed run: which launch trained which [fold, seed] keys.
         "resume": resume_summary(contributions),
         "extended_from": None if extend_from is None else Path(extend_from).name,
+        "model_folds": sorted(model_folds),
     }
+    for fold_index in sorted(model_folds):
+        if read_model_manifest(fold_models_dir(output_root, fold_index)) is None:
+            raise RuntimeError(f"Fold {fold_index} has no verified weights under {MODELS_DIR}/")
     atomic_write_json(output_root / "results.json", results)
+    key = registry_key("xs", experiment, label_variant, feature_spec)
+    write_lineage(
+        output_root,
+        lineage_payload(
+            launch=output_root.name,
+            kind="xs",
+            key=key,
+            model=experiment,
+            label_variant=label_variant,
+            feature_spec=feature_spec,
+            schedule=schedule,
+            folds=folds,
+            fold_sources=fold_sources,
+            model_folds=model_folds,
+            extended_from=None if extend_from is None else Path(extend_from).name,
+            seeds=list(seeds),
+            context=resume_context,
+        ),
+    )
+    results["lineage"] = {"key": key, "file": LINEAGE_NAME}
+    if extend_from is not None:
+        # The extended launch is history: its folds live on here, the registry will point at
+        # this launch, and its weight files go once this launch's are verified (above).
+        carried = sorted(i for i, src in fold_sources.items() if src.get("how") != "trained")
+        stamp_superseded(
+            extend_from,
+            superseded_by=output_root,
+            folds=carried,
+            experiment=experiment,
+            label_variant=label_variant,
+            pruned_models=prune_models(extend_from),
+        )
     for source, keys in contributions.items():
         if extend_from is not None and source.resolve() == Path(extend_from).resolve():
             continue  # a finished launch: never offered as a resume source, so no stamp
@@ -1242,14 +1376,19 @@ def _load_xs_partials(
                         continue
                     if horizons is not None and values.shape != (len(rows), horizons):
                         continue
-                    resumed[(fold.index, seed)] = (
-                        rows,
-                        values,
-                        json.loads(str(payload["record"])),
-                    )
+                    record = json.loads(str(payload["record"]))
                 contributions.setdefault(source_root, []).append([fold.index, seed])
                 if path.resolve() != (partial_root / path.name).resolve():
                     (partial_root / path.name).write_bytes(path.read_bytes())
+                # The unfinished launch saved this pair's weights (a P3 fold): carry them.
+                weights = fold_models_dir(source_root, fold.index) / _xs_model_name(seed)
+                if weights.is_file() and not weights.is_symlink():
+                    target = fold_models_dir(partial_root.parent, fold.index) / weights.name
+                    if target.resolve() != weights.resolve():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(weights.read_bytes())
+                    record["model_file"] = weights.name
+                resumed[(fold.index, seed)] = (rows, values, record)
     return resumed, contributions
 
 
@@ -1263,9 +1402,251 @@ FOLD_DEFINITION = (
 )
 
 
+def _xs_model_name(seed: int) -> str:
+    return f"seed-{seed}.pt"
+
+
+def _save_xs_model(
+    fold_dir: Path,
+    model: CrossStockModel,
+    *,
+    seed: int,
+    experiment: str,
+    config: CrossStockConfig,
+    record: dict[str, Any],
+    label_variant: str | None,
+    context: str | None,
+) -> str:
+    """Save the model's current (best-epoch) parameters for one (fold, seed) and read them
+    back: a file that does not reproduce the tensors is a failure."""
+    fold_dir.mkdir(parents=True, exist_ok=True)
+    name = _xs_model_name(seed)
+    path = fold_dir / name
+    state = {k: v.detach().to("cpu").clone() for k, v in model.state_dict().items()}
+    payload = {
+        "schema": "cross-stock-weights-v1",
+        "experiment": experiment,
+        "config": config.to_dict(),
+        "fold": int(record["fold"]),
+        "seed": int(seed),
+        "best_epoch": int(record["best_epoch"]),
+        "validation_rank_ic": float(record["validation_rank_ic"]),
+        "label_variant": label_variant or "",
+        "context": context or "",
+        "state_dict": state,
+    }
+    pending = path.with_name(name + ".pending")
+    with pending.open("wb") as stream:
+        torch.save(payload, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    pending.replace(path)
+    reloaded = torch.load(path, map_location="cpu", weights_only=True)
+    if set(reloaded["state_dict"]) != set(state) or any(
+        not torch.equal(reloaded["state_dict"][k], state[k]) for k in state
+    ):
+        raise RuntimeError(f"Saved weights do not reproduce the model: {path}")
+    return name
+
+
+def _write_xs_model_manifest(
+    fold_dir: Path,
+    fold: Fold,
+    fold_records: list[dict[str, Any]],
+    *,
+    experiment: str,
+    config: CrossStockConfig,
+    label_variant: str | None,
+    context: str | None,
+    seeds: tuple[int, ...],
+) -> dict[str, Any]:
+    files = {}
+    for record in fold_records:
+        if record.get("model_file") and record["model_file"] not in files:
+            files[record["model_file"]] = {
+                "seed": int(record["seed"]),
+                "best_epoch": int(record["best_epoch"]),
+                "validation_rank_ic": float(record["validation_rank_ic"]),
+            }
+    missing = [seed for seed in seeds if _xs_model_name(seed) not in files]
+    if missing:
+        raise RuntimeError(f"Fold {fold.index}: no saved weights for seeds {missing}")
+    return write_model_manifest(
+        fold_dir,
+        kind="xs",
+        fold=fold_frame([fold]).to_dict(orient="records")[0],
+        files=files,
+        experiment=experiment,
+        config=config.to_dict(),
+        label_variant=label_variant,
+        context=context,
+        seeds=list(seeds),
+    )
+
+
+def load_xs_weights(path: Path, model: CrossStockModel) -> dict[str, Any]:
+    """Load a saved (fold, seed) state into ``model`` in place (parameter addresses are kept,
+    as ``FoldTrainer.reset`` does); returns the file's metadata."""
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    if payload.get("schema") != "cross-stock-weights-v1":
+        raise ValueError(f"Unsupported weight file: {path}")
+    with torch.no_grad():
+        model.load_state_dict(payload["state_dict"])
+    return {k: v for k, v in payload.items() if k != "state_dict"}
+
+
+def predict_fold_with_weights(
+    weights: Path,
+    store: TensorStore,
+    index: GroupIndex,
+    plan: FoldPlan,
+    *,
+    seed: int,
+    trainer: FoldTrainer,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Score a fold's prediction groups with saved weights; returns (rows, scores, record)."""
+    started = time.monotonic()
+    meta = load_xs_weights(weights, trainer.model)
+    if int(meta["seed"]) != int(seed):
+        raise ValueError(f"{weights} holds seed {meta['seed']}, not {seed}")
+    try:
+        rows, scores = _predict(trainer.runner, store, index, plan.predict_groups)
+    except Exception as error:  # pragma: no cover - compiler backend failures
+        trainer.fall_back(error)
+        rows, scores = _predict(trainer.runner, store, index, plan.predict_groups)
+    record = {
+        "fold": plan.fold.index,
+        "seed": seed,
+        "epochs": 0,
+        "best_epoch": int(meta["best_epoch"]),
+        "validation_rank_ic": float(meta["validation_rank_ic"]),
+        "train_groups": len(plan.train_groups),
+        "validation_rows": len(plan.valid_rows),
+        "predict_rows": len(rows),
+        "parameters": parameter_count(trainer.model),
+        "seconds": time.monotonic() - started,
+        "history": [],
+        "execution": {"mode": trainer.execution_label, "pad_multiple": store.pad_multiple},
+        "predicted_with": {"launch": weights.parent.parent.parent.name, "fold": int(meta["fold"])},
+    }
+    return rows, scores.astype(np.float32), record
+
+
+def score_table_with_launch(
+    table: SampleTable,
+    launch: Path,
+    *,
+    start: str,
+    end: str,
+    device: str | None = None,
+    fold: int | None = None,
+    headroom_bytes: int = 4 * 1024**3,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Scores of every (date, market) group with a signal date in [start, end) from a launch's
+    saved weights (each seed and the mean ensemble; ensemble rows carry per-group ranks,
+    1 = highest). Each date is scored by the model fold ``select_model_fold`` picks unless
+    ``fold`` names one. The weights are loaded in place into one ``FoldTrainer`` per run, as
+    the trainer does, so the compiled step runner is reused unchanged."""
+    from stock_forecasting.model_lineage import read_lineage, select_model_fold
+
+    launch = Path(launch)
+    results = json.loads((launch / "results.json").read_text(encoding="utf-8"))
+    experiment = str(results["model"])
+    seeds = tuple(int(seed) for seed in results["seeds"])
+    model_folds = [int(index) for index in results.get("model_folds") or []]
+    if not model_folds:
+        raise ValueError(f"{launch} kept no weights (it predates the 2026-11-02 rule)")
+    if fold is not None and fold not in model_folds:
+        raise ValueError(f"Fold {fold} has no saved weights; model folds: {model_folds}")
+    config, lambda_corr = make_config(experiment, table)
+    saved = CrossStockConfig(**json.loads(json.dumps(results["config"])))
+    if saved != config:
+        raise ValueError("The table's shapes do not match the launch's model configuration")
+    index = build_group_index(table)
+    torch_device = resolve_device(device)
+    store = TensorStore(table, torch_device, headroom_bytes=headroom_bytes)
+    store.attach_order(index.order)
+    group_dates = pd.DatetimeIndex(index.dates).normalize()
+    inside = (group_dates >= pd.Timestamp(start)) & (group_dates < pd.Timestamp(end))
+    if not inside.any():
+        raise ValueError(f"No groups with a signal date in [{start}, {end})")
+    chosen = {
+        day: fold if fold is not None else select_model_fold(results["folds"], model_folds, day)
+        for day in sorted({d.strftime("%Y-%m-%d") for d in group_dates[inside]})
+    }
+    trainer = FoldTrainer(config, torch_device, lambda_corr=lambda_corr, params=TRAINING_PARAMS)
+    horizons = table.horizons
+    frames = []
+    for fold_index in sorted(set(chosen.values())):
+        days = {pd.Timestamp(d) for d, i in chosen.items() if i == fold_index}
+        groups = np.flatnonzero(inside & np.array([d in days for d in group_dates]))
+        manifest = read_model_manifest(fold_models_dir(launch, fold_index))
+        if manifest is None:
+            raise ValueError(f"Fold {fold_index} has no verified weights in {launch}")
+        rows = None
+        stacked = []
+        for seed in seeds:
+            weights = fold_models_dir(launch, fold_index) / _xs_model_name(seed)
+            meta = load_xs_weights(weights, trainer.model)
+            if int(meta["seed"]) != seed or meta["experiment"] != experiment:
+                raise ValueError(f"{weights} does not belong to {experiment} seed {seed}")
+            seed_rows, values = _predict(trainer.runner, store, index, groups)
+            if rows is None:
+                rows = seed_rows
+            elif not np.array_equal(rows, seed_rows):
+                raise RuntimeError("Seeds predicted different rows of the same groups")
+            frame = pd.DataFrame(
+                {
+                    "symbol": table.symbols[rows],
+                    "market": table.markets[rows],
+                    "signal_date": table.dates[rows],
+                    "split": table.split[rows],
+                    "ordinal": table.ordinal[rows],
+                    "fold": fold_index,
+                    "model": f"{experiment}-seed{seed}",
+                }
+            )
+            for position, h in enumerate(horizons):
+                frame[score_column(h)] = values[:, position].astype(np.float32)
+            frames.append(frame)
+            stacked.append(values)
+        ensemble = frames[-1].copy()
+        ensemble["model"] = experiment
+        mean = np.mean(stacked, axis=0).astype(np.float32)
+        for position, h in enumerate(horizons):
+            ensemble[score_column(h)] = mean[:, position]
+            ensemble[f"rank_h{h:02d}"] = (
+                ensemble.groupby(["signal_date", "market"])[score_column(h)]
+                .rank(ascending=False, method="first")
+                .astype(np.int64)
+            )
+        frames.append(ensemble)
+    out = (
+        pd.concat(frames, ignore_index=True)
+        .sort_values(["signal_date", "market", "model", "symbol"], kind="stable")
+        .reset_index(drop=True)
+    )
+    record = {
+        "launch": launch.name,
+        "model": experiment,
+        "lineage": read_lineage(launch),
+        "start": start,
+        "end": end,
+        "folds_by_date": chosen,
+        "rows": len(out),
+        "execution": trainer.execution_label,
+    }
+    return out, record
+
+
+def _context_dataset(context: str | None) -> str:
+    """The dataset part of a resume context (everything after the schedule name)."""
+    return (context or "").split("|", 1)[1] if context and "|" in context else ""
+
+
 def _load_xs_extension(
     extend_from: Path | None,
-    partial_root: Path,
+    output_root: Path,
     experiment: str,
     folds: list[Fold],
     seeds: tuple[int, ...],
@@ -1273,21 +1654,36 @@ def _load_xs_extension(
     label_variant: str | None,
     expected_rows: dict[int, np.ndarray],
     horizons: int,
+    context: str | None,
+    model_folds: set[int],
 ) -> tuple[
     dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]],
     dict[Path, list[list[int]]],
+    dict[int, dict[str, Any]],
+    dict[tuple[int, int], Path],
 ]:
-    """(fold, seed) pairs of a finished launch whose folds this schedule defines identically.
+    """(fold, seed) pairs of a FINISHED launch this run carries on (2026-11-02 rule).
 
-    The launch must have a ``results.json`` of the same experiment and label variant; a fold
-    matches by its dates (``FOLD_DEFINITION``), not by index or schedule name, and its partial
-    is used only when its prediction rows are exactly this run's rows of that fold. Partials
-    are copied under this run's fold index.
+    The launch must have a ``results.json`` of the same experiment and label variant and the
+    partials must come from the same dataset (the context after the schedule name). A fold
+    matches by its training window (``TRAINING_DEFINITION``), not by index or schedule name:
+
+    * same prediction window, rows exactly this run's rows, and either no weights needed or
+      verified source weights: the partial is **linked** (no copy); a P3 fold's weights are
+      copied;
+    * same training window, another prediction window, verified source weights: the saved
+      weights **predict** this run's rows (returned as ``to_predict``);
+    * a P3 fold whose source kept no weights, or any other fold: **trained** here.
+
+    Returns the linked pairs, the contributions (for ``results["resume"]``), per-fold
+    provenance for the lineage and the pairs to predict with saved weights.
     """
     resumed: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]] = {}
     contributions: dict[Path, list[list[int]]] = {}
+    sources: dict[int, dict[str, Any]] = {}
+    to_predict: dict[tuple[int, int], Path] = {}
     if extend_from is None:
-        return resumed, contributions
+        return resumed, contributions, sources, to_predict
     source_root = Path(extend_from)
     results_path = source_root / "results.json"
     if not results_path.is_file():
@@ -1302,42 +1698,81 @@ def _load_xs_extension(
             f"--extend-from launch used label variant {results.get('label_variant')!r}, "
             f"this run uses {label_variant!r}"
         )
-    by_definition = {
-        tuple(str(entry[key]) for key in FOLD_DEFINITION): int(entry["index"])
-        for entry in results.get("folds", [])
-    }
+    by_training = {training_key(entry): entry for entry in results.get("folds", [])}
+    source_models = launch_models(source_root)
+    partial_root = output_root / "partial"
+    partial_root.mkdir(parents=True, exist_ok=True)
     for fold in folds:
-        source_index = by_definition.get(tuple(str(getattr(fold, k)) for k in FOLD_DEFINITION))
-        if source_index is None:
+        entry = by_training.get(training_key(fold))
+        if entry is None:
             continue
+        source_index = int(entry["index"])
+        has_models = source_index in source_models and all(
+            _xs_model_name(seed) in source_models[source_index]["files"] for seed in seeds
+        )
+        needs_model = fold.index in model_folds
+        same_window = prediction_key(entry) == prediction_key(fold)
+        if same_window and needs_model and not has_models:
+            sources[fold.index] = {
+                "how": "trained",
+                "reason": "P3 fold: the source launch kept no weights",
+                "source_fold": source_index,
+            }
+            continue
+        if not same_window:
+            if has_models:
+                for seed in seeds:
+                    to_predict[(fold.index, seed)] = fold_models_dir(
+                        source_root, source_index
+                    ) / _xs_model_name(seed)
+                sources[fold.index] = {
+                    "how": "predicted",
+                    "models_from": source_root.name,
+                    "source_fold": source_index,
+                }
+            continue
+        pairs = {}
         for seed in seeds:
             path = source_root / "partial" / _xs_partial_name(source_index, seed)
             if not path.is_file():
-                continue
+                break
             with np.load(path, allow_pickle=False) as payload:
                 if str(payload["experiment"]) != experiment:
-                    continue
+                    break
                 stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
                 if stored != (label_variant or ""):
-                    continue
+                    break
+                stored_context = str(payload["context"]) if "context" in payload.files else ""
+                if _context_dataset(stored_context) != _context_dataset(context):
+                    break
                 rows = np.asarray(payload["rows"], dtype=np.int64)
                 values = np.asarray(payload["values"], dtype=np.float32)
                 if not np.array_equal(rows, expected_rows[fold.index]):
-                    continue
+                    break
                 if values.shape != (len(rows), horizons):
-                    continue
+                    break
                 record = json.loads(str(payload["record"]))
-                arrays = {name: payload[name] for name in payload.files}
             record["fold"] = fold.index
             record["extended_from"] = {"launch": source_root.name, "fold": source_index}
+            pairs[seed] = (path, rows, values, record)
+        if len(pairs) != len(seeds):
+            continue  # not every seed of the fold is usable: the fold is trained
+        modes = set()
+        for seed, (path, rows, values, record) in pairs.items():
+            modes.add(link_file(partial_root / _xs_partial_name(fold.index, seed), path))
             resumed[(fold.index, seed)] = (rows, values, record)
             contributions.setdefault(source_root, []).append([fold.index, seed])
-            arrays["record"] = np.array(json.dumps(record))
-            target = partial_root / _xs_partial_name(fold.index, seed)
-            with (partial_root / (target.name + ".pending")).open("wb") as stream:
-                np.savez(stream, **arrays)
-            (partial_root / (target.name + ".pending")).replace(target)
-    return resumed, contributions
+        sources[fold.index] = {
+            "how": "linked" if modes == {"link"} else "copied",
+            "predictions_launch": owning_launch(pairs[seeds[0]][0]),
+            "source_fold": source_index,
+        }
+        if needs_model:
+            copy_fold_models(
+                fold_models_dir(source_root, source_index), fold_models_dir(output_root, fold.index)
+            )
+            sources[fold.index]["models_from"] = source_root.name
+    return resumed, contributions, sources, to_predict
 
 
 def write_xs_manifest(
@@ -1353,6 +1788,8 @@ def write_xs_manifest(
     )
     if (output_root / "daily_rank_ic_residual.parquet").is_file():
         names = (*names, "daily_rank_ic_residual.parquet")
+    if (output_root / LINEAGE_NAME).is_file():
+        names = (*names, LINEAGE_NAME)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "kind": "cross-stock-walk-forward",
@@ -1365,6 +1802,8 @@ def write_xs_manifest(
             }
             for name in names
         },
+        # Saved weights (2026-11-02 rule): downloaded and verified like the result files.
+        "models": model_files(output_root),
         **extra,
     }
     atomic_write_json(output_root / "walk-forward-manifest.json", payload)

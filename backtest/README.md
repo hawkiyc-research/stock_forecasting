@@ -392,7 +392,10 @@ uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exe
 
 `config/scenario_suite_v1_p3.json` 是 §13.20 的設定：在補充四的 S1／S2（V1、無配平、執行層、參數固定）之外加入
 **S-A `wk_long`**（`twbacktest.weekly_band`），期間 P1、P2、**P3 = [2026-06-01, 2026-10-23)**，`decision_periods`
-指定 `P1+P2` 的聯集只含 P1 與 P2（P3 只報點估計與區間，不進任何選擇或門檻）。S-A 的規則：每個 ISO 週的最後一個
+指定 `P1+P2` 的聯集只含 P1 與 P2（P3 只報點估計與區間，不進任何選擇或門檻）。§13.23 補充二（2026-11-02）起，
+P3 改由資料結束日推算（最後一個完整日曆季起算）：§13.23 的 21 格回測與判定改用 `config/scenario_suite_v1_p3b.json`
+（P2 = [2025-07-01, 2026-07-01)、**P3 = [2026-07-01, 2026-10-23)**）與 `config/strategy_decision_p3b.json`，兩檔與凍結的
+原檔只差 `periods`、名稱與說明；原檔保留給 §13.20–§13.22 的紀錄。S-A 的規則：每個 ISO 週的最後一個
 訊號日為再平衡日，以 V1 正交化的 h = 5 分數在流動性宇宙內排序，持股掉出前 m × K 才賣、空位依排名補進，
 每次再平衡最多換掉 `turnover_cap` × K（0.5）個部位，超過時只賣排名最差的；再平衡之間只持有（跌停擋住的賣單
 次日再試，停牌或下市的部位照各 band 引擎的規則在收盤出場，這類被迫出場與期初建倉的補位不計入上限）。
@@ -971,7 +974,11 @@ uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_exe
 `config/scenario_suite_v1_p3.json` is the §13.20 configuration: supplement 4's S1 / S2 (v1, no matching, execution
 layer, fixed parameters) plus **S-A `wk_long`** (`twbacktest.weekly_band`), over P1, P2 and **P3 = [2026-06-01,
 2026-10-23)**; `decision_periods` restricts the `P1+P2` union to P1 and P2 (P3 is reported with point estimates
-and intervals only and enters no selection or bar). The S-A rule: the last signal date of every ISO week is a
+and intervals only and enters no selection or bar). Since §13.23 supplement 2 (2026-11-02) P3 is derived from the
+data end (it starts at the last complete calendar quarter): the §13.23 21-cell backtests and verdicts use
+`config/scenario_suite_v1_p3b.json` (P2 = [2025-07-01, 2026-07-01), **P3 = [2026-07-01, 2026-10-23)**) and
+`config/strategy_decision_p3b.json`, which differ from the frozen originals only in `periods`, name and
+description; the originals stay for the §13.20–§13.22 record. The S-A rule: the last signal date of every ISO week is a
 rebalance date; the liquidity universe is ranked by the v1-orthogonalized h = 5 score, a holding leaves only
 when its rank falls out of the top m × K, empty slots are refilled best-first, and at most `turnover_cap` × K
 (0.5) positions are replaced per rebalance (when more names fall out, only the worst-ranked are sold). Between
