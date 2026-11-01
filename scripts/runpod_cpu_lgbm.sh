@@ -188,8 +188,10 @@ mkdir -p "${LGBM_SCRATCH_ROOT}"
 # results.json) and is skipped too.
 RESUME_ROOTS=()
 for resume_candidate in "${NETWORK_VOLUME_ROOT}/diagnostics/lgbm"/launch-*/partial; do
-    # The glob stays literal when nothing matches; only real directories qualify.
-    if [[ -d "${resume_candidate}" && ! -f "$(dirname "${resume_candidate}")/results.json" \
+    # The glob stays literal when nothing matches; only real directories holding at least one
+    # partial file qualify (an emptied launch keeps an empty partial/ shell on the volume).
+    if [[ -d "${resume_candidate}" && -n "$(ls -A "${resume_candidate}" 2>/dev/null)" \
+        && ! -f "$(dirname "${resume_candidate}")/results.json" \
         && ! -f "$(dirname "${resume_candidate}")/resumed_into.json" ]]; then
         RESUME_ROOTS+=("$(dirname "${resume_candidate}")")
     fi

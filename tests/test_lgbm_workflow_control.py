@@ -223,11 +223,14 @@ class LgbmTmuxTests(unittest.TestCase):
                 ("launch-20261027T068000Z-5", False),
             ):
                 (launches / name / "partial").mkdir(parents=True)
+                (launches / name / "partial" / "fold-00.npz").write_bytes(b"x")
                 if finished:
                     (launches / name / "results.json").write_text("{}", encoding="utf-8")
             (launches / "launch-20261027T070000Z-4").mkdir()  # no partial/ at all
+            (launches / "launch-20261027T071000Z-7" / "partial").mkdir(parents=True)  # empty
             absorbed = launches / "launch-20261027T080000Z-6"  # newest, already absorbed
             (absorbed / "partial").mkdir(parents=True)
+            (absorbed / "partial" / "fold-00.npz").write_bytes(b"x")
             (absorbed / "resumed_into.json").write_text("{}", encoding="utf-8")
             script = (
                 f"NETWORK_VOLUME_ROOT={shlex.quote(tmp)}\n{loop}"
