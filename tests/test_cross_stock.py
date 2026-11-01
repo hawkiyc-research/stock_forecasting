@@ -262,6 +262,12 @@ def test_finished_fold_seeds_are_written_and_resumed(tmp_path: Path) -> None:
         pd.read_parquet(first / "predictions.parquet"),
     )
     assert results["fits"]["count"] == len(folds)
+    # The consumed source is stamped so the GPU job never offers it again (it keeps its
+    # partial/ and never gets a results.json of its own).
+    stamp = json.loads((first / "resumed_into.json").read_text(encoding="utf-8"))
+    assert stamp["resumed_into"] == "second"
+    assert stamp["experiment"] == "t-xs-a1-no-cross"
+    assert stamp["fold_seeds"] == len(folds)
     # Partials of another experiment are ignored.
     other = run_cross_stock(
         table,
@@ -271,6 +277,7 @@ def test_finished_fold_seeds_are_written_and_resumed(tmp_path: Path) -> None:
         **{**shared, "experiment": "t-xs-a4-no-gating"},
     )
     assert other["fits"]["mean_epochs"] == 1.0
+    assert stamp == json.loads((first / "resumed_into.json").read_text(encoding="utf-8"))
 
 
 def _variant(cache, seed: int):

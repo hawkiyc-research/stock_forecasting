@@ -217,6 +217,7 @@ class XsTmuxTests(unittest.TestCase):
         end = job.index("done\n", start) + len("done\n")
         loop = job[start:end]
         self.assertIn('! -f "$(dirname "${resume_candidate}")/results.json"', loop)
+        self.assertIn('! -f "$(dirname "${resume_candidate}")/resumed_into.json"', loop)
         with tempfile.TemporaryDirectory() as tmp:
             xs = Path(tmp, "diagnostics", "xs")
             for name, finished in (
@@ -228,6 +229,10 @@ class XsTmuxTests(unittest.TestCase):
                 if finished:
                     (xs / name / "results.json").write_text("{}", encoding="utf-8")
             (xs / "launch-20261027T070000Z-4").mkdir()  # no partial/ at all
+            # Newest but already absorbed by a later launch: skipped.
+            absorbed = xs / "launch-20261027T080000Z-5"
+            (absorbed / "partial").mkdir(parents=True)
+            (absorbed / "resumed_into.json").write_text("{}", encoding="utf-8")
             script = f'NETWORK_VOLUME_ROOT={shlex.quote(tmp)}\n{loop}printf "%s" "$RESUME_ROOT"\n'
             chosen = subprocess.run(
                 ["bash", "-c", script], check=True, capture_output=True, text=True
