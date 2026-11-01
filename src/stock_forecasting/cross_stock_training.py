@@ -493,6 +493,95 @@ class StepRunner:
             return _forward(self.predict_fn, batch)
 
 
+class FoldTrainer:
+    """The model, optimizer and runner of one run, shared by every (fold, seed).
+
+    A fresh model per fold changes every parameter (and optimizer-state) address, so the
+    CUDA-graph trees record new graphs for each (fold, seed) and keep the earlier recordings'
+    memory alive: the Kronos three-seed launch ran out of GPU memory at its 31st fold-seed.
+    Re-initializing the same tensors in place keeps every address static, so nothing is
+    re-recorded or recompiled and memory stays flat across the run. ``reset(seed)`` leaves the
+    parameters exactly as ``torch.manual_seed(seed); CrossStockModel(config)`` would.
+    """
+
+    def __init__(
+        self,
+        config: CrossStockConfig,
+        device: torch.device,
+        *,
+        lambda_corr: float,
+        params: dict[str, Any],
+    ) -> None:
+        self.config, self.device, self.lambda_corr = config, device, lambda_corr
+        self.gradient_clip = float(params["gradient_clip"])
+        self.model = CrossStockModel(config).to(device)
+        # One fused kernel per step instead of per-parameter updates: the per-group steps are
+        # launch-bound (one (date, market) group per step), so kernel count is the wall clock.
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=params["learning_rate"],
+            weight_decay=params["weight_decay"],
+            fused=device.type == "cuda",
+        )
+        # Padded groups have a handful of static shapes, so the compiled regions replay CUDA
+        # graphs instead of launching every small kernel from Python: the steps are launch-bound,
+        # the model's compute per group being well under a millisecond on a data-centre GPU.
+        requested = execution_mode(device)
+        try:
+            self.runner = self._make_runner(requested)
+            self.execution_label = requested
+        except Exception as error:  # pragma: no cover - depends on the Pod's torch build
+            print(f"cross-stock: {requested} execution unavailable, eager: {error}", flush=True)
+            self.runner = self._make_runner("eager")
+            self.execution_label = f"eager (compile unavailable: {error})"
+
+    def _make_runner(self, mode: str) -> StepRunner:
+        return StepRunner(
+            self.model,
+            self.optimizer,
+            self.device,
+            lambda_corr=self.lambda_corr,
+            gradient_clip=self.gradient_clip,
+            mode=mode,
+        )
+
+    def reset(self, seed: int) -> None:
+        """Parameters of a fresh model built under ``seed``, copied in place; optimizer state
+        zeroed in place (a fresh AdamW state is all zeros, including the step count)."""
+        torch.manual_seed(seed)
+        fresh = CrossStockModel(self.config)
+        with torch.no_grad():
+            self.model.load_state_dict(fresh.state_dict())
+        self.optimizer.zero_grad(set_to_none=True)
+        state_tensors = [
+            value
+            for state in self.optimizer.state.values()
+            for value in state.values()
+            if isinstance(value, torch.Tensor)
+        ]
+        if len(state_tensors) == sum(len(state) for state in self.optimizer.state.values()):
+            for value in state_tensors:
+                value.zero_()
+        else:  # pragma: no cover - non-tensor optimizer state (not fused AdamW)
+            self.optimizer.state.clear()
+
+    def fall_back(self, error: Exception) -> None:
+        """Replace the runner by one a mode cheaper after a compiler-backend failure. Nothing
+        the failed call changed survives it (grads are zeroed first, the fused update is one
+        kernel, prediction is read-only), so the caller simply redoes the call."""
+        if self.runner.mode == "eager":
+            raise error
+        fallback = "model" if self.runner.mode == "step" else "eager"
+        print(
+            f"cross-stock: {self.runner.mode} execution failed, back to {fallback}: {error}",
+            flush=True,
+        )
+        self.execution_label = (
+            f"{fallback} (fallback from {self.runner.mode}: {type(error).__name__})"
+        )
+        self.runner = self._make_runner(fallback)
+
+
 def _predict(
     runner: StepRunner, store: TensorStore, index: GroupIndex, groups: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -573,41 +662,30 @@ def train_fold(
     seed: int,
     params: dict[str, Any],
     max_groups_per_epoch: int | None = None,
+    trainer: FoldTrainer | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Train one seed on one fold; returns (predict rows, scores, record)."""
+    """Train one seed on one fold; returns (predict rows, scores, record).
+
+    ``trainer`` (one per run) is reset in place for this seed; without one a trainer is built
+    for this call alone.
+    """
     started = time.monotonic()
-    torch.manual_seed(seed)
+    if trainer is None:
+        trainer = FoldTrainer(config, store.device, lambda_corr=lambda_corr, params=params)
+    trainer.reset(seed)
     rng = np.random.default_rng(seed)
-    model = CrossStockModel(config).to(store.device)
-    # One fused kernel per step instead of per-parameter updates: the per-group steps are
-    # launch-bound (one (date, market) group per step), so kernel count is the wall clock.
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=params["learning_rate"],
-        weight_decay=params["weight_decay"],
-        fused=store.device.type == "cuda",
-    )
+    model = trainer.model
+    cuda = store.device.type == "cuda"
+    if cuda:
+        torch.cuda.reset_peak_memory_stats(store.device)
 
-    def make_runner(mode: str) -> StepRunner:
-        return StepRunner(
-            model,
-            optimizer,
-            store.device,
-            lambda_corr=lambda_corr,
-            gradient_clip=params["gradient_clip"],
-            mode=mode,
-        )
+    def predict(groups: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        try:
+            return _predict(trainer.runner, store, index, groups)
+        except Exception as error:  # pragma: no cover - compiler backend failures
+            trainer.fall_back(error)
+            return _predict(trainer.runner, store, index, groups)
 
-    # Padded groups have a handful of static shapes, so the compiled regions replay CUDA graphs
-    # instead of launching every small kernel from Python: the steps are launch-bound, the
-    # model's compute per group being well under a millisecond on a data-centre GPU.
-    requested = execution_mode(store.device)
-    try:
-        runner = make_runner(requested)
-        execution_label = requested
-    except Exception as error:  # pragma: no cover - depends on the Pod's torch build
-        print(f"cross-stock: {requested} execution unavailable, eager: {error}", flush=True)
-        runner, execution_label = make_runner("eager"), f"eager (compile unavailable: {error})"
     best_ic, best_epoch, best_state, bad_epochs, history = -np.inf, -1, None, 0, []
     for epoch in range(int(params["max_epochs"])):
         model.train()
@@ -620,26 +698,14 @@ def train_fold(
         for group in groups:
             batch = store.group_batch(index, int(group))
             try:
-                loss = runner.train_step(batch)
+                loss = trainer.runner.train_step(batch)
             except Exception as error:  # pragma: no cover - compiler backend failures
-                if runner.mode == "eager":
-                    raise
-                # A failed step changed nothing the next attempt does not reset (grads are
-                # zeroed first; the fused update is one kernel), so redo it one mode down.
-                fallback = "model" if runner.mode == "step" else "eager"
-                print(
-                    f"cross-stock: {runner.mode} execution failed, back to {fallback}: {error}",
-                    flush=True,
-                )
-                execution_label = (
-                    f"{fallback} (fallback from {runner.mode}: {type(error).__name__})"
-                )
-                runner = make_runner(fallback)
-                loss = runner.train_step(batch)
+                trainer.fall_back(error)
+                loss = trainer.runner.train_step(batch)
             loss_sum += loss
             steps += 1
         losses = [float(loss_sum) / max(steps, 1)]
-        rows, scores = _predict(runner, store, index, plan.valid_groups)
+        rows, scores = predict(plan.valid_groups)
         if not np.array_equal(rows, plan.valid_rows):
             raise RuntimeError("Validation rows changed order between planning and prediction")
         ic = _validation_ic(scores, plan.valid_alpha_ranks, plan.valid_codes, plan.valid_sizes)
@@ -655,7 +721,15 @@ def train_fold(
                 break
     if best_state is not None:
         model.load_state_dict(best_state)
-    rows, scores = _predict(runner, store, index, plan.predict_groups)
+    rows, scores = predict(plan.predict_groups)
+    execution: dict[str, Any] = {
+        "mode": trainer.execution_label,
+        "pad_multiple": store.pad_multiple,
+    }
+    if cuda:
+        # Flat across fold-seeds when the static-address reuse works; growth means re-recording.
+        execution["peak_allocated_bytes"] = int(torch.cuda.max_memory_allocated(store.device))
+        execution["reserved_bytes"] = int(torch.cuda.memory_reserved(store.device))
     record = {
         "fold": plan.fold.index,
         "seed": seed,
@@ -668,7 +742,7 @@ def train_fold(
         "parameters": parameter_count(model),
         "seconds": time.monotonic() - started,
         "history": history,
-        "execution": {"mode": execution_label, "pad_multiple": store.pad_multiple},
+        "execution": execution,
     }
     return rows, scores.astype(np.float32), record
 
@@ -830,6 +904,7 @@ def run_cross_stock(
     store.attach_order(index.order)
     plans = [plan_fold(table, index, fold, min_group_size=min_group_size) for fold in folds]
     records, scores = [], {}
+    trainer: FoldTrainer | None = None
     for plan in plans:
         for seed in seeds:
             if (plan.fold.index, seed) in resumed:
@@ -840,6 +915,8 @@ def run_cross_stock(
                     json.dumps({"fold": plan.fold.index, "seed": seed, "resumed": True}), flush=True
                 )
                 continue
+            if trainer is None:
+                trainer = FoldTrainer(config, torch_device, lambda_corr=lambda_corr, params=params)
             rows, values, record = train_fold(
                 table,
                 index,
@@ -850,6 +927,7 @@ def run_cross_stock(
                 seed=seed,
                 params=params,
                 max_groups_per_epoch=max_groups_per_epoch,
+                trainer=trainer,
             )
             scores[(plan.fold.index, seed)] = (rows, values)
             records.append(record)
