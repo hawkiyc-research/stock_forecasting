@@ -13,6 +13,12 @@ import pandas as pd
 import pytest
 
 import stock_forecasting.walk_forward_lgbm as module
+from stock_forecasting.model_lineage import (
+    SUPERSEDED_BY_NAME,
+    read_lineage,
+    read_model_manifest,
+    update_registry,
+)
 from stock_forecasting.walk_forward import quarterly_folds
 from stock_forecasting.walk_forward_lgbm import (
     MODEL_NAME,
@@ -329,3 +335,264 @@ def test_partial_folds_are_written_and_resumed(tmp_path: Path, monkeypatch) -> N
         **shared,
     )
     assert fifth["resume"] == [{"root": "fourth", "keys": [0, 1]}]
+
+
+def _extension_runs(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(module, "backend_name", lambda: "sklearn_hist_gradient_boosting")
+    monkeypatch.setenv(WORKERS_ENV, "1")
+    table = _table(symbols_per_market=20)
+    sessions = _sessions()
+    # The first launch's data end cuts 2024Q2 at 06-01, like tw_quarterly_v1 cut 2026Q2.
+    cut = {**SCHEDULE, "name": "cut", "data_end": "2024-06-01"}
+    full = {
+        **SCHEDULE,
+        "name": "full",
+        "periods": {**SCHEDULE["periods"], "P3": ["2024-04-01", "2024-07-01"]},
+    }
+    cut_folds = quarterly_folds(sessions[sessions < "2024-06-01"], cut)
+    full_folds = quarterly_folds(sessions, full)
+    shared = dict(
+        feature_columns=[f"f{i}" for i in range(6)],
+        horizons=HORIZONS,
+        seeds=(1, 2),
+        workers=1,
+        max_rounds=20,
+        early_stopping=3,
+        min_group_size=10,
+        resume_context="ctx|dataset-a",
+        feature_spec="spec_a",
+    )
+    return table, cut, full, cut_folds, full_folds, shared
+
+
+def test_models_of_the_p3_folds_are_saved_and_verified(tmp_path: Path, monkeypatch) -> None:
+    """2026-11-02 rule: the folds P3 needs (the last fold when no P3 is defined) keep one
+    verified model per horizon and seed; the launch records them in results, lineage and the
+    manifest, and the models can score rows again."""
+    table, cut, _full, cut_folds, _full_folds, shared = _extension_runs(tmp_path, monkeypatch)
+    first = tmp_path / "launch-first"
+    results = run_walk_forward(table, folds=cut_folds, schedule=cut, output_root=first, **shared)
+    assert results["model_folds"] == [1]
+    assert not (first / "models" / "fold-00").exists()
+    manifest = read_model_manifest(first / "models" / "fold-01")
+    assert manifest is not None and manifest["backend"] == "sklearn_hist_gradient_boosting"
+    assert sorted(manifest["files"]) == [
+        f"h{h:02d}-seed{seed}.joblib" for h in HORIZONS for seed in (1, 2)
+    ]
+    assert manifest["feature_columns"] == shared["feature_columns"]
+    lineage = read_lineage(first)
+    assert lineage["key"] == f"{MODEL_NAME}__spec_a" and lineage["extended_from"] is None
+    assert lineage["folds"]["1"]["models"] == "models/fold-01"
+    assert lineage["folds"]["0"] == {
+        "name": "2024Q1",
+        "training": [
+            cut_folds[0].train_start,
+            cut_folds[0].validation_start,
+            cut_folds[0].train_end,
+        ],
+        "predict": [cut_folds[0].predict_start, cut_folds[0].predict_end],
+        "how": "trained",
+        "predictions_launch": "launch-first",
+        "models": None,
+    }
+    # The saved models reproduce the launch's own fold-1 predictions.
+    _train, _valid, predict = fold_masks(pd.DatetimeIndex(table["signal_date"]), cut_folds[1])
+    X = table.loc[predict, shared["feature_columns"]].to_numpy(dtype=np.float32)
+    _, scores = module.score_with_fold_models(first / "models" / "fold-01", X, HORIZONS, (1, 2))
+    predictions = pd.read_parquet(first / "predictions.parquet")
+    seed1 = predictions[
+        (predictions["fold"] == 1) & (predictions["model"] == f"{MODEL_NAME}-seed1")
+    ]
+    np.testing.assert_allclose(
+        seed1[score_column(5)].to_numpy(), scores[(5, 1)], rtol=1e-5, atol=1e-5
+    )
+    files = module.model_files(first)
+    assert set(files) == {f"models/fold-01/{name}" for name in manifest["files"]} | {
+        "models/fold-01/model-manifest.json"
+    }
+    # The registry (updated by the download step) points at this launch.
+    path, registry = update_registry(tmp_path / "registry", first, downloaded_at="t0")
+    assert path == tmp_path / "registry" / "lgbm" / f"{MODEL_NAME}__spec_a.json"
+    assert registry["current"]["launch"] == "launch-first" and registry["model_folds"] == [1]
+    assert registry["folds"]["0"]["predictions_launch"] == "launch-first"
+
+
+def test_extension_links_predicts_with_saved_models_and_supersedes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Extending a finished launch: a fold with the same training and prediction window is
+    linked (no copy); a fold with the same training window but a longer prediction window is
+    scored by the saved models, not retrained; the source is stamped superseded and loses its
+    model files; the lineage says where each fold lives."""
+    table, cut, full, cut_folds, full_folds, shared = _extension_runs(tmp_path, monkeypatch)
+    first = tmp_path / "launch-first"
+    run_walk_forward(table, folds=cut_folds, schedule=cut, output_root=first, **shared)
+    first_predictions = pd.read_parquet(first / "predictions.parquet")
+    second = tmp_path / "launch-second"
+    results = run_walk_forward(
+        table,
+        folds=full_folds,
+        schedule=full,
+        output_root=second,
+        extend_from=first,
+        **{**shared, "max_rounds": 2},
+    )
+    assert results["extended_from"] == "launch-first" and results["model_folds"] == [1]
+    assert results["resume"] is None  # a finished launch is carried on, not resumed
+    assert results["fits"]["count"] == len(HORIZONS) * 2 * 2
+    link = second / "partial" / "fold-00.npz"
+    assert link.is_symlink() and link.resolve() == (first / "partial" / "fold-00.npz").resolve()
+    assert not (second / "partial" / "fold-01.npz").is_symlink()
+    lineage = read_lineage(second)
+    assert lineage["folds"]["0"]["how"] == "linked"
+    assert lineage["folds"]["0"]["predictions_launch"] == "launch-first"
+    assert lineage["folds"]["1"]["how"] == "predicted"
+    assert lineage["folds"]["1"]["models_from"] == "launch-first"
+    assert lineage["folds"]["1"]["models"] == "models/fold-01"
+    assert read_model_manifest(second / "models" / "fold-01") is not None
+    # Fold 0 is byte-identical; fold 1's rows before the old data end carry the same scores.
+    second_predictions = pd.read_parquet(second / "predictions.parquet")
+    pd.testing.assert_frame_equal(
+        first_predictions[first_predictions["fold"] == 0].reset_index(drop=True),
+        second_predictions[second_predictions["fold"] == 0].reset_index(drop=True),
+    )
+    keys = ["symbol", "market", "signal_date", "model"]
+    a = first_predictions[first_predictions["fold"] == 1].set_index(keys).sort_index()
+    b = second_predictions[second_predictions["fold"] == 1].set_index(keys).sort_index()
+    b = b.loc[a.index]
+    for h in HORIZONS:
+        np.testing.assert_allclose(a[score_column(h)], b[score_column(h)], rtol=1e-5, atol=1e-5)
+    assert second_predictions[second_predictions["fold"] == 1]["signal_date"].max() > pd.Timestamp(
+        "2024-06-01"
+    )
+    fits = pd.read_parquet(second / "fits.parquet")
+    assert set(fits[fits["fold"] == 1]["predicted_with"].map(lambda v: v["launch"])) == {
+        "launch-first"
+    }
+    # The source: stamped, carried folds listed, model files pruned, partials kept (linked).
+    stamp = json.loads((first / SUPERSEDED_BY_NAME).read_text(encoding="utf-8"))
+    assert stamp["superseded_by"] == "launch-second" and stamp["folds"] == [0, 1]
+    assert sorted(stamp["pruned_models"]) == sorted(
+        [
+            f"models/fold-01/{name}"
+            for name in read_model_manifest(second / "models" / "fold-01")["files"]
+        ]
+        + ["models/fold-01/model-manifest.json"]
+    )
+    assert not (first / "models").exists()
+    assert (first / "partial" / "fold-00.npz").is_file() and (first / "results.json").is_file()
+    # The registry moves to the second launch and remembers the first.
+    update_registry(tmp_path / "registry", first, downloaded_at="t0")
+    _, registry = update_registry(tmp_path / "registry", second, downloaded_at="t1")
+    assert registry["current"]["launch"] == "launch-second"
+    assert registry["folds"]["0"]["predictions_launch"] == "launch-first"
+    assert registry["folds"]["1"]["predictions_launch"] == "launch-second"
+    assert registry["history"] == [
+        {
+            "launch": "launch-first",
+            "schedule": "cut",
+            "data_end": "2024-06-01",
+            "p3": None,
+            "superseded_by": "launch-second",
+            "superseded_at": "t1",
+        }
+    ]
+    # A source that kept no models for a P3 fold: that fold is trained, the others linked.
+    bare = tmp_path / "launch-bare"
+    run_walk_forward(table, folds=cut_folds, schedule=cut, output_root=bare, **shared)
+    import shutil
+
+    shutil.rmtree(bare / "models")
+    third = run_walk_forward(
+        table,
+        folds=cut_folds,
+        schedule={
+            **cut,
+            "periods": {"P1": ["2024-01-01", "2024-04-01"], "P3": ["2024-04-01", "2024-06-01"]},
+        },
+        output_root=tmp_path / "launch-third",
+        extend_from=bare,
+        **shared,
+    )
+    lineage = read_lineage(tmp_path / "launch-third")
+    assert lineage["folds"]["0"]["how"] == "linked" and lineage["folds"]["1"]["how"] == "trained"
+    assert lineage["folds"]["1"]["reason"].startswith("P3 fold")
+    assert third["fits"]["count"] == len(HORIZONS) * 2 * 2  # linked records count too
+    assert json.loads((bare / SUPERSEDED_BY_NAME).read_text())["folds"] == [0]
+    # Another model name, or an unfinished launch, is refused.
+    with pytest.raises(ValueError, match="trained"):
+        run_walk_forward(
+            table,
+            folds=cut_folds,
+            schedule=cut,
+            output_root=tmp_path / "other",
+            extend_from=first,
+            **{**shared, "model_name": "t-other"},
+        )
+    with pytest.raises(ValueError, match="finished"):
+        run_walk_forward(
+            table,
+            folds=cut_folds,
+            schedule=cut,
+            output_root=tmp_path / "unfinished",
+            extend_from=tmp_path / "missing",
+            **shared,
+        )
+
+
+def test_saved_models_score_dates_through_the_fold_selector(tmp_path: Path, monkeypatch) -> None:
+    """score_table_with_launch: each date goes to the model fold whose window holds it, dates
+    after the last window to the newest model fold, dates before the first model fold are
+    refused; the scores equal the launch's own predictions on shared rows."""
+    table, _cut, full, _cut_folds, full_folds, shared = _extension_runs(tmp_path, monkeypatch)
+    launch = tmp_path / "launch-full"
+    run_walk_forward(table, folds=full_folds, schedule=full, output_root=launch, **shared)
+    assert json.loads((launch / "results.json").read_text())["model_folds"] == [1]
+    scores, record = module.score_table_with_launch(
+        table,
+        launch,
+        feature_columns=shared["feature_columns"],
+        start="2024-05-01",
+        end="2024-07-01",
+    )
+    assert set(record["folds_by_date"].values()) == {1}
+    assert set(scores["model"]) == {MODEL_NAME, f"{MODEL_NAME}-seed1", f"{MODEL_NAME}-seed2"}
+    ensemble = scores[scores["model"] == MODEL_NAME]
+    first_day = ensemble[ensemble["signal_date"] == ensemble["signal_date"].min()]
+    for market in ("TWSE", "TPEX"):
+        ranks = first_day[first_day["market"] == market]["rank_h05"].to_numpy()
+        assert sorted(ranks) == list(range(1, len(ranks) + 1))
+    predictions = pd.read_parquet(launch / "predictions.parquet")
+    keys = ["symbol", "market", "signal_date", "model"]
+    shared_rows = predictions[
+        (predictions["fold"] == 1) & (predictions["signal_date"] >= "2024-05-01")
+    ]
+    a = shared_rows.set_index(keys).sort_index()
+    b = scores.set_index(keys).sort_index().loc[a.index]
+    for h in HORIZONS:
+        np.testing.assert_allclose(a[score_column(h)], b[score_column(h)], rtol=1e-5, atol=1e-5)
+    with pytest.raises(ValueError, match="precedes"):
+        module.score_table_with_launch(
+            table,
+            launch,
+            feature_columns=shared["feature_columns"],
+            start="2024-02-01",
+            end="2024-02-10",
+        )
+    with pytest.raises(ValueError, match="No samples"):
+        module.score_table_with_launch(
+            table,
+            launch,
+            feature_columns=shared["feature_columns"],
+            start="2025-01-01",
+            end="2025-02-01",
+        )
+    forced, _ = module.score_table_with_launch(
+        table,
+        launch,
+        feature_columns=shared["feature_columns"],
+        start="2024-02-01",
+        end="2024-02-10",
+        fold=1,
+    )
+    assert forced["fold"].unique().tolist() == [1]

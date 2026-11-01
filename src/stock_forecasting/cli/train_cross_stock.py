@@ -73,8 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--extend-from",
         type=Path,
-        help="Finished launch of the same experiment and labels whose folds this schedule "
-        "defines identically are reused; only the folds this schedule adds are trained.",
+        help="Finished launch of the same experiment and labels to carry on (2026-11-02 rule): "
+        "folds with the same training window are linked (same prediction window) or scored by "
+        "their saved weights (another window); P3 folds without saved weights, and new folds, "
+        "are trained; that launch is stamped superseded_by.json and loses its weight files.",
     )
     parser.add_argument(
         "--offline-encoders",
@@ -118,33 +120,38 @@ def load_baseline(
     return model, daily, residual
 
 
-def main(argv: list[str] | None = None) -> int:
-    from stock_forecasting.config import ExperimentConfig
+def build_sample_table(
+    config,
+    spec: dict,
+    *,
+    experiment: str,
+    label_variant: Path | None,
+    workers: int | None,
+    device: str | None,
+    embedding_batch_size: int,
+    offline_encoders: bool,
+):
+    """The in-memory sample table of the selected dataset (xs caches of the three splits, the
+    label variant's ranks and residual targets, the frozen encoder's cached embeddings for a
+    D1 experiment). Shared by training and by ``stock-forecasting-predict-cross-stock``.
+
+    Returns (table, cache roots by split, encoder record, variant name, variant roots).
+    """
     from stock_forecasting.data.sample_universe import open_clean_dataset, validated_split_roots
 
-    args = build_parser().parse_args(argv)
-    if args.workers is not None and not 1 <= args.workers <= MAX_WORKERS:
-        raise SystemExit(f"--workers must be 1-{MAX_WORKERS}")
-    if len(set(args.seeds)) != len(args.seeds) or any(seed < 0 for seed in args.seeds):
-        raise SystemExit("--seeds must be distinct non-negative integers")
-    if args.output_root.exists() and any(args.output_root.iterdir()):
-        raise SystemExit(f"--output-root must be a new or empty directory: {args.output_root}")
-    config = ExperimentConfig.from_yaml(args.experiment_config)
-    spec = load_spec(args.spec)
-    schedule = load_schedule(args.schedule)
     roots = validated_split_roots(config)
     min_group_size = int(config.model.rank_min_group_size)
     label_spec, variant_name = None, None
-    if args.label_variant is not None:
+    if label_variant is not None:
         from stock_forecasting.data.residual_labels import load_label_spec
 
-        label_spec = load_label_spec(args.label_variant)
+        label_spec = load_label_spec(label_variant)
         variant_name = str(label_spec["name"])
     caches, cache_roots, variants, variant_roots = {}, {}, {}, {}
     for split in ("train", "validation", "test"):
         source = open_clean_dataset(config, split, validated_root=roots[split])
         try:
-            root = ensure_xs_cache(source, spec, min_group_size, workers=args.workers)
+            root = ensure_xs_cache(source, spec, min_group_size, workers=workers)
             caches[split] = open_xs_cache(root)
             if label_spec is not None:
                 from stock_forecasting.data.xs_label_variant import (
@@ -161,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             source.close()
         cache_roots[split] = str(root)
     table = table_from_caches(caches, label_variants=variants if label_spec is not None else None)
-    encoder_name = EXPERIMENTS[args.experiment].get("encoder")
+    encoder_name = EXPERIMENTS[experiment].get("encoder")
     encoder_records = None
     if encoder_name is not None:
         import torch
@@ -175,8 +182,8 @@ def main(argv: list[str] | None = None) -> int:
             prefetch,
         )
 
-        device = resolve_device(args.device)
-        revisions = prefetch(ENCODERS[encoder_name], local_files_only=args.offline_encoders)
+        torch_device = resolve_device(device)
+        revisions = prefetch(ENCODERS[encoder_name], local_files_only=offline_encoders)
         kronos_kwargs = (
             {
                 "kronos_source_root": str(config.model.kronos_source_root),
@@ -185,15 +192,15 @@ def main(argv: list[str] | None = None) -> int:
             if ENCODERS[encoder_name].family == "kronos"
             else {}
         )
-        encoder = load_encoder(encoder_name, device=device, **kronos_kwargs)
+        encoder = load_encoder(encoder_name, device=torch_device, **kronos_kwargs)
         stores = []
         for split in ("train", "validation", "test"):
             root = ensure_embeddings(
                 caches[split],
                 encoder_name,
                 encoder=encoder,
-                device=device,
-                batch_size=args.embedding_batch_size,
+                device=torch_device,
+                batch_size=embedding_batch_size,
                 revisions=revisions,
             )
             stores.append(open_embeddings(root))
@@ -206,6 +213,33 @@ def main(argv: list[str] | None = None) -> int:
             "revisions": revisions,
             "dim": int(table.encoded.shape[1]),
         }
+    return table, cache_roots, encoder_records, variant_name, variant_roots
+
+
+def main(argv: list[str] | None = None) -> int:
+    from stock_forecasting.config import ExperimentConfig
+
+    args = build_parser().parse_args(argv)
+    if args.workers is not None and not 1 <= args.workers <= MAX_WORKERS:
+        raise SystemExit(f"--workers must be 1-{MAX_WORKERS}")
+    if len(set(args.seeds)) != len(args.seeds) or any(seed < 0 for seed in args.seeds):
+        raise SystemExit("--seeds must be distinct non-negative integers")
+    if args.output_root.exists() and any(args.output_root.iterdir()):
+        raise SystemExit(f"--output-root must be a new or empty directory: {args.output_root}")
+    config = ExperimentConfig.from_yaml(args.experiment_config)
+    spec = load_spec(args.spec)
+    schedule = load_schedule(args.schedule)
+    min_group_size = int(config.model.rank_min_group_size)
+    table, cache_roots, encoder_records, variant_name, variant_roots = build_sample_table(
+        config,
+        spec,
+        experiment=args.experiment,
+        label_variant=args.label_variant,
+        workers=args.workers,
+        device=args.device,
+        embedding_batch_size=args.embedding_batch_size,
+        offline_encoders=args.offline_encoders,
+    )
     folds = build_folds(schedule)
     if args.folds:
         wanted = set(args.folds)
@@ -240,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         label_variant=variant_name,
         resume_context=xs_resume_context(schedule, cache_roots, encoder_records),
         extend_from=args.extend_from,
+        feature_spec=str(spec.get("name") or args.spec.stem),
     )
     write_xs_manifest(
         args.output_root,

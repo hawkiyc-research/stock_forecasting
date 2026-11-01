@@ -271,7 +271,11 @@ if [[ -n "${XS_EXTEND_LAUNCH}" ]]; then
         echo "RUNPOD_XS_EXTEND_LAUNCH is not a finished launch on this volume: ${EXTEND_ROOT}" >&2
         exit 2
     fi
-    printf 'Extending finished launch %s (its identical folds are reused)\n' "${XS_EXTEND_LAUNCH}"
+    if [[ -f "${EXTEND_ROOT}/superseded_by.json" ]]; then
+        echo "RUNPOD_XS_EXTEND_LAUNCH was already superseded; extend its successor instead: ${EXTEND_ROOT}" >&2
+        exit 2
+    fi
+    printf 'Extending finished launch %s (its folds are linked or re-scored; P3 folds get weights)\n' "${XS_EXTEND_LAUNCH}"
     XS_ARGUMENTS+=(--extend-from "${EXTEND_ROOT}")
 fi
 "${POETRY_BIN}" run stock-forecasting-train-cross-stock "${XS_ARGUMENTS[@]}"

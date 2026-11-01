@@ -48,6 +48,8 @@ stock-forecasting-tw-information-test = "stock_forecasting.cli.tw_information_te
 stock-forecasting-build-features = "stock_forecasting.cli.build_features:main"
 stock-forecasting-walk-forward-lgbm = "stock_forecasting.cli.walk_forward_lgbm:main"
 stock-forecasting-train-cross-stock = "stock_forecasting.cli.train_cross_stock:main"
+stock-forecasting-predict-lgbm = "stock_forecasting.cli.predict_lgbm:main"
+stock-forecasting-predict-cross-stock = "stock_forecasting.cli.predict_cross_stock:main"
 
 [tool.poetry]
 packages = [{ include = "stock_forecasting", from = "src" }]

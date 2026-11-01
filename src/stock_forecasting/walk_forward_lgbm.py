@@ -37,6 +37,25 @@ from stock_forecasting.data.rank_labels import (
     label_identity,
     label_root,
 )
+from stock_forecasting.model_lineage import (
+    LINEAGE_NAME,
+    MODELS_DIR,
+    copy_fold_models,
+    fold_models_dir,
+    launch_models,
+    lineage_payload,
+    link_file,
+    model_fold_indexes,
+    owning_launch,
+    prediction_key,
+    prune_models,
+    read_model_manifest,
+    registry_key,
+    stamp_superseded,
+    training_key,
+    write_lineage,
+    write_model_manifest,
+)
 from stock_forecasting.resume_sources import (
     resume_candidates,
     resume_summary,
@@ -507,6 +526,7 @@ def _fit_lightgbm(
     valid_target_ranks,
     X_pred,
     seed: int,
+    model_path: Path | None = None,
 ):
     import lightgbm as lgb
 
@@ -536,7 +556,18 @@ def _fit_lightgbm(
     )
     best = int(booster.best_iteration or booster.current_iteration())
     score = float(booster.best_score["validation"]["rank_ic"])
-    return booster.predict(X_pred, num_iteration=best).astype(np.float32), best, score
+    scores = booster.predict(X_pred, num_iteration=best).astype(np.float32)
+    if model_path is not None:
+        # 2026-11-02 rule: the model is part of the result. Saved at the best iteration and
+        # read back before the fold counts as done: a file that does not reproduce the
+        # predictions is a failure, not a warning.
+        booster.save_model(str(model_path), num_iteration=best)
+        reloaded = lgb.Booster(model_file=str(model_path)).predict(X_pred).astype(np.float32)
+        if not np.allclose(reloaded, scores, atol=1e-5, rtol=1e-5):
+            raise RuntimeError(
+                f"Saved LightGBM model does not reproduce its predictions: {model_path}"
+            )
+    return scores, best, score
 
 
 def _fit_sklearn(
@@ -550,6 +581,7 @@ def _fit_sklearn(
     valid_target_ranks,
     X_pred,
     seed: int,
+    model_path: Path | None = None,
 ):
     from sklearn.ensemble import HistGradientBoostingRegressor
 
@@ -566,7 +598,144 @@ def _fit_sklearn(
     model.fit(X_train, y_train)
     valid_pred = model.predict(X_valid)
     score = fast_grouped_spearman(valid_pred, valid_target_ranks, valid_groups, valid_sizes)
-    return model.predict(X_pred).astype(np.float32), int(model.n_iter_), float(score)
+    scores = model.predict(X_pred).astype(np.float32)
+    if model_path is not None:
+        import joblib
+
+        joblib.dump(model, model_path)
+        reloaded = joblib.load(model_path).predict(X_pred).astype(np.float32)
+        if not np.allclose(reloaded, scores, atol=1e-5, rtol=1e-5):
+            raise RuntimeError(f"Saved model does not reproduce its predictions: {model_path}")
+    return scores, int(model.n_iter_), float(score)
+
+
+def score_table_with_launch(
+    table: pd.DataFrame,
+    launch: Path,
+    *,
+    feature_columns: list[str],
+    start: str,
+    end: str,
+    fold: int | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Scores of every sample with a signal date in [start, end) from a launch's saved models
+    (one row per sample and model: each seed and the mean ensemble; the ensemble rows carry
+    per-(date, market) ranks, 1 = highest score). Each date is scored by the model fold that
+    ``select_model_fold`` picks unless ``fold`` names one. Returns the frame and a record of
+    which fold scored which dates."""
+    from stock_forecasting.model_lineage import read_lineage, select_model_fold
+
+    launch = Path(launch)
+    results = json.loads((launch / "results.json").read_text(encoding="utf-8"))
+    horizons = [int(h) for h in results["horizons"]]
+    seeds = tuple(int(seed) for seed in results["seeds"])
+    model_folds = [int(index) for index in results.get("model_folds") or []]
+    if not model_folds:
+        raise ValueError(f"{launch} kept no models (it predates the 2026-11-02 rule)")
+    model_name = str(results["model"])
+    dates = pd.DatetimeIndex(table["signal_date"]).normalize()
+    inside = (dates >= pd.Timestamp(start)) & (dates < pd.Timestamp(end))
+    if not inside.any():
+        raise ValueError(f"No samples with a signal date in [{start}, {end})")
+    chosen: dict[str, int] = {}
+    for day in sorted({d.strftime("%Y-%m-%d") for d in dates[inside]}):
+        chosen[day] = (
+            fold if fold is not None else select_model_fold(results["folds"], model_folds, day)
+        )
+    if fold is not None and fold not in model_folds:
+        raise ValueError(f"Fold {fold} has no saved models; model folds: {model_folds}")
+    frames = []
+    keys = ["symbol", "market", "signal_date", "split", "ordinal"]
+    for index in sorted(set(chosen.values())):
+        days = pd.DatetimeIndex([pd.Timestamp(d) for d, i in chosen.items() if i == index])
+        mask = inside & dates.isin(days)
+        rows = table.loc[mask]
+        manifest, scores = score_with_fold_models(
+            fold_models_dir(launch, index),
+            rows[feature_columns].to_numpy(dtype=np.float32),
+            horizons,
+            seeds,
+        )
+        if list(manifest.get("feature_columns") or []) != list(feature_columns):
+            raise ValueError(f"Saved models of fold {index} use other feature columns")
+        base = rows[keys].reset_index(drop=True)
+        base["fold"] = index
+        for seed in seeds:
+            frame = base.copy()
+            frame["model"] = f"{model_name}-seed{seed}"
+            for h in horizons:
+                frame[score_column(h)] = scores[(h, seed)]
+            frames.append(frame)
+        ensemble = base.copy()
+        ensemble["model"] = model_name
+        for h in horizons:
+            ensemble[score_column(h)] = np.mean(
+                [scores[(h, seed)] for seed in seeds], axis=0
+            ).astype(np.float32)
+            ensemble[f"rank_h{h:02d}"] = (
+                ensemble.groupby(["signal_date", "market"])[score_column(h)]
+                .rank(ascending=False, method="first")
+                .astype(np.int64)
+            )
+        frames.append(ensemble)
+    out = (
+        pd.concat(frames, ignore_index=True)
+        .sort_values(["signal_date", "market", "model", "symbol"], kind="stable")
+        .reset_index(drop=True)
+    )
+    record = {
+        "launch": launch.name,
+        "model": model_name,
+        "lineage": read_lineage(launch),
+        "start": start,
+        "end": end,
+        "folds_by_date": chosen,
+        "rows": len(out),
+    }
+    return out, record
+
+
+def model_file_name(h: int, seed: int, backend: str) -> str:
+    """One model file per (horizon, seed) in a fold's ``models/fold-XX/`` directory."""
+    suffix = "txt" if backend == "lightgbm" else "joblib"
+    return f"h{h:02d}-seed{seed}.{suffix}"
+
+
+def load_fold_models(fold_dir: Path) -> tuple[dict[str, Any], dict[tuple[int, int], Callable]]:
+    """The verified model manifest of a fold and one predictor per (horizon, seed)."""
+    manifest = read_model_manifest(fold_dir)
+    if manifest is None:
+        raise ValueError(f"No verified model manifest in {fold_dir}")
+    backend = str(manifest.get("backend"))
+    predictors: dict[tuple[int, int], Callable] = {}
+    for name, details in manifest["files"].items():
+        path = Path(fold_dir) / name
+        if backend == "lightgbm":
+            import lightgbm as lgb
+
+            booster = lgb.Booster(model_file=str(path))
+            predictors[(int(details["h"]), int(details["seed"]))] = booster.predict
+        else:
+            import joblib
+
+            predictors[(int(details["h"]), int(details["seed"]))] = joblib.load(path).predict
+    return manifest, predictors
+
+
+def score_with_fold_models(
+    fold_dir: Path, X, horizons: list[int], seeds: tuple[int, ...]
+) -> tuple[dict[str, Any], dict[tuple[int, int], np.ndarray]]:
+    """Scores of ``X`` (feature columns in the manifest's order) from a fold's saved models."""
+    manifest, predictors = load_fold_models(fold_dir)
+    missing = [(h, seed) for h in horizons for seed in seeds if (h, seed) not in predictors]
+    if missing:
+        raise ValueError(f"{fold_dir} has no model for {missing}")
+    scores = {
+        (h, seed): np.asarray(predictors[(h, seed)](np.asarray(X)), dtype=np.float32)
+        for h in horizons
+        for seed in seeds
+    }
+    return manifest, scores
 
 
 def run_fold_task(task: dict) -> dict:
@@ -608,12 +777,16 @@ def run_fold_task(task: dict) -> dict:
     else:
         fit = _fit_sklearn
     records, predictions = [], {}
+    model_dir = Path(task["model_dir"]) if task.get("model_dir") else None
+    if model_dir is not None:
+        model_dir.mkdir(parents=True, exist_ok=True)
     for position, h in zip(task["positions"], task["horizons"], strict=True):
         y_train = y_train_all[:, position]
         y_valid = y_valid_all[:, position]
         valid_target_ranks = average_ranks(alpha_valid_all[:, position], valid_groups)
         for seed in task["seeds"]:
             started = time.monotonic()
+            model_file = None if model_dir is None else model_file_name(h, seed, backend)
             scores, best, valid_ic = fit(
                 task,
                 X_train,
@@ -625,6 +798,7 @@ def run_fold_task(task: dict) -> dict:
                 valid_target_ranks,
                 X_pred,
                 seed,
+                None if model_dir is None else model_dir / model_file,
             )
             predictions[(h, seed)] = scores
             records.append(
@@ -638,6 +812,7 @@ def run_fold_task(task: dict) -> dict:
                     "validation_rows": len(y_valid),
                     "predict_rows": len(X_pred),
                     "seconds": time.monotonic() - started,
+                    "model_file": model_file,
                 }
             )
     return {"fold": task["fold"], "records": records, "predictions": predictions}
@@ -822,6 +997,14 @@ def _load_partial(
     contributions.setdefault(source_root, []).append(fold.index)
     if path.resolve() != (partial_root / path.name).resolve():
         (partial_root / path.name).write_bytes(path.read_bytes())
+    # The unfinished launch saved this fold's models (a P3 fold): carry them.
+    source_models = fold_models_dir(source_root, fold.index)
+    target_models = fold_models_dir(partial_root.parent, fold.index)
+    if (
+        source_models.resolve() != target_models.resolve()
+        and read_model_manifest(source_models) is not None
+    ):
+        copy_fold_models(source_models, target_models)
 
 
 def _resumed_fold_info(
@@ -842,6 +1025,152 @@ def _resumed_fold_info(
     }
 
 
+def _context_dataset(context: str | None) -> str:
+    """The dataset part of a resume context (everything after the schedule name)."""
+    return (context or "").split("|", 1)[1] if context and "|" in context else ""
+
+
+def _read_partial(
+    path: Path,
+    horizons: list[int],
+    seeds: tuple[int, ...],
+    label_variant: str | None,
+    features: str | None,
+) -> tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]], str] | None:
+    """A fold's partial when it covers every horizon and seed under these labels and features;
+    returns (scores, records, stored context)."""
+    if not path.is_file():
+        return None
+    with np.load(path, allow_pickle=False) as payload:
+        keys = {f"h{h:02d}_seed{seed}" for h in horizons for seed in seeds}
+        if not keys <= set(payload.files):
+            return None
+        stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
+        if stored != (label_variant or ""):
+            return None
+        stored_features = str(payload["features"]) if "features" in payload.files else ""
+        if stored_features != (features or ""):
+            return None
+        context = str(payload["context"]) if "context" in payload.files else ""
+        fold_scores = {
+            (h, seed): np.asarray(payload[f"h{h:02d}_seed{seed}"], dtype=np.float32)
+            for h in horizons
+            for seed in seeds
+        }
+        fold_records = json.loads(str(payload["records"]))
+    return fold_scores, fold_records, context
+
+
+def _load_extension(
+    extend_from: Path | None,
+    output_root: Path,
+    table: pd.DataFrame,
+    folds: list[Fold],
+    horizons: list[int],
+    seeds: tuple[int, ...],
+    *,
+    model_name: str,
+    label_variant: str | None,
+    features: str | None,
+    context: str | None,
+    model_folds: set[int],
+) -> tuple[
+    dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]],
+    dict[int, dict[str, Any]],
+    dict[int, Path],
+]:
+    """Folds of a FINISHED launch of the same model this run carries on (2026-11-02 rule).
+
+    A fold matches by its training window (``TRAINING_DEFINITION``), not by index or schedule
+    name, on the same labels, feature tag and dataset. Then:
+
+    * same prediction window and no model needed (or the source holds verified models for
+      it): the source's partial is **linked** into this launch (no copy) and, for a P3 fold,
+      its models are copied; the fold is not retrained;
+    * same training window but a different prediction window, with verified source models:
+      the saved models **predict** this run's rows (no retraining; returned as ``to_predict``);
+    * a P3 fold whose source has no models, or any other fold: **trained** here.
+
+    Returns the linked folds (scores and records), per-fold provenance for the lineage, and
+    the folds to predict with saved models.
+    """
+    linked: dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]] = {}
+    sources: dict[int, dict[str, Any]] = {}
+    to_predict: dict[int, Path] = {}
+    if extend_from is None:
+        return linked, sources, to_predict
+    source_root = Path(extend_from)
+    results_path = source_root / "results.json"
+    if not results_path.is_file():
+        raise ValueError(f"--extend-from needs a finished launch (results.json): {source_root}")
+    results = json.loads(results_path.read_text(encoding="utf-8"))
+    if results.get("model") != model_name:
+        raise ValueError(
+            f"--extend-from launch trained {results.get('model')!r}, this run is {model_name!r}"
+        )
+    if (results.get("label_variant") or None) != (label_variant or None):
+        raise ValueError(
+            f"--extend-from launch used label variant {results.get('label_variant')!r}, "
+            f"this run uses {label_variant!r}"
+        )
+    by_training = {training_key(entry): entry for entry in results.get("folds", [])}
+    source_models = launch_models(source_root)
+    partial_root = output_root / "partial"
+    partial_root.mkdir(parents=True, exist_ok=True)
+    dates = pd.DatetimeIndex(table["signal_date"])
+    for fold in folds:
+        entry = by_training.get(training_key(fold))
+        if entry is None:
+            continue
+        source_index = int(entry["index"])
+        source_partial = source_root / "partial" / _partial_name(source_index)
+        loaded = _read_partial(source_partial, horizons, seeds, label_variant, features)
+        if loaded is None:
+            continue
+        fold_scores, fold_records, stored_context = loaded
+        if _context_dataset(stored_context) != _context_dataset(context):
+            continue  # another dataset: its folds are not this run's folds
+        has_models = source_index in source_models
+        needs_model = fold.index in model_folds
+        same_window = prediction_key(entry) == prediction_key(fold)
+        if same_window:
+            if needs_model and not has_models:
+                sources[fold.index] = {
+                    "how": "trained",
+                    "reason": "P3 fold: the source launch kept no models",
+                    "source_fold": source_index,
+                }
+                continue
+            _, _, predict = fold_masks(dates, fold)
+            if int(predict.sum()) != len(next(iter(fold_scores.values()))):
+                continue  # the rows are not this table's rows of the fold
+            mode = link_file(partial_root / _partial_name(fold.index), source_partial)
+            for record in fold_records:
+                record["fold"] = fold.index
+                record["extended_from"] = {"launch": source_root.name, "fold": source_index}
+            linked[fold.index] = (fold_scores, fold_records)
+            sources[fold.index] = {
+                "how": "linked" if mode == "link" else "copied",
+                "predictions_launch": owning_launch(source_partial),
+                "source_fold": source_index,
+            }
+            if needs_model:
+                copy_fold_models(
+                    fold_models_dir(source_root, source_index),
+                    fold_models_dir(output_root, fold.index),
+                )
+                sources[fold.index]["models_from"] = source_root.name
+            continue
+        if has_models:
+            to_predict[fold.index] = fold_models_dir(source_root, source_index)
+            sources[fold.index] = {
+                "how": "predicted",
+                "models_from": source_root.name,
+                "source_fold": source_index,
+            }
+    return linked, sources, to_predict
+
+
 def run_walk_forward(
     table: pd.DataFrame,
     *,
@@ -860,12 +1189,20 @@ def run_walk_forward(
     model_name: str = MODEL_NAME,
     label_variant: str | None = None,
     resume_context: str | None = None,
+    extend_from: Path | None = None,
+    feature_spec: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold, write predictions, targets, daily Rank IC and the cell summary.
 
     Each finished fold is written to ``output_root/partial/`` at once; ``resume_root`` names one
     or several earlier output roots whose partial folds are reused (a Pod restart costs at most
     one fold); every source used is stamped with ``resumed_into.json`` afterwards.
+
+    2026-11-02 rule: the folds the schedule's P3 needs keep their models under
+    ``models/fold-XX/`` (one file per horizon and seed, verified by reloading), every launch
+    writes ``lineage.json``, and ``extend_from`` names a finished launch of the same model whose
+    folds are carried on instead of retrained (see ``_load_extension``); that launch is then
+    stamped ``superseded_by.json`` and loses its model files.
     """
     started = time.monotonic()
     backend = backend_name()
@@ -877,9 +1214,34 @@ def run_walk_forward(
     partial_root.mkdir(parents=True, exist_ok=True)
     records, scores = [], {}
     features = feature_tag(feature_columns)
-    resumed, contributions = _load_partials(
-        resume_root, partial_root, folds, horizons, seeds, label_variant, features, resume_context
+    model_folds = model_fold_indexes(folds, schedule)
+    fold_sources: dict[int, dict[str, Any]] = {}
+    resumed, fold_sources, to_predict = _load_extension(
+        extend_from,
+        output_root,
+        table,
+        folds,
+        horizons,
+        seeds,
+        model_name=model_name,
+        label_variant=label_variant,
+        features=features,
+        context=resume_context,
+        model_folds=model_folds,
     )
+    more, contributions = _load_partials(
+        resume_root,
+        partial_root,
+        [fold for fold in folds if fold.index not in resumed and fold.index not in to_predict],
+        horizons,
+        seeds,
+        label_variant,
+        features,
+        resume_context,
+    )
+    resumed.update(more)
+    for fold_index in more:
+        fold_sources[fold_index] = {"how": "resumed"}
     for fold_index, (fold_scores, fold_records) in resumed.items():
         scores[fold_index] = fold_scores
         records.extend(fold_records)
@@ -894,6 +1256,52 @@ def run_walk_forward(
             continue
         work = work_root / f"fold-{fold.index:02d}"
         fold_info[fold.index] = _write_fold_work(table, feature_columns, horizons, fold, work)
+        if fold.index in to_predict:
+            # Same training window as a fold of the extended launch: its saved models score
+            # this run's rows (the prediction window changed, e.g. a quarter that was cut at
+            # the old data end); nothing is retrained.
+            predicted_at = time.monotonic()
+            manifest, fold_scores = score_with_fold_models(
+                to_predict[fold.index], np.load(work / "X_pred.npy", mmap_mode="r"), horizons, seeds
+            )
+            if list(manifest.get("feature_columns") or []) != list(feature_columns):
+                raise ValueError(f"Saved models of {to_predict[fold.index]} use other features")
+            fold_records = []
+            for (h, seed), values in fold_scores.items():
+                details = manifest["files"][model_file_name(h, seed, str(manifest["backend"]))]
+                fold_records.append(
+                    {
+                        "fold": fold.index,
+                        "h": h,
+                        "seed": seed,
+                        "best_iteration": details.get("best_iteration"),
+                        "validation_rank_ic": details.get("validation_rank_ic"),
+                        "train_rows": fold_info[fold.index]["train_rows"],
+                        "validation_rows": fold_info[fold.index]["validation_rows"],
+                        "predict_rows": len(values),
+                        "seconds": time.monotonic() - predicted_at,
+                        "predicted_with": {
+                            "launch": to_predict[fold.index].parent.parent.name,
+                            "fold": int(manifest["fold"]["index"]),
+                        },
+                    }
+                )
+            scores[fold.index] = fold_scores
+            records.extend(fold_records)
+            _save_partial(
+                partial_root,
+                fold.index,
+                fold_scores,
+                fold_records,
+                label_variant,
+                features,
+                resume_context,
+            )
+            if fold.index in model_folds:
+                copy_fold_models(to_predict[fold.index], fold_models_dir(output_root, fold.index))
+            _cleanup_work(work)
+            print(json.dumps({"fold": fold.index, "predicted_with_saved_models": True}), flush=True)
+            continue
         pending_chunks[fold.index] = len(horizon_chunks)
         for positions in horizon_chunks:
             tasks.append(
@@ -908,6 +1316,11 @@ def run_walk_forward(
                     "early_stopping": early_stopping,
                     "backend": backend,
                     "feature_names": feature_columns,
+                    "model_dir": (
+                        str(fold_models_dir(output_root, fold.index))
+                        if fold.index in model_folds
+                        else None
+                    ),
                 }
             )
     fold_records: dict[int, list[dict[str, Any]]] = {}
@@ -922,6 +1335,30 @@ def run_walk_forward(
         scores.setdefault(result["fold"], {}).update(result["predictions"])
         pending_chunks[result["fold"]] -= 1
         if pending_chunks[result["fold"]] == 0:
+            if result["fold"] in model_folds:
+                fold = next(f for f in folds if f.index == result["fold"])
+                write_model_manifest(
+                    fold_models_dir(output_root, fold.index),
+                    kind="lgbm",
+                    fold=fold_frame([fold]).to_dict(orient="records")[0],
+                    files={
+                        r["model_file"]: {
+                            "h": r["h"],
+                            "seed": r["seed"],
+                            "best_iteration": r["best_iteration"],
+                            "validation_rank_ic": r["validation_rank_ic"],
+                        }
+                        for r in fold_records[fold.index]
+                    },
+                    backend=backend,
+                    model=model_name,
+                    label_variant=label_variant,
+                    features=features,
+                    feature_columns=list(feature_columns),
+                    horizons=list(horizons),
+                    seeds=list(seeds),
+                    context=resume_context,
+                )
             _save_partial(
                 partial_root,
                 result["fold"],
@@ -1040,8 +1477,49 @@ def run_walk_forward(
         "seconds": time.monotonic() - started,
         # Provenance of a resumed run: which launch trained which folds.
         "resume": resume_summary(contributions),
+        "extended_from": None if extend_from is None else Path(extend_from).name,
+        "model_folds": sorted(model_folds),
     }
+    # Every P3 fold's models must be on disk and verified before the launch is a result.
+    for index in sorted(model_folds):
+        if read_model_manifest(fold_models_dir(output_root, index)) is None:
+            raise RuntimeError(f"Fold {index} has no verified models under {MODELS_DIR}/")
     atomic_write_json(output_root / "results.json", results)
+    key = registry_key("lgbm", model_name, label_variant, feature_spec)
+    write_lineage(
+        output_root,
+        lineage_payload(
+            launch=output_root.name,
+            kind="lgbm",
+            key=key,
+            model=model_name,
+            label_variant=label_variant,
+            feature_spec=feature_spec,
+            schedule=schedule,
+            folds=folds,
+            fold_sources=fold_sources,
+            model_folds=model_folds,
+            extended_from=None if extend_from is None else Path(extend_from).name,
+            backend=backend,
+            features=features,
+            context=resume_context,
+        ),
+    )
+    results["lineage"] = {"key": key, "file": LINEAGE_NAME}
+    if extend_from is not None:
+        # The extended launch is history now: its folds live on here (linked or re-predicted),
+        # the registry points at this launch, and its model files go (this launch holds every
+        # model P3 needs, verified above) — the user's 2026-11-02 rule, applied before the Pod
+        # ends.
+        carried = sorted(i for i, src in fold_sources.items() if src.get("how") != "trained")
+        stamp_superseded(
+            extend_from,
+            superseded_by=output_root,
+            folds=carried,
+            model=model_name,
+            label_variant=label_variant,
+            pruned_models=prune_models(extend_from),
+        )
     for source, keys in contributions.items():
         # The source keeps its partial/ and never gets a results.json of its own; the stamp
         # keeps later jobs from offering it again and the volume reset from deleting it.
@@ -1080,6 +1558,8 @@ def write_manifest(
     ]
     if (output_root / "daily_rank_ic_residual.parquet").is_file():
         names.append("daily_rank_ic_residual.parquet")  # label variants (protocol 13.16)
+    if (output_root / LINEAGE_NAME).is_file():
+        names.append(LINEAGE_NAME)
     files = {
         name: {
             "sha256": sha256_file(output_root / name),
@@ -1107,9 +1587,26 @@ def write_manifest(
         },
         "backend": results["backend"],
         "files": files,
+        # Saved models (2026-11-02 rule): downloaded and verified like the result files.
+        "models": model_files(output_root),
     }
     atomic_write_json(output_root / "walk-forward-manifest.json", payload)
     return payload
+
+
+def model_files(output_root: Path) -> dict[str, dict[str, Any]]:
+    """Every file under ``models/`` with its SHA-256, keyed by launch-relative path."""
+    models_root = output_root / MODELS_DIR
+    found: dict[str, dict[str, Any]] = {}
+    if not models_root.is_dir():
+        return found
+    for file in sorted(models_root.rglob("*")):
+        if file.is_file() and not file.is_symlink():
+            found[str(file.relative_to(output_root))] = {
+                "sha256": sha256_file(file),
+                "bytes": file.stat().st_size,
+            }
+    return found
 
 
 __all__ = [

@@ -414,6 +414,35 @@ class LgbmControlPlaneTests(unittest.TestCase):
         )
         self.assertIn("RUNPOD_WALK_FORWARD_SCHEDULE must name a file under", job)
 
+    def test_lgbm_pod_carries_the_launch_to_extend(self) -> None:
+        """--extendLaunch (2026-11-02 rule) reaches the Pod as RUNPOD_LGBM_EXTEND_LAUNCH; the
+        job passes the launch directory as --extend-from after checking it is a finished,
+        not yet superseded launch."""
+        write_env(self.env_file, "RUNPOD_NETWORK_VOLUME_ID=fixture-volume\n")
+        result = self.command("lgbm", "--extendLaunch", "launch-20261031T084414Z-353215384")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        line = next(line for line in result.stdout.splitlines() if "--name" in line)
+        command = shlex.split(line.removeprefix("DRY RUN:"))
+        env = json.loads(command[command.index("--env") + 1])
+        self.assertEqual(env["RUNPOD_LGBM_EXTEND_LAUNCH"], "launch-20261031T084414Z-353215384")
+        plain = self.command("lgbm")
+        line = next(line for line in plain.stdout.splitlines() if "--name" in line)
+        command = shlex.split(line.removeprefix("DRY RUN:"))
+        self.assertEqual(
+            json.loads(command[command.index("--env") + 1])["RUNPOD_LGBM_EXTEND_LAUNCH"], ""
+        )
+        self.assertEqual(self.command("lgbm", "--extendLaunch", "../x").returncode, 2)
+        self.assertEqual(
+            self.command(
+                "features", "--extendLaunch", "launch-20261031T084414Z-353215384"
+            ).returncode,
+            2,
+        )
+        job = (ROOT / "scripts/runpod_cpu_lgbm.sh").read_text(encoding="utf-8")
+        self.assertIn('LGBM_EXTEND_LAUNCH="${RUNPOD_LGBM_EXTEND_LAUNCH:-}"', job)
+        self.assertIn('LGBM_ARGUMENTS+=(--extend-from "${EXTEND_ROOT}")', job)
+        self.assertIn("superseded_by.json", job)
+
     def test_download_reports_running_missing_and_verified_results(self) -> None:
         write_env(
             self.env_file,
@@ -459,8 +488,69 @@ class LgbmControlPlaneTests(unittest.TestCase):
         result = self.command("download-lgbm")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("short: rank_ic=0.0500", result.stdout)
+        self.assertIn("registry unchanged", result.stdout)
         local = self.project / "artifacts/lgbm" / LAUNCH
         self.assertEqual((local / "predictions.parquet").read_bytes(), b"parquet")
+        # 2026-11-02 rule: saved models and the lineage come down too; the registry moves.
+        lineage = {
+            "schema": "walk-forward-lineage-v1",
+            "launch": LAUNCH,
+            "kind": "lgbm",
+            "key": "t-lgbm-alpha__alpha_tw_v1",
+            "model": "t-lgbm-alpha",
+            "label_variant": None,
+            "feature_spec": "alpha_tw_v1",
+            "schedule": "tw_quarterly_v2",
+            "data_end": "2026-10-23",
+            "p3": ["2026-07-01", "2026-10-23"],
+            "extended_from": None,
+            "folds": {
+                "0": {"name": "2023Q1", "how": "trained", "predict": ["a", "b"], "models": None},
+                "1": {
+                    "name": "2023Q2",
+                    "how": "trained",
+                    "predict": ["b", "c"],
+                    "models": "models/fold-01",
+                },
+            },
+        }
+        (remote / "lineage.json").write_text(json.dumps(lineage), encoding="utf-8")
+        (remote / "models" / "fold-01").mkdir(parents=True)
+        (remote / "models" / "fold-01" / "h10-seed42.txt").write_bytes(b"tree")
+        digest = __import__("hashlib").sha256
+        files["lineage.json"] = {
+            "sha256": digest((remote / "lineage.json").read_bytes()).hexdigest()
+        }
+        (remote / "walk-forward-manifest.json").write_text(
+            json.dumps(
+                {
+                    "kind": "walk-forward-lgbm",
+                    "files": files,
+                    "models": {
+                        "models/fold-01/h10-seed42.txt": {"sha256": digest(b"tree").hexdigest()}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        shutil.rmtree(local)
+        result = self.command("download-lgbm")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((local / "models" / "fold-01" / "h10-seed42.txt").read_bytes(), b"tree")
+        registry = json.loads(
+            (self.project / "registry" / "lgbm" / "t-lgbm-alpha__alpha_tw_v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(registry["current"]["launch"], LAUNCH)
+        self.assertEqual(registry["model_folds"], [1])
+        self.assertEqual(registry["folds"]["0"]["predictions_launch"], LAUNCH)
+        self.assertIn("Registry registry/lgbm/t-lgbm-alpha__alpha_tw_v1.json", result.stdout)
+        # A model file that fails its hash check fails the download.
+        (remote / "models" / "fold-01" / "h10-seed42.txt").write_bytes(b"other")
+        shutil.rmtree(local)
+        self.assertNotEqual(self.command("download-lgbm").returncode, 0)
+        (remote / "models" / "fold-01" / "h10-seed42.txt").write_bytes(b"tree")
         (remote / "predictions.parquet").write_bytes(b"tampered")
         shutil.rmtree(local)
         self.assertNotEqual(self.command("download-lgbm").returncode, 0)

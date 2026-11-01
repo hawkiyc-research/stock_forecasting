@@ -39,6 +39,30 @@ def _volume(tmp_path: Path) -> Path:
     xs = volume / "diagnostics" / "xs" / "launch-20261023T000000Z-3"
     _write(xs / "results.json", b"{}")
     _write(xs / "checkpoints" / "fold-01.pt", b"w" * 400)
+    # 2026-11-02 rule: a current launch keeps models/; the launch it extended (superseded,
+    # linked into) keeps results and partial/ but loses leftover model files.
+    superseded = volume / "diagnostics" / "lgbm" / "launch-20261101T000000Z-5"
+    _write(superseded / "results.json", b"{}")
+    _write(superseded / "partial" / "fold-00.npz", b"s" * 200)
+    _write(superseded / "models" / "fold-14" / "h10-seed42.txt", b"m" * 300)
+    _write(superseded / "superseded_by.json", b"{}")
+    current = volume / "diagnostics" / "lgbm" / "launch-20261102T000000Z-6"
+    _write(current / "results.json", b"{}")
+    _write(current / "partial" / "fold-14.npz", b"c" * 200)
+    (current / "partial" / "fold-00.npz").symlink_to(
+        "../../launch-20261101T000000Z-5/partial/fold-00.npz"
+    )
+    _write(current / "models" / "fold-14" / "h10-seed42.txt", b"n" * 300)
+    _write(current / "models" / "fold-14" / "model-manifest.json", b"{}")
+    # Linked into but not yet stamped (the successor is still running): kept as well.
+    linked = volume / "diagnostics" / "xs" / "launch-20261101T000000Z-7"
+    _write(linked / "results.json", b"{}")
+    _write(linked / "partial" / "fold-00-seed-42.npz", b"l" * 200)
+    running = volume / "diagnostics" / "xs" / "launch-20261102T000000Z-8"
+    _write(running / "partial" / "fold-02-seed-42.npz", b"r" * 200)
+    (running / "partial" / "fold-00-seed-42.npz").symlink_to(
+        "../../launch-20261101T000000Z-7/partial/fold-00-seed-42.npz"
+    )
     _write(volume / "diagnostics" / "invalid" / "datasets" / "x" / "store.parquet", b"i" * 50)
     checkpoint = volume / "savedModel" / "run-1" / "checkpoint-000100"
     _write(checkpoint / "adapter.safetensors", b"a" * 900)
@@ -68,6 +92,11 @@ def test_plan_targets_superseded_data_and_weights_only(tmp_path: Path) -> None:
     # A launch whose folds a later launch absorbed is part of that result's record: kept.
     assert not any(path.startswith("diagnostics/xs/launch-20261031T000000Z-4") for path in paths)
     assert "diagnostics/xs/launch-20261023T000000Z-3/checkpoints/fold-01.pt" in paths
+    assert "diagnostics/lgbm/launch-20261101T000000Z-5/models" in paths
+    assert not any(p.startswith("diagnostics/lgbm/launch-20261102T000000Z-6/models") for p in paths)
+    assert "diagnostics/lgbm/launch-20261102T000000Z-6/partial" in paths
+    assert not any(p.startswith("diagnostics/xs/launch-20261101T000000Z-7") for p in paths)
+    assert "diagnostics/xs/launch-20261102T000000Z-8" in paths  # unfinished: still deletable
     assert "diagnostics/invalid" in paths
     assert "savedModel/run-1/checkpoint-000100/adapter.safetensors" in paths
     assert "savedModel/run-1/checkpoint-000100/optimizer.pt" in paths
@@ -80,6 +109,9 @@ def test_plan_targets_superseded_data_and_weights_only(tmp_path: Path) -> None:
         "datasets/tw-chip-data",
         "diagnostics/lgbm/launch-20261028T000000Z-1/results.json",
         "diagnostics/lgbm/launch-20261028T000000Z-1/predictions.parquet",
+        "diagnostics/lgbm/launch-20261101T000000Z-5/partial",
+        "diagnostics/lgbm/launch-20261101T000000Z-5/results.json",
+        "diagnostics/lgbm/launch-20261102T000000Z-6/models/fold-14/h10-seed42.txt",
         "diagnostics/xs/launch-20261023T000000Z-3/results.json",
         "savedModel/run-1/checkpoint-000100/trainer_state.json",
         "forward/2026-10-20/package/manifest.json",
@@ -122,6 +154,12 @@ def test_apply_removes_targets_and_reports_dangling_markers(tmp_path: Path, caps
     assert not (finished / "partial").exists()
     assert not (volume / "diagnostics" / "lgbm" / "launch-20261029T000000Z-2").exists()
     assert not (volume / "diagnostics" / "invalid").exists()
+    superseded = volume / "diagnostics" / "lgbm" / "launch-20261101T000000Z-5"
+    assert (superseded / "partial" / "fold-00.npz").is_file()
+    assert not (superseded / "models").exists()
+    current = volume / "diagnostics" / "lgbm" / "launch-20261102T000000Z-6"
+    assert (current / "models" / "fold-14" / "h10-seed42.txt").is_file()
+    assert not (current / "partial").exists()
     checkpoint = volume / "savedModel" / "run-1" / "checkpoint-000100"
     assert not (checkpoint / "adapter.safetensors").exists()
     assert (checkpoint / "trainer_state.json").is_file()

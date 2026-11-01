@@ -220,6 +220,20 @@ sentinel；真正的 dataset 值記錄為 `effective_sample_stride=1` 與
 `effective_embargo_bars=14`。訓練與 manifest validator 同時驗證 sentinel 與有效值，
 避免部署相容參數誤改新標籤語意。
 
+**Network volume 上的 walk-forward launch 之間有連結（2026-11-02 規則，§13.23 補充二）。**
+每個 `diagnostics/lgbm/<launch>/` 與 `diagnostics/xs/<launch>/` 都存 P3 需要的折的模型
+（`models/fold-XX/`）並寫 `lineage.json`。用 `--extendLaunch` 延伸舊 launch 時，新 launch 的
+`partial/` 裡沒變的折是**相對路徑的符號連結**，指向真正訓練那一折的舊 launch（鏈會解析到最
+初的檔案），舊 launch 蓋 `superseded_by.json`、只刪它的 `models/`。因此清理 volume 空間時：
+
+- 不得刪除任何被連結或蓋了 `superseded_by.json` 的 launch 目錄，否則正本的 `partial/` 斷鏈，
+  後續的續跑與下一次延伸都會把那些折當成不存在而重訓；`scripts/runpod_volume_reset.py` 會
+  辨識連結與標記並跳過，手動 `aws s3 rm` 前要先看 `registry/<kind>/<key>.json` 的
+  `folds[i].predictions_launch`。
+- 正本（已完成、未被取代）launch 的 `models/` 是結果的一部分，不得當作「權重檔」清掉。
+- 每個模型目前的正本與每折所在的 launch 以 repo 內的 `registry/` 為準（由 `download-lgbm`／
+  `download-xs` 更新）；下一次只補 P3 折時，`--extendLaunch` 傳登錄表的 `current.launch`。
+
 ### 10. 未來多模態能力
 
 本次不保留 LLM 或 fact head，但保留 `encode_ohlcv(...)` 與 conditioned numeric latent
@@ -465,6 +479,25 @@ remain unchanged. Stable CPU preparation passes `--stride 5` and
 `--embargo-bars 5`; these remain readiness sentinels. Effective dataset values
 are separately recorded as `effective_sample_stride=1` and
 `effective_embargo_bars=14`. Validators bind both layers.
+
+**Walk-forward launches on the network volume link to each other (the 2026-11-02 rule,
+§13.23 supplement 2).** Every `diagnostics/lgbm/<launch>/` and `diagnostics/xs/<launch>/`
+keeps the models of the folds P3 needs (`models/fold-XX/`) and writes `lineage.json`. When
+an old launch is extended with `--extendLaunch`, the unchanged folds in the new launch's
+`partial/` are **relative symbolic links** to the launch that really trained them (chains
+resolve to the original file); the old launch is stamped `superseded_by.json` and only its
+`models/` is removed. When freeing volume space:
+
+- never delete a launch directory that is linked into or carries `superseded_by.json`: the
+  current launch's `partial/` would dangle and the next resume or extension would treat those
+  folds as missing and retrain them; `scripts/runpod_volume_reset.py` recognises links and
+  stamps and skips them, and before any manual `aws s3 rm` check
+  `folds[i].predictions_launch` in `registry/<kind>/<key>.json`;
+- the `models/` of a current (finished, not superseded) launch is part of the result and is
+  never swept as "weight files";
+- the repository's `registry/` (updated by `download-lgbm` / `download-xs`) is the source of
+  truth for each model's current launch and the launch holding each fold; the next P3-only
+  round passes the registry's `current.launch` to `--extendLaunch`.
 
 ### 10. Future multimodal capability
 
