@@ -177,7 +177,8 @@ export PYTHONUNBUFFERED=1
 
 printf '[%s] cross-stock tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "${POETRY_BIN}" run pytest -q \
-    tests/test_walk_forward.py tests/test_cross_stock.py tests/test_encoders.py
+    tests/test_walk_forward.py tests/test_cross_stock.py tests/test_encoders.py \
+    tests/test_verify_resume_rules.py
 bash "${SCRIPT_DIR}/ensure_runpod_data_dependencies.sh"
 # The paired H-A comparison needs a finished B0 run of the same label variant on this
 # volume: the newest diagnostics/lgbm/launch-*/results.json whose label_variant matches (the
