@@ -537,3 +537,60 @@ def test_static_bucket_buffers_are_refilled_for_a_smaller_group(monkeypatch) -> 
     assert not smaller["windows"][size:].any()
     assert torch.equal(smaller["windows"][:size], table.windows[index.rows(small)])
     monkeypatch.delenv("FIN_TS_XS_PAD_MULTIPLE")
+
+
+def test_fold_trainer_reset_reuses_addresses_and_matches_a_fresh_model(monkeypatch) -> None:
+    """One model / optimizer per run: ``reset(seed)`` copies a fresh model's parameters in
+    place (same values as building the model under the seed, same data pointers, so CUDA-graph
+    trees never re-record) and zeroes the optimizer state in place."""
+    from stock_forecasting.cross_stock_training import FoldTrainer, TensorStore
+
+    monkeypatch.setenv("FIN_TS_XS_PAD_MULTIPLE", "16")
+    sessions = _sessions()
+    table = table_from_caches({"train": _cache("train", sessions, 3, 12)})
+    index = build_group_index(table)
+    store = TensorStore(table, torch.device("cpu"), headroom_bytes=0)
+    store.attach_order(index.order)
+    config, _lambda = make_config("t-xs-scratch", table)
+    params = {"learning_rate": 1e-3, "weight_decay": 1e-4, "gradient_clip": 1.0}
+    trainer = FoldTrainer(config, torch.device("cpu"), lambda_corr=1.0, params=params)
+    assert trainer.execution_label == "eager"
+    pointers = {name: p.data_ptr() for name, p in trainer.model.named_parameters()}
+
+    trainer.reset(42)
+    trainer.model.train()
+    for group in range(3):
+        trainer.runner.train_step(store.group_batch(index, group))
+    state_pointers = [
+        value.data_ptr()
+        for state in trainer.optimizer.state.values()
+        for value in state.values()
+        if isinstance(value, torch.Tensor)
+    ]
+    assert state_pointers, "a step must have created optimizer state"
+    assert any(
+        value.abs().sum() > 0
+        for state in trainer.optimizer.state.values()
+        for value in state.values()
+        if isinstance(value, torch.Tensor)
+    )
+
+    trainer.reset(43)
+    torch.manual_seed(43)
+    fresh = CrossStockModel(config)
+    for (name, p), (fresh_name, q) in zip(
+        trainer.model.named_parameters(), fresh.named_parameters(), strict=True
+    ):
+        assert name == fresh_name
+        assert torch.equal(p, q), name
+        assert p.data_ptr() == pointers[name], name
+    after = [
+        value
+        for state in trainer.optimizer.state.values()
+        for value in state.values()
+        if isinstance(value, torch.Tensor)
+    ]
+    assert [value.data_ptr() for value in after] == state_pointers
+    assert all(float(value.abs().sum()) == 0.0 for value in after)
+    assert all(p.grad is None for p in trainer.model.parameters())
+    monkeypatch.delenv("FIN_TS_XS_PAD_MULTIPLE")

@@ -154,6 +154,9 @@ flowchart TD
 三段各自編譯成 CUDA graph 重播，group batch 直接寫進每個 bucket 的靜態緩衝區（`mark_static_address`，重播不複製輸入），
 每步留給 Python 的只剩 gather、`zero_grad` 與 loss 累加；`model` 只編譯模型（10-30 的做法，loss、裁剪與 optimizer 仍是
 每步約 50 次 eager 發射，RTX PRO 4500 上利用率約 50%），`eager` 不編譯；某一級失敗會自動降一級並記在 `execution.mode`。
+整個 run 只建一次模型與 optimizer（`FoldTrainer`），每個（fold, seed）把以該 seed 新建模型的參數原地複製進去、optimizer 狀態原地歸零，
+所以參數與狀態的位址固定，CUDA graph 不會為每個 fold 重錄（重錄會保留舊錄影的記憶體：Kronos 三 seed 曾在第 31 個 fold-seed OOM）；
+`fits.execution` 另記 `peak_allocated_bytes` 與 `reserved_bytes`，各 fold 應持平，持續上升就是重錄。
 編譯產物（Inductor FX graph、Triton 核心與 autotune 結果）由 `runpod_gpu_xs.sh` 指到 volume 的
 `cache/torch-compile/`（`TORCHINDUCTOR_CACHE_DIR`、`TRITON_CACHE_DIR`、`TORCHINDUCTOR_FX_GRAPH_CACHE=1`），同型號 GPU 的下一台 Pod
 跳過冷編譯；CUDA graph 的捕捉仍是每個 process、每個模型實例各做一次。D1 的凍結編碼器 embedding 改用 pinned memory 非同步上傳與 `inference_mode`。
@@ -4589,6 +4592,11 @@ group batch is written into that bucket's static buffers (`mark_static_address`,
 only the gather, `zero_grad` and the loss accumulation to Python per step; `model` compiles the model alone (the
 2026-10-30 path, which left the loss, clipping and optimizer as ~50 eager launches per step and held an RTX PRO 4500 at
 ~50% utilization); `eager` compiles nothing. A failing level falls back one level and is recorded in `execution.mode`.
+One model and optimizer serve the whole run (`FoldTrainer`): every (fold, seed) copies the parameters of a model freshly
+built under that seed into them in place and zeroes the optimizer state in place, so parameter and state addresses never
+change and the CUDA-graph trees never re-record per fold (re-recording keeps the earlier recordings' memory: the Kronos
+three-seed launch ran out of GPU memory at its 31st fold-seed). `fits.execution` also records `peak_allocated_bytes` and
+`reserved_bytes`, which should stay flat across folds; growth means re-recording.
 Compile artifacts (Inductor FX graphs, Triton kernels, autotune
 results) are kept on the volume under `cache/torch-compile/` by `runpod_gpu_xs.sh` (`TORCHINDUCTOR_CACHE_DIR`,
 `TRITON_CACHE_DIR`, `TORCHINDUCTOR_FX_GRAPH_CACHE=1`), so the next Pod with the same GPU model skips the cold
