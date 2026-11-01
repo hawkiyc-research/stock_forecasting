@@ -15,7 +15,9 @@ What is DELETED (``--apply``):
 * ``diagnostics/invalid/`` entirely (quarantined results);
 * in ``diagnostics/lgbm``, ``diagnostics/xs`` and ``diagnostics/features`` launches: an
   unfinished launch (no ``results.json`` / ``features-manifest.json``) entirely, and in a
-  finished one its ``partial/`` resume directory;
+  finished one its ``partial/`` resume directory — except a launch carrying
+  ``resumed_into.json`` (a later launch absorbed its folds: part of that result's record,
+  kept whole);
 * ``forward/<date>/shared-cache/`` and every non-JSON file of ``forward/<date>/package/``
   (bars and caches of the forward pipeline);
 * model weights and cached tensors anywhere outside the protected roots: ``*.pt``, ``*.pth``,
@@ -56,10 +58,20 @@ from pathlib import Path
 NAMESPACE = re.compile(r"^[0-9a-f]{64}$")
 LAUNCH_ROOTS = ("diagnostics/lgbm", "diagnostics/xs", "diagnostics/features")
 FINISHED_MARKERS = ("results.json", "features-manifest.json")
+RESUMED_INTO_MARKER = "resumed_into.json"
 PROTECTED_DIRS = ("lifecycle", "logs", "evaluations")
 WEIGHT_SUFFIXES = (
-    ".pt", ".pth", ".safetensors", ".bin", ".ckpt", ".npy", ".npz", ".joblib", ".pkl",
-    ".pickle", ".lgb",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".bin",
+    ".ckpt",
+    ".npy",
+    ".npz",
+    ".joblib",
+    ".pkl",
+    ".pickle",
+    ".lgb",
 )
 WEIGHT_NAME = re.compile(r"^model.*\.txt$")
 NAMESPACE_BULK = ("raw", "prepared", "provider-checkpoints")
@@ -131,6 +143,10 @@ def plan_launches(volume: Path) -> list[dict]:
             if launch.is_symlink() or not launch.is_dir():
                 continue
             finished = any((launch / marker).is_file() for marker in FINISHED_MARKERS)
+            if (launch / RESUMED_INTO_MARKER).is_file():
+                # A later launch absorbed its folds: it is part of that result's record
+                # (per-fold records, logs) and is kept whole.
+                continue
             if not finished:
                 entries.append(
                     _entry(volume, launch, "launch", "unfinished launch: nothing traceable")
@@ -182,6 +198,9 @@ def plan_weights(volume: Path, planned: set[str]) -> list[dict]:
             rel_prefix.startswith(skip_prefixes)
             or "/api-cache/" in f"/{rel_prefix}"
             or rel_prefix.startswith("datasets/tw-chip-data/")
+            # A resume source a later launch absorbed: its partial/ (.npz) is that result's
+            # per-fold record, kept whole.
+            or (current / RESUMED_INTO_MARKER).is_file()
         ):
             dirs[:] = []
             continue
@@ -227,7 +246,7 @@ def dangling_lifecycle_markers(volume: Path, deleted: list[dict]) -> list[str]:
 
 
 def _check_target(volume: Path, entry: dict) -> Path:
-    path = (volume / entry["path"])
+    path = volume / entry["path"]
     if path.is_symlink():
         raise RuntimeError(f"refusing symlink: {path}")
     resolved = path.resolve(strict=True)

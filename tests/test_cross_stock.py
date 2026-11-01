@@ -262,24 +262,75 @@ def test_finished_fold_seeds_are_written_and_resumed(tmp_path: Path) -> None:
         pd.read_parquet(first / "predictions.parquet"),
     )
     assert results["fits"]["count"] == len(folds)
-    # The consumed source is stamped so the GPU job never offers it again (it keeps its
-    # partial/ and never gets a results.json of its own).
-    assert results["resume"] == {"root": "first", "fold_seeds": [[0, 1], [1, 1]]}
+    # Provenance in the result, and a stamp in the consumed source so the Pod jobs never
+    # offer it again (it keeps its partial/ and never gets a results.json of its own).
+    assert results["resume"] == [{"root": "first", "keys": [[0, 1], [1, 1]]}]
     stamp = json.loads((first / "resumed_into.json").read_text(encoding="utf-8"))
     assert stamp["resumed_into"] == "second"
     assert stamp["experiment"] == "t-xs-a1-no-cross"
-    assert stamp["fold_seeds"] == len(folds)
+    assert stamp["keys"] == [[0, 1], [1, 1]]
+    # A stamped source is no candidate any more: nothing is resumed from it.
+    third = run_cross_stock(
+        table,
+        output_root=tmp_path / "third",
+        params={"max_epochs": 1, "patience": 1},
+        resume_root=first,
+        **shared,
+    )
+    assert third["resume"] is None and third["fits"]["mean_epochs"] == 1.0
     # Partials of another experiment are ignored.
     other = run_cross_stock(
         table,
         output_root=tmp_path / "other",
         params={"max_epochs": 1, "patience": 1},
-        resume_root=first,
+        resume_root=second,
         **{**shared, "experiment": "t-xs-a4-no-gating"},
     )
-    assert other["fits"]["mean_epochs"] == 1.0
-    assert other["resume"] is None
-    assert stamp == json.loads((first / "resumed_into.json").read_text(encoding="utf-8"))
+    assert other["fits"]["mean_epochs"] == 1.0 and other["resume"] is None
+    assert not (second / "resumed_into.json").exists()
+    # Partials of another context (schedule, caches, encoder revisions) are ignored; the
+    # context is stored with the partial and must match exactly.
+    fourth = run_cross_stock(
+        table,
+        output_root=tmp_path / "fourth",
+        params={"max_epochs": 1, "patience": 1},
+        resume_root=second,
+        resume_context="tw_quarterly_v2|abc",
+        **shared,
+    )
+    assert fourth["resume"] is None and fourth["fits"]["mean_epochs"] == 1.0
+    fifth = run_cross_stock(
+        table,
+        output_root=tmp_path / "fifth",
+        params={"max_epochs": 1, "patience": 1},
+        resume_root=[tmp_path / "fourth", tmp_path / "missing"],
+        resume_context="tw_quarterly_v2|abc",
+        **shared,
+    )
+    assert fifth["resume"] == [{"root": "fourth", "keys": [[0, 1], [1, 1]]}]
+    # Several candidates: the newest launch name supplies a (fold, seed) first; a partial
+    # whose rows are not this run's rows of that fold is skipped even when everything else
+    # matches.
+    sixth, seventh = tmp_path / "launch-2-newer", tmp_path / "launch-1-older"
+    run_cross_stock(table, output_root=seventh, params={"max_epochs": 1, "patience": 1}, **shared)
+    run_cross_stock(table, output_root=sixth, params={"max_epochs": 1, "patience": 1}, **shared)
+    broken = sixth / "partial" / "fold-01-seed-1.npz"
+    with np.load(broken, allow_pickle=False) as payload:
+        arrays = {name: payload[name] for name in payload.files}
+    arrays["rows"] = arrays["rows"][::-1].copy()
+    np.savez(broken, **arrays)
+    eighth = run_cross_stock(
+        table,
+        output_root=tmp_path / "eighth",
+        params={"max_epochs": 1, "patience": 1},
+        resume_root=[seventh, sixth],
+        **shared,
+    )
+    assert eighth["resume"] == [
+        {"root": "launch-1-older", "keys": [[1, 1]]},
+        {"root": "launch-2-newer", "keys": [[0, 1]]},
+    ]
+    assert (sixth / "resumed_into.json").exists() and (seventh / "resumed_into.json").exists()
 
 
 def _variant(cache, seed: int):

@@ -27,6 +27,7 @@ from stock_forecasting.cross_stock_training import (
     run_cross_stock,
     table_from_caches,
     write_xs_manifest,
+    xs_resume_context,
 )
 from stock_forecasting.data.feature_library import DEFAULT_SPEC_PATH, load_spec
 from stock_forecasting.data.xs_cache import ensure_xs_cache, open_xs_cache
@@ -62,7 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-groups-per-epoch", type=int, help="Smoke runs only.")
     parser.add_argument("--embedding-batch-size", type=int, default=512)
     parser.add_argument(
-        "--resume-root", type=Path, help="Earlier output root whose finished folds are reused."
+        "--resume-root",
+        type=Path,
+        action="append",
+        help="Earlier output root whose finished folds are reused (repeatable: the trainer "
+        "takes, per fold and seed, the newest candidate of the same experiment, labels, "
+        "schedule, caches and encoder revisions, and stamps every source it used).",
     )
     parser.add_argument(
         "--offline-encoders",
@@ -226,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_model=baseline_model,
         baseline_daily_residual=baseline_residual,
         label_variant=variant_name,
+        resume_context=xs_resume_context(schedule, cache_roots, encoder_records),
     )
     write_xs_manifest(
         args.output_root,

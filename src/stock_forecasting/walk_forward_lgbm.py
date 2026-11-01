@@ -37,6 +37,11 @@ from stock_forecasting.data.rank_labels import (
     label_identity,
     label_root,
 )
+from stock_forecasting.resume_sources import (
+    resume_candidates,
+    resume_summary,
+    stamp_resume_source,
+)
 from stock_forecasting.runtime_resources import detect_available_memory, detect_visible_cpu_count
 from stock_forecasting.walk_forward import (
     Fold,
@@ -738,7 +743,7 @@ def _save_partial(
 
 
 def _load_partials(
-    resume_root: Path | None,
+    resume_root: Path | list[Path] | None,
     partial_root: Path,
     folds: list[Fold],
     horizons: list[int],
@@ -746,44 +751,77 @@ def _load_partials(
     label_variant: str | None = None,
     features: str | None = None,
     context: str | None = None,
-) -> dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]]:
-    """Finished folds of an earlier run that cover every horizon and seed asked for now.
+) -> tuple[
+    dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]],
+    dict[Path, list[int]],
+]:
+    """Finished folds of earlier runs (one or several candidates, newest first) that cover
+    every horizon and seed asked for now; returns them and, per source used, its fold indexes.
 
     Folds saved under another label variant (or by the standard labels when a variant is
     asked for), under another feature tag or under another context (schedule and dataset)
     are ignored; folds saved before a tag existed are ignored whenever that tag is asked for.
     """
-    if resume_root is None:
-        return {}
-    source = Path(resume_root) / "partial"
-    resumed = {}
-    for fold in folds:
-        path = source / _partial_name(fold.index)
-        if not path.is_file():
-            continue
-        with np.load(path, allow_pickle=False) as payload:
-            keys = {f"h{h:02d}_seed{seed}" for h in horizons for seed in seeds}
-            if not keys <= set(payload.files):
+    resumed: dict[int, tuple[dict[tuple[int, int], np.ndarray], list[dict[str, Any]]]] = {}
+    contributions: dict[Path, list[int]] = {}
+    for source_root in resume_candidates(resume_root):
+        for fold in folds:
+            if fold.index in resumed:
                 continue
-            stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
-            if stored != (label_variant or ""):
-                continue
-            stored_features = str(payload["features"]) if "features" in payload.files else ""
-            if stored_features != (features or ""):
-                continue
-            stored_context = str(payload["context"]) if "context" in payload.files else ""
-            if stored_context != (context or ""):
-                continue
-            fold_scores = {
-                (h, seed): np.asarray(payload[f"h{h:02d}_seed{seed}"], dtype=np.float32)
-                for h in horizons
-                for seed in seeds
-            }
-            fold_records = json.loads(str(payload["records"]))
-        resumed[fold.index] = (fold_scores, fold_records)
-        if path.resolve() != (partial_root / path.name).resolve():
-            (partial_root / path.name).write_bytes(path.read_bytes())
-    return resumed
+            _load_partial(
+                source_root,
+                partial_root,
+                fold,
+                horizons,
+                seeds,
+                label_variant,
+                features,
+                context,
+                resumed,
+                contributions,
+            )
+    return resumed, contributions
+
+
+def _load_partial(
+    source_root: Path,
+    partial_root: Path,
+    fold: Fold,
+    horizons: list[int],
+    seeds: tuple[int, ...],
+    label_variant: str | None,
+    features: str | None,
+    context: str | None,
+    resumed: dict,
+    contributions: dict[Path, list[int]],
+) -> None:
+    source = source_root / "partial"
+    path = source / _partial_name(fold.index)
+    if not path.is_file():
+        return
+    with np.load(path, allow_pickle=False) as payload:
+        keys = {f"h{h:02d}_seed{seed}" for h in horizons for seed in seeds}
+        if not keys <= set(payload.files):
+            return
+        stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
+        if stored != (label_variant or ""):
+            return
+        stored_features = str(payload["features"]) if "features" in payload.files else ""
+        if stored_features != (features or ""):
+            return
+        stored_context = str(payload["context"]) if "context" in payload.files else ""
+        if stored_context != (context or ""):
+            return
+        fold_scores = {
+            (h, seed): np.asarray(payload[f"h{h:02d}_seed{seed}"], dtype=np.float32)
+            for h in horizons
+            for seed in seeds
+        }
+        fold_records = json.loads(str(payload["records"]))
+    resumed[fold.index] = (fold_scores, fold_records)
+    contributions.setdefault(source_root, []).append(fold.index)
+    if path.resolve() != (partial_root / path.name).resolve():
+        (partial_root / path.name).write_bytes(path.read_bytes())
 
 
 def _resumed_fold_info(
@@ -818,15 +856,16 @@ def run_walk_forward(
     early_stopping: int = DEFAULT_EARLY_STOPPING,
     min_group_size: int,
     scratch: Path | None = None,
-    resume_root: Path | None = None,
+    resume_root: Path | list[Path] | None = None,
     model_name: str = MODEL_NAME,
     label_variant: str | None = None,
     resume_context: str | None = None,
 ) -> dict[str, Any]:
     """Train every fold, write predictions, targets, daily Rank IC and the cell summary.
 
-    Each finished fold is written to ``output_root/partial/`` at once; ``resume_root`` names an
-    earlier output root whose partial folds are reused (a Pod restart costs at most one fold).
+    Each finished fold is written to ``output_root/partial/`` at once; ``resume_root`` names one
+    or several earlier output roots whose partial folds are reused (a Pod restart costs at most
+    one fold); every source used is stamped with ``resumed_into.json`` afterwards.
     """
     started = time.monotonic()
     backend = backend_name()
@@ -838,7 +877,7 @@ def run_walk_forward(
     partial_root.mkdir(parents=True, exist_ok=True)
     records, scores = [], {}
     features = feature_tag(feature_columns)
-    resumed = _load_partials(
+    resumed, contributions = _load_partials(
         resume_root, partial_root, folds, horizons, seeds, label_variant, features, resume_context
     )
     for fold_index, (fold_scores, fold_records) in resumed.items():
@@ -999,8 +1038,22 @@ def run_walk_forward(
             "seconds": float(fits["seconds"].sum()) if len(fits) else 0.0,
         },
         "seconds": time.monotonic() - started,
+        # Provenance of a resumed run: which launch trained which folds.
+        "resume": resume_summary(contributions),
     }
     atomic_write_json(output_root / "results.json", results)
+    for source, keys in contributions.items():
+        # The source keeps its partial/ and never gets a results.json of its own; the stamp
+        # keeps later jobs from offering it again and the volume reset from deleting it.
+        stamp_resume_source(
+            source,
+            resumed_into=output_root,
+            keys=keys,
+            model=model_name,
+            label_variant=label_variant,
+            features=features,
+            context=resume_context,
+        )
     return results
 
 

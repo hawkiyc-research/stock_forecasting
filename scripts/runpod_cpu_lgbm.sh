@@ -178,15 +178,19 @@ printf '[%s] walk-forward tests\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '[%s] LightGBM walk-forward baseline: %s (schedule %s)\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${DATA_ROOT}" "${WALK_FORWARD_SCHEDULE}"
 mkdir -p "${LGBM_SCRATCH_ROOT}"
-# A container restart loses the job but not the volume: reuse the newest UNFINISHED earlier
-# launch's folds (the trainer verifies label variant and feature spec before using them). A
-# launch that already wrote results.json is a result, never a resume source: resuming from one
-# would re-emit its predictions under a new launch id instead of training anything.
-RESUME_ROOT=""
+# A container restart loses the job but not the volume: every UNFINISHED earlier launch is
+# offered to the trainer, which reuses, per fold, the newest one whose folds belong to this
+# run (same experiment / labels / feature spec / schedule / dataset) and stamps every source it
+# used with resumed_into.json. A launch that wrote results.json is a result, never a resume
+# source: resuming from one would re-emit its predictions under a new launch id instead of
+# training anything. A stamped launch was absorbed by a later one (its partial/ never gains a
+# results.json) and is skipped too.
+RESUME_ROOTS=()
 for resume_candidate in "${NETWORK_VOLUME_ROOT}/diagnostics/lgbm"/launch-*/partial; do
     # The glob stays literal when nothing matches; only real directories qualify.
-    if [[ -d "${resume_candidate}" && ! -f "$(dirname "${resume_candidate}")/results.json" ]]; then
-        RESUME_ROOT="$(dirname "${resume_candidate}")"
+    if [[ -d "${resume_candidate}" && ! -f "$(dirname "${resume_candidate}")/results.json" \
+        && ! -f "$(dirname "${resume_candidate}")/resumed_into.json" ]]; then
+        RESUME_ROOTS+=("$(dirname "${resume_candidate}")")
     fi
 done
 LGBM_ARGUMENTS=(
@@ -196,10 +200,10 @@ LGBM_ARGUMENTS=(
     --output-root "${OUTPUT_ROOT}"
     --scratch "${LGBM_SCRATCH_ROOT}"
 )
-if [[ -n "${RESUME_ROOT}" && -d "${RESUME_ROOT}" ]]; then
-    printf 'Resuming finished folds from %s\n' "${RESUME_ROOT}"
-    LGBM_ARGUMENTS+=(--resume-root "${RESUME_ROOT}")
-fi
+for resume_root in ${RESUME_ROOTS[@]+"${RESUME_ROOTS[@]}"}; do
+    printf 'Resume candidate (used only for folds of this run): %s\n' "${resume_root}"
+    LGBM_ARGUMENTS+=(--resume-root "${resume_root}")
+done
 if [[ -n "${FIN_TS_LGBM_WORKERS:-}" ]]; then
     LGBM_ARGUMENTS+=(--workers "${FIN_TS_LGBM_WORKERS}")
 fi
