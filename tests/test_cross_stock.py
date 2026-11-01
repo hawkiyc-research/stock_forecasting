@@ -22,6 +22,7 @@ from stock_forecasting.cross_stock_training import (
     score_table_with_launch,
     table_from_caches,
     write_xs_manifest,
+    xs_resume_context,
 )
 from stock_forecasting.model_lineage import (
     SUPERSEDED_BY_NAME,
@@ -767,6 +768,84 @@ def test_extend_from_links_identical_folds_keeps_weights_and_supersedes(
             extend_from=tmp_path / "missing",
             **shared,
         )
+
+
+def test_extend_from_accepts_partials_without_context_through_the_manifest(
+    tmp_path: Path,
+) -> None:
+    """Partials written before 2026-11-01 carry no ``context``; the launch's walk-forward
+    manifest (cache roots and encoder revisions) stands in for it. The three v1.1 deep-model
+    launches of 2026-10-31 / 11-01 are such launches: without this rule every fold of them was
+    retrained (D0 extension Pod u3u3rbx74wjmej, 2026-11-02). A manifest naming another dataset
+    still refuses the partials."""
+    sessions = pd.bdate_range("2023-01-02", "2024-09-27")
+    table = table_from_caches({"train": _cache("train", sessions, 5, 12)})
+    short = {**SCHEDULE, "name": "short"}
+    longer = {
+        **SCHEDULE,
+        "name": "longer",
+        "data_end": "2024-10-01",
+        "last_quarter": "2024Q3",
+        "periods": {**SCHEDULE["periods"], "P3": ["2024-07-01", "2024-10-01"]},
+    }
+    short_folds = quarterly_folds(sessions[sessions < "2024-07-01"], short)
+    long_folds = quarterly_folds(sessions, longer)
+    caches = {
+        split: str(tmp_path / f"cache-{split}-0123456789abcdef0123")
+        for split in ("train", "validation", "test")
+    }
+    shared = dict(
+        experiment="t-xs-a1-no-cross",
+        seeds=(1,),
+        min_group_size=5,
+        device="cpu",
+        max_groups_per_epoch=20,
+        params={"max_epochs": 2, "patience": 2},
+        feature_spec="spec_a",
+    )
+    first = tmp_path / "launch-first"
+    results = run_cross_stock(
+        table,
+        folds=short_folds,
+        schedule=short,
+        output_root=first,
+        resume_context=xs_resume_context(short, caches, None),
+        **shared,
+    )
+    # Drop the context the way the 2026-10-31 writer never stored it.
+    for path in sorted((first / "partial").glob("*.npz")):
+        with np.load(path, allow_pickle=False) as payload:
+            kept = {name: payload[name] for name in payload.files if name != "context"}
+        np.savez(path, **kept)
+    write_xs_manifest(first, results=results, caches=caches, encoder=None, schedule="x")
+    extended = run_cross_stock(
+        table,
+        folds=long_folds,
+        schedule=longer,
+        output_root=tmp_path / "launch-extended",
+        extend_from=first,
+        resume_context=xs_resume_context(longer, caches, None),
+        **shared,
+    )
+    assert extended["resume"] == [{"root": "launch-first", "keys": [[0, 1], [1, 1]]}]
+    lineage = read_lineage(tmp_path / "launch-extended")
+    assert [lineage["folds"][str(i)]["how"] for i in range(3)] == ["linked", "linked", "trained"]
+    # The manifest names another dataset: nothing is carried on.
+    other_caches = {
+        split: str(tmp_path / f"cache-{split}-ffffffffffffffff0000") for split in caches
+    }
+    write_xs_manifest(first, results=results, caches=other_caches, encoder=None, schedule="x")
+    (first / SUPERSEDED_BY_NAME).unlink()
+    other = run_cross_stock(
+        table,
+        folds=long_folds,
+        schedule=longer,
+        output_root=tmp_path / "launch-other",
+        extend_from=first,
+        resume_context=xs_resume_context(longer, caches, None),
+        **shared,
+    )
+    assert other["resume"] is None and other["fits"]["count"] == 3
 
 
 def test_extend_from_scores_a_longer_window_with_the_saved_weights(tmp_path: Path) -> None:

@@ -1644,6 +1644,24 @@ def _context_dataset(context: str | None) -> str:
     return (context or "").split("|", 1)[1] if context and "|" in context else ""
 
 
+def _legacy_xs_context(source_root: Path) -> str | None:
+    """The resume context of a launch whose partials predate the ``context`` field (written
+    before 2026-11-01, like the three v1.1 deep-model launches of 2026-10-31 / 11-01), rebuilt
+    from its walk-forward manifest: the three cache roots and the encoder revisions it records
+    are exactly what ``xs_resume_context`` hashes, so the dataset part compares like a stored
+    context. None when the launch has no manifest or the manifest names no caches."""
+    manifest_path = source_root / "walk-forward-manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    caches = manifest.get("caches")
+    if not isinstance(caches, dict) or not all(
+        isinstance(caches.get(split), str) for split in ("train", "validation", "test")
+    ):
+        return None
+    return xs_resume_context({"name": "legacy"}, caches, manifest.get("encoder") or None)
+
+
 def _load_xs_extension(
     extend_from: Path | None,
     output_root: Path,
@@ -1700,6 +1718,7 @@ def _load_xs_extension(
         )
     by_training = {training_key(entry): entry for entry in results.get("folds", [])}
     source_models = launch_models(source_root)
+    legacy_context = _legacy_xs_context(source_root)
     partial_root = output_root / "partial"
     partial_root.mkdir(parents=True, exist_ok=True)
     for fold in folds:
@@ -1743,6 +1762,8 @@ def _load_xs_extension(
                 if stored != (label_variant or ""):
                     break
                 stored_context = str(payload["context"]) if "context" in payload.files else ""
+                if not stored_context and legacy_context:
+                    stored_context = legacy_context  # pre-2026-11-01 partial: its manifest
                 if _context_dataset(stored_context) != _context_dataset(context):
                     break
                 rows = np.asarray(payload["rows"], dtype=np.int64)
