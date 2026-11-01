@@ -71,6 +71,12 @@ def build_parser() -> argparse.ArgumentParser:
         "schedule, caches and encoder revisions, and stamps every source it used).",
     )
     parser.add_argument(
+        "--extend-from",
+        type=Path,
+        help="Finished launch of the same experiment and labels whose folds this schedule "
+        "defines identically are reused; only the folds this schedule adds are trained.",
+    )
+    parser.add_argument(
         "--offline-encoders",
         action="store_true",
         help="Verify encoder weights in the local Hugging Face cache instead of downloading.",
@@ -233,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_daily_residual=baseline_residual,
         label_variant=variant_name,
         resume_context=xs_resume_context(schedule, cache_roots, encoder_records),
+        extend_from=args.extend_from,
     )
     write_xs_manifest(
         args.output_root,

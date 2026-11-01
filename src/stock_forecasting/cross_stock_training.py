@@ -894,12 +894,19 @@ def run_cross_stock(
     baseline_daily_residual: pd.DataFrame | None = None,
     label_variant: str | None = None,
     resume_context: str | None = None,
+    extend_from: Path | None = None,
 ) -> dict[str, Any]:
     """Train every fold and seed; each finished (fold, seed) is written to ``output_root/partial``
     immediately and reused from ``resume_root`` (one or several earlier output roots) after a
     restart. A partial is reused only when its experiment, label variant and ``resume_context``
     (schedule, caches, encoder revisions; see ``xs_resume_context``) match and its prediction
     rows are exactly this run's rows of that fold; every source used is stamped afterwards.
+
+    ``extend_from`` names a FINISHED launch of the same experiment and label variant whose
+    folds are reused wherever this schedule defines the same fold (same dates) and the partial's
+    prediction rows are exactly this run's rows: only the folds the new schedule adds are
+    trained (2026-11-01 rule: a shortlisted 14-fold model gets its P3 folds without retraining
+    the 14; every fold's model is independent, so nothing else changes).
 
     With a label variant (``table.residual`` set, ``label_variant`` named) the scores are also
     evaluated against the residual targets (protocol 13.16) and, when
@@ -921,7 +928,17 @@ def run_cross_stock(
         plan.fold.index: np.concatenate([index.rows(int(g)) for g in plan.predict_groups])
         for plan in plans
     }
-    resumed, contributions = _load_xs_partials(
+    resumed, contributions = _load_xs_extension(
+        extend_from,
+        partial_root,
+        experiment,
+        folds,
+        seeds,
+        label_variant=label_variant,
+        expected_rows=expected_rows,
+        horizons=len(table.horizons),
+    )
+    more, more_contributions = _load_xs_partials(
         resume_root,
         partial_root,
         experiment,
@@ -931,7 +948,10 @@ def run_cross_stock(
         context=resume_context,
         expected_rows=expected_rows,
         horizons=len(table.horizons),
+        skip=set(resumed),
     )
+    resumed.update(more)
+    contributions.update(more_contributions)
     records, scores = [], {}
     trainer: FoldTrainer | None = None
     for plan in plans:
@@ -1101,9 +1121,12 @@ def run_cross_stock(
         "seconds": time.monotonic() - started,
         # Provenance of a resumed run: which launch trained which [fold, seed] keys.
         "resume": resume_summary(contributions),
+        "extended_from": None if extend_from is None else Path(extend_from).name,
     }
     atomic_write_json(output_root / "results.json", results)
     for source, keys in contributions.items():
+        if extend_from is not None and source.resolve() == Path(extend_from).resolve():
+            continue  # a finished launch: never offered as a resume source, so no stamp
         # The source keeps its partial/ and never gets a results.json of its own; the stamp
         # keeps later jobs from offering it again and the volume reset from deleting it.
         stamp_resume_source(
@@ -1177,6 +1200,7 @@ def _load_xs_partials(
     context: str | None = None,
     expected_rows: dict[int, np.ndarray] | None = None,
     horizons: int | None = None,
+    skip: set[tuple[int, int]] | None = None,
 ) -> tuple[
     dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]],
     dict[Path, list[list[int]]],
@@ -1185,7 +1209,8 @@ def _load_xs_partials(
     context whose rows are exactly this run's rows; the newest candidate supplies a pair first.
     Returns the pairs and, per source used, the [fold, seed] keys taken from it. Partials saved
     under another label variant (or by the standard labels when a variant is asked for),
-    another context, or without a context when one is asked for, are ignored.
+    another context, or without a context when one is asked for, are ignored; ``skip`` names
+    pairs already supplied (by ``_load_xs_extension``).
     """
     resumed: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]] = {}
     contributions: dict[Path, list[list[int]]] = {}
@@ -1193,7 +1218,7 @@ def _load_xs_partials(
         source = source_root / "partial"
         for fold in folds:
             for seed in seeds:
-                if (fold.index, seed) in resumed:
+                if (fold.index, seed) in resumed or (skip and (fold.index, seed) in skip):
                     continue
                 path = source / _xs_partial_name(fold.index, seed)
                 if not path.is_file():
@@ -1225,6 +1250,93 @@ def _load_xs_partials(
                 contributions.setdefault(source_root, []).append([fold.index, seed])
                 if path.resolve() != (partial_root / path.name).resolve():
                     (partial_root / path.name).write_bytes(path.read_bytes())
+    return resumed, contributions
+
+
+FOLD_DEFINITION = (
+    "name",
+    "train_start",
+    "validation_start",
+    "train_end",
+    "predict_start",
+    "predict_end",
+)
+
+
+def _load_xs_extension(
+    extend_from: Path | None,
+    partial_root: Path,
+    experiment: str,
+    folds: list[Fold],
+    seeds: tuple[int, ...],
+    *,
+    label_variant: str | None,
+    expected_rows: dict[int, np.ndarray],
+    horizons: int,
+) -> tuple[
+    dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]],
+    dict[Path, list[list[int]]],
+]:
+    """(fold, seed) pairs of a finished launch whose folds this schedule defines identically.
+
+    The launch must have a ``results.json`` of the same experiment and label variant; a fold
+    matches by its dates (``FOLD_DEFINITION``), not by index or schedule name, and its partial
+    is used only when its prediction rows are exactly this run's rows of that fold. Partials
+    are copied under this run's fold index.
+    """
+    resumed: dict[tuple[int, int], tuple[np.ndarray, np.ndarray, dict[str, Any]]] = {}
+    contributions: dict[Path, list[list[int]]] = {}
+    if extend_from is None:
+        return resumed, contributions
+    source_root = Path(extend_from)
+    results_path = source_root / "results.json"
+    if not results_path.is_file():
+        raise ValueError(f"--extend-from needs a finished launch (results.json): {source_root}")
+    results = json.loads(results_path.read_text(encoding="utf-8"))
+    if results.get("model") != experiment:
+        raise ValueError(
+            f"--extend-from launch trained {results.get('model')!r}, this run is {experiment!r}"
+        )
+    if (results.get("label_variant") or None) != (label_variant or None):
+        raise ValueError(
+            f"--extend-from launch used label variant {results.get('label_variant')!r}, "
+            f"this run uses {label_variant!r}"
+        )
+    by_definition = {
+        tuple(str(entry[key]) for key in FOLD_DEFINITION): int(entry["index"])
+        for entry in results.get("folds", [])
+    }
+    for fold in folds:
+        source_index = by_definition.get(tuple(str(getattr(fold, k)) for k in FOLD_DEFINITION))
+        if source_index is None:
+            continue
+        for seed in seeds:
+            path = source_root / "partial" / _xs_partial_name(source_index, seed)
+            if not path.is_file():
+                continue
+            with np.load(path, allow_pickle=False) as payload:
+                if str(payload["experiment"]) != experiment:
+                    continue
+                stored = str(payload["label_variant"]) if "label_variant" in payload.files else ""
+                if stored != (label_variant or ""):
+                    continue
+                rows = np.asarray(payload["rows"], dtype=np.int64)
+                values = np.asarray(payload["values"], dtype=np.float32)
+                if not np.array_equal(rows, expected_rows[fold.index]):
+                    continue
+                if values.shape != (len(rows), horizons):
+                    continue
+                record = json.loads(str(payload["record"]))
+                arrays = {name: payload[name] for name in payload.files}
+            record["fold"] = fold.index
+            record["extended_from"] = {"launch": source_root.name, "fold": source_index}
+            resumed[(fold.index, seed)] = (rows, values, record)
+            contributions.setdefault(source_root, []).append([fold.index, seed])
+            arrays["record"] = np.array(json.dumps(record))
+            target = partial_root / _xs_partial_name(fold.index, seed)
+            with (partial_root / (target.name + ".pending")).open("wb") as stream:
+                np.savez(stream, **arrays)
+            (partial_root / (target.name + ".pending")).replace(target)
     return resumed, contributions
 
 
