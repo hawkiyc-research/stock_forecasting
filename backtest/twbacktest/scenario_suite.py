@@ -1075,9 +1075,17 @@ def run(
     artifacts: Path,
     chip_data_root: Path | None = None,
     labels: list[str] | None = None,
+    multi_day_default: str | None = None,
 ) -> dict[str, Any]:
     """Run the suite; ``labels`` names the runs in the outputs (default: the model names) so
-    two files carrying the same model name, such as F0 and F2, stay apart."""
+    two files carrying the same model name, such as F0 and F2, stay apart.
+
+    ``multi_day_default`` names a run of ``config["multi_day"]["fixed"]``: every run without
+    its own entry there takes that run's (h, K, m) instead of the P1 grid selection, so all
+    runs share one score position and one construction (protocol 13.23 supplement 1 (g)).
+    The configuration file is not changed; the report records where each run's parameters
+    came from.
+    """
     if len(predictions) != len(models) or not models:
         raise ValueError("Give one --model per --predictions file")
     labels = list(models) if labels is None else list(labels)
@@ -1086,6 +1094,10 @@ def run(
     if len(set(labels)) != len(labels):
         raise ValueError("Run labels must be unique")
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    if (multi_day_default is not None
+            and multi_day_default not in config["multi_day"].get("fixed", {})):
+        raise ValueError(
+            f"--multi-day-default {multi_day_default!r} is not a run of multi_day.fixed")
     profiles = load_profiles(config)
     participation_cap = float(profiles["participation_cap"])
     exec_cfg = config.get("execution")
@@ -1135,11 +1147,12 @@ def run(
                 digests.update(borrow.digests)
         chooser = markets[config["selection"]["market"]]
         grid_variant = construction.get("grid_score_variant", "v0")
-        if label in fixed:
-            spec = fixed[label]
+        if label in fixed or multi_day_default is not None:
+            fixed_from = label if label in fixed else multi_day_default
+            spec = fixed[fixed_from]
             md_params = (int(spec["h"]), int(spec["k"]), int(spec["buffer"]))
             md_choice = {"h": md_params[0], "k": md_params[1], "buffer": md_params[2],
-                         "fixed": True}
+                         "fixed": True, "fixed_from": fixed_from}
             grid_rows: list[dict[str, Any]] = []
         else:
             grid_rows, md_params, md_choice = select_multi_day(
@@ -1490,13 +1503,17 @@ def main(argv: list[str] | None = None) -> int:
                         default=os.environ.get("TW_CHIP_DATA_ROOT"),
                         help="tw_chip_data/data (curated layer) for the execution layer; "
                              "defaults to $TW_CHIP_DATA_ROOT")
+    parser.add_argument("--multi-day-default",
+                        help="a run named in the configuration's multi_day.fixed; every run "
+                             "without its own entry takes its (h, K, m) instead of the P1 "
+                             "grid selection (protocol 13.23 supplement 1 (g))")
     args = parser.parse_args(argv)
     output_root = args.output_root or runner.default_output_root(args.artifacts_root,
                                                                  "scenario-suite")
     report = run(args.config, args.predictions, args.model, args.prices, output_root,
                  artifacts=args.artifacts_root,
                  chip_data_root=Path(args.chip_data_root) if args.chip_data_root else None,
-                 labels=args.label)
+                 labels=args.label, multi_day_default=args.multi_day_default)
     print(json.dumps({"output_root": str(output_root), "selection": report["selection"],
                       "attractiveness": report["attractiveness"]}, indent=2, ensure_ascii=False))
     return 0

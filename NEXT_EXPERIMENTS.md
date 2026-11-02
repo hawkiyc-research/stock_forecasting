@@ -2,11 +2,13 @@
 
 ## 中文
 
-本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-11-02（§13.23 補充二：模型儲存、延伸取代重訓、P3 由資料結束日推算）。
+本檔只列**尚未完成**的實驗與前置工作，依執行順序排列；每完成一項就從本檔移除，結果寫入 `docs/experiment_protocol.md` 對應章節與結果報告。歷史結論見 `MODEL_DEVELOPMENT_ROADMAP.md` 第 1 節與第 9 節。最後更新：2026-11-02（第 1–17 步完成；第 18 步實作註記已登記）。
 
 ### 現況
 
 2026-10-29 發現 v1 還原價對有償現金增資套錯（§13.20 補充三）：同一組預測改用修正價重算，三個入選格的樣本外年化淨報酬從 +34.1%／+27.5%／+30.9% 降為 +14.7%／+19.4%／+13.7%；所有已出的模型分數仍帶著這個錯誤。2026-10-30 使用者決定全線重訓（§13.23）：v2 分支已合併、資料修訂可用 `--dataset-revision v1*`／`v2*` 切換（共用 provider 快取）、除權息因子修正已在 master；資料集用 **v1.1**（只套除權息因子）、停牌排除規則不變、P3 仍為樣本外；§13.22 的確認期在任何讀數出現前作廢。下面是 Pod 與本機的執行順序，每一步都要等前一步結束（features 與 lgbm Pod 在 volume 上互斥）。
+
+**2026-11-02 進度：第 1–17 步完成。** 七個模型的正本 launch（補充二 (c) 的延伸 launch，fold 0–13／0–12 連結沿用、其餘折重訓並存模型，舊折每日 Rank IC 與舊 launch 逐位元相同）：B0 `launch-20261101T212237Z-2508230824`、變體 A = F0 `launch-20261101T220120Z-29216090`、變體 B `launch-20261101T221954Z-1215615947`、F2 `launch-20261101T223737Z-1940816181`、D0 `launch-20261102T063519Z-189413204`、D1 Kronos-small `launch-20261102T071451Z-322624982`、D1 Chronos-2-small `launch-20261102T073405Z-1322713845`；七個都已下載到 `artifacts/`，`registry/` 指向它們。深度模型的 Pod 自動配對的基線是 F2 的延伸 launch（同標籤最新完成的 LightGBM launch），與原始 launch 相同；`results.json` 的配對統計只作參考，第 18 步的篩選不用它。第 18 步的 run 名稱、分數欄位、多日參數的對稱處理（`scenario_suite --multi-day-default F0`）與資料來源登記在 §13.23 第 18 步實作註記。
 
 ### 執行順序
 
@@ -47,11 +49,13 @@
 
 ## English
 
-This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-11-02 (§13.23 supplement 2: saved models, extension instead of retraining, P3 derived from the data end).
+This file lists only the experiments and prerequisites **not yet done**, in execution order; a finished item is removed and its result goes into the matching section of `docs/experiment_protocol.md` and the results report. Past conclusions are in `MODEL_DEVELOPMENT_ROADMAP.md` sections 1 and 9. Last update: 2026-11-02 (steps 1–17 done; the step 18 implementation note is registered).
 
 ### Where things stand
 
 On 2026-10-29 v1's adjusted prices were found wrong for paid rights issues (§13.20 supplement 3): re-running the same predictions on corrected prices lowers the three shortlisted cells' out-of-sample annual net return from +34.1% / +27.5% / +30.9% to +14.7% / +19.4% / +13.7%, and every published model score still carries the error. On 2026-10-30 the user ordered a full retrain (§13.23): the v2 branch is merged, the data revision is selectable with `--dataset-revision v1*` / `v2*` (one shared provider cache), and the ex-rights fix is on master; the dataset is **v1.1** (ex-rights factors only), the halt-exclusion rule is unchanged, P3 stays out of sample, and §13.22's confirmation period is void before any reading. Below is the Pod and local order; every step waits for the previous one (features and lgbm Pods are exclusive on the volume).
+
+**Progress 2026-11-02: steps 1–17 done.** The seven models' current launches (the extension launches of supplement 2 (c): folds 0–13 / 0–12 linked, the remaining folds retrained with saved models, the old folds' daily Rank IC byte-identical to the old launches): B0 `launch-20261101T212237Z-2508230824`, variant A = F0 `launch-20261101T220120Z-29216090`, variant B `launch-20261101T221954Z-1215615947`, F2 `launch-20261101T223737Z-1940816181`, D0 `launch-20261102T063519Z-189413204`, D1 Kronos-small `launch-20261102T071451Z-322624982`, D1 Chronos-2-small `launch-20261102T073405Z-1322713845`; all seven are downloaded under `artifacts/` and `registry/` points at them. The deep-model Pods paired automatically against the F2 extension launch (the newest finished LightGBM launch of the same label variant), as the original launches did; the paired statistics in `results.json` are informational and step 18's shortlist does not use them. Step 18's run names, score columns, symmetric multi-day parameters (`scenario_suite --multi-day-default F0`) and data sources are registered in the §13.23 step 18 implementation note.
 
 ### Execution order
 
