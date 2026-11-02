@@ -102,9 +102,16 @@ def main(argv: list[str] | None = None) -> int:
     local.mkdir(parents=True, exist_ok=True)
     if lifecycle is not None:
         (local / "lifecycle.json").write_text(json.dumps(lifecycle, indent=2) + "\n")
+    # CPU jobs log under logs/tmux/<session>/<launch>/; xs-train jobs under a run directory
+    # logs/xs-<launch timestamp>/tmux/<session>/<launch>/ (runpod_tmux_launch.sh).
+    log_prefixes = [f"logs/tmux/{session}/{launch_id}"]
+    if args.workflow == "xs":
+        stamp = launch_id.split("-")[1]
+        log_prefixes.insert(0, f"logs/xs-{stamp}/tmux/{session}/{launch_id}")
     for name in ("combined.log", "status.json"):
-        if not reader.download(
-            f"logs/tmux/{session}/{launch_id}/{name}", local / "logs" / name, None
+        if not any(
+            reader.download(f"{prefix}/{name}", local / "logs" / name, None)
+            for prefix in log_prefixes
         ):
             print(f"Not found on the volume: {name}", file=sys.stderr)
     manifest_key = f"{remote_root}/{launch_id}/{MANIFEST_NAME}"

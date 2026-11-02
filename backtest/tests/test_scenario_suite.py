@@ -250,3 +250,28 @@ def test_purified_band_construction_runs_both_variants_and_matchings(tmp_path):
     # The momentum-matched book splits k over the quintile sub-books but keeps the same k label.
     matched = grid[(grid["leg_matching"] == "momentum") & (grid["market"] == "TWSE")]
     assert matched["k"].eq(6).all() and matched["turnover"].notna().all()
+
+
+def test_multi_day_default_fixes_every_run_from_the_named_run(tmp_path):
+    """Protocol 13.23 supplement 1 (g): runs without a ``multi_day.fixed`` entry take the named
+    run's (h, K, m) instead of selecting their own on the P1 grid; the source is recorded."""
+    predictions_path, prices_path, artifacts = _fixture(tmp_path)
+    config = _config(tmp_path)
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    payload["multi_day"]["fixed"] = {"good": {"h": 10, "k": 5, "buffer": 2}}
+    payload["scenarios"] = ["md_ls"]
+    config.write_text(json.dumps(payload))
+    output = tmp_path / "out-default"
+    report = ss.run(config, [predictions_path, predictions_path], ["good", "good"],
+                    prices_path, output, artifacts=artifacts, labels=["good", "other"],
+                    multi_day_default="good")
+    for label, source in (("good", "good"), ("other", "good")):
+        choice = report["selection"][label]["multi_day"]
+        assert choice["fixed"] is True and choice["fixed_from"] == source
+        assert (choice["h"], choice["k"], choice["buffer"]) == (10, 5, 2)
+    grid = pd.read_csv(output / "grid.csv")
+    assert (grid["stage"] == "final").all()  # no P1 selection grid for either run
+    assert set(grid["model"]) == {"good", "other"}
+    with pytest.raises(ValueError, match="multi-day-default"):
+        ss.run(config, [predictions_path], ["good"], prices_path, tmp_path / "bad",
+               artifacts=artifacts, labels=["other"], multi_day_default="missing")

@@ -1,0 +1,186 @@
+{
+  "schema": "model-registry-v1",
+  "kind": "lgbm",
+  "key": "t-lgbm-alpha-residual_v1b__alpha_tw_v1",
+  "model": "t-lgbm-alpha-residual_v1b",
+  "label_variant": "residual_v1b",
+  "feature_spec": "alpha_tw_v1",
+  "current": {
+    "launch": "launch-20261101T221954Z-1215615947",
+    "schedule": "tw_quarterly_v2",
+    "data_end": "2026-10-23",
+    "p3": [
+      "2026-07-01",
+      "2026-10-23"
+    ],
+    "extended_from": "launch-20261030T230426Z-1485418161",
+    "downloaded_at": "2026-11-02T08:16:26+00:00"
+  },
+  "model_folds": [
+    14,
+    15
+  ],
+  "folds": {
+    "0": {
+      "name": "2023Q1",
+      "predict": [
+        "2023-01-03",
+        "2023-04-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "1": {
+      "name": "2023Q2",
+      "predict": [
+        "2023-04-06",
+        "2023-07-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "2": {
+      "name": "2023Q3",
+      "predict": [
+        "2023-07-03",
+        "2023-10-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "3": {
+      "name": "2023Q4",
+      "predict": [
+        "2023-10-02",
+        "2024-01-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "4": {
+      "name": "2024Q1",
+      "predict": [
+        "2024-01-02",
+        "2024-04-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "5": {
+      "name": "2024Q2",
+      "predict": [
+        "2024-04-01",
+        "2024-07-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "6": {
+      "name": "2024Q3",
+      "predict": [
+        "2024-07-01",
+        "2024-10-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "7": {
+      "name": "2024Q4",
+      "predict": [
+        "2024-10-01",
+        "2025-01-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "8": {
+      "name": "2025Q1",
+      "predict": [
+        "2025-01-02",
+        "2025-04-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "9": {
+      "name": "2025Q2",
+      "predict": [
+        "2025-04-01",
+        "2025-07-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "10": {
+      "name": "2025Q3",
+      "predict": [
+        "2025-07-01",
+        "2025-10-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "11": {
+      "name": "2025Q4",
+      "predict": [
+        "2025-10-01",
+        "2026-01-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "12": {
+      "name": "2026Q1",
+      "predict": [
+        "2026-01-02",
+        "2026-04-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "13": {
+      "name": "2026Q2",
+      "predict": [
+        "2026-04-01",
+        "2026-07-01"
+      ],
+      "predictions_launch": "launch-20261030T230426Z-1485418161",
+      "how": "linked",
+      "models": null
+    },
+    "14": {
+      "name": "2026Q3",
+      "predict": [
+        "2026-07-01",
+        "2026-10-01"
+      ],
+      "predictions_launch": "launch-20261101T221954Z-1215615947",
+      "how": "trained",
+      "models": "models/fold-14"
+    },
+    "15": {
+      "name": "2026Q4",
+      "predict": [
+        "2026-10-01",
+        "2026-10-23"
+      ],
+      "predictions_launch": "launch-20261101T221954Z-1215615947",
+      "how": "trained",
+      "models": "models/fold-15"
+    }
+  },
+  "history": []
+}
