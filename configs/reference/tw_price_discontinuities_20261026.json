@@ -1,5 +1,5 @@
 {
-  "market_parquet": "/Users/hawkiyc/Documents/stock_forecasting-worktrees/claude-model-performance-20261016/artifacts/datasets/53e3915b862ce81e24a9557d4e03a0814d7fe6b8c237ed26d3cb9bc62a10941b/raw/market.parquet",
+  "market_parquet": "artifacts/datasets/53e3915b862ce81e24a9557d4e03a0814d7fe6b8c237ed26d3cb9bc62a10941b/raw/market.parquet",
   "threshold": 0.25,
   "scan_start": "2016-01-01",
   "rows_scanned": 4411941,
