@@ -90,6 +90,19 @@ def test_weekly_band_trades_on_rebalance_dates_only_and_caps_replacements():
     assert symbols[bought[bought >= 0]].tolist() == [4]
 
 
+def test_weekly_band_skips_blocked_candidates_and_counts_them():
+    n_dates, n_stocks = 3, 6
+    rows, symbols, link, move = _ranked_market(n_dates, n_stocks)
+    ranked = [np.array([j * n_stocks + s for s in range(n_stocks)]) for j in range(n_dates)]
+    blocked = (symbols == 0)  # stock 0 is under disposition on every date
+    result = wb.simulate_weekly_band(
+        ranked, k=4, buffer=1, turnover_cap=0.5, rebalance=np.array([True, False, True]),
+        symbols=symbols, link=link, move=move, limit=0.095, blocked=blocked)
+    assert sorted(symbols[result.band.path.buy[0]]) == [1, 2, 3, 4]
+    assert result.band.blocked_skipped == 1
+    assert rows.size == n_dates * n_stocks
+
+
 def test_weekly_band_retries_a_limit_locked_sale_on_the_next_session():
     n_dates, n_stocks = 5, 3
     rows, symbols, link, move = _ranked_market(n_dates, n_stocks)

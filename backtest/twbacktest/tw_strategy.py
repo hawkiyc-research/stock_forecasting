@@ -154,6 +154,8 @@ class BandResult:
     borrow_failed: int = 0  # candidates lost to the borrow-failure draw (``fail_prob``)
     quota_capped: int = 0  # buys scaled down by the per-row value cap (``value_cap``)
     recalls: int = 0  # held positions forced out by the recall draw (``recall_prob``)
+    blocked_skipped: int = 0  # candidates skipped because the row is blocked (``blocked``)
+    forced_exits: int = 0  # held positions forced out by the row flag (``forced_exit``)
 
 
 def simulate_band(
@@ -177,6 +179,8 @@ def simulate_band(
     value_cap: np.ndarray | None = None,
     recall_prob: float = 0.0,
     rng: np.random.Generator | None = None,
+    blocked: np.ndarray | None = None,
+    forced_exit: np.ndarray | None = None,
 ) -> BandResult:
     """The hold-buffer rule of positions.simulate with a daily entry cap and capital limits.
 
@@ -197,6 +201,11 @@ def simulate_band(
     (NT$ per row, used with ``slot_capital``) bounds the position like the participation
     cap, under the same ``cap_mode``; every held position is recalled with probability
     ``recall_prob`` per interval and sold at the next open (a limit-locked open delays it).
+
+    The deterministic rules of protocol 13.23 supplement 3: a candidate row with ``blocked``
+    True (under a disposition period) is skipped and counted, in either leg; a held position
+    whose current row has ``forced_exit`` True (short selling suspended that day) leaves at
+    the next open exactly like a recalled one, and is counted.
     """
     if cap_mode not in CAP_MODES:
         raise ValueError(f"Unknown cap_mode {cap_mode!r}")
@@ -234,6 +243,7 @@ def simulate_band(
     blocked_buys = blocked_sells = missing_exits = lot_blocked = buy_attempts = 0
     liquidity_blocked = odd_lot_buys = 0
     ineligible_skipped = borrow_failed = quota_capped = recalls = 0
+    blocked_skipped = forced_exits = 0
     recalled = np.zeros(k, dtype=bool)
 
     def close_position(s: int, row: int) -> None:
@@ -271,6 +281,9 @@ def simulate_band(
                     break
                 buy_attempts += 1
                 fill = 1.0
+                if blocked is not None and blocked[row]:
+                    blocked_skipped += 1
+                    continue
                 if eligible is not None and not eligible[row]:
                     ineligible_skipped += 1
                     continue
@@ -331,6 +344,9 @@ def simulate_band(
             if recall_prob > 0 and not recalled[s] and rng.random() < recall_prob:
                 recalled[s] = True
                 recalls += 1
+            if forced_exit is not None and not recalled[s] and forced_exit[row]:
+                recalled[s] = True
+                forced_exits += 1
             held[j, s] = row
             deployed[j] += slot_fill[s] / k
             following = link.next_row[row]
@@ -372,7 +388,8 @@ def simulate_band(
         sell_value=sell_value, odd_buy=odd_buy, odd_sell=odd_sell,
         fill_fraction=fill_row, capped_buys=capped_buys, deployed=deployed,
         ineligible_skipped=ineligible_skipped, borrow_failed=borrow_failed,
-        quota_capped=quota_capped, recalls=recalls,
+        quota_capped=quota_capped, recalls=recalls, blocked_skipped=blocked_skipped,
+        forced_exits=forced_exits,
     )
 
 

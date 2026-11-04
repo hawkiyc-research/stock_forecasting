@@ -430,6 +430,17 @@ def momentum_labels(data: MarketData, quintiles: int) -> np.ndarray:
     return labels
 
 
+def disposition_mask(data: MarketData, config: dict[str, Any]) -> np.ndarray | None:
+    """Rows under a disposition period when the configuration switches rule D on (protocol
+    13.23 supplement 3), else None."""
+    exec_cfg = config.get("execution") or {}
+    if not exec_cfg.get("disposition_block"):
+        return None
+    if data.borrow is None or data.borrow.disposition is None:
+        raise ValueError("disposition_block needs the market's borrow data with dispositions")
+    return data.borrow.disposition
+
+
 def _band_long_short(
     data: MarketData,
     score: np.ndarray,
@@ -447,6 +458,7 @@ def _band_long_short(
     cache: dict[tuple, Any] | None = None,
     part: int = 0,
     odd_lots: bool = False,
+    blocked: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """One long band book and one short band book on ``groups`` ranked by ``score``.
 
@@ -467,9 +479,11 @@ def _band_long_short(
         "participation_cap": None if fractional else participation_cap,
         "cap_mode": cap_mode,
         "odd_lots": odd_lots and not fractional,
+        "blocked": blocked,
     }
     cache = {} if cache is None else cache
-    base_key = (part, capital.name, k, buffer, max_buys, limit, cap_mode, odd_lots)
+    base_key = (part, capital.name, k, buffer, max_buys, limit, cap_mode, odd_lots,
+                blocked is not None)
     long_key = ("long", *base_key)
     if long_key not in cache:
         cache[long_key] = simulate_band(engine.rankings(score, groups), move=inputs.move,
@@ -485,7 +499,7 @@ def _band_long_short(
         if data.borrow is None:
             raise ValueError("the execution layer needs the market's borrow data")
         short_key = ("short", *base_key, execution.profile, execution.key, execution.seed,
-                     execution.replicates, execution.quota_cap)
+                     execution.replicates, execution.quota_cap, execution.forced_cover)
         if short_key not in cache:
             arrays = short_arrays(execution, data.borrow, fractional=fractional,
                                   default_fee_annual=profile.borrow_fee_annual)
@@ -540,6 +554,8 @@ def _band_long_short(
         "borrow_failed": short_count("borrow_failed"),
         "quota_capped": short_count("quota_capped"),
         "recalls": short_count("recalls"),
+        "blocked_skipped": long_result.blocked_skipped + short_count("blocked_skipped"),
+        "forced_exits": short_count("forced_exits"),
     }
 
 
@@ -586,12 +602,13 @@ def multi_day_book(
     cap_fraction = float(config["multi_day"]["entry_cap_fraction"])
     limit = float(config["price_limit"]["open_gap"])
     cap_mode = str(load_profiles(config).get("participation_mode", "skip"))
+    blocked = disposition_mask(data, config)
     if leg_matching == "none":
         parts = [_band_long_short(
             data, score, data.groups, profile, capital, k=k, buffer=buffer,
             max_buys=max(1, math.ceil(k * cap_fraction)), limit=limit,
             participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
-            cache=cache, odd_lots=odd_lots,
+            cache=cache, odd_lots=odd_lots, blocked=blocked,
         )]
     elif leg_matching == "momentum":
         quintiles = int(config.get("construction", {}).get("momentum_quintiles", 5))
@@ -604,7 +621,7 @@ def multi_day_book(
                 data, score, groups_q, profile, capital, k=k_sub, buffer=buffer,
                 max_buys=max(1, math.ceil(k_sub * cap_fraction)), limit=limit,
                 participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
-                cache=cache, part=q + 1, odd_lots=odd_lots,
+                cache=cache, part=q + 1, odd_lots=odd_lots, blocked=blocked,
             ))
     else:
         raise ValueError(f"Unknown leg matching {leg_matching!r}")
@@ -638,6 +655,8 @@ def multi_day_book(
         "borrow_failed_share": sum(part["borrow_failed"] for part in parts) / short_attempts,
         "quota_capped_share": sum(part["quota_capped"] for part in parts) / short_attempts,
         "recalls": float(sum(part["recalls"] for part in parts)),
+        "disposition_skipped_share": sum(part["blocked_skipped"] for part in parts) / attempts,
+        "forced_covers": float(sum(part["forced_exits"] for part in parts)),
         "replicates": len(replicate_annual),
         "short_net_annual_rep_min": min(replicate_annual),
         "short_net_annual_rep_max": max(replicate_annual),
@@ -647,6 +666,7 @@ def multi_day_book(
             "borrow_list": execution.borrow_list,
             "failure_multiplier": execution.failure_multiplier,
             "recall_prob": execution.recall_prob,
+            "forced_cover": execution.forced_cover or "",
         })
     return Book(net=long_net + short_net, gross=long_gross + short_gross, info=info,
                 legs={"long": long_net, "short": short_net},
@@ -1141,7 +1161,8 @@ def run(
         if specs:
             for market, data in markets.items():
                 borrow = load_borrow_data(chip_data_root, frame, inputs, data.groups,
-                                          datasets=exec_cfg.get("datasets"))
+                                          datasets=exec_cfg.get("datasets"),
+                                          disposition=bool(exec_cfg.get("disposition_block")))
                 markets[market] = replace(data, borrow=borrow)
                 coverage.setdefault(label, {})[market] = summarize_borrow(borrow, data.groups)
                 digests.update(borrow.digests)
@@ -1247,7 +1268,8 @@ def run(
         report["execution"] = {
             "chip_data_root": str(chip_data_root), "config": exec_cfg,
             "points": {name: [{"failure_multiplier": s.failure_multiplier,
-                               "recall_prob": s.recall_prob, "primary": s.primary}
+                               "recall_prob": s.recall_prob, "primary": s.primary,
+                               "forced_cover": s.forced_cover}
                               for s in items] for name, items in specs.items()},
             "coverage": coverage, "partition_digests": digests,
         }
@@ -1427,9 +1449,10 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame, profiles: dict[
         lines.append("## 執行不確定性（空頭腿）/ Execution layer (short book)")
         lines.append("")
         lines.append("| 模型 | 市場 | 成本檔 | 借不到倍率 | 召回機率 | 期間 | 年化淨報酬 "
-                     "| 95% 區間 | Sharpe | 名單外 | 借不到 | 限額封頂 | 召回次數 | 空頭重複極差 |")
+                     "| 95% 區間 | Sharpe | 名單外 | 借不到 | 限額封頂 | 召回次數 | 空頭重複極差 "
+                     "| 處置跳過 | 強制回補 |")
         lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- "
-                     "| --- | --- |")
+                     "| --- | --- | --- | --- |")
         rows = grid[grid["stage"].isin(["final", "execution"]) & grid["primary_slippage"]
                     & (grid["capital"] == FRACTIONAL) & (grid["scenario"] == "md_ls")
                     & grid["failure_multiplier"].notna()]
@@ -1442,7 +1465,9 @@ def summary_markdown(report: dict[str, Any], grid: pd.DataFrame, profiles: dict[
                 f"{_cell_ci(row)} | {runner.number(row.sharpe)} | {pct(row.ineligible_share)} | "
                 f"{pct(row.borrow_failed_share)} | {pct(row.quota_capped_share)} | "
                 f"{row.recalls:.0f} | {pct(row.short_net_annual_rep_min)} .. "
-                f"{pct(row.short_net_annual_rep_max)} |"
+                f"{pct(row.short_net_annual_rep_max)} | "
+                f"{pct(getattr(row, 'disposition_skipped_share', float('nan')))} | "
+                f"{getattr(row, 'forced_covers', float('nan')):.0f} |"
             )
         lines.append("")
     weekly = final[final["scenario"].isin([WEEKLY, WEEKLY_TX, WEEKLY_ETF])]

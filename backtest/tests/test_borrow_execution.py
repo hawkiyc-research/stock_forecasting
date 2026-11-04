@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -29,9 +30,15 @@ def _write_curated(root: Path, rows: pd.DataFrame, dataset: str) -> None:
 
 
 def _chip_root(tmp_path: Path, predictions: pd.DataFrame, *, ineligible: set[str] = frozenset(),
-               quota_shares: float = 1e9, drop_dates: int = 0) -> Path:
+               quota_shares: float = 1e9, drop_dates: int = 0,
+               suspended_from: int | None = None,
+               dispositions: list[tuple] | None = None) -> Path:
     """A synthetic curated layer covering every prediction row (minus ``ineligible`` symbols
-    and the last ``drop_dates`` signal dates, which are then carried forward)."""
+    and the last ``drop_dates`` signal dates, which are then carried forward).
+
+    ``suspended_from`` flags ``short_suspended`` on every row from that signal-date index on;
+    ``dispositions`` are (code, market, announce_date, period_start, period_end) windows written
+    to the ``disposition`` dataset (supplement 3)."""
     root = tmp_path / "chip"
     base = predictions[["symbol", "market", "signal_date"]].drop_duplicates()
     base = base[~base["symbol"].isin(ineligible)]
@@ -40,12 +47,24 @@ def _chip_root(tmp_path: Path, predictions: pd.DataFrame, *, ineligible: set[str
         base = base[~base["signal_date"].isin(dates[-drop_dates:])]
     code = base["symbol"].str.split(".").str[0]
     stamp = pd.Timestamp("2000-01-01", tz="Asia/Taipei")
+    suspended = np.zeros(len(base), dtype=bool)
+    if suspended_from is not None:
+        suspended = (base["signal_date"] >= dates[suspended_from]).to_numpy()
     eligibility = pd.DataFrame({
         "date": base["signal_date"].to_numpy(), "symbol": code.to_numpy(),
         "market": base["market"].to_numpy(), "name": "x",
-        "margin_eligible": True, "short_suspended": False, "sbl_suspended": False,
+        "margin_eligible": True, "short_suspended": suspended, "sbl_suspended": False,
         "limit_down_block": False, "sbl_eligible": True, "available_at": stamp,
     })
+    if dispositions is not None:
+        windows = pd.DataFrame(
+            dispositions, columns=["symbol", "market", "announce_date", "period_start",
+                                   "period_end"])
+        windows["measure"] = "第一次處置"
+        windows["available_at"] = stamp
+        windows["date"] = windows["announce_date"]  # partition key for the helper below
+        _write_curated(root, windows.drop(columns=["date"]).assign(date=windows["date"]),
+                       "disposition")
     sbl = pd.DataFrame({
         "date": base["signal_date"].to_numpy(), "symbol": code.to_numpy(),
         "market": base["market"].to_numpy(), "sbl_next_quota": int(quota_shares),
@@ -106,6 +125,25 @@ def test_recall_forces_the_exit_at_the_next_open():
     assert result.path.buy[0, 0] == 0 and result.recalls >= 1
     assert result.path.sell_open[1, 0] == 2  # A's next row is sold at the second open
     assert result.path.buy[1, 0] == 3  # and the slot refills with B's row of that date
+
+
+def test_blocked_candidates_are_skipped_and_counted():
+    # A is under disposition on every date: B fills the slot, three attempts on A are counted.
+    result = _two_stock_band(blocked=np.array([True, False, True, False, True, False]))
+    assert result.path.buy[0, 0] == 1 and result.blocked_skipped == 1
+    assert result.ineligible_skipped == 0
+
+
+def test_forced_exit_covers_at_the_next_open():
+    # A's first row is flagged: the position leaves at the second open like a recall.
+    result = _two_stock_band(forced_exit=np.array([True, False, False, False, False, False]))
+    assert result.path.buy[0, 0] == 0 and result.forced_exits == 1 and result.recalls == 0
+    assert result.path.sell_open[1, 0] == 2 and result.path.buy[1, 0] == 3
+
+
+def test_forced_exit_needs_no_generator():
+    result = _two_stock_band(forced_exit=np.zeros(6, dtype=bool))
+    assert result.forced_exits == 0 and result.path.buy[0, 0] == 0
 
 
 def test_value_cap_scales_the_position_under_the_quota():
@@ -182,6 +220,42 @@ def test_load_borrow_data_joins_lists_quota_and_terciles(tmp_path):
         chip_data.partition_files(missing, "eligibility")
 
 
+def test_load_borrow_data_aligns_suspensions_and_dispositions(tmp_path):
+    data = _tiny_market(tmp_path / "m")
+    frame = load_predictions(tmp_path / "m" / "s.parquet", "m")
+    dates = sorted(frame["signal_date"].unique())  # two signal dates
+    # B: announced on dates[0], window = dates[1] (the open after the first signal date);
+    # C: announced on dates[1], after its window started, so no earlier row can know it.
+    root = _chip_root(tmp_path, frame, suspended_from=1, dispositions=[
+        ("B", "TWSE", dates[0], dates[1], dates[1]),
+        ("C", "TWSE", dates[1], dates[1], dates[1]),
+    ])
+    plain = be.load_borrow_data(root, frame, data.inputs, data.groups)
+    assert plain.disposition is None and plain.short_suspended is not None
+    borrow = be.load_borrow_data(root, frame, data.inputs, data.groups, disposition=True)
+    symbols, signal = frame["symbol"].to_numpy(), frame["signal_date"].to_numpy()
+    assert borrow.short_suspended[signal >= dates[1]].all()
+    assert not borrow.short_suspended[signal < dates[1]].any()
+    # Rule D: the row of signal date t is blocked when the next open lies in the window and
+    # the announcement is already out: B on dates[0] only, never on the last date.
+    assert list(borrow.disposition[symbols == "B.TW"]) == [True, False]
+    assert not borrow.disposition[symbols == "C.TW"].any()
+    assert borrow.forced_exit("short_suspended") is borrow.short_suspended
+    assert borrow.forced_exit(None) is None
+    # Rule C also closes the entry list on flagged rows, for the SBL list too.
+    spec = be.ExecutionSpec("institution", "sbl", (0.0, 0.0, 0.0), 0.0, 0.0, None, True, 1, 11,
+                            True, forced_cover="short_suspended")
+    arrays = be.short_arrays(spec, borrow, fractional=True, default_fee_annual=0.02)
+    assert not arrays["eligible"][borrow.short_suspended].any()
+    assert arrays["eligible"][~borrow.short_suspended].all()
+    assert arrays["forced_exit"] is borrow.short_suspended
+    with pytest.raises(ValueError, match="forced_cover"):
+        borrow.forced_exit("sbl_suspended")
+    summary = be.summarize_borrow(borrow, data.groups)
+    assert 0 < summary["disposition_share"] < 1 and 0 < summary["short_suspended_share"] < 1
+    assert any("disposition" in key for key in borrow.digests)
+
+
 # --------------------------------------------------------------------------- books
 
 
@@ -256,3 +330,37 @@ def test_run_with_the_execution_layer(tmp_path):
     assert report["execution"]["points"]["institution"][0]["primary"]
     summary = (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
     assert "Execution layer" in summary
+
+
+def test_run_with_rules_d_and_c(tmp_path):
+    predictions, prices, artifacts = _fixture(tmp_path)
+    frame = load_predictions(predictions, "good")
+    dates = sorted(frame["signal_date"].unique())
+    windows = [(f"{1101 + i}", "TWSE", dates[0], dates[1], dates[-1]) for i in range(3)]
+    root = _chip_root(tmp_path, frame, suspended_from=len(dates) // 2, dispositions=windows)
+    config = _config(
+        tmp_path, scenarios=["md_ls", "md_ls_tx"],
+        construction={"score_variants": ["v0"], "leg_matching": ["none"]},
+        execution=_exec_block(
+            failure_multipliers=[1], recall_probabilities=[0.0], disposition_block=True,
+            forced_cover={"retail": "short_suspended", "institution": "short_suspended"}),
+    )
+    report = ss.run(config, [predictions], ["good"], prices, tmp_path / "out",
+                    artifacts=artifacts, chip_data_root=root)
+    grid = pd.read_csv(tmp_path / "out" / "grid.csv")
+    final = grid[(grid["stage"] == "final") & (grid["scenario"] == "md_ls")
+                 & (grid["market"] == "TWSE") & (grid["capital"] == "fractional")
+                 & grid["primary_slippage"]]
+    assert (final["disposition_skipped_share"] > 0).all()
+    assert (final["forced_covers"] > 0).all()
+    assert set(final["forced_cover"]) == {"short_suspended"}
+    coverage = report["execution"]["coverage"]["good"]["TWSE"]
+    assert 0 < coverage["disposition_share"] < 1 and 0 < coverage["short_suspended_share"] < 1
+    assert report["execution"]["points"]["institution"][0]["forced_cover"] == "short_suspended"
+    summary = (tmp_path / "out" / "summary.md").read_text(encoding="utf-8")
+    assert "強制回補" in summary
+    # Rule D without aligned dispositions is refused rather than silently ignored.
+    with pytest.raises(ValueError, match="disposition_block"):
+        ss.disposition_mask(SimpleNamespace(borrow=None),
+                            {"execution": {"disposition_block": True}})
+    assert ss.disposition_mask(SimpleNamespace(borrow=None), {"execution": {}}) is None

@@ -72,6 +72,7 @@ def simulate_weekly_band(
     dollar_volume: np.ndarray | None = None,
     participation_cap: float | None = None,
     cap_mode: str = "skip",
+    blocked: np.ndarray | None = None,
 ) -> WeeklyBand:
     """The band rule of ``tw_strategy.simulate_band`` applied on rebalance dates only, with a
     cap on the number of replacements per rebalance.
@@ -80,6 +81,8 @@ def simulate_weekly_band(
     the signal dates on which the book is reviewed. The capital limits (``lot_cost`` with
     ``slot_capital``, ``dollar_volume`` with ``participation_cap`` under ``cap_mode``) follow
     the long band exactly; the short-book execution layer does not apply to a long-only book.
+    A candidate row with ``blocked`` True (under a disposition period, protocol 13.23
+    supplement 3) is skipped and counted.
     """
     if cap_mode not in CAP_MODES:
         raise ValueError(f"Unknown cap_mode {cap_mode!r}")
@@ -115,7 +118,7 @@ def simulate_weekly_band(
     deployed = np.zeros(intervals)
     periods: list[int] = []
     blocked_buys = blocked_sells = missing_exits = lot_blocked = buy_attempts = 0
-    liquidity_blocked = odd_lot_buys = capped_buys = 0
+    liquidity_blocked = odd_lot_buys = capped_buys = blocked_skipped = 0
     rebalances = replacements = cap_hits = 0
 
     def close_position(s: int, row: int) -> None:
@@ -171,6 +174,9 @@ def simulate_weekly_band(
                         break
                     buy_attempts += 1
                     fill = 1.0
+                    if blocked is not None and blocked[row]:
+                        blocked_skipped += 1
+                        continue
                     if slot_capital is not None and dollar_volume is not None \
                             and participation_cap is not None:
                         volume = dollar_volume[row]
@@ -244,7 +250,7 @@ def simulate_weekly_band(
         path=path, lot_blocked=lot_blocked, liquidity_blocked=liquidity_blocked,
         odd_lot_buys=odd_lot_buys, buy_attempts=buy_attempts, buy_value=buy_value,
         sell_value=sell_value, odd_buy=odd_buy, odd_sell=odd_sell, fill_fraction=fill_row,
-        capped_buys=capped_buys, deployed=deployed,
+        capped_buys=capped_buys, deployed=deployed, blocked_skipped=blocked_skipped,
     )
     return WeeklyBand(band=band, rebalances=rebalances, replacements=replacements,
                       cap_hits=cap_hits)
@@ -289,7 +295,7 @@ def weekly_long_book(
     odd_lots: bool = False,
 ) -> Any:
     """The S-A book of one market under one cost profile and capital scenario."""
-    from twbacktest.scenario_suite import Book, load_profiles
+    from twbacktest.scenario_suite import Book, disposition_mask, load_profiles
 
     weekly = config["weekly"]
     h = int(weekly["score_horizon"])
@@ -303,8 +309,9 @@ def weekly_long_book(
     if score_key not in cache:
         cache[score_key] = weekly_score(data, config, h=h, score_variant=score_variant)
     score = cache[score_key]
+    blocked = disposition_mask(data, config)
     key = ("weekly", capital.name, k, buffer, turnover_cap, limit, cap_mode,
-           odd_lots and not fractional, h, score_variant)
+           odd_lots and not fractional, h, score_variant, blocked is not None)
     if key not in cache:
         cache[key] = simulate_weekly_band(
             engine.rankings(score, data.groups), k=k, buffer=buffer,
@@ -315,6 +322,7 @@ def weekly_long_book(
             odd_lots=odd_lots and not fractional,
             dollar_volume=None if fractional else inputs.dollar_volume,
             participation_cap=None if fractional else participation_cap, cap_mode=cap_mode,
+            blocked=blocked,
         )
     result: WeeklyBand = cache[key]
     band = result.band
@@ -339,6 +347,7 @@ def weekly_long_book(
         "capped_share": band.capped_buys / attempts,
         "deployed_share": float(band.deployed.mean()),
         "cap_mode": cap_mode,
+        "disposition_skipped_share": band.blocked_skipped / attempts,
     }
     return Book(net=net, gross=gross, info=info, legs={"long": net},
                 gross_legs={"long": gross})
