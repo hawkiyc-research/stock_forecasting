@@ -12,7 +12,10 @@ parts, all applied to the short band book only:
 2. borrow failure: a Bernoulli draw per candidate and day with a probability by dollar-volume
    tercile of the universe (large / mid / small), times a sensitivity multiplier, plus a daily
    recall probability on held shorts;
-3. tiered borrow fees for the institution profile by the same tercile.
+3. tiered borrow fees for the institution profile by the same tercile;
+4. (protocol 13.23 supplement 3, sensitivities) rows under a disposition period get no new
+   entry in either leg (``disposition``), and a held short whose row is flagged
+   ``short_suspended`` is covered at the next open (``forced_cover``).
 
 The per-row data comes from the ``tw_chip_data`` curated layer (``eligibility`` and ``sbl``;
 the row of signal date t is published at t 23:59:59 and used at the open of t + 1). A
@@ -51,6 +54,16 @@ class BorrowData:
     quota_matched_share: float
     carried_dates: int
     digests: dict[str, str]
+    short_suspended: np.ndarray | None = None  # bool: margin short selling suspended that day
+    disposition: np.ndarray | None = None  # bool: the execution day is inside a disposition
+
+    def forced_exit(self, column: str | None) -> np.ndarray | None:
+        """The row flag that forces a held short out (supplement 3 rule C), or None."""
+        if column is None:
+            return None
+        if column != "short_suspended" or self.short_suspended is None:
+            raise ValueError(f"forced_cover column {column!r} is not aligned")
+        return self.short_suspended
 
     def eligible(self, borrow_list: str) -> np.ndarray:
         return getattr(self, LIST_FOR[borrow_list])
@@ -73,6 +86,7 @@ class ExecutionSpec:
     replicates: int
     seed: int
     primary: bool
+    forced_cover: str | None = None  # eligibility column that forces a cover (rule C)
 
     @property
     def key(self) -> tuple[float, float]:
@@ -104,6 +118,8 @@ def execution_specs(config: dict[str, Any], profile: str) -> list[ExecutionSpec]
     tiers = tuple(float(x) for x in tiers) if tiers is not None else None
     primary_mult = float(spec["primary_failure_multiplier"])
     primary_recall = float(spec["primary_recall_probability"])
+    forced_cover = (spec.get("forced_cover") or {}).get(profile)
+    forced_cover = str(forced_cover) if forced_cover else None
     points = [(primary_mult, primary_recall)]
     for mult in spec["failure_multipliers"]:
         for recall in spec["recall_probabilities"]:
@@ -114,7 +130,7 @@ def execution_specs(config: dict[str, Any], profile: str) -> list[ExecutionSpec]
             profile=profile, borrow_list=borrow_list, failure_probs=probs,
             failure_multiplier=mult, recall_prob=recall, fee_tiers=tiers,
             quota_cap=bool(spec.get("quota_cap", True)), replicates=int(spec["replicates"]),
-            seed=int(spec["seed"]), primary=(i == 0),
+            seed=int(spec["seed"]), primary=(i == 0), forced_cover=forced_cover,
         )
         for i, (mult, recall) in enumerate(points)
     ]
@@ -139,6 +155,28 @@ def _aligned(predictions: pd.DataFrame, table: pd.DataFrame, columns: list[str])
     return chip_data.align_rows(keyed, table, columns), carried
 
 
+def _disposition_flags(
+    predictions: pd.DataFrame, inputs: WalkForwardInputs, periods: pd.DataFrame
+) -> np.ndarray:
+    """Per prediction row: the execution day (the next signal date) lies inside a disposition
+    window announced on or before the signal date (rule D of supplement 3)."""
+    dates = np.sort(predictions["signal_date"].unique()).astype("datetime64[ns]")
+    following = np.append(dates[1:], dates[-1] + np.timedelta64(1, "D"))
+    signal = predictions["signal_date"].to_numpy(dtype="datetime64[ns]")
+    execution = following[np.searchsorted(dates, signal)]
+    keyed = pd.DataFrame({
+        "symbol": predictions["symbol"].to_numpy(), "signal_date": signal,
+        "execution_date": execution, "row": np.arange(len(predictions)),
+    })
+    merged = keyed.merge(periods, left_on="symbol", right_on="prediction_symbol", how="inner")
+    hit = merged[(merged["announce_date"] <= merged["signal_date"])
+                 & (merged["period_start"] <= merged["execution_date"])
+                 & (merged["execution_date"] <= merged["period_end"])]
+    flags = np.zeros(len(predictions), dtype=bool)
+    flags[hit["row"].to_numpy()] = True
+    return flags
+
+
 def load_borrow_data(
     root: Path,
     predictions: pd.DataFrame,
@@ -146,18 +184,30 @@ def load_borrow_data(
     groups: tuple[np.ndarray, ...],
     *,
     datasets: dict[str, str] | None = None,
+    disposition: bool = False,
 ) -> BorrowData:
     """Join the eligibility and lending tables onto the prediction rows of one model.
 
     ``predictions`` is the frame ``build_inputs`` was built from (same row order as ``inputs``);
     ``groups`` are the universe rows per signal date, used for the dollar-volume terciles.
+    With ``disposition`` the disposition windows are aligned too (rule D of supplement 3).
     """
-    names = {"eligibility": "eligibility", "sbl": "sbl", **(datasets or {})}
+    names = {"eligibility": "eligibility", "sbl": "sbl", "disposition": "disposition",
+             **(datasets or {})}
     years = sorted({int(y) for y in predictions["signal_date"].dt.year.unique()})
     eligibility = chip_data.short_eligibility(root, years)
     lending = chip_data.borrow_quota(root, years)
-    lists, carried_lists = _aligned(predictions, eligibility,
-                                    ["sbl_eligible", "sbl_suspended", "margin_short_allowed"])
+    lists, carried_lists = _aligned(
+        predictions, eligibility,
+        ["sbl_eligible", "sbl_suspended", "margin_short_allowed", "short_suspended"])
+    disposition_flags = None
+    digests = {**chip_data.partition_digests(root, names["eligibility"], years),
+               **chip_data.partition_digests(root, names["sbl"], years)}
+    if disposition:
+        period_years = sorted({years[0] - 1, *years})
+        periods = chip_data.disposition_periods(root, period_years)
+        disposition_flags = _disposition_flags(predictions, inputs, periods)
+        digests.update(chip_data.partition_digests(root, names["disposition"], period_years))
     quota, carried_quota = _aligned(predictions, lending,
                                     ["sbl_quota_shares", "margin_short_room_shares"])
     open_ = inputs.raw_open_1 if inputs.raw_open_1 is not None else np.full(inputs.index.count,
@@ -182,21 +232,31 @@ def load_borrow_data(
         list_matched_share=float(lists["matched"].mean()),
         quota_matched_share=float(quota["matched"].mean()),
         carried_dates=carried_lists + carried_quota,
-        digests={**chip_data.partition_digests(root, names["eligibility"], years),
-                 **chip_data.partition_digests(root, names["sbl"], years)},
+        digests=digests,
+        short_suspended=lists["short_suspended"], disposition=disposition_flags,
     )
 
 
 def short_arrays(
     spec: ExecutionSpec, borrow: BorrowData, *, fractional: bool, default_fee_annual: float
 ) -> dict[str, Any]:
-    """Keyword arguments of ``simulate_band`` for the short book plus the per-row daily fee."""
+    """Keyword arguments of ``simulate_band`` for the short book plus the per-row daily fee.
+
+    With ``forced_cover`` the flagged rows are also removed from the entry list: a lender who
+    recalls at the suspension does not lend during it (the margin list excludes them already),
+    otherwise the institution book re-enters the day after every forced cover.
+    """
+    forced_exit = borrow.forced_exit(spec.forced_cover)
+    eligible = borrow.eligible(spec.borrow_list)
+    if forced_exit is not None:
+        eligible = eligible & ~forced_exit
     return {
-        "eligible": borrow.eligible(spec.borrow_list),
+        "eligible": eligible,
         "fail_prob": spec.fail_prob(borrow.tercile),
         "value_cap": None if (fractional or not spec.quota_cap)
         else borrow.value_cap(spec.borrow_list),
         "recall_prob": spec.recall_prob,
+        "forced_exit": forced_exit,
         "fee_daily": spec.fee_daily(borrow.tercile, default_fee_annual),
     }
 
@@ -206,7 +266,7 @@ def summarize_borrow(borrow: BorrowData, groups: tuple[np.ndarray, ...]) -> dict
     rows = np.concatenate([g for g in groups if g.size]) if groups else np.array([], dtype=int)
     if rows.size == 0:
         return {}
-    return {
+    out = {
         "universe_rows": int(rows.size),
         "sbl_eligible_share": float(borrow.sbl_eligible[rows].mean()),
         "margin_eligible_share": float(borrow.margin_eligible[rows].mean()),
@@ -215,3 +275,8 @@ def summarize_borrow(borrow: BorrowData, groups: tuple[np.ndarray, ...]) -> dict
         "quota_matched_share": borrow.quota_matched_share,
         "carried_dates": borrow.carried_dates,
     }
+    if borrow.short_suspended is not None:
+        out["short_suspended_share"] = float(borrow.short_suspended[rows].mean())
+    if borrow.disposition is not None:
+        out["disposition_share"] = float(borrow.disposition[rows].mean())
+    return out

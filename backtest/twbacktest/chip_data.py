@@ -78,6 +78,23 @@ def short_eligibility(root: Path, years: list[int] | None = None) -> pd.DataFram
                   "short_suspended", "sbl_suspended", "limit_down_block"]]
 
 
+def disposition_periods(root: Path, years: list[int] | None = None) -> pd.DataFrame:
+    """Per announcement: the disposition window of one stock (protocol 13.23 supplement 3).
+
+    Partitions are by announcement year; a window announced late in a year can run into the
+    next, so the caller passes the years it needs plus the one before.
+    """
+    table = ds.dataset(partition_files(root, "disposition", years), format="parquet")
+    frame = table.to_table(
+        columns=["announce_date", "symbol", "market", "period_start", "period_end"]
+    ).to_pandas()
+    frame["symbol"] = frame["symbol"].astype(str).str.strip()
+    for column in ("announce_date", "period_start", "period_end"):
+        frame[column] = pd.to_datetime(frame[column]).dt.normalize()
+    frame = with_prediction_symbol(frame)
+    return frame[["prediction_symbol", "announce_date", "period_start", "period_end"]]
+
+
 def borrow_quota(root: Path, years: list[int] | None = None) -> pd.DataFrame:
     """Per (prediction_symbol, date): next-session securities-lending sell quota (shares) and the
     margin short room (short_limit - short_balance, shares)."""

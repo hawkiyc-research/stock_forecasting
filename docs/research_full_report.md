@@ -1,7 +1,7 @@
 # 台股量化選股研究完整報告（第二版）：全線重訓、七個模型 × 三種策略的門檻篩選與樣本外驗證 / Quantitative Taiwan Stock Research, Full Report (second edition): the Full Retrain, the 21-Cell Threshold Shortlist and Out-of-Sample Verification
 
-版本：2026-11-02（取代 2026-10-29 的第一版；第一版封存於 `reports/deprecated/pre-1323-20261102/`）。
-Version: 2026-11-02 (supersedes the first edition of 2026-10-29, archived under `reports/deprecated/pre-1323-20261102/`).
+版本：2026-11-02，2026-11-04 補充 §6.7 執行層敏感度並修訂摘要、7.2、8、9.2（取代 2026-10-29 的第一版；第一版封存於 `reports/deprecated/pre-1323-20261102/`，11-02 的 Word 版封存於 `reports/deprecated/pre-1323s3-20261104/`）。
+Version: 2026-11-02, with §6.7 (execution-layer sensitivity) added on 2026-11-04 and the summary, 7.2, 8 and 9.2 revised (supersedes the first edition of 2026-10-29, archived under `reports/deprecated/pre-1323-20261102/`; the 11-02 Word files are archived under `reports/deprecated/pre-1323s3-20261104/`).
 
 ---
 
@@ -17,6 +17,7 @@ Version: 2026-11-02 (supersedes the first edition of 2026-10-29, archived under 
 - **門檻篩選**：21 格中 **7 格**三段期間淨 Sharpe 都 ≥ 1.5 且區間下界 > 0：F2 的三個策略、F0 的多空＋避險、兩個 transformer 的多空＋避險、Kronos 的週頻多頭。
 - **樣本外驗證（2026-07-01 至 10-01，64 個交易日）**：7 格中 **6 格通過**（淨報酬 > 0 且回撤在樣本內兩倍之內）。最強的一格是 **F2 × 多空＋台指期避險**：樣本內三段 Sharpe 2.17／2.84／2.38、年化 +30.2%，樣本外 **+19.6%**、Sharpe 1.48、回撤 −8.0%（樣本內 −8.1%）。唯一不通過的是 F2 × 週頻多頭（樣本外 −13.4%），原因和第一版一樣：純多頭的回撤由市場決定，7 月那次廣度修正直接打在它身上。
 - **處置**：六個通過的格一起進入 **2026-10-23 起 12 個月的確認期**（規則事前登記、期間內不得修改）；F2 × 週頻多頭維持研究狀態。這是這個專案第一次有策略走到確認期。
+- **執行層補充敏感度（11 月 4 日，§6.7）**：加上「處置期間不新進場」與「停券起日強制回補」兩條規則後，F2 × 多空＋避險全段 Sharpe 由 2.38 降到 1.70、年化 +30.2% 降到 +22.6%，樣本外 +20.4% 不變；下降幅度超過事前預期，這套保守假設成為確認期每季讀數的參考。六格裡 F2 × S2、D0 × S2、D1-Kronos × S-A 在保守假設下仍過門檻，F2 × S1、F0 × S2、D1-Chronos × S2 未過，三格自此帶註記；散戶成本下只有 D1-Kronos × S-A 通過。影響主要來自處置規則：排序模型在兩端集中於隨後被處置的股票。
 
 第 4 節保留第一版的研究歷程（七個階段），第 5 節記錄這一輪新增的三個階段（資料修正與重訓、模型儲存與延伸、候選集擴大），第 6 節是全部數字，第 7 節交代樣本的使用方式與限制。
 
@@ -172,6 +173,41 @@ F2 × S2 沒有一年低於 +17%、沒有一年回撤深過 −8%；三個 trans
 
 F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半）：S1 **+9.6% [+1.6%, +18.1%]**、S-A **+12.9% [+4.2%, +23.1%]** → 宣稱有增量；S2 +7.8% [−0.8%, +16.3%] → 區間跨 0，不宣稱。樣本外點估計 S1 +9.2%、S2 +12.0%、S-A −3.5%。與第一版相比，多空上的增量從 +0.8% 升到 +9.6%：修正價與全資料重訓後，籌碼對空頭腿也開始有貢獻。
 
+#### 6.7 執行層補充敏感度（2026-11-04）：處置期間不新進場、停券起日強制回補
+
+本輪的回測在 6.4 之前都把處置股當正常交易，已持有的空頭也只有隨機召回的敏感度。11 月 4 日登記並實作兩條確定性規則（協定 §13.23 補充三）：**D** = 訊號日的次一開盤落在處置期間（公告已出）的股票，多頭與空頭都不新進場，已持有者不強制出場、不加分盤撮合的滑價；**C** = 已持有的空頭在該股被列為暫停融券賣出的次一開盤強制回補，並且停券期間不新建空單（散戶的融券規則；機構借券不因停券而必須歸還，這裡以同一旗標作上界）。暴露：處置股占宇宙股票日上市 1.2%、上櫃 2.2%，但在 D + C 下占 F2 × S2 兩腿候選的 9.1%／9.4%，在週頻多頭占 13% 到 31%；停券占股票日 3.4% 到 3.7%，F2 × S2 在 811 個區間內被強制回補約 400 次（兩個成本檔相當）。
+
+機構主要成本（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3 的 64 個區間；TW 兩市場各半、分數位置、主滑價）：
+
+| 格 | 全段 基準 | 全段 D | 全段 C | 全段 D + C | 樣本外 基準 | 樣本外 D + C | D + C 讀法 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F2 × S2 | +30.2% / 2.38 / -8.1% | +25.7% / 1.92 / -8.1% | +26.7% / 2.12 / -8.1% | **+22.6% / 1.70 / -8.3%** | +19.6% / 1.48 / -8.0% | **+20.4% / 1.39 / -8.3%** | 通過 |
+| F2 × S1 | +25.5% / 2.11 / -11.0% | +18.9% / 1.49 / -11.2% | +22.1% / 1.85 / -11.1% | **+16.6% / 1.32 / -11.5%** | +14.2% / 1.06 / -8.3% | **+16.0% / 1.13 / -9.6%** | 未通過（Sharpe < 1.5） |
+| D0 × S2 | +24.5% / 1.80 / -8.2% | +22.3% / 1.65 / -9.5% | +21.9% / 1.63 / -8.1% | **+20.3% / 1.51 / -9.3%** | +15.7% / 1.16 / -7.8% | **+3.2% / 0.23 / -10.4%** | 通過 |
+| D1-Chronos × S2 | +24.4% / 1.81 / -9.3% | +23.3% / 1.73 / -8.8% | +24.6% / 1.86 / -8.6% | **+21.4% / 1.61 / -8.4%** | +14.5% / 1.03 / -10.0% | **-2.1% / -0.14 / -10.9%** | 未通過（樣本外 < 0） |
+| F0 × S2 | +22.3% / 1.64 / -8.6% | +20.1% / 1.46 / -8.7% | +20.4% / 1.54 / -9.2% | **+19.0% / 1.41 / -9.2%** | +7.6% / 0.60 / -7.0% | **+26.8% / 1.87 / -8.5%** | 未通過（Sharpe < 1.5） |
+| D1-Kronos × S-A | +44.2% / 2.16 / -23.9% | +40.2% / 2.06 / -24.7% | +44.2% / 2.16 / -23.9% | **+40.2% / 2.06 / -24.7%** | +4.8% / 0.16 / -16.1% | **+17.7% / 0.59 / -11.7%** | 通過 |
+| F2 × S-A（未進確認期） | +53.4% / 2.33 / -25.1% | +38.3% / 1.97 / -24.3% | +53.4% / 2.33 / -25.1% | **+38.3% / 1.97 / -24.3%** | -13.4% / -0.33 / -24.6% | **+5.7% / 0.22 / -13.6%** | 通過 |
+
+散戶成本（C 是制度規則，不是上界）（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3 的 64 個區間；TW 兩市場各半、分數位置、主滑價）：
+
+| 格 | 全段 基準 | 全段 D | 全段 C | 全段 D + C | 樣本外 基準 | 樣本外 D + C | D + C 讀法 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F2 × S2 | +29.1% / 2.26 / -7.3% | +24.9% / 1.85 / -7.7% | +24.7% / 1.96 / -8.6% | **+19.4% / 1.45 / -8.7%** | +24.0% / 1.73 / -7.9% | **+22.5% / 1.51 / -8.4%** | 未通過（Sharpe < 1.5） |
+| F2 × S1 | +24.2% / 1.98 / -10.5% | +18.5% / 1.44 / -10.6% | +20.3% / 1.70 / -11.5% | **+13.4% / 1.06 / -11.0%** | +19.8% / 1.43 / -8.4% | **+18.3% / 1.28 / -9.8%** | 未通過（Sharpe < 1.5） |
+| D0 × S2 | +22.2% / 1.63 / -9.5% | +20.7% / 1.52 / -10.4% | +19.0% / 1.41 / -9.4% | **+15.6% / 1.17 / -9.9%** | +19.5% / 1.40 / -8.0% | **-1.0% / -0.07 / -10.6%** | 未通過（Sharpe < 1.5） |
+| D1-Chronos × S2 | +23.3% / 1.75 / -9.1% | +19.9% / 1.47 / -9.4% | +18.5% / 1.40 / -8.6% | **+17.0% / 1.29 / -9.7%** | +3.8% / 0.27 / -11.9% | **-0.9% / -0.06 / -11.4%** | 未通過（Sharpe < 1.5） |
+| F0 × S2 | +19.5% / 1.40 / -8.5% | +18.9% / 1.36 / -8.7% | +18.4% / 1.37 / -9.5% | **+16.3% / 1.19 / -9.7%** | +3.1% / 0.24 / -8.3% | **+21.9% / 1.51 / -8.1%** | 未通過（Sharpe < 1.5） |
+| D1-Kronos × S-A | +41.2% / 2.02 / -24.4% | +37.2% / 1.91 / -26.4% | +41.2% / 2.02 / -24.4% | **+37.2% / 1.91 / -26.4%** | +1.5% / 0.05 / -16.3% | **+14.6% / 0.48 / -12.0%** | 通過 |
+| F2 × S-A（未進確認期） | +49.7% / 2.18 / -25.3% | +35.4% / 1.82 / -24.6% | +49.7% / 2.18 / -25.3% | **+35.4% / 1.82 / -24.6%** | -17.9% / -0.45 / -24.7% | **+1.2% / 0.05 / -13.8%** | 通過 |
+
+怎麼讀：
+
+- 事前預期「全段年化下降 0 到 5 個百分點、Sharpe 下降 0 到 0.3」被超過（F2 × S2 −7.5 個百分點／−0.68，F2 × S1 −8.9／−0.79），依登記的規則 **D + C 成為確認期每季讀數的保守參考**。依 D + C 的讀法（全段淨 Sharpe ≥ 1.5 且樣本外 > 0），確認期六格裡 **F2 × S2、D0 × S2、D1-Kronos × S-A 通過，F2 × S1、F0 × S2、D1-Chronos × S2 未通過**，後三格自此在報告與每季讀數旁註記「執行層敏感度未通過」。散戶只有 D1-Kronos × S-A 通過，F2 × S2 以 1.45 差 0.05。
+- **D 的影響大於 C，而且在多頭與空頭兩腿都出現**：排序模型把兩端集中在隨後被處置的股票，P2 多頭報酬有相當部分來自它們（F2 × S-A 的 P2 由 +114% 降到 +65%、F2 × S1 由 +38% 降到 +22%），樣本外則反過來（7 月修正中這些股票下跌，D 讓 F2 × S-A 的樣本外由 −13.4% 變成 +5.7%）。
+- 兩條規則仍偏樂觀（D 不強制出場、不加滑價；C 比真實的最後回補日晚至少一天）；確認期六格、凍結設定與 H-L 門檻不變，是否改以 D + C 為主要執行假設由使用者決定，採用即另案登記並重新起算。
+- 第一次執行時機構的借券名單在停券期間仍可進場，被回補後次日又重新放空（強制回補 705 次對散戶 399 次）；修正為停券期間不新建空單後兩個成本檔相當，第一次執行的輸出保留作對照（協定「補充三實作修正」）。
+
 ### 7. 樣本的使用方式與資料限制
 
 #### 7.1 樣本是怎麼用的：洩漏與設計偏誤的交代
@@ -197,7 +233,7 @@ F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半�
 (b) 樣本內後段在第一版設計正交化時已看過；本輪的候選集與門檻是看過第一版樣本外之後定的；本輪的樣本外只對重訓後的分數乾淨。
 (c) 樣本外只有 64 個交易日、一種市場狀態，區間寬 ±50 到 ±120 個百分點；最後 14 個交易日沒有標籤就沒有預測。
 (d) 籌碼特徵的公布時刻用保守規則（次日開盤前）；外資持股比例的 z 分數欄因資料來源問題恆為缺值。
-(e) 放空腿的借不到機率、召回機率與借券費分層是參數假設。
+(e) 放空腿的借不到機率、召回機率與借券費分層是參數假設；主表沒有處置股與停券強制回補的約束，§6.7 的兩條規則是 11 月 4 日補登記的敏感度，而且仍偏樂觀（處置期間不強制出場、不加分盤撮合的滑價；強制回補比真實的最後回補日晚至少一天；機構的停券回補是上界）。
 (f) 三個 transformer 的結果不保證逐次重現（bf16、不同 GPU）；本輪重訓的三折與舊 launch 不同，報告用的是延伸後的正本。
 (g) 樣本外視窗含 2026 年 7 月修正，不含 2022 年空頭；分點與集保資料未購買。
 
@@ -216,6 +252,7 @@ F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半�
 | --- | --- | --- |
 | 1 | 六個通過的格進入 2026-10-23 起 12 個月的確認期，各自判定（淨報酬 > 0、回撤不深於各自樣本內的兩倍）；每季以延伸方式補新折，期中（2027-04-22）只報不判 | 這是對重訓後模型第一段乾淨的樣本外 |
 | 2 | 上櫃空頭腿在樣本外的虧損要做歸因（反彈期的空頭 band 持股與借券費） | 多空格的樣本外全部由上市貢獻 |
+| 2b | 決定是否以「處置期間不新進場＋停券強制回補」為主要執行假設（使用者決定；採用即另案登記、重新起算），並補上處置期間的滑價加碼與真實的融券最後回補日 | §6.7 的下降超過事前預期，排序模型在兩端集中於隨後被處置的股票 |
 | 3 | 事件研究：處置、注意股首次公告、當沖比跳升後的反轉 | 免費資料裡尚未使用的事件型訊號 |
 | 4 | 跨股票 transformer 在籌碼特徵上重訓（使用者決定） | 籌碼增量在排序層成立，transformer 的多空＋避險已入選 |
 | 5 | 購買券商分點資料（使用者決定；兩道事前門檻已通過） | 文獻與子分析都指向分點對強勢股延續／反轉的鑑別 |
@@ -246,6 +283,7 @@ F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半�
 - 研究協定（每個實驗的事前登記與結果）：`docs/experiment_protocol.md` §13.23 與其補充；第一版的章節 §13.1 至 §13.22。
 - 模型輸出：`artifacts/lgbm/<launch>/`、`artifacts/xs/<launch>/`（含 `lineage.json` 與 `models/`）；登錄表 `registry/lgbm/*.json`、`registry/xs/*.json`。
 - 回測輸出：`artifacts/diagnostics/backtest/scenario-suite-p3b-21cells-20261102T082149Z/`（`grid.csv`、`daily.csv`、`yearly.csv`、`report.json`、`summary.md`）；篩選與樣本外驗證：`strategy-decision-p3b-21cells-20261102T082429Z/`。
+- 執行層敏感度（§6.7）：`scenario-suite-p3b-disp-20261104T113932Z/`（D）、`scenario-suite-p3b-cover-20261104T114651Z/`（C）、`scenario-suite-p3b-exec-20261104T114651Z/`（D + C）與對應的 `strategy-decision-p3b-{disp,cover,exec}-…/`；設定 `backtest/config/scenario_suite_v1_p3b_{disp,cover,exec}.json`；修正前的第一次執行 `…-cover-20261104T113932Z/`、`…-exec-20261104T113932Z/` 保留。
 - 重現：`cd backtest && uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_p3b.json --chip-data-root <tw_chip_data/data> --multi-day-default F0 --predictions ../artifacts/lgbm/<B0>/predictions.parquet --model t-lgbm-alpha --label B0 … --prices ../artifacts/datasets/<v1.1 資料集>/raw/market.parquet`，再 `uv run python -m twbacktest.strategy_decision --config config/strategy_decision_p3b.json --suite <套件輸出目錄>`；完整命令見協定 §13.23 第 18 步實作註記。
 - 程式：`src/stock_forecasting/`（資料、特徵、模型、延伸與登錄表）、`backtest/twbacktest/`（策略與回測）、`scripts/`（雲端 CPU／GPU 工作流程與下載）。
 
@@ -263,6 +301,7 @@ The outcome (institution primary cost, TWSE and TPEX half each, fractional capit
 - **Threshold shortlist**: **7 of 21 cells** reach net Sharpe ≥ 1.5 in all three periods with a lower bound above zero: F2's three strategies, F0's long-short + hedge, the two transformers' long-short + hedge, and Kronos's weekly long.
 - **Out-of-sample verification (2026-07-01 to 10-01, 64 sessions)**: **6 of 7 pass** (net return > 0 and drawdown within twice the in-sample drawdown). The strongest cell is **F2 × long-short + TX hedge**: in-sample Sharpe 2.17 / 2.84 / 2.38 and +30.2% a year, out of sample **+19.6%**, Sharpe 1.48, drawdown −8.0% (in-sample −8.1%). The one failure is F2 × weekly long (−13.4% out of sample), for the reason seen in the first edition: a long-only book's drawdown is set by the market, and the July breadth correction landed on it.
 - **Disposition**: the six passing cells enter a **12-month confirmation period from 2026-10-23** (rules registered in advance and frozen); F2 × weekly long stays in research. This is the first time a strategy in this project has reached a confirmation period.
+- **Execution-layer sensitivity added on 4 November (§6.7)**: with the rules "no new entry during a disposition period" and "forced cover when short selling is suspended", F2 × long-short + hedge falls from Sharpe 2.38 to 1.70 and from +30.2% to +22.6% a year over the whole period while its out-of-sample +20.4% is unchanged; the fall exceeds the pre-registered expectation, so this conservative setting becomes the reference for the quarterly confirmation readings. Of the six cells, F2 × S2, D0 × S2 and D1-Kronos × S-A still clear the thresholds under it, F2 × S1, F0 × S2 and D1-Chronos × S2 do not and now carry a note; under retail costs only D1-Kronos × S-A passes. The effect comes mainly from the disposition rule: the ranking models concentrate both ends of the ranking in stocks that are subsequently placed under disposition.
 
 Section 4 keeps the first edition's research history (seven stages) in summary, section 5 records the three stages added in this round (data fix and retrain, model saving and extension, the wider candidate set), section 6 holds all the numbers and section 7 states how the samples were used and the limitations.
 
@@ -418,6 +457,41 @@ F2 × S2 has no year below +17% and no yearly drawdown deeper than −8%; the th
 
 F2 − F0 paired daily net difference (whole period annualized, institution, two markets half each): S1 **+9.6% [+1.6%, +18.1%]**, S-A **+12.9% [+4.2%, +23.1%]** → an increment is claimed; S2 +7.8% [−0.8%, +16.3%] → the interval crosses zero, not claimed. Out-of-sample point estimates S1 +9.2%, S2 +12.0%, S-A −3.5%. Against the first edition the long-short increment rose from +0.8% to +9.6%: after the price fix and the full-data retrain the chip features also help the short leg.
 
+#### 6.7 Execution-layer sensitivity added on 2026-11-04: no new entries during a disposition period, forced cover when short selling is suspended
+
+Up to section 6.4 the backtest treated disposition stocks as trading normally and held shorts had only the random-recall sensitivity. Two deterministic rules were registered and implemented on 4 November (protocol §13.23 supplement 3): **D** = a stock whose next open after the signal date lies inside an announced disposition period gets no new entry in either leg; held positions are not forced out and no batched-auction slippage is added; **C** = a held short is covered at the open after the stock is listed as suspended from margin short selling, and no new short is opened during the suspension (the retail margin rule; an institution's SBL borrow need not be returned at a suspension, so the same flag serves as an upper bound). Exposure: disposition stocks are 1.2% (TWSE) / 2.2% (TPEX) of universe stock-days but, under D + C, 9.1% / 9.4% of F2 × S2's candidates across both legs and 13% to 31% of the weekly long's; suspensions cover 3.4% to 3.7% of stock-days, and F2 × S2 is force-covered about 400 times over the 811 intervals (both cost profiles alike).
+
+Institution primary cost (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = the 64 intervals of P3; TW half each, fractional, primary slippage):
+
+| Cell | Whole baseline | Whole D | Whole C | Whole D + C | OOS baseline | OOS D + C | D + C reading |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F2 × S2 | +30.2% / 2.38 / -8.1% | +25.7% / 1.92 / -8.1% | +26.7% / 2.12 / -8.1% | **+22.6% / 1.70 / -8.3%** | +19.6% / 1.48 / -8.0% | **+20.4% / 1.39 / -8.3%** | pass |
+| F2 × S1 | +25.5% / 2.11 / -11.0% | +18.9% / 1.49 / -11.2% | +22.1% / 1.85 / -11.1% | **+16.6% / 1.32 / -11.5%** | +14.2% / 1.06 / -8.3% | **+16.0% / 1.13 / -9.6%** | fail (Sharpe < 1.5) |
+| D0 × S2 | +24.5% / 1.80 / -8.2% | +22.3% / 1.65 / -9.5% | +21.9% / 1.63 / -8.1% | **+20.3% / 1.51 / -9.3%** | +15.7% / 1.16 / -7.8% | **+3.2% / 0.23 / -10.4%** | pass |
+| D1-Chronos × S2 | +24.4% / 1.81 / -9.3% | +23.3% / 1.73 / -8.8% | +24.6% / 1.86 / -8.6% | **+21.4% / 1.61 / -8.4%** | +14.5% / 1.03 / -10.0% | **-2.1% / -0.14 / -10.9%** | fail (OOS < 0) |
+| F0 × S2 | +22.3% / 1.64 / -8.6% | +20.1% / 1.46 / -8.7% | +20.4% / 1.54 / -9.2% | **+19.0% / 1.41 / -9.2%** | +7.6% / 0.60 / -7.0% | **+26.8% / 1.87 / -8.5%** | fail (Sharpe < 1.5) |
+| D1-Kronos × S-A | +44.2% / 2.16 / -23.9% | +40.2% / 2.06 / -24.7% | +44.2% / 2.16 / -23.9% | **+40.2% / 2.06 / -24.7%** | +4.8% / 0.16 / -16.1% | **+17.7% / 0.59 / -11.7%** | pass |
+| F2 × S-A (not in confirmation) | +53.4% / 2.33 / -25.1% | +38.3% / 1.97 / -24.3% | +53.4% / 2.33 / -25.1% | **+38.3% / 1.97 / -24.3%** | -13.4% / -0.33 / -24.6% | **+5.7% / 0.22 / -13.6%** | pass |
+
+Retail cost (C is the rule here, not an upper bound) (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = the 64 intervals of P3; TW half each, fractional, primary slippage):
+
+| Cell | Whole baseline | Whole D | Whole C | Whole D + C | OOS baseline | OOS D + C | D + C reading |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| F2 × S2 | +29.1% / 2.26 / -7.3% | +24.9% / 1.85 / -7.7% | +24.7% / 1.96 / -8.6% | **+19.4% / 1.45 / -8.7%** | +24.0% / 1.73 / -7.9% | **+22.5% / 1.51 / -8.4%** | fail (Sharpe < 1.5) |
+| F2 × S1 | +24.2% / 1.98 / -10.5% | +18.5% / 1.44 / -10.6% | +20.3% / 1.70 / -11.5% | **+13.4% / 1.06 / -11.0%** | +19.8% / 1.43 / -8.4% | **+18.3% / 1.28 / -9.8%** | fail (Sharpe < 1.5) |
+| D0 × S2 | +22.2% / 1.63 / -9.5% | +20.7% / 1.52 / -10.4% | +19.0% / 1.41 / -9.4% | **+15.6% / 1.17 / -9.9%** | +19.5% / 1.40 / -8.0% | **-1.0% / -0.07 / -10.6%** | fail (Sharpe < 1.5) |
+| D1-Chronos × S2 | +23.3% / 1.75 / -9.1% | +19.9% / 1.47 / -9.4% | +18.5% / 1.40 / -8.6% | **+17.0% / 1.29 / -9.7%** | +3.8% / 0.27 / -11.9% | **-0.9% / -0.06 / -11.4%** | fail (Sharpe < 1.5) |
+| F0 × S2 | +19.5% / 1.40 / -8.5% | +18.9% / 1.36 / -8.7% | +18.4% / 1.37 / -9.5% | **+16.3% / 1.19 / -9.7%** | +3.1% / 0.24 / -8.3% | **+21.9% / 1.51 / -8.1%** | fail (Sharpe < 1.5) |
+| D1-Kronos × S-A | +41.2% / 2.02 / -24.4% | +37.2% / 1.91 / -26.4% | +41.2% / 2.02 / -24.4% | **+37.2% / 1.91 / -26.4%** | +1.5% / 0.05 / -16.3% | **+14.6% / 0.48 / -12.0%** | pass |
+| F2 × S-A (not in confirmation) | +49.7% / 2.18 / -25.3% | +35.4% / 1.82 / -24.6% | +49.7% / 2.18 / -25.3% | **+35.4% / 1.82 / -24.6%** | -17.9% / -0.45 / -24.7% | **+1.2% / 0.05 / -13.8%** | pass |
+
+How to read it:
+
+- The pre-registered expectation ("whole-period annualized return down 0 to 5 points, Sharpe down 0 to 0.3") is exceeded (F2 × S2 −7.5 points / −0.68, F2 × S1 −8.9 / −0.79), so by the registered rule **D + C becomes the conservative reference for every quarterly confirmation reading**. Under the D + C reading (whole-period net Sharpe ≥ 1.5 and OOS > 0), of the six confirmation-period cells **F2 × S2, D0 × S2 and D1-Kronos × S-A pass, F2 × S1, F0 × S2 and D1-Chronos × S2 do not**, and the latter three now carry the note "execution-layer sensitivity not passed" in the reports and in every quarterly reading. Among retail cells only D1-Kronos × S-A passes; F2 × S2 misses by 0.05 at 1.45.
+- **D matters more than C and shows in both legs**: the ranking models concentrate both ends of the ranking in stocks that are subsequently placed under disposition; a sizeable part of the P2 long-side return came from them (F2 × S-A's P2 falls from +114% to +65%, F2 × S1's from +38% to +22%), while out of sample it goes the other way (those stocks fell in the July correction, so D turns F2 × S-A's OOS from −13.4% to +5.7%).
+- Both rules remain optimistic (D forces no exit and adds no slippage; C is at least one day later than the real last cover day); the six confirmation-period cells, the frozen configuration and the H-L limits are unchanged, and whether D + C becomes the primary execution assumption is the user's decision, which would mean a separate registration with a fresh clock.
+- In the first run the institution SBL list still admitted suspended names, so a covered position was re-shorted the next day (705 forced covers against 399 for retail); after the correction (no new short during a suspension) the two profiles agree, and the first run's outputs are kept for comparison (protocol "supplement 3 implementation correction").
+
 ### 7. How the samples were used, and data limitations
 
 #### 7.1 How the samples were used: leakage and design bias, stated plainly
@@ -443,7 +517,7 @@ Constructions tried: six generations of strategy layer, seven models, three stra
 (b) The in-sample second half was seen when the first edition's orthogonalization was designed; this round's candidate set and thresholds were set after the first edition's out-of-sample results; this round's out-of-sample period is clean only for the retrained scores.
 (c) The out-of-sample period has 64 sessions and one market state, with intervals ±50 to ±120 points wide; the last 14 sessions have no label and therefore no prediction.
 (d) Chip publication times follow a conservative rule (before the next open); the foreign-holding z-score column is always missing because of a source problem.
-(e) The short leg's borrow-failure probability, recall probability and fee tiers are parameter assumptions.
+(e) The short leg's borrow-failure probability, recall probability and fee tiers are parameter assumptions; the main tables carry no disposition-stock or forced-cover constraint, the two rules of §6.7 are a sensitivity registered on 4 November, and they remain optimistic (no forced exit and no batched-auction slippage during a disposition; the forced cover is at least one day later than the real last cover day; the institution's cover at a suspension is an upper bound).
 (f) The three transformers' results are not reproducible run to run (bf16, different GPUs); the three retrained folds differ from the old launches, and the report uses the extended current launches.
 (g) The out-of-sample window holds the July 2026 correction and not the 2022 bear market; broker-branch and depository data were not bought.
 
@@ -462,6 +536,7 @@ Constructions tried: six generations of strategy layer, seven models, three stra
 | --- | --- | --- |
 | 1 | The six passing cells enter the 12-month confirmation period from 2026-10-23, each judged on its own (net return > 0, drawdown within twice its own in-sample drawdown); new folds added each quarter by extension; the interim reading (2027-04-22) is reported, not judged | The first clean out-of-sample period for the retrained models |
 | 2 | Attribute the TPEX short leg's out-of-sample loss (short-band holdings and borrow fees during the rebound) | Every long-short cell's out-of-sample return came from TWSE |
+| 2b | Decide whether "no new entry during a disposition period + forced cover at a suspension" becomes the primary execution assumption (the user's decision; adopting it means a separate registration with a fresh clock), and add the disposition-period slippage and the real margin last-cover day | The fall in §6.7 exceeds the pre-registered expectation; the ranking models concentrate both ends in stocks subsequently placed under disposition |
 | 3 | Event studies: disposition, first attention-stock notice, reversal after a day-trade-ratio jump | Event signals in the free data not yet used |
 | 4 | Retrain the cross-stock transformer on the chip features (the user's decision) | The chip increment holds at the ranking level, and the transformers' long-short + hedge is shortlisted |
 | 5 | Buy broker-branch data (the user's decision; both pre-registered gates passed) | Literature and the sub-analysis point to branch flow for telling continuation from reversal among strong stocks |
@@ -492,5 +567,6 @@ Constructions tried: six generations of strategy layer, seven models, three stra
 - Research protocol (every experiment's pre-registration and result): `docs/experiment_protocol.md` §13.23 and its supplements; the first edition's sections §13.1 to §13.22.
 - Model outputs: `artifacts/lgbm/<launch>/`, `artifacts/xs/<launch>/` (with `lineage.json` and `models/`); registry `registry/lgbm/*.json`, `registry/xs/*.json`.
 - Backtest outputs: `artifacts/diagnostics/backtest/scenario-suite-p3b-21cells-20261102T082149Z/` (`grid.csv`, `daily.csv`, `yearly.csv`, `report.json`, `summary.md`); shortlist and out-of-sample verification: `strategy-decision-p3b-21cells-20261102T082429Z/`.
+- Execution-layer sensitivity (§6.7): `scenario-suite-p3b-disp-20261104T113932Z/` (D), `scenario-suite-p3b-cover-20261104T114651Z/` (C), `scenario-suite-p3b-exec-20261104T114651Z/` (D + C) with the matching `strategy-decision-p3b-{disp,cover,exec}-…/`; configurations `backtest/config/scenario_suite_v1_p3b_{disp,cover,exec}.json`; the pre-correction first run `…-cover-20261104T113932Z/`, `…-exec-20261104T113932Z/` is kept.
 - Reproduction: `cd backtest && uv run python -m twbacktest.scenario_suite --config config/scenario_suite_v1_p3b.json --chip-data-root <tw_chip_data/data> --multi-day-default F0 --predictions ../artifacts/lgbm/<B0>/predictions.parquet --model t-lgbm-alpha --label B0 … --prices ../artifacts/datasets/<v1.1 dataset>/raw/market.parquet`, then `uv run python -m twbacktest.strategy_decision --config config/strategy_decision_p3b.json --suite <suite output directory>`; the full command is in the protocol's §13.23 step 18 implementation note.
 - Code: `src/stock_forecasting/` (data, features, models, extension and registry), `backtest/twbacktest/` (strategies and backtests), `scripts/` (cloud CPU / GPU workflows and downloads).
