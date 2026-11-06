@@ -560,6 +560,8 @@ def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
     """Supplement 4 parameters as grid columns (NaN when the rule is off)."""
     fill = (config.get("execution") or {}).get("open_fill") or {}
     stop = config.get("stop_loss") or {}
+    odd = (config.get("execution") or {}).get("odd_lots") or {}
+    odd_cost = (config.get("execution") or {}).get("odd_lots_cost") or {}
     return {
         "fill_policy": str(fill.get("policy", "A")) if fill else "",
         "delay_theta": float(fill.get("delay_theta", np.nan)) if fill else np.nan,
@@ -567,6 +569,8 @@ def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
         "auction_share": float(fill.get("auction_share", np.nan)) if fill else np.nan,
         "stop_fraction": float(stop.get("fraction", np.nan)),
         "stop_overshoot": float(stop.get("overshoot", np.nan)),
+        "odd_lots": ";".join(f"{name}:{','.join(rows)}" for name, rows in sorted(odd.items())),
+        "odd_gap": float(odd_cost.get("gap", np.nan)) if odd else np.nan,
     }
 
 
@@ -603,14 +607,66 @@ def fill_profile(profile: CostProfile, config: dict[str, Any], capital: Capital)
     return replace(profile, slippage=(0.0, 0.0))
 
 
+def odd_lot_spec(config: dict[str, Any], capital: Capital) -> dict[str, Any] | None:
+    """Supplement 7: the odd-lot settings of a capital row, or None when the row trades whole
+    lots only. ``execution.odd_lots`` maps a cost profile to the capital rows whose long legs
+    may buy odd lots; ``execution.odd_lots_cost`` holds the gap ``g`` to the board-lot price,
+    whether half a tick is added (policy A; policy B already charges it) and the minimum
+    commission per odd-lot trade in NT$."""
+    cfg = (config.get("execution") or {}).get("odd_lots")
+    if not cfg or capital.twd is None or capital.profile is None:
+        return None
+    if capital.name not in (cfg.get(capital.profile) or []):
+        return None
+    cost = (config.get("execution") or {}).get("odd_lots_cost") or {}
+    return {
+        "gap": float(cost.get("gap", 0.0)),
+        "half_tick": bool(cost.get("half_tick", True)),
+        "min_commission_twd": float(cost.get("min_commission_twd", 0.0)),
+    }
+
+
+def odd_lot_rates(
+    result: BandResult, data: MarketData, config: dict[str, Any], profile: CostProfile,
+    spec: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-row (buy, sell) cost additions of the rows a long book traded as odd lots: the gap
+    ``g`` to the board-lot price (paid on buys, conceded on sells), half a tick under policy A
+    (limit orders at the quote), and the minimum-commission top-up max(min / value - rate, 0).
+    Rows traded as whole lots get nothing."""
+    inputs = data.inputs
+    rows = result.buy_value.size
+    policy = str(((config.get("execution") or {}).get("open_fill") or {}).get("policy", "A"))
+    per_side = float(spec["gap"])
+    half = np.zeros(rows)
+    if spec["half_tick"] and policy != "B" and inputs.raw_open_1 is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            half = 0.5 * tick_size(inputs.raw_open_1) / inputs.raw_open_1
+        half = np.where(np.isfinite(half), half, 0.0)
+    minimum = float(spec["min_commission_twd"])
+    out = []
+    for value, flags in ((result.buy_value, result.odd_buy), (result.sell_value, result.odd_sell)):
+        traded = flags & np.isfinite(value) & (value > 0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            top_up = np.where(traded, np.maximum(minimum / value - profile.commission, 0.0), 0.0)
+        out.append(np.where(traded, per_side + half, 0.0) + np.nan_to_num(top_up))
+    return out[0], out[1]
+
+
 def with_impact(
     rates: tuple[np.ndarray, np.ndarray], result: BandResult, data: MarketData,
-    config: dict[str, Any], *, short: bool = False,
+    config: dict[str, Any], *, short: bool = False, profile: CostProfile | None = None,
+    capital: Capital | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
+    buy, sell = rates
     extra = impact_rates(result, data, config, short=short)
-    if extra is None:
-        return rates
-    return rates[0] + extra[0], rates[1] + extra[1]
+    if extra is not None:
+        buy, sell = buy + extra[0], sell + extra[1]
+    spec = odd_lot_spec(config, capital) if (capital is not None and profile is not None) else None
+    if spec is not None and not short:
+        odd = odd_lot_rates(result, data, config, profile, spec)
+        buy, sell = buy + odd[0], sell + odd[1]
+    return buy, sell
 
 
 def _band_long_short(
@@ -645,6 +701,7 @@ def _band_long_short(
     fractional = capital.twd is None
     config = config or {}
     leg_capital = None if fractional else capital.twd * capital_share(config, data, 2)
+    odd_lots = bool(odd_lots or odd_lot_spec(config, capital) is not None) and not fractional
     common = {
         "k": k, "buffer": buffer, "max_buys": max_buys, "symbols": inputs.index.symbol_codes,
         "link": inputs.link, "limit": limit,
@@ -653,9 +710,10 @@ def _band_long_short(
         "dollar_volume": None if fractional else inputs.dollar_volume,
         "participation_cap": None if fractional else participation_cap,
         "cap_mode": cap_mode,
-        "odd_lots": odd_lots and not fractional,
+        "odd_lots": odd_lots,  # the long leg only: no margin or SBL short in odd lots
         "blocked": blocked,
     }
+    short_common = {**common, "odd_lots": False}
     long_stop = stop_settings(data, config)
     short_stop = stop_settings(data, config, short=True)
     stop_key = (long_stop.get("stop_fraction"), long_stop.get("stop_overshoot"))
@@ -671,7 +729,7 @@ def _band_long_short(
         short_key = ("short", *base_key, None)
         if short_key not in cache:
             cache[short_key] = [simulate_band(engine.rankings(-score, groups),
-                                              move=short_moves(inputs.move), **common,
+                                              move=short_moves(inputs.move), **short_common,
                                               **short_stop)]
         fee: float | np.ndarray = profile.borrow_fee_daily
     else:
@@ -686,8 +744,8 @@ def _band_long_short(
             ranked = engine.rankings(-score, groups)
             move = short_moves(inputs.move)
             cache[short_key] = [
-                simulate_band(ranked, move=move, rng=np.random.default_rng(seed), **common,
-                              **arrays, **short_stop)
+                simulate_band(ranked, move=move, rng=np.random.default_rng(seed),
+                              **short_common, **arrays, **short_stop)
                 for seed in execution.replicate_seeds()
             ]
         fee = execution.fee_daily(data.borrow.tercile, profile.borrow_fee_annual)
@@ -718,7 +776,7 @@ def _band_long_short(
         "long_net": positions.replay(
             long_result.path,
             *with_impact(scaled_rates(long_result, *profile.long_rates(codes)), long_result,
-                         data, config)).daily,
+                         data, config, profile=profile, capital=capital)).daily,
         "short_gross": short_gross,
         "short_net": np.mean(short_nets, axis=0),
         "short_net_replicates": [float(np.mean(net)) for net in short_nets],
@@ -734,6 +792,7 @@ def _band_long_short(
         "deployed_share": float(0.5 * (long_result.deployed.mean()
                                        + np.mean([r.deployed.mean() for r in short_results]))),
         "short_deployed_share": float(np.mean([r.deployed.mean() for r in short_results])),
+        "odd_lot_share": long_result.odd_lot_buys / max(long_result.buy_attempts, 1),
         "ineligible_skipped": short_count("ineligible_skipped"),
         "borrow_failed": short_count("borrow_failed"),
         "quota_capped": short_count("quota_capped"),
@@ -836,6 +895,7 @@ def multi_day_book(
         "capped_share": sum(part["capped_buys"] for part in parts) / attempts,
         "deployed_share": float(np.mean([part["deployed_share"] for part in parts])),
         "short_deployed_share": float(np.mean([part["short_deployed_share"] for part in parts])),
+        "odd_lot_share": float(np.mean([part["odd_lot_share"] for part in parts])),
         "cap_mode": cap_mode,
         "ineligible_share": sum(part["ineligible_skipped"] for part in parts) / short_attempts,
         "borrow_failed_share": sum(part["borrow_failed"] for part in parts) / short_attempts,
@@ -1139,7 +1199,7 @@ def combined_market(
                                 for m, w in spec["weights"].items())}
         for key in ("beta_mean", "beta_abs_mean", "tx_notional_mean", "names_mean",
                     "holding_mean", "liquidity_blocked_share", "liquidity_capped_share",
-                    "deployed_share", "weekly_turnover", "hedge_notional_mean",
+                    "deployed_share", "odd_lot_share", "weekly_turnover", "hedge_notional_mean",
                     "hedge_fees_annual", "tx_fees_annual"):
             values = [books[m][scenario].info.get(key) for m in spec["weights"]]
             if all(v is not None for v in values):

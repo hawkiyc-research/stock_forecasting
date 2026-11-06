@@ -350,6 +350,7 @@ def weekly_long_book(
         execution_tags,
         fill_profile,
         load_profiles,
+        odd_lot_spec,
         stop_settings,
         with_impact,
     )
@@ -369,8 +370,9 @@ def weekly_long_book(
     blocked = disposition_mask(data, config)
     stop = stop_settings(data, config)
     book_capital = None if fractional else capital.twd * capital_share(config, data, 1)
+    odd_lots = bool(odd_lots or odd_lot_spec(config, capital) is not None) and not fractional
     key = ("weekly", capital.name, k, buffer, turnover_cap, limit, cap_mode,
-           odd_lots and not fractional, h, score_variant, blocked is not None,
+           odd_lots, h, score_variant, blocked is not None,
            stop.get("stop_fraction"), stop.get("stop_overshoot"), capital_basis(config))
     if key not in cache:
         cache[key] = simulate_weekly_band(
@@ -379,7 +381,7 @@ def weekly_long_book(
             symbols=inputs.index.symbol_codes, link=inputs.link, move=inputs.move,
             limit=limit, lot_cost=None if fractional else data.lot_cost,
             slot_capital=book_capital,
-            odd_lots=odd_lots and not fractional,
+            odd_lots=odd_lots,
             dollar_volume=None if fractional else inputs.dollar_volume,
             participation_cap=None if fractional else participation_cap, cap_mode=cap_mode,
             blocked=blocked, **stop,
@@ -392,7 +394,7 @@ def weekly_long_book(
     profile = fill_profile(profile, config, capital)
     net = positions.replay(
         band.path, *with_impact(scaled_rates(band, *profile.long_rates(codes)), band, data,
-                                config)).daily
+                                config, profile=profile, capital=capital)).daily
     statistics = positions.path_statistics(band.path)
     attempts = max(band.buy_attempts, 1)
     info = {
@@ -409,6 +411,7 @@ def weekly_long_book(
         "liquidity_blocked_share": band.liquidity_blocked / attempts,
         "capped_share": band.capped_buys / attempts,
         "deployed_share": float(band.deployed.mean()),
+        "odd_lot_share": band.odd_lot_buys / attempts,
         "cap_mode": cap_mode,
         "disposition_skipped_share": band.blocked_skipped / attempts,
         "stop_exits": float(band.stop_exits), "stop_gap_exits": float(band.stop_gap_exits),
