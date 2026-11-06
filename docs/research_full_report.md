@@ -18,7 +18,8 @@ Version: 2026-11-02, with §6.7 (execution-layer sensitivity) added on 2026-11-0
 - **樣本外驗證（2026-07-01 至 10-01，64 個交易日）**：7 格中 **6 格通過**（淨報酬 > 0 且回撤在樣本內兩倍之內）。最強的一格是 **F2 × 多空＋台指期避險**：樣本內三段 Sharpe 2.17／2.84／2.38、年化 +30.2%，樣本外 **+19.6%**、Sharpe 1.48、回撤 −8.0%（樣本內 −8.1%）。唯一不通過的是 F2 × 週頻多頭（樣本外 −13.4%），原因和第一版一樣：純多頭的回撤由市場決定，7 月那次廣度修正直接打在它身上。
 - **處置**：六個通過的格一起進入 **2026-10-23 起 12 個月的確認期**（規則事前登記、期間內不得修改）；F2 × 週頻多頭維持研究狀態。這是這個專案第一次有策略走到確認期。
 - **執行層補充敏感度（11 月 4 日，§6.7）**：加上「處置期間不新進場」與「停券起日強制回補」兩條規則後，F2 × 多空＋避險全段 Sharpe 由 2.38 降到 1.70、年化 +30.2% 降到 +22.6%，樣本外 +20.4% 不變；下降幅度超過事前預期，這套保守假設成為確認期每季讀數的參考。六格裡 F2 × S2、D0 × S2、D1-Kronos × S-A 在保守假設下仍過門檻，F2 × S1、F0 × S2、D1-Chronos × S2 未過，三格自此帶註記；散戶成本下只有 D1-Kronos × S-A 通過。影響主要來自處置規則：排序模型在兩端集中於隨後被處置的股票。
-- **成交價模型與追蹤停損（11 月 6 日，§6.8）**：使用者決定以開盤集合競價市價單下單，成交價改為「開盤價 × (1 ± 自身衝擊)」，並加 15% 追蹤停損。衝擊講的是容量：散戶 1,000 萬年化少 9 到 12 個百分點（F2 × S2 +28.6% → +17.5%），機構 3 億變成 −17.5%、10 億 −39.5%——這套挑中小型股的策略在「全部掛開盤」的方式下容量遠低於 3 億。停損對七格全部是負的、回撤沒有變淺（F2 × S2 全段 Sharpe 2.38 → 1.30），F2 × S2 帶註記「成交與停損敏感度未通過」。四條規則全開時機構分數位置 F2 × S2 全段 +10.9%／0.85、樣本外 +17.6%。都是並列讀數，確認期六格不變。
+- **成交價的修正（11 月 6 日，§6.4、§6.8）**：實際下單方式是市價單進開盤集合競價，資本情境的成交價改為「開盤價 × (1 ± 自身衝擊)」，§6.4 的資本情境主表據此修正：散戶 1,000 萬 F2 × S2 全段 +17.5%（Sharpe 1.40），機構 3 億 −17.5%、10 億 −39.5%——這套挑中小型股的策略在「全部掛開盤」下容量遠低於 3 億。分數位置列（Q → 0）不變，確認期六格不受影響。
+- **策略變體：15% 追蹤停損（§6.8）**：與無停損版本對照，七格全部較差、回撤沒有變淺（F2 × S2 分數位置全段 Sharpe 2.38 → 1.30，平均持有 36 → 20 日、換手加倍）；停損版本不進入確認期。四條規則全開時機構分數位置 F2 × S2 全段 +10.9%／0.85、樣本外 +17.6%。
 - **方式 B 與容量（11 月 6 日，§6.9）**：改為開盤後盤中分批下單，延遲成本只有約 5 個百分點（F2 × S2 分數位置 +30.2%／2.38 → +25.4%／2.01，對執行時點不敏感），但 3 億的衝擊仍讓 F2 × S2 只剩 +8.1%／0.72，10 億、30 億為負且部署率只剩一半以下。以「全段 Sharpe ≥ 1.5」定義的容量：散戶 1,000 萬可行（F2 × S2 +20.1%／1.62），3 億在整個文獻範圍的衝擊係數下都不達標；補跑 3,000 萬與 1 億後，多空＋避險的容量約 1,000 萬到 3,000 萬（3,000 萬 Sharpe 1.49）、純多頭約 1 億；這是宇宙（中小型股）與換手結構的限制，不是訊號的問題。
 
 第 4 節保留第一版的研究歷程（七個階段），第 5 節記錄這一輪新增的三個階段（資料修正與重訓、模型儲存與延伸、候選集擴大），第 6 節是全部數字，第 7 節交代樣本的使用方式與限制。
@@ -147,16 +148,20 @@ Rank IC（每日橫斷面 Spearman 的平均；短 = 1 日、持有 = 5 到 10 �
 
 #### 6.4 散戶成本、資本情境、滑價與執行層
 
-| 入選格 | 散戶全段 | 散戶樣本外 | 機構 3 億全段 | 機構 10 億全段 | 3 億樣本外 | 10 億樣本外 | 滑價 0／1／2 倍（全段） |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | +29.1%（2.26） | +24.0% | +24.7%（2.20，部署 71%） | +15.6%（2.01，50%） | +36.4% | +9.8% | +31.6%／+30.2%／+28.7% |
-| F2 × S1 | +24.2% | +19.8% | +19.7% | +17.2% | +32.9% | +9.8% | +26.9%／+25.5%／+24.1% |
-| D1-Kronos × S-A | +41.2% | +1.5% | +31.6%（回撤 −20.2%） | +29.3%（−18.2%） | +14.3% | +19.3% | +45.2%／+44.2%／+43.2% |
-| D1-Chronos × S2 | +23.3% | +3.8% | — | — | — | — | — |
-| D0 × S2 | +22.2% | +19.5% | +17.8% | +11.9% | +26.6% | +25.6% | +26.1%／+24.5%／+22.8% |
-| F0 × S2 | +19.5% | +3.1% | +17.4% | +13.7% | +8.5% | +16.4% | +23.9%／+22.3%／+20.7% |
+資本情境的成交價依實際下單方式計算（11 月 6 日修正，§6.8）：市價單進開盤集合競價，成交價 = 開盤價 × (1 ± 自身衝擊)，衝擊 ε = Y × σ_日 × √(Q ÷ (f × V))，Y 0.7、f 10%（台股無實證，括弧見 §6.8）。分數位置列是 Q → 0 的理想基準，成交價就是開盤價。年化淨報酬（Sharpe）：
 
-放空執行層（F2 × S2，全段）：借不到倍率 × 0／× 1／× 2 與召回 0.5% 的淨報酬在 +27.8% 到 +30.9% 之間，±2 個百分點內；可借券名單幾乎不改變結果，分層借券費與借不到各吃掉 1 到 3 個百分點（與第一版相同）。
+| 入選格 | 散戶 分數位置 全段 / 樣本外 | 散戶 1,000 萬 全段 / 樣本外 | 機構 3 億 全段 / 樣本外 | 機構 10 億 全段 / 樣本外 | 滑價 0／1／2 倍（分數位置，全段） |
+| --- | --- | --- | --- | --- | --- |
+| F2 × S2 | — / — | — / — | — / — | — / — | +31.6%／+30.2%／+28.7% |
+| F2 × S1 | — / — | — / — | — / — | — / — | +26.9%／+25.5%／+24.1% |
+| D1-Kronos × S-A | — / — | — / — | — / — | — / — | +45.2%／+44.2%／+43.2% |
+| D1-Chronos × S2 | — / — | — / — | — / — | — / — | — |
+| D0 × S2 | — / — | — / — | — / — | — / — | +26.1%／+24.5%／+22.8% |
+| F0 × S2 | — / — | — / — | — / — | — / — | +23.9%／+22.3%／+20.7% |
+
+讀法：衝擊只與單量相對成交量有關，毛報酬不變。宇宙裡個股 20 日成交金額中位數只有 6,900 萬，3 億在 50 檔就把 61% 的部位推到 5% 參與率上限，每邊衝擊中位 0.85%；1,000 萬每邊 0.25%。所以 1,000 萬可行，3 億與 10 億在這種下單方式下不可行（盤中分批的方式 B 與容量見 §6.9）。
+
+放空執行層（F2 × S2，分數位置，全段）：借不到倍率 × 0／× 1／× 2 與召回 0.5% 的淨報酬在 +27.8% 到 +30.9% 之間，±2 個百分點內；可借券名單幾乎不改變結果，分層借券費與借不到各吃掉 1 到 3 個百分點（與第一版相同）。
 
 #### 6.5 逐年（機構、上市上櫃各半）
 
@@ -210,120 +215,119 @@ F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半�
 - 兩條規則仍偏樂觀（D 不強制出場、不加滑價；C 比真實的最後回補日晚至少一天）；確認期六格、凍結設定與 H-L 門檻不變，是否改以 D + C 為主要執行假設由使用者決定，採用即另案登記並重新起算。
 - 第一次執行時機構的借券名單在停券期間仍可進場，被回補後次日又重新放空（強制回補 705 次對散戶 399 次）；修正為停券期間不新建空單後兩個成本檔相當，第一次執行的輸出保留作對照（協定「補充三實作修正」）。
 
-#### 6.8 成交價模型與 15% 追蹤停損（2026-11-06）
+#### 6.8 成交價的修正（開盤集合競價市價單）與策略變體：15% 追蹤停損（2026-11-06）
 
-11 月 6 日使用者決定兩件事（協定 §13.23 補充四）：實際下單方式是每天 08:30–09:00 掛市價單進開盤集合競價（方式 A），成交價模型因此是「開盤價 × (1 ± 自身衝擊)」，衝擊 ε = Y × σ_日 × √(Q ÷ (f × V))（Y 0.7、f 10%，台股沒有實證參數，括弧 Y 0.5／1.0、f 5%／20%，明寫未校準）；持有部位加 15% 追蹤停損，盤中觸發、成交價「質量點在停損價、右尾往低價」（半檔位 + 衝擊 + 超越量 c × (停損價 − 當日最低)，c 0.25，括弧 0／0.5）。分數位置那一列是 Q → 0 的理想基準，衝擊只進資本情境（機構 3 億、10 億，散戶新增 1,000 萬）。
+**成交價的修正。** 使用者確認實際下單方式是每天 08:30–09:00 掛市價單進開盤集合競價。集合競價是單一價格撮合，市價單全數以開盤價成交、沒有買賣價差，代價是自身單量把撮合價推動的幅度；歷史開盤價不含我們的單，所以回測的成交價改為「開盤價 × (1 ± ε)」，ε = Y × σ_日 × √(Q ÷ (f × V))（平方根律；Y 0.7，f = 開盤量占全日量的比例 10%；台股沒有實證參數，括弧 Y 0.5／1.0、f 5%／20% 明寫未校準；σ_日 = 20 日報酬標準差、V = 20 日成交金額中位數、Q = 該筆成交值）。這是對實際狀況的修正而不是敏感度，資本情境的主要讀數一律以修正後的成交價計算（§6.4 的主表已更新）；分數位置列因 Q → 0 不變，確認期六格與門檻不受影響。衝擊的量級：宇宙個股 20 日成交金額中位數 6,900 萬，3 億在 50 檔有 61% 的部位被 5% 參與率上限壓住，每邊衝擊中位 0.85%（p90 1.75%）；1,000 萬 0.25%。事前登記的「每邊 0.2% 到 0.45%」算錯了（漏除 f）。
 
-**衝擊的量級**：宇宙裡個股 20 日成交金額中位數只有 6,900 萬，3 億在 50 檔有 61% 的部位被 5% 參與率上限壓住，開盤量又只有全日的一成，所以每邊衝擊中位 0.85%（p90 1.75%）；1,000 萬是 0.25%。事前登記的「每邊 0.2% 到 0.45%」算錯了（漏除 f），實際大 √10 倍。
+修正後的資本情境（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價）：
 
-分數位置（機構）（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價）：
-
-| 格 | 期間 | 基準 | L 停損 | D + C | 全部（D + C + F + L） |
+| 格 | 成本檔 / 資金 | 全段 | 樣本外 | 全段 Y 0.5 / Y 1.0 | 全段 f 5% / f 20% |
 | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | P1+P2 | — | — | — | — |
-| F2 × S2 | P3 | — | — | — | — |
-| F2 × S1 | P1+P2 | — | — | — | — |
-| F2 × S1 | P3 | — | — | — | — |
-| D0 × S2 | P1+P2 | — | — | — | — |
-| D0 × S2 | P3 | — | — | — | — |
-| D1-Chronos × S2 | P1+P2 | — | — | — | — |
-| D1-Chronos × S2 | P3 | — | — | — | — |
-| F0 × S2 | P1+P2 | — | — | — | — |
-| F0 × S2 | P3 | — | — | — | — |
-| D1-Kronos × S-A | P1+P2 | — | — | — | — |
-| D1-Kronos × S-A | P3 | — | — | — | — |
-| F2 × S-A（未進確認期） | P1+P2 | — | — | — | — |
-| F2 × S-A（未進確認期） | P3 | — | — | — | — |
+| F2 × S2 | retail 10M | — | — | — / — | — / — |
+| F2 × S2 | institution 300M | — | — | — / — | — / — |
+| F2 × S2 | institution 1B | — | — | — / — | — / — |
+| F2 × S1 | retail 10M | — | — | — / — | — / — |
+| F2 × S1 | institution 300M | — | — | — / — | — / — |
+| F2 × S1 | institution 1B | — | — | — / — | — / — |
+| D0 × S2 | retail 10M | — | — | — / — | — / — |
+| D0 × S2 | institution 300M | — | — | — / — | — / — |
+| D0 × S2 | institution 1B | — | — | — / — | — / — |
+| D1-Chronos × S2 | retail 10M | — | — | — / — | — / — |
+| D1-Chronos × S2 | institution 300M | — | — | — / — | — / — |
+| D1-Chronos × S2 | institution 1B | — | — | — / — | — / — |
+| F0 × S2 | retail 10M | — | — | — / — | — / — |
+| F0 × S2 | institution 300M | — | — | — / — | — / — |
+| F0 × S2 | institution 1B | — | — | — / — | — / — |
+| D1-Kronos × S-A | retail 10M | — | — | — / — | — / — |
+| D1-Kronos × S-A | institution 300M | — | — | — / — | — / — |
+| D1-Kronos × S-A | institution 1B | — | — | — / — | — / — |
+| F2 × S-A（未進確認期） | retail 10M | — | — | — / — | — / — |
+| F2 × S-A（未進確認期） | institution 300M | — | — | — / — | — / — |
+| F2 × S-A（未進確認期） | institution 1B | — | — | — / — | — / — |
 
-分數位置（散戶）（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價）：
+讀法：毛報酬在各資本情境不變，差的全是衝擊成本。散戶 1,000 萬年化少 9 到 12 個百分點（F2 × S2 +28.6% → +17.5%、Sharpe 1.40），機構 3 億的 F2 × S2 是 −17.5%、10 億 −39.5%，所有括弧下 3 億都是負的：這套挑中小型股的策略在「全部掛開盤」下容量遠低於 3 億（盤中分批的方式 B 與容量見 §6.9）。
 
-| 格 | 期間 | 基準 | L 停損 | D + C | 全部（D + C + F + L） |
+**策略變體：15% 追蹤停損。** 停損是策略的一環，等於多出一組策略：持有部位的價值自進場後的最高點回落 15% 即盤中出場（當日最低觸及 S = 0.85 × 最高點；開盤已低於 S 則在開盤出場；跌停開盤延後），成交價「質量點在停損價、右尾往低價」= S × (1 − 半檔位 − 衝擊 − c × (S − 當日最低) ÷ S)，c 0.25（括弧 0／0.5）。兩組策略都以修正後的成交價計算（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價）：
+
+| 格 | 成本檔 / 資金 | 期間 | 無停損 | 15% 追蹤停損 | 差（百分點 / Sharpe） |
 | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | P1+P2 | — | — | — | — |
-| F2 × S2 | P3 | — | — | — | — |
-| F2 × S1 | P1+P2 | — | — | — | — |
-| F2 × S1 | P3 | — | — | — | — |
-| D0 × S2 | P1+P2 | — | — | — | — |
-| D0 × S2 | P3 | — | — | — | — |
-| D1-Chronos × S2 | P1+P2 | — | — | — | — |
-| D1-Chronos × S2 | P3 | — | — | — | — |
-| F0 × S2 | P1+P2 | — | — | — | — |
-| F0 × S2 | P3 | — | — | — | — |
-| D1-Kronos × S-A | P1+P2 | — | — | — | — |
-| D1-Kronos × S-A | P3 | — | — | — | — |
-| F2 × S-A（未進確認期） | P1+P2 | — | — | — | — |
-| F2 × S-A（未進確認期） | P3 | — | — | — | — |
+| F2 × S2 | institution fractional | P1+P2 | — | — | — |
+| F2 × S2 | institution fractional | P3 | — | — | — |
+| F2 × S2 | retail fractional | P1+P2 | — | — | — |
+| F2 × S2 | retail fractional | P3 | — | — | — |
+| F2 × S2 | retail 10M | P1+P2 | — | — | — |
+| F2 × S2 | retail 10M | P3 | — | — | — |
+| F2 × S2 | institution 300M | P1+P2 | — | — | — |
+| F2 × S2 | institution 300M | P3 | — | — | — |
+| F2 × S1 | institution fractional | P1+P2 | — | — | — |
+| F2 × S1 | institution fractional | P3 | — | — | — |
+| F2 × S1 | retail fractional | P1+P2 | — | — | — |
+| F2 × S1 | retail fractional | P3 | — | — | — |
+| F2 × S1 | retail 10M | P1+P2 | — | — | — |
+| F2 × S1 | retail 10M | P3 | — | — | — |
+| F2 × S1 | institution 300M | P1+P2 | — | — | — |
+| F2 × S1 | institution 300M | P3 | — | — | — |
+| D0 × S2 | institution fractional | P1+P2 | — | — | — |
+| D0 × S2 | institution fractional | P3 | — | — | — |
+| D0 × S2 | retail fractional | P1+P2 | — | — | — |
+| D0 × S2 | retail fractional | P3 | — | — | — |
+| D0 × S2 | retail 10M | P1+P2 | — | — | — |
+| D0 × S2 | retail 10M | P3 | — | — | — |
+| D0 × S2 | institution 300M | P1+P2 | — | — | — |
+| D0 × S2 | institution 300M | P3 | — | — | — |
+| D1-Chronos × S2 | institution fractional | P1+P2 | — | — | — |
+| D1-Chronos × S2 | institution fractional | P3 | — | — | — |
+| D1-Chronos × S2 | retail fractional | P1+P2 | — | — | — |
+| D1-Chronos × S2 | retail fractional | P3 | — | — | — |
+| D1-Chronos × S2 | retail 10M | P1+P2 | — | — | — |
+| D1-Chronos × S2 | retail 10M | P3 | — | — | — |
+| D1-Chronos × S2 | institution 300M | P1+P2 | — | — | — |
+| D1-Chronos × S2 | institution 300M | P3 | — | — | — |
+| F0 × S2 | institution fractional | P1+P2 | — | — | — |
+| F0 × S2 | institution fractional | P3 | — | — | — |
+| F0 × S2 | retail fractional | P1+P2 | — | — | — |
+| F0 × S2 | retail fractional | P3 | — | — | — |
+| F0 × S2 | retail 10M | P1+P2 | — | — | — |
+| F0 × S2 | retail 10M | P3 | — | — | — |
+| F0 × S2 | institution 300M | P1+P2 | — | — | — |
+| F0 × S2 | institution 300M | P3 | — | — | — |
+| D1-Kronos × S-A | institution fractional | P1+P2 | — | — | — |
+| D1-Kronos × S-A | institution fractional | P3 | — | — | — |
+| D1-Kronos × S-A | retail fractional | P1+P2 | — | — | — |
+| D1-Kronos × S-A | retail fractional | P3 | — | — | — |
+| D1-Kronos × S-A | retail 10M | P1+P2 | — | — | — |
+| D1-Kronos × S-A | retail 10M | P3 | — | — | — |
+| D1-Kronos × S-A | institution 300M | P1+P2 | — | — | — |
+| D1-Kronos × S-A | institution 300M | P3 | — | — | — |
+| F2 × S-A（未進確認期） | institution fractional | P1+P2 | — | — | — |
+| F2 × S-A（未進確認期） | institution fractional | P3 | — | — | — |
+| F2 × S-A（未進確認期） | retail fractional | P1+P2 | — | — | — |
+| F2 × S-A（未進確認期） | retail fractional | P3 | — | — | — |
+| F2 × S-A（未進確認期） | retail 10M | P1+P2 | — | — | — |
+| F2 × S-A（未進確認期） | retail 10M | P3 | — | — | — |
+| F2 × S-A（未進確認期） | institution 300M | P1+P2 | — | — | — |
+| F2 × S-A（未進確認期） | institution 300M | P3 | — | — | — |
 
-資本情境（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價）；基準是同一成本檔副本、無規則的參考跑：
+超越量 c 的括弧（F2 × S2，全段）：
 
-| 格 | 成本檔 / 資金 | 期間 | 基準 | F 成交模型 | L 停損 | F + L | 全部 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| F2 × S2 | retail 10M | P3 | — | — | — | — | — |
-| F2 × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| F2 × S2 | institution 300M | P3 | — | — | — | — | — |
-| F2 × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| F2 × S2 | institution 1B | P3 | — | — | — | — | — |
-| F2 × S1 | retail 10M | P1+P2 | — | — | — | — | — |
-| F2 × S1 | retail 10M | P3 | — | — | — | — | — |
-| F2 × S1 | institution 300M | P1+P2 | — | — | — | — | — |
-| F2 × S1 | institution 300M | P3 | — | — | — | — | — |
-| F2 × S1 | institution 1B | P1+P2 | — | — | — | — | — |
-| F2 × S1 | institution 1B | P3 | — | — | — | — | — |
-| D0 × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| D0 × S2 | retail 10M | P3 | — | — | — | — | — |
-| D0 × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| D0 × S2 | institution 300M | P3 | — | — | — | — | — |
-| D0 × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| D0 × S2 | institution 1B | P3 | — | — | — | — | — |
-| D1-Chronos × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| D1-Chronos × S2 | retail 10M | P3 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 300M | P3 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 1B | P3 | — | — | — | — | — |
-| F0 × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| F0 × S2 | retail 10M | P3 | — | — | — | — | — |
-| F0 × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| F0 × S2 | institution 300M | P3 | — | — | — | — | — |
-| F0 × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| F0 × S2 | institution 1B | P3 | — | — | — | — | — |
-| D1-Kronos × S-A | retail 10M | P1+P2 | — | — | — | — | — |
-| D1-Kronos × S-A | retail 10M | P3 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 300M | P1+P2 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 300M | P3 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 1B | P1+P2 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 1B | P3 | — | — | — | — | — |
-| F2 × S-A（未進確認期） | retail 10M | P1+P2 | — | — | — | — | — |
-| F2 × S-A（未進確認期） | retail 10M | P3 | — | — | — | — | — |
-| F2 × S-A（未進確認期） | institution 300M | P1+P2 | — | — | — | — | — |
-| F2 × S-A（未進確認期） | institution 300M | P3 | — | — | — | — | — |
-| F2 × S-A（未進確認期） | institution 1B | P1+P2 | — | — | — | — | — |
-| F2 × S-A（未進確認期） | institution 1B | P3 | — | — | — | — | — |
-
-括弧（F2 × S2，全段，F + L）：
-
-| F2 × S2 列 | Y 0.5 | Y 0.7（主要） | Y 1.0 | f 5% | f 20% | c 0 | c 0.5 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| institution fractional | — | — | — | — | — | — | — |
-| retail 10M | — | — | — | — | — | — | — |
-| institution 300M | — | — | — | — | — | — | — |
-| institution 1B | — | — | — | — | — | — | — |
+| F2 × S2 列 | c 0 | c 0.25（主要） | c 0.5 |
+| --- | --- | --- | --- |
+| institution fractional | — | — | — |
+| retail 10M | — | — | — |
+| institution 300M | — | — | — |
 
 怎麼讀：
 
-- **成交價模型講的是容量，不是訊號。** 毛報酬在各資本情境不變，淨報酬的差全是衝擊成本：散戶 1,000 萬年化少 9 到 12 個百分點（F2 × S2 +28.6% → +17.5%，Sharpe 1.40），機構 3 億變成 −17.5%、10 億 −39.5%，所有括弧下 3 億都是負的。方式 A 把一整天的單量擠進只有全日一成的開盤量，這套挑中小型股的排序策略在方式 A 下容量遠低於 3 億；改為盤中分批（方式 B）衝擊約降為 1 ÷ √10，但那是另一個下單方式，要另案登記。
-- **15% 追蹤停損對這套策略是負的，而且沒有讓回撤變淺。** F2 × S2 全段 Sharpe 2.38 → 1.30、年化 +30.2% → +17.0%；平均持有 36 日砍到 20 日、換手加倍、成本拖累 +4.4 個百分點；F2 × S2 在 811 個區間內上市盤中出場 1,413 次、跳空出場 438 次。超越量只占停損代價的三分之一（c = 0 時 +21.9%／1.68），其餘是換手與「停在低點後幾天就回到帶內又買回」。純多頭的回撤反而更深（D1-Kronos × S-A −23.9% → −29.2%）。只有 F2 × S2 的樣本外略升（+19.6% → +23.1%）。這和 V1 分數已對近期報酬正交化、以及 Kaminski 與 Lo（2014）在均值回歸下停損有害的結果一致。
-- **全部保守假設（處置、停券、成交、停損一起）**：機構分數位置 F2 × S2 全段 +10.9%／0.85、樣本外 +17.6%／1.30；散戶 1,000 萬 F + L 下多空格全部轉負（F2 × S2 −1.4%），只有純多頭仍為正（D1-Kronos × S-A +23.6%／1.31）。
-- 依登記的讀法，F + L 下 F2 × S2 全段 Sharpe 1.30 低於 1.5，本報告註記「成交與停損敏感度未通過」；依 11 月 4 日的裁定這些都是並列讀數，確認期六格與凍結設定不變。
+- **停損版本在七格全部較差，而且回撤沒有變淺**：F2 × S2 分數位置全段 Sharpe 2.38 → 1.30、年化 +30.2% → +17.0%；平均持有 36 日砍到 20 日、換手加倍、成本拖累 +4.4 個百分點；F2 × S2 在 811 個區間內上市盤中出場 1,413 次、跳空出場 438 次。超越量只占代價的三分之一（c = 0 時 +21.9%／1.68），其餘是換手與「停在低點後幾天就回到帶內又買回」。純多頭的回撤反而更深（D1-Kronos × S-A −23.9% → −29.2%）。只有 F2 × S2 的樣本外略升（+19.6% → +23.1%）。這和 V1 分數已對近期報酬正交化、以及 Kaminski 與 Lo（2014）在均值回歸下停損有害的結果一致。停損版本不進入確認期。
+- **全部並列規則（處置 D、停券 C 與停損一起）**：機構分數位置 F2 × S2 全段 —、樣本外 —；散戶 1,000 萬 —。D 與 C 依 11 月 4 日的裁定仍是並列讀數。
 
 #### 6.9 方式 B：開盤後盤中分批下單與容量（2026-11-06）
 
-方式 A 的結論是 3 億以上不可行，使用者因此登記方式 B（協定 §13.23 補充五）：以開盤價為到達價、單子在連續交易時段分批執行，成交價 = 開盤價 × exp(θ × 當日開盤到收盤報酬) × (1 ± 半檔位 ± Y σ_日 √(Q ÷ V))，θ 0.5（括弧 0.25／0.75）、Y 0.7（括弧 0.5／1.0）、衝擊以全日量為分母；不含停損；資本情境加入機構 30 億。分數位置列的變化就是延遲成本（θ 項 + 半檔位）。
+§6.8 修正後的方式 A 顯示 3 億以上不可行，使用者因此登記方式 B 作容量評估（協定 §13.23 補充五）：以開盤價為到達價、單子在連續交易時段分批執行，成交價 = 開盤價 × exp(θ × 當日開盤到收盤報酬) × (1 ± 半檔位 ± Y σ_日 √(Q ÷ V))，θ 0.5（括弧 0.25／0.75）、Y 0.7（括弧 0.5／1.0）、衝擊以全日量為分母；不含停損；資本情境加入機構 30 億。分數位置列的變化就是延遲成本（θ 項 + 半檔位）。
 
-分數位置（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價；基準 = 同一成本檔副本、無規則的參考跑）：
+分數位置（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價）；方式 A 的成交價是開盤價（Q → 0），方式 B 的差就是延遲成本：
 
-| 格 | 成本檔 | 期間 | 基準 | B | B + D + C |
+| 格 | 成本檔 | 期間 | 方式 A（開盤成交） | 方式 B（盤中分批） | B + D + C |
 | --- | --- | --- | --- | --- | --- |
 | F2 × S2 | institution | P1+P2 | +30.2% / 2.38 / -8.1% | +25.4% / 2.01 / -9.8% | +17.9% / 1.34 / -10.1% |
 | F2 × S2 | institution | P3 | +19.6% / 1.48 / -8.0% | +19.5% / 1.50 / -8.2% | +17.7% / 1.21 / -8.8% |
@@ -354,66 +358,66 @@ F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半�
 | F2 × S-A（未進確認期） | retail | P1+P2 | +49.7% / 2.18 / -25.3% | +44.0% / 1.95 / -25.8% | +32.5% / 1.69 / -24.8% |
 | F2 × S-A（未進確認期） | retail | P3 | -17.9% / -0.45 / -24.7% | -21.8% / -0.55 / -25.1% | -0.6% / -0.02 / -13.6% |
 
-資本情境（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價；基準 = 同一成本檔副本、無規則的參考跑）：
+資本情境（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價）；對照是 §6.8 修正後的方式 A：
 
-| 格 | 成本檔 / 資金 | 期間 | 基準 | B | B + D + C | 部署率（B） |
+| 格 | 成本檔 / 資金 | 期間 | 方式 A（修正後） | 方式 B | B + D + C | 部署率（B） |
 | --- | --- | --- | --- | --- | --- | ---: |
-| F2 × S2 | retail 10M | P1+P2 | +28.6% / 2.29 / -9.2% | +20.1% / 1.62 / -12.4% | +13.4% / 1.13 / -11.2% | 94% |
-| F2 × S2 | retail 10M | P3 | +6.8% / 0.46 / -4.5% | -1.7% / -0.12 / -5.4% | +20.9% / 1.51 / -4.0% | 94% |
-| F2 × S2 | institution 300M | P1+P2 | +24.7% / 2.20 / -6.1% | +8.1% / 0.72 / -10.3% | -1.0% / -0.09 / -14.7% | 71% |
-| F2 × S2 | institution 300M | P3 | +36.4% / 2.66 / -6.4% | +2.6% / 0.20 / -11.5% | +0.3% / 0.02 / -11.1% | 71% |
-| F2 × S2 | institution 1B | P1+P2 | +15.6% / 2.01 / -4.6% | -4.7% / -0.61 / -23.7% | -11.3% / -1.51 / -31.8% | 50% |
-| F2 × S2 | institution 1B | P3 | +9.8% / 0.92 / -3.2% | -28.5% / -2.66 / -9.1% | -17.4% / -1.50 / -8.8% | 50% |
-| F2 × S2 | institution 3B | P1+P2 | +11.7% / 1.95 / -3.5% | -15.6% / -2.57 / -40.3% | -21.6% / -3.61 / -50.5% | 36% |
-| F2 × S2 | institution 3B | P3 | +12.7% / 1.24 / -2.4% | -45.6% / -4.25 / -11.9% | -39.4% / -3.78 / -11.8% | 36% |
-| F2 × S1 | retail 10M | P1+P2 | +25.6% / 2.09 / -11.6% | +17.1% / 1.40 / -14.8% | +9.5% / 0.84 / -13.8% | 94% |
-| F2 × S1 | retail 10M | P3 | +11.4% / 0.62 / -6.4% | +2.8% / 0.15 / -6.3% | +26.3% / 1.66 / -4.1% | 94% |
-| F2 × S1 | institution 300M | P1+P2 | +19.7% / 1.81 / -8.9% | +3.0% / 0.28 / -15.7% | -6.3% / -0.57 / -24.3% | 71% |
-| F2 × S1 | institution 300M | P3 | +32.9% / 2.32 / -6.0% | -0.9% / -0.06 / -11.1% | -5.4% / -0.40 / -12.3% | 71% |
-| F2 × S1 | institution 1B | P1+P2 | +17.2% / 2.17 / -4.6% | -3.2% / -0.40 / -26.1% | -10.3% / -1.40 / -33.3% | 50% |
-| F2 × S1 | institution 1B | P3 | +9.8% / 0.81 / -2.8% | -28.5% / -2.35 / -7.8% | -15.5% / -1.19 / -7.5% | 50% |
-| F2 × S1 | institution 3B | P1+P2 | +15.9% / 2.42 / -4.1% | -11.4% / -1.72 / -38.3% | -17.1% / -2.66 / -46.1% | 36% |
-| F2 × S1 | institution 3B | P3 | +15.0% / 1.18 / -3.2% | -43.2% / -3.37 / -11.3% | -37.3% / -3.04 / -10.8% | 36% |
-| D0 × S2 | retail 10M | P1+P2 | +19.0% / 1.45 / -8.9% | +9.8% / 0.74 / -13.4% | +8.7% / 0.65 / -16.1% | 95% |
-| D0 × S2 | retail 10M | P3 | +2.5% / 0.20 / -4.0% | -5.1% / -0.41 / -5.0% | -25.1% / -1.47 / -8.5% | 95% |
-| D0 × S2 | institution 300M | P1+P2 | +17.8% / 1.58 / -6.4% | -1.1% / -0.10 / -15.4% | -4.6% / -0.41 / -19.7% | 68% |
-| D0 × S2 | institution 300M | P3 | +26.6% / 2.05 / -4.5% | +2.7% / 0.21 / -7.5% | -12.9% / -1.14 / -8.6% | 68% |
-| D0 × S2 | institution 1B | P1+P2 | +11.9% / 1.50 / -6.5% | -11.8% / -1.48 / -35.3% | -13.4% / -1.71 / -38.3% | 49% |
-| D0 × S2 | institution 1B | P3 | +25.6% / 2.50 / -2.7% | -14.6% / -1.32 / -8.3% | -19.4% / -1.62 / -8.9% | 49% |
-| D0 × S2 | institution 3B | P1+P2 | +8.7% / 1.41 / -4.5% | -24.6% / -3.94 / -55.8% | -29.6% / -5.13 / -61.9% | 36% |
-| D0 × S2 | institution 3B | P3 | +9.0% / 0.90 / -3.6% | -42.6% / -3.86 / -12.2% | -34.7% / -3.35 / -10.3% | 36% |
-| D1-Chronos × S2 | retail 10M | P1+P2 | +19.6% / 1.51 / -9.5% | +10.1% / 0.78 / -12.8% | +7.3% / 0.59 / -13.0% | 95% |
-| D1-Chronos × S2 | retail 10M | P3 | -8.5% / -0.55 / -5.3% | -13.5% / -0.88 / -5.7% | -24.3% / -1.31 / -8.1% | 95% |
-| D1-Chronos × S2 | institution 300M | P1+P2 | +17.6% / 1.52 / -6.8% | -1.4% / -0.12 / -22.2% | -4.2% / -0.37 / -25.0% | 69% |
-| D1-Chronos × S2 | institution 300M | P3 | +6.2% / 0.48 / -6.9% | -14.4% / -1.09 / -10.3% | -23.1% / -1.88 / -11.3% | 69% |
-| D1-Chronos × S2 | institution 1B | P1+P2 | +12.6% / 1.56 / -4.7% | -10.0% / -1.22 / -34.3% | -13.7% / -1.71 / -38.9% | 49% |
-| D1-Chronos × S2 | institution 1B | P3 | +11.0% / 1.04 / -4.9% | -20.1% / -1.76 / -9.6% | -25.7% / -2.18 / -9.5% | 49% |
-| D1-Chronos × S2 | institution 3B | P1+P2 | +8.0% / 1.35 / -3.4% | -23.9% / -3.95 / -55.5% | -29.3% / -4.47 / -61.4% | 36% |
-| D1-Chronos × S2 | institution 3B | P3 | +18.1% / 1.79 / -3.6% | -29.1% / -2.56 / -10.0% | -31.9% / -2.54 / -10.5% | 36% |
-| F0 × S2 | retail 10M | P1+P2 | +22.3% / 1.67 / -7.7% | +13.2% / 0.99 / -12.1% | +8.8% / 0.66 / -12.4% | 93% |
-| F0 × S2 | retail 10M | P3 | +6.9% / 0.51 / -5.5% | -2.5% / -0.19 / -6.8% | -31.8% / -1.69 / -11.4% | 93% |
-| F0 × S2 | institution 300M | P1+P2 | +17.4% / 1.57 / -10.0% | -1.0% / -0.09 / -16.3% | -5.6% / -0.50 / -19.7% | 68% |
-| F0 × S2 | institution 300M | P3 | +8.5% / 0.80 / -6.2% | -22.3% / -2.02 / -10.3% | -2.5% / -0.20 / -8.2% | 68% |
-| F0 × S2 | institution 1B | P1+P2 | +13.7% / 1.77 / -6.8% | -9.6% / -1.25 / -33.2% | -15.7% / -2.15 / -40.3% | 48% |
-| F0 × S2 | institution 1B | P3 | +16.4% / 1.57 / -2.7% | -23.9% / -2.14 / -8.8% | -37.8% / -4.38 / -9.8% | 48% |
-| F0 × S2 | institution 3B | P1+P2 | +6.9% / 1.20 / -5.1% | -25.2% / -4.29 / -56.1% | -29.8% / -5.38 / -61.8% | 36% |
-| F0 × S2 | institution 3B | P3 | +8.8% / 1.12 / -2.3% | -50.4% / -5.48 / -13.1% | -49.4% / -6.15 / -12.8% | 36% |
-| D1-Kronos × S-A | retail 10M | P1+P2 | +39.8% / 1.98 / -24.4% | +32.7% / 1.63 / -27.9% | +28.9% / 1.56 / -29.4% | 98% |
-| D1-Kronos × S-A | retail 10M | P3 | +2.3% / 0.08 / -15.4% | -2.8% / -0.09 / -15.8% | -2.5% / -0.09 / -14.9% | 98% |
-| D1-Kronos × S-A | institution 300M | P1+P2 | +31.6% / 2.00 / -20.2% | +19.7% / 1.26 / -26.0% | +15.8% / 1.11 / -25.6% | 62% |
-| D1-Kronos × S-A | institution 300M | P3 | +14.3% / 0.42 / -16.8% | +1.9% / 0.06 / -17.8% | +1.6% / 0.06 / -15.2% | 62% |
-| D1-Kronos × S-A | institution 1B | P1+P2 | +29.3% / 2.04 / -18.2% | +13.9% / 0.96 / -27.5% | +10.8% / 0.81 / -26.3% | 50% |
-| D1-Kronos × S-A | institution 1B | P3 | +19.3% / 0.71 / -14.1% | -0.1% / -0.00 / -15.8% | -1.4% / -0.05 / -17.5% | 50% |
-| D1-Kronos × S-A | institution 3B | P1+P2 | +21.9% / 1.76 / -14.5% | -2.0% / -0.16 / -36.7% | -3.8% / -0.31 / -34.8% | 39% |
-| D1-Kronos × S-A | institution 3B | P3 | +14.1% / 0.54 / -14.2% | -8.3% / -0.30 / -16.7% | -7.2% / -0.26 / -16.3% | 39% |
-| F2 × S-A（未進確認期） | retail 10M | P1+P2 | +45.0% / 2.19 / -22.3% | +36.9% / 1.81 / -23.8% | +27.8% / 1.49 / -26.2% | 98% |
-| F2 × S-A（未進確認期） | retail 10M | P3 | -23.5% / -0.64 / -25.1% | -39.0% / -1.07 / -25.9% | +10.1% / 0.36 / -14.8% | 98% |
-| F2 × S-A（未進確認期） | institution 300M | P1+P2 | +41.1% / 2.45 / -14.9% | +25.3% / 1.54 / -16.7% | +18.5% / 1.28 / -17.9% | 59% |
-| F2 × S-A（未進確認期） | institution 300M | P3 | -0.4% / -0.01 / -20.3% | -25.8% / -0.78 / -21.1% | -0.5% / -0.02 / -14.2% | 59% |
-| F2 × S-A（未進確認期） | institution 1B | P1+P2 | +34.3% / 2.13 / -16.5% | +15.4% / 0.97 / -23.9% | +13.3% / 0.92 / -23.1% | 51% |
-| F2 × S-A（未進確認期） | institution 1B | P3 | -3.1% / -0.10 / -20.4% | -34.1% / -1.05 / -21.6% | -28.4% / -1.06 / -17.8% | 51% |
-| F2 × S-A（未進確認期） | institution 3B | P1+P2 | +26.3% / 1.98 / -15.0% | +0.8% / 0.06 / -37.7% | -0.5% / -0.04 / -35.7% | 40% |
-| F2 × S-A（未進確認期） | institution 3B | P3 | +2.0% / 0.08 / -15.9% | -37.4% / -1.38 / -18.5% | -24.6% / -0.97 / -15.5% | 40% |
+| F2 × S2 | retail 10M | P1+P2 | — | +20.1% / 1.62 / -12.4% | +13.4% / 1.13 / -11.2% | 94% |
+| F2 × S2 | retail 10M | P3 | — | -1.7% / -0.12 / -5.4% | +20.9% / 1.51 / -4.0% | 94% |
+| F2 × S2 | institution 300M | P1+P2 | — | +8.1% / 0.72 / -10.3% | -1.0% / -0.09 / -14.7% | 71% |
+| F2 × S2 | institution 300M | P3 | — | +2.6% / 0.20 / -11.5% | +0.3% / 0.02 / -11.1% | 71% |
+| F2 × S2 | institution 1B | P1+P2 | — | -4.7% / -0.61 / -23.7% | -11.3% / -1.51 / -31.8% | 50% |
+| F2 × S2 | institution 1B | P3 | — | -28.5% / -2.66 / -9.1% | -17.4% / -1.50 / -8.8% | 50% |
+| F2 × S2 | institution 3B | P1+P2 | — | -15.6% / -2.57 / -40.3% | -21.6% / -3.61 / -50.5% | 36% |
+| F2 × S2 | institution 3B | P3 | — | -45.6% / -4.25 / -11.9% | -39.4% / -3.78 / -11.8% | 36% |
+| F2 × S1 | retail 10M | P1+P2 | — | +17.1% / 1.40 / -14.8% | +9.5% / 0.84 / -13.8% | 94% |
+| F2 × S1 | retail 10M | P3 | — | +2.8% / 0.15 / -6.3% | +26.3% / 1.66 / -4.1% | 94% |
+| F2 × S1 | institution 300M | P1+P2 | — | +3.0% / 0.28 / -15.7% | -6.3% / -0.57 / -24.3% | 71% |
+| F2 × S1 | institution 300M | P3 | — | -0.9% / -0.06 / -11.1% | -5.4% / -0.40 / -12.3% | 71% |
+| F2 × S1 | institution 1B | P1+P2 | — | -3.2% / -0.40 / -26.1% | -10.3% / -1.40 / -33.3% | 50% |
+| F2 × S1 | institution 1B | P3 | — | -28.5% / -2.35 / -7.8% | -15.5% / -1.19 / -7.5% | 50% |
+| F2 × S1 | institution 3B | P1+P2 | — | -11.4% / -1.72 / -38.3% | -17.1% / -2.66 / -46.1% | 36% |
+| F2 × S1 | institution 3B | P3 | — | -43.2% / -3.37 / -11.3% | -37.3% / -3.04 / -10.8% | 36% |
+| D0 × S2 | retail 10M | P1+P2 | — | +9.8% / 0.74 / -13.4% | +8.7% / 0.65 / -16.1% | 95% |
+| D0 × S2 | retail 10M | P3 | — | -5.1% / -0.41 / -5.0% | -25.1% / -1.47 / -8.5% | 95% |
+| D0 × S2 | institution 300M | P1+P2 | — | -1.1% / -0.10 / -15.4% | -4.6% / -0.41 / -19.7% | 68% |
+| D0 × S2 | institution 300M | P3 | — | +2.7% / 0.21 / -7.5% | -12.9% / -1.14 / -8.6% | 68% |
+| D0 × S2 | institution 1B | P1+P2 | — | -11.8% / -1.48 / -35.3% | -13.4% / -1.71 / -38.3% | 49% |
+| D0 × S2 | institution 1B | P3 | — | -14.6% / -1.32 / -8.3% | -19.4% / -1.62 / -8.9% | 49% |
+| D0 × S2 | institution 3B | P1+P2 | — | -24.6% / -3.94 / -55.8% | -29.6% / -5.13 / -61.9% | 36% |
+| D0 × S2 | institution 3B | P3 | — | -42.6% / -3.86 / -12.2% | -34.7% / -3.35 / -10.3% | 36% |
+| D1-Chronos × S2 | retail 10M | P1+P2 | — | +10.1% / 0.78 / -12.8% | +7.3% / 0.59 / -13.0% | 95% |
+| D1-Chronos × S2 | retail 10M | P3 | — | -13.5% / -0.88 / -5.7% | -24.3% / -1.31 / -8.1% | 95% |
+| D1-Chronos × S2 | institution 300M | P1+P2 | — | -1.4% / -0.12 / -22.2% | -4.2% / -0.37 / -25.0% | 69% |
+| D1-Chronos × S2 | institution 300M | P3 | — | -14.4% / -1.09 / -10.3% | -23.1% / -1.88 / -11.3% | 69% |
+| D1-Chronos × S2 | institution 1B | P1+P2 | — | -10.0% / -1.22 / -34.3% | -13.7% / -1.71 / -38.9% | 49% |
+| D1-Chronos × S2 | institution 1B | P3 | — | -20.1% / -1.76 / -9.6% | -25.7% / -2.18 / -9.5% | 49% |
+| D1-Chronos × S2 | institution 3B | P1+P2 | — | -23.9% / -3.95 / -55.5% | -29.3% / -4.47 / -61.4% | 36% |
+| D1-Chronos × S2 | institution 3B | P3 | — | -29.1% / -2.56 / -10.0% | -31.9% / -2.54 / -10.5% | 36% |
+| F0 × S2 | retail 10M | P1+P2 | — | +13.2% / 0.99 / -12.1% | +8.8% / 0.66 / -12.4% | 93% |
+| F0 × S2 | retail 10M | P3 | — | -2.5% / -0.19 / -6.8% | -31.8% / -1.69 / -11.4% | 93% |
+| F0 × S2 | institution 300M | P1+P2 | — | -1.0% / -0.09 / -16.3% | -5.6% / -0.50 / -19.7% | 68% |
+| F0 × S2 | institution 300M | P3 | — | -22.3% / -2.02 / -10.3% | -2.5% / -0.20 / -8.2% | 68% |
+| F0 × S2 | institution 1B | P1+P2 | — | -9.6% / -1.25 / -33.2% | -15.7% / -2.15 / -40.3% | 48% |
+| F0 × S2 | institution 1B | P3 | — | -23.9% / -2.14 / -8.8% | -37.8% / -4.38 / -9.8% | 48% |
+| F0 × S2 | institution 3B | P1+P2 | — | -25.2% / -4.29 / -56.1% | -29.8% / -5.38 / -61.8% | 36% |
+| F0 × S2 | institution 3B | P3 | — | -50.4% / -5.48 / -13.1% | -49.4% / -6.15 / -12.8% | 36% |
+| D1-Kronos × S-A | retail 10M | P1+P2 | — | +32.7% / 1.63 / -27.9% | +28.9% / 1.56 / -29.4% | 98% |
+| D1-Kronos × S-A | retail 10M | P3 | — | -2.8% / -0.09 / -15.8% | -2.5% / -0.09 / -14.9% | 98% |
+| D1-Kronos × S-A | institution 300M | P1+P2 | — | +19.7% / 1.26 / -26.0% | +15.8% / 1.11 / -25.6% | 62% |
+| D1-Kronos × S-A | institution 300M | P3 | — | +1.9% / 0.06 / -17.8% | +1.6% / 0.06 / -15.2% | 62% |
+| D1-Kronos × S-A | institution 1B | P1+P2 | — | +13.9% / 0.96 / -27.5% | +10.8% / 0.81 / -26.3% | 50% |
+| D1-Kronos × S-A | institution 1B | P3 | — | -0.1% / -0.00 / -15.8% | -1.4% / -0.05 / -17.5% | 50% |
+| D1-Kronos × S-A | institution 3B | P1+P2 | — | -2.0% / -0.16 / -36.7% | -3.8% / -0.31 / -34.8% | 39% |
+| D1-Kronos × S-A | institution 3B | P3 | — | -8.3% / -0.30 / -16.7% | -7.2% / -0.26 / -16.3% | 39% |
+| F2 × S-A（未進確認期） | retail 10M | P1+P2 | — | +36.9% / 1.81 / -23.8% | +27.8% / 1.49 / -26.2% | 98% |
+| F2 × S-A（未進確認期） | retail 10M | P3 | — | -39.0% / -1.07 / -25.9% | +10.1% / 0.36 / -14.8% | 98% |
+| F2 × S-A（未進確認期） | institution 300M | P1+P2 | — | +25.3% / 1.54 / -16.7% | +18.5% / 1.28 / -17.9% | 59% |
+| F2 × S-A（未進確認期） | institution 300M | P3 | — | -25.8% / -0.78 / -21.1% | -0.5% / -0.02 / -14.2% | 59% |
+| F2 × S-A（未進確認期） | institution 1B | P1+P2 | — | +15.4% / 0.97 / -23.9% | +13.3% / 0.92 / -23.1% | 51% |
+| F2 × S-A（未進確認期） | institution 1B | P3 | — | -34.1% / -1.05 / -21.6% | -28.4% / -1.06 / -17.8% | 51% |
+| F2 × S-A（未進確認期） | institution 3B | P1+P2 | — | +0.8% / 0.06 / -37.7% | -0.5% / -0.04 / -35.7% | 40% |
+| F2 × S-A（未進確認期） | institution 3B | P3 | — | -37.4% / -1.38 / -18.5% | -24.6% / -0.97 / -15.5% | 40% |
 
 括弧（F2 × S2，全段，方式 B）：
 
@@ -440,9 +444,9 @@ F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半�
 怎麼讀：
 
 - **延遲成本小而穩定**：F2 × S2 分數位置 +30.2%／2.38 → +25.4%／2.01，約 5 個百分點、Sharpe −0.4，θ 從 0.25 到 0.75 只差 1.5 個百分點。訊號不是在開盤瞬間實現的，盤中分批不會把它吃掉。「方式 B 延遲成本敏感度」通過（2.01 ≥ 1.5）。
-- **3 億仍不達標**：方式 B 把 3 億從方式 A 的 −17.5% 拉回 +8.1%／0.72，成本拖累仍比基準多 16.7 個百分點；10 億 −4.7%、30 億 −15.6%，而且部署率只剩 50% 與 36%。原因是結構性的：中小型股宇宙（20 日成交金額中位數 6,900 萬）、兩腿各 50 檔、日均換手 2.8%，3 億時每檔 600 萬就是 ADV 的 5%，衝擊 ∝ √(Q ÷ V)。整個文獻範圍的 Y（0.5 到 1.0）都讓 3 億不達標；要在 3 億達標只能擴大 K、降低換手或改宇宙，那是新策略。
+- **3 億仍不達標**：方式 B 把 3 億從方式 A 的 −17.5% 拉回 +8.1%／0.72，成本拖累 24.3%（無衝擊的參考值 7.6%）；10 億 −4.7%、30 億 −15.6%，而且部署率只剩 50% 與 36%。原因是結構性的：中小型股宇宙（20 日成交金額中位數 6,900 萬）、兩腿各 50 檔、日均換手 2.8%，3 億時每檔 600 萬就是 ADV 的 5%，衝擊 ∝ √(Q ÷ V)。整個文獻範圍的 Y（0.5 到 1.0）都讓 3 億不達標；要在 3 億達標只能擴大 K、降低換手或改宇宙，那是新策略。
 - **散戶 1,000 萬可行**：F2 × S2 +20.1%／1.62、F2 × S-A +36.9%／1.81、D1-Kronos × S-A +32.7%／1.63 達標；三個 transformer 與 F0 的多空格不達標。
-- 補跑的資本情境（機構，全段，基準 → B）：3,000 萬 F2 × S2 +30.1%／2.25 → **+19.9%／1.49**（門檻邊緣）、1 億 +27.2%／2.08 → +13.6%／1.04；純多頭 1 億 D1-Kronos × S-A +25.7%／1.51、F2 × S-A +31.1%／1.66 仍達標。**容量結論：多空＋避險約 1,000 萬到 3,000 萬，純多頭約 1 億。**
+- 補跑的資本情境（機構，全段，無衝擊參考 → B）：3,000 萬 F2 × S2 +30.1%／2.25 → **+19.9%／1.49**（門檻邊緣）、1 億 +27.2%／2.08 → +13.6%／1.04；純多頭 1 億 D1-Kronos × S-A +25.7%／1.51、F2 × S-A +31.1%／1.66 仍達標。**容量結論：多空＋避險約 1,000 萬到 3,000 萬，純多頭約 1 億。**
 - 全部並列規則（B + D + C）：機構分數位置 F2 × S2 全段 +17.9%／1.34、樣本外 +17.7%／1.21。依 11 月 4 日的裁定，這些都是並列讀數，確認期六格不變。
 
 ### 7. 樣本的使用方式與資料限制
@@ -470,7 +474,7 @@ F2 − F0 的每日淨報酬配對差（全段年化，機構、兩市場各半�
 (b) 樣本內後段在第一版設計正交化時已看過；本輪的候選集與門檻是看過第一版樣本外之後定的；本輪的樣本外只對重訓後的分數乾淨。
 (c) 樣本外只有 64 個交易日、一種市場狀態，區間寬 ±50 到 ±120 個百分點；最後 14 個交易日沒有標籤就沒有預測。
 (d) 籌碼特徵的公布時刻用保守規則（次日開盤前）；外資持股比例的 z 分數欄因資料來源問題恆為缺值。
-(e) 放空腿的借不到機率、召回機率與借券費分層是參數假設；主表沒有處置股與停券強制回補的約束，§6.7 的兩條規則是 11 月 4 日補登記的敏感度，而且仍偏樂觀（處置期間不強制出場、不加分盤撮合的滑價；強制回補比真實的最後回補日晚至少一天；機構的停券回補是上界）。§6.8 的衝擊係數 Y 與開盤量占比 f、停損超越量 c 都沒有台股實證，只有括弧；成交價模型只在資本情境列生效，分數位置列仍是開盤價。§6.9 的容量結論取決於衝擊係數 Y 與 5% 參與率上限兩個未經台股校準的假設，以及 θ 是日內均勻執行的假設。
+(e) 放空腿的借不到機率、召回機率與借券費分層是參數假設；主表沒有處置股與停券強制回補的約束，§6.7 的兩條規則是 11 月 4 日補登記的敏感度，而且仍偏樂觀（處置期間不強制出場、不加分盤撮合的滑價；強制回補比真實的最後回補日晚至少一天；機構的停券回補是上界）。資本情境成交價修正（§6.4、§6.8）所用的衝擊係數 Y 與開盤量占比 f 沒有台股實證，只有括弧，停損變體的超越量 c 亦同；分數位置列因 Q → 0 仍是開盤價。§6.9 的容量結論取決於衝擊係數 Y 與 5% 參與率上限兩個未經台股校準的假設，以及 θ 是日內均勻執行的假設。
 (f) 三個 transformer 的結果不保證逐次重現（bf16、不同 GPU）；本輪重訓的三折與舊 launch 不同，報告用的是延伸後的正本。
 (g) 樣本外視窗含 2026 年 7 月修正，不含 2022 年空頭；分點與集保資料未購買。
 
@@ -543,7 +547,8 @@ The outcome (institution primary cost, TWSE and TPEX half each, fractional capit
 - **Out-of-sample verification (2026-07-01 to 10-01, 64 sessions)**: **6 of 7 pass** (net return > 0 and drawdown within twice the in-sample drawdown). The strongest cell is **F2 × long-short + TX hedge**: in-sample Sharpe 2.17 / 2.84 / 2.38 and +30.2% a year, out of sample **+19.6%**, Sharpe 1.48, drawdown −8.0% (in-sample −8.1%). The one failure is F2 × weekly long (−13.4% out of sample), for the reason seen in the first edition: a long-only book's drawdown is set by the market, and the July breadth correction landed on it.
 - **Disposition**: the six passing cells enter a **12-month confirmation period from 2026-10-23** (rules registered in advance and frozen); F2 × weekly long stays in research. This is the first time a strategy in this project has reached a confirmation period.
 - **Execution-layer sensitivity added on 4 November (§6.7)**: with the rules "no new entry during a disposition period" and "forced cover when short selling is suspended", F2 × long-short + hedge falls from Sharpe 2.38 to 1.70 and from +30.2% to +22.6% a year over the whole period while its out-of-sample +20.4% is unchanged; the fall exceeds the pre-registered expectation, so this conservative setting becomes the reference for the quarterly confirmation readings. Of the six cells, F2 × S2, D0 × S2 and D1-Kronos × S-A still clear the thresholds under it, F2 × S1, F0 × S2 and D1-Chronos × S2 do not and now carry a note; under retail costs only D1-Kronos × S-A passes. The effect comes mainly from the disposition rule: the ranking models concentrate both ends of the ranking in stocks that are subsequently placed under disposition.
-- **Fill model and trailing stop (6 November, §6.8)**: the user chose market orders in the opening call auction, so the fill becomes "open × (1 ± own impact)", and added a 15% trailing stop. The impact is a capacity story: retail NT$10M loses 9 to 12 points a year (F2 × S2 +28.6% → +17.5%), institution NT$300M turns to −17.5% and NT$1B to −39.5% — under "everything at the open" this small-and-mid-cap strategy's capacity is far below NT$300M. The stop is negative for all seven cells and makes no drawdown shallower (F2 × S2 whole-period Sharpe 2.38 → 1.30), so F2 × S2 carries the note "fill-and-stop sensitivity not passed". With all four rules on, institution fractional F2 × S2 is +10.9% / 0.85 over the whole period and +17.6% out of sample. All parallel readings; the six confirmation-period cells are unchanged.
+- **The fill correction (6 November, §6.4, §6.8)**: orders are market orders in the opening call auction, so capital-scenario fills become "open × (1 ± own impact)" and the capital table in §6.4 is corrected accordingly: retail NT$10M F2 × S2 whole period +17.5% (Sharpe 1.40), institution NT$300M −17.5% and NT$1B −39.5% — under "everything at the open" this small-and-mid-cap strategy's capacity is far below NT$300M. The fractional row (Q → 0) is unchanged, so the six confirmation-period cells are unaffected.
+- **Strategy variant: the 15% trailing stop (§6.8)**: against the no-stop version it is worse in all seven cells and makes no drawdown shallower (F2 × S2 fractional whole-period Sharpe 2.38 → 1.30, mean holding 36 → 20 sessions with turnover doubled); the stop version does not enter the confirmation period. With all four rules on, institution fractional F2 × S2 is +10.9% / 0.85 over the whole period and +17.6% out of sample.
 - **Policy B and capacity (6 November, §6.9)**: with orders worked through the session after the open, the delay cost is only about 5 points (F2 × S2 fractional +30.2% / 2.38 → +25.4% / 2.01, insensitive to the execution time), but the impact at NT$300M still leaves F2 × S2 at +8.1% / 0.72, and NT$1B and NT$3B are negative with deployment below half. Capacity defined as "whole-period Sharpe ≥ 1.5": retail NT$10M works (F2 × S2 +20.1% / 1.62), NT$300M falls short under the whole literature range of the impact coefficient; with the added NT$30M and NT$100M rows, the capacity is about NT$10M to NT$30M for long-short + hedge (Sharpe 1.49 at NT$30M) and about NT$100M for long-only; a limit of the small-and-mid-cap universe and the turnover structure, not of the signal.
 
 Section 4 keeps the first edition's research history (seven stages) in summary, section 5 records the three stages added in this round (data fix and retrain, model saving and extension, the wider candidate set), section 6 holds all the numbers and section 7 states how the samples were used and the limitations.
@@ -672,16 +677,20 @@ How to read it: with 64 intervals the intervals are ±50 to ±120 points wide, s
 
 #### 6.4 Retail costs, capital, slippage and the execution layer
 
-| Shortlisted cell | Retail whole | Retail OOS | Institution 300M whole | Institution 1B whole | 300M OOS | 1B OOS | Slippage × 0 / × 1 / × 2 (whole) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | +29.1% (2.26) | +24.0% | +24.7% (2.20, deployed 71%) | +15.6% (2.01, 50%) | +36.4% | +9.8% | +31.6% / +30.2% / +28.7% |
-| F2 × S1 | +24.2% | +19.8% | +19.7% | +17.2% | +32.9% | +9.8% | +26.9% / +25.5% / +24.1% |
-| D1-Kronos × S-A | +41.2% | +1.5% | +31.6% (drawdown −20.2%) | +29.3% (−18.2%) | +14.3% | +19.3% | +45.2% / +44.2% / +43.2% |
-| D1-Chronos × S2 | +23.3% | +3.8% | — | — | — | — | — |
-| D0 × S2 | +22.2% | +19.5% | +17.8% | +11.9% | +26.6% | +25.6% | +26.1% / +24.5% / +22.8% |
-| F0 × S2 | +19.5% | +3.1% | +17.4% | +13.7% | +8.5% | +16.4% | +23.9% / +22.3% / +20.7% |
+Capital-scenario fills follow the actual order type (corrected on 6 November, §6.8): market orders in the opening call auction, fill = open × (1 ± own impact), ε = Y × σ_daily × √(Q ÷ (f × V)), Y 0.7, f 10% (no Taiwan evidence, brackets in §6.8). The fractional row is the Q → 0 ideal reference whose fill is the open. Annualized net return (Sharpe):
 
-Short execution layer (F2 × S2, whole period): with borrow failure × 0 / × 1 / × 2 and 0.5% recalls the net return stays between +27.8% and +30.9%, within ±2 points; the borrowable list itself hardly moves the result, and the tiered borrow fee and the failures each cost 1 to 3 points (as in the first edition).
+| Shortlisted cell | Retail fractional whole / OOS | Retail NT$10M whole / OOS | Institution NT$300M whole / OOS | Institution NT$1B whole / OOS | Slippage × 0 / × 1 / × 2 (fractional, whole) |
+| --- | --- | --- | --- | --- | --- |
+| F2 × S2 | — / — | — / — | — / — | — / — | +31.6% / +30.2% / +28.7% |
+| F2 × S1 | — / — | — / — | — / — | — / — | +26.9% / +25.5% / +24.1% |
+| D1-Kronos × S-A | — / — | — / — | — / — | — / — | +45.2% / +44.2% / +43.2% |
+| D1-Chronos × S2 | — / — | — / — | — / — | — / — | — |
+| D0 × S2 | — / — | — / — | — / — | — / — | +26.1% / +24.5% / +22.8% |
+| F0 × S2 | — / — | — / — | — / — | — / — | +23.9% / +22.3% / +20.7% |
+
+Reading: impact depends only on order size relative to traded value, gross returns are unchanged. The universe's median 20-session traded value is only NT$69M, so NT$300M across 50 names pushes 61% of positions to the 5% participation cap with a median impact of 0.85% per side; NT$10M pays 0.25% per side. NT$10M is therefore feasible, NT$300M and NT$1B are not under this order type (policy B, orders worked through the session, and capacity are in §6.9).
+
+Short execution layer (F2 × S2, fractional, whole period): with borrow failure × 0 / × 1 / × 2 and 0.5% recalls the net return stays between +27.8% and +30.9%, within ±2 points; the borrowable list itself hardly moves the result, and the tiered borrow fee and the failures each cost 1 to 3 points (as in the first edition).
 
 #### 6.5 By year (institution, TWSE and TPEX half each)
 
@@ -735,120 +744,119 @@ How to read it:
 - Both rules remain optimistic (D forces no exit and adds no slippage; C is at least one day later than the real last cover day); the six confirmation-period cells, the frozen configuration and the H-L limits are unchanged, and whether D + C becomes the primary execution assumption is the user's decision, which would mean a separate registration with a fresh clock.
 - In the first run the institution SBL list still admitted suspended names, so a covered position was re-shorted the next day (705 forced covers against 399 for retail); after the correction (no new short during a suspension) the two profiles agree, and the first run's outputs are kept for comparison (protocol "supplement 3 implementation correction").
 
-#### 6.8 The fill model and the 15% trailing stop (2026-11-06)
+#### 6.8 The fill correction (market orders in the opening call) and a strategy variant: the 15% trailing stop (2026-11-06)
 
-On 6 November the user decided two things (protocol §13.23 supplement 4): orders are market orders placed 08:30–09:00 into the opening call auction (policy A), so the fill model is "open × (1 ± own impact)" with ε = Y × σ_daily × √(Q ÷ (f × V)) (Y 0.7, f 10%; no Taiwan evidence exists for either, brackets Y 0.5 / 1.0 and f 5% / 20%, labelled uncalibrated); held positions get a 15% trailing stop, triggered intraday, with a fill "mass at the stop price, right tail toward the low" (half a tick + impact + overshoot c × (stop − today's low), c 0.25, brackets 0 / 0.5). The fractional row is the Q → 0 ideal reference; impact enters the capital scenarios only (institution NT$300M and 1B, retail NT$10M added).
+**The fill correction.** The user confirmed that orders are market orders placed 08:30–09:00 into the opening call auction. The call is a single-price match, market orders fill in full at the open and there is no bid-ask spread; the cost is how far one's own order moves the matched price, and the historical open excludes our order, so the backtest's fill becomes "open × (1 ± ε)" with ε = Y × σ_daily × √(Q ÷ (f × V)) (the square-root law; Y 0.7, f = the opening auction's share of daily volume 10%; no Taiwan evidence exists for either, brackets Y 0.5 / 1.0 and f 5% / 20% labelled uncalibrated; σ_daily = 20-session return standard deviation, V = 20-session median traded value, Q = the fill's value). This is a correction toward reality, not a sensitivity: the capital-scenario primary readings are always computed with the corrected fill (the main table in §6.4 is updated); the fractional row is unchanged because Q → 0, so the six confirmation-period cells and the thresholds are unaffected. Magnitude: the universe's median 20-session traded value is NT$69M, at NT$300M across 50 names 61% of positions sit at the 5% participation cap, and the median impact is 0.85% per side (p90 1.75%); NT$10M pays 0.25%. The pre-registered "0.2% to 0.45% per side" was an arithmetic slip (f not divided out).
 
-**Impact magnitude**: the universe's median 20-session traded value is only NT$69M; at NT$300M across 50 names 61% of positions sit at the 5% participation cap and the opening auction holds a tenth of the day's volume, so the median impact is 0.85% per side (p90 1.75%); NT$10M gives 0.25%. The pre-registered "0.2% to 0.45% per side" was an arithmetic slip (f was not divided out); the real magnitude is √10 larger.
+Corrected capital scenarios (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage):
 
-Fractional (institution) (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage):
-
-| Cell | Period | Baseline | L stop | D + C | All (D + C + F + L) |
+| Cell | Profile / capital | Whole | OOS | Whole Y 0.5 / Y 1.0 | Whole f 5% / f 20% |
 | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | P1+P2 | — | — | — | — |
-| F2 × S2 | P3 | — | — | — | — |
-| F2 × S1 | P1+P2 | — | — | — | — |
-| F2 × S1 | P3 | — | — | — | — |
-| D0 × S2 | P1+P2 | — | — | — | — |
-| D0 × S2 | P3 | — | — | — | — |
-| D1-Chronos × S2 | P1+P2 | — | — | — | — |
-| D1-Chronos × S2 | P3 | — | — | — | — |
-| F0 × S2 | P1+P2 | — | — | — | — |
-| F0 × S2 | P3 | — | — | — | — |
-| D1-Kronos × S-A | P1+P2 | — | — | — | — |
-| D1-Kronos × S-A | P3 | — | — | — | — |
-| F2 × S-A (not in confirmation) | P1+P2 | — | — | — | — |
-| F2 × S-A (not in confirmation) | P3 | — | — | — | — |
+| F2 × S2 | retail 10M | — | — | — / — | — / — |
+| F2 × S2 | institution 300M | — | — | — / — | — / — |
+| F2 × S2 | institution 1B | — | — | — / — | — / — |
+| F2 × S1 | retail 10M | — | — | — / — | — / — |
+| F2 × S1 | institution 300M | — | — | — / — | — / — |
+| F2 × S1 | institution 1B | — | — | — / — | — / — |
+| D0 × S2 | retail 10M | — | — | — / — | — / — |
+| D0 × S2 | institution 300M | — | — | — / — | — / — |
+| D0 × S2 | institution 1B | — | — | — / — | — / — |
+| D1-Chronos × S2 | retail 10M | — | — | — / — | — / — |
+| D1-Chronos × S2 | institution 300M | — | — | — / — | — / — |
+| D1-Chronos × S2 | institution 1B | — | — | — / — | — / — |
+| F0 × S2 | retail 10M | — | — | — / — | — / — |
+| F0 × S2 | institution 300M | — | — | — / — | — / — |
+| F0 × S2 | institution 1B | — | — | — / — | — / — |
+| D1-Kronos × S-A | retail 10M | — | — | — / — | — / — |
+| D1-Kronos × S-A | institution 300M | — | — | — / — | — / — |
+| D1-Kronos × S-A | institution 1B | — | — | — / — | — / — |
+| F2 × S-A (not in confirmation) | retail 10M | — | — | — / — | — / — |
+| F2 × S-A (not in confirmation) | institution 300M | — | — | — / — | — / — |
+| F2 × S-A (not in confirmation) | institution 1B | — | — | — / — | — / — |
 
-Fractional (retail) (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage):
+Reading: gross returns are unchanged in every capital scenario and the whole difference is impact cost. Retail NT$10M loses 9 to 12 points a year (F2 × S2 +28.6% → +17.5%, Sharpe 1.40), institution NT$300M F2 × S2 is −17.5% and NT$1B −39.5%, negative under every bracket: under "everything at the open" this small-and-mid-cap strategy's capacity is far below NT$300M (policy B, orders worked through the session, and capacity are in §6.9).
 
-| Cell | Period | Baseline | L stop | D + C | All (D + C + F + L) |
+**Strategy variant: the 15% trailing stop.** A stop is part of the strategy, i.e. an additional strategy: a held position leaves intraday once its value falls 15% from its running high since entry (today's low touches S = 0.85 × the running high; an open already below S exits at the open; a limit-down open waits), with the fill "mass at the stop price, right tail toward the low" = S × (1 − half a tick − impact − c × (S − today's low) ÷ S), c 0.25 (brackets 0 / 0.5). Both strategies use the corrected fill (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage):
+
+| Cell | Profile / capital | Period | No stop | 15% trailing stop | Difference (pp / Sharpe) |
 | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | P1+P2 | — | — | — | — |
-| F2 × S2 | P3 | — | — | — | — |
-| F2 × S1 | P1+P2 | — | — | — | — |
-| F2 × S1 | P3 | — | — | — | — |
-| D0 × S2 | P1+P2 | — | — | — | — |
-| D0 × S2 | P3 | — | — | — | — |
-| D1-Chronos × S2 | P1+P2 | — | — | — | — |
-| D1-Chronos × S2 | P3 | — | — | — | — |
-| F0 × S2 | P1+P2 | — | — | — | — |
-| F0 × S2 | P3 | — | — | — | — |
-| D1-Kronos × S-A | P1+P2 | — | — | — | — |
-| D1-Kronos × S-A | P3 | — | — | — | — |
-| F2 × S-A (not in confirmation) | P1+P2 | — | — | — | — |
-| F2 × S-A (not in confirmation) | P3 | — | — | — | — |
+| F2 × S2 | institution fractional | P1+P2 | — | — | — |
+| F2 × S2 | institution fractional | P3 | — | — | — |
+| F2 × S2 | retail fractional | P1+P2 | — | — | — |
+| F2 × S2 | retail fractional | P3 | — | — | — |
+| F2 × S2 | retail 10M | P1+P2 | — | — | — |
+| F2 × S2 | retail 10M | P3 | — | — | — |
+| F2 × S2 | institution 300M | P1+P2 | — | — | — |
+| F2 × S2 | institution 300M | P3 | — | — | — |
+| F2 × S1 | institution fractional | P1+P2 | — | — | — |
+| F2 × S1 | institution fractional | P3 | — | — | — |
+| F2 × S1 | retail fractional | P1+P2 | — | — | — |
+| F2 × S1 | retail fractional | P3 | — | — | — |
+| F2 × S1 | retail 10M | P1+P2 | — | — | — |
+| F2 × S1 | retail 10M | P3 | — | — | — |
+| F2 × S1 | institution 300M | P1+P2 | — | — | — |
+| F2 × S1 | institution 300M | P3 | — | — | — |
+| D0 × S2 | institution fractional | P1+P2 | — | — | — |
+| D0 × S2 | institution fractional | P3 | — | — | — |
+| D0 × S2 | retail fractional | P1+P2 | — | — | — |
+| D0 × S2 | retail fractional | P3 | — | — | — |
+| D0 × S2 | retail 10M | P1+P2 | — | — | — |
+| D0 × S2 | retail 10M | P3 | — | — | — |
+| D0 × S2 | institution 300M | P1+P2 | — | — | — |
+| D0 × S2 | institution 300M | P3 | — | — | — |
+| D1-Chronos × S2 | institution fractional | P1+P2 | — | — | — |
+| D1-Chronos × S2 | institution fractional | P3 | — | — | — |
+| D1-Chronos × S2 | retail fractional | P1+P2 | — | — | — |
+| D1-Chronos × S2 | retail fractional | P3 | — | — | — |
+| D1-Chronos × S2 | retail 10M | P1+P2 | — | — | — |
+| D1-Chronos × S2 | retail 10M | P3 | — | — | — |
+| D1-Chronos × S2 | institution 300M | P1+P2 | — | — | — |
+| D1-Chronos × S2 | institution 300M | P3 | — | — | — |
+| F0 × S2 | institution fractional | P1+P2 | — | — | — |
+| F0 × S2 | institution fractional | P3 | — | — | — |
+| F0 × S2 | retail fractional | P1+P2 | — | — | — |
+| F0 × S2 | retail fractional | P3 | — | — | — |
+| F0 × S2 | retail 10M | P1+P2 | — | — | — |
+| F0 × S2 | retail 10M | P3 | — | — | — |
+| F0 × S2 | institution 300M | P1+P2 | — | — | — |
+| F0 × S2 | institution 300M | P3 | — | — | — |
+| D1-Kronos × S-A | institution fractional | P1+P2 | — | — | — |
+| D1-Kronos × S-A | institution fractional | P3 | — | — | — |
+| D1-Kronos × S-A | retail fractional | P1+P2 | — | — | — |
+| D1-Kronos × S-A | retail fractional | P3 | — | — | — |
+| D1-Kronos × S-A | retail 10M | P1+P2 | — | — | — |
+| D1-Kronos × S-A | retail 10M | P3 | — | — | — |
+| D1-Kronos × S-A | institution 300M | P1+P2 | — | — | — |
+| D1-Kronos × S-A | institution 300M | P3 | — | — | — |
+| F2 × S-A (not in confirmation) | institution fractional | P1+P2 | — | — | — |
+| F2 × S-A (not in confirmation) | institution fractional | P3 | — | — | — |
+| F2 × S-A (not in confirmation) | retail fractional | P1+P2 | — | — | — |
+| F2 × S-A (not in confirmation) | retail fractional | P3 | — | — | — |
+| F2 × S-A (not in confirmation) | retail 10M | P1+P2 | — | — | — |
+| F2 × S-A (not in confirmation) | retail 10M | P3 | — | — | — |
+| F2 × S-A (not in confirmation) | institution 300M | P1+P2 | — | — | — |
+| F2 × S-A (not in confirmation) | institution 300M | P3 | — | — | — |
 
-Capital scenarios (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage); the baseline is a reference run with the same cost-profile copy and no rule:
+Overshoot brackets (F2 × S2, whole period):
 
-| Cell | Profile / capital | Period | Baseline | F fill | L stop | F + L | All |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| F2 × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| F2 × S2 | retail 10M | P3 | — | — | — | — | — |
-| F2 × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| F2 × S2 | institution 300M | P3 | — | — | — | — | — |
-| F2 × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| F2 × S2 | institution 1B | P3 | — | — | — | — | — |
-| F2 × S1 | retail 10M | P1+P2 | — | — | — | — | — |
-| F2 × S1 | retail 10M | P3 | — | — | — | — | — |
-| F2 × S1 | institution 300M | P1+P2 | — | — | — | — | — |
-| F2 × S1 | institution 300M | P3 | — | — | — | — | — |
-| F2 × S1 | institution 1B | P1+P2 | — | — | — | — | — |
-| F2 × S1 | institution 1B | P3 | — | — | — | — | — |
-| D0 × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| D0 × S2 | retail 10M | P3 | — | — | — | — | — |
-| D0 × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| D0 × S2 | institution 300M | P3 | — | — | — | — | — |
-| D0 × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| D0 × S2 | institution 1B | P3 | — | — | — | — | — |
-| D1-Chronos × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| D1-Chronos × S2 | retail 10M | P3 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 300M | P3 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| D1-Chronos × S2 | institution 1B | P3 | — | — | — | — | — |
-| F0 × S2 | retail 10M | P1+P2 | — | — | — | — | — |
-| F0 × S2 | retail 10M | P3 | — | — | — | — | — |
-| F0 × S2 | institution 300M | P1+P2 | — | — | — | — | — |
-| F0 × S2 | institution 300M | P3 | — | — | — | — | — |
-| F0 × S2 | institution 1B | P1+P2 | — | — | — | — | — |
-| F0 × S2 | institution 1B | P3 | — | — | — | — | — |
-| D1-Kronos × S-A | retail 10M | P1+P2 | — | — | — | — | — |
-| D1-Kronos × S-A | retail 10M | P3 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 300M | P1+P2 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 300M | P3 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 1B | P1+P2 | — | — | — | — | — |
-| D1-Kronos × S-A | institution 1B | P3 | — | — | — | — | — |
-| F2 × S-A (not in confirmation) | retail 10M | P1+P2 | — | — | — | — | — |
-| F2 × S-A (not in confirmation) | retail 10M | P3 | — | — | — | — | — |
-| F2 × S-A (not in confirmation) | institution 300M | P1+P2 | — | — | — | — | — |
-| F2 × S-A (not in confirmation) | institution 300M | P3 | — | — | — | — | — |
-| F2 × S-A (not in confirmation) | institution 1B | P1+P2 | — | — | — | — | — |
-| F2 × S-A (not in confirmation) | institution 1B | P3 | — | — | — | — | — |
-
-Brackets (F2 × S2, whole period, F + L):
-
-| F2 × S2 row | Y 0.5 | Y 0.7 (primary) | Y 1.0 | f 5% | f 20% | c 0 | c 0.5 |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| institution fractional | — | — | — | — | — | — | — |
-| retail 10M | — | — | — | — | — | — | — |
-| institution 300M | — | — | — | — | — | — | — |
-| institution 1B | — | — | — | — | — | — | — |
+| F2 × S2 row | c 0 | c 0.25 (primary) | c 0.5 |
+| --- | --- | --- | --- |
+| institution fractional | — | — | — |
+| retail 10M | — | — | — |
+| institution 300M | — | — | — |
 
 How to read it:
 
-- **The fill model is about capacity, not signal.** Gross returns are unchanged in every capital scenario and the whole difference is impact cost: retail NT$10M loses 9 to 12 points a year (F2 × S2 +28.6% → +17.5%, Sharpe 1.40), institution NT$300M turns to −17.5% and NT$1B to −39.5%, and NT$300M is negative under every bracket. Policy A pushes a whole day's order into an auction that holds a tenth of the day's volume, so this small-and-mid-cap ranking strategy's capacity under policy A is far below NT$300M; working orders through the day (policy B) would cut the impact by about 1 ÷ √10, but that is a different execution policy and needs its own registration.
-- **The 15% trailing stop is negative for this strategy and makes no drawdown shallower.** F2 × S2's whole-period Sharpe falls from 2.38 to 1.30 and its return from +30.2% to +17.0%; the mean holding drops from 36 to 20 sessions, turnover doubles and cost drag rises 4.4 points; over the 811 intervals F2 × S2 has 1,413 intraday and 438 gap exits on TWSE. The overshoot is only a third of the cost (c = 0 gives +21.9% / 1.68); the rest is turnover and names that stop at a low and are bought back within days. The long-only cells' drawdowns get deeper (D1-Kronos × S-A −23.9% → −29.2%). Only F2 × S2's out-of-sample return rises slightly (+19.6% → +23.1%). This agrees with the V1 score already being orthogonalized against recent returns and with Kaminski and Lo (2014) on stops under mean reversion.
-- **Everything conservative (disposition, suspension, fill and stop together)**: institution fractional F2 × S2 whole +10.9% / 0.85, out of sample +17.6% / 1.30; under retail NT$10M with F + L every long-short cell turns negative (F2 × S2 −1.4%) and only the long-only cells stay positive (D1-Kronos × S-A +23.6% / 1.31).
-- By the registered reading, F2 × S2's whole-period Sharpe under F + L is 1.30, below 1.5, so this report carries the note "fill-and-stop sensitivity not passed"; under the 4 November ruling these are parallel readings, and the six confirmation-period cells and the frozen configuration are unchanged.
+- **The stop version is worse in all seven cells and makes no drawdown shallower**: F2 × S2 fractional whole-period Sharpe 2.38 → 1.30 and return +30.2% → +17.0%; the mean holding drops from 36 to 20 sessions, turnover doubles and cost drag rises 4.4 points; over the 811 intervals F2 × S2 has 1,413 intraday and 438 gap exits on TWSE. The overshoot is only a third of the cost (c = 0 gives +21.9% / 1.68); the rest is turnover and names that stop at a low and are bought back within days. The long-only cells' drawdowns get deeper (D1-Kronos × S-A −23.9% → −29.2%). Only F2 × S2's out-of-sample return rises slightly (+19.6% → +23.1%). This agrees with the V1 score already being orthogonalized against recent returns and with Kaminski and Lo (2014) on stops under mean reversion. The stop version does not enter the confirmation period.
+- **All parallel rules together (disposition D, suspension C and the stop)**: institution fractional F2 × S2 whole —, out of sample —; retail NT$10M —. D and C remain parallel readings under the 4 November ruling.
 
 #### 6.9 Policy B: orders worked through the session, and capacity (2026-11-06)
 
-Policy A's verdict was that NT$300M and above is infeasible, so the user registered policy B (protocol §13.23 supplement 5): the open is the arrival price and the order is worked through the continuous session, fill = open × exp(θ × the day's open-to-close return) × (1 ± half a tick ± Y σ_daily √(Q ÷ V)), θ 0.5 (brackets 0.25 / 0.75), Y 0.7 (brackets 0.5 / 1.0), impact over the full day's volume; no stop; an institution NT$3B scenario is added. The fractional row's change is the delay cost (the θ term plus half a tick).
+The corrected policy A of §6.8 showed NT$300M and above to be infeasible, so the user registered policy B as a capacity assessment (protocol §13.23 supplement 5): the open is the arrival price and the order is worked through the continuous session, fill = open × exp(θ × the day's open-to-close return) × (1 ± half a tick ± Y σ_daily √(Q ÷ V)), θ 0.5 (brackets 0.25 / 0.75), Y 0.7 (brackets 0.5 / 1.0), impact over the full day's volume; no stop; an institution NT$3B scenario is added. The fractional row's change is the delay cost (the θ term plus half a tick).
 
-Fractional (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage; baseline = a reference run with the same cost-profile copy and no rule):
+Fractional (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage); policy A fills at the open (Q → 0), so the difference to policy B is the delay cost:
 
-| Cell | Profile | Period | Baseline | B | B + D + C |
+| Cell | Profile | Period | Policy A (open fill) | Policy B (worked) | B + D + C |
 | --- | --- | --- | --- | --- | --- |
 | F2 × S2 | institution | P1+P2 | +30.2% / 2.38 / -8.1% | +25.4% / 2.01 / -9.8% | +17.9% / 1.34 / -10.1% |
 | F2 × S2 | institution | P3 | +19.6% / 1.48 / -8.0% | +19.5% / 1.50 / -8.2% | +17.7% / 1.21 / -8.8% |
@@ -879,66 +887,66 @@ Fractional (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OO
 | F2 × S-A (not in confirmation) | retail | P1+P2 | +49.7% / 2.18 / -25.3% | +44.0% / 1.95 / -25.8% | +32.5% / 1.69 / -24.8% |
 | F2 × S-A (not in confirmation) | retail | P3 | -17.9% / -0.45 / -24.7% | -21.8% / -0.55 / -25.1% | -0.6% / -0.02 / -13.6% |
 
-Capital scenarios (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage; baseline = a reference run with the same cost-profile copy and no rule):
+Capital scenarios (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage); the comparison is the corrected policy A of §6.8:
 
-| Cell | Profile / capital | Period | Baseline | B | B + D + C | Deployed (B) |
+| Cell | Profile / capital | Period | Policy A (corrected) | Policy B | B + D + C | Deployed (B) |
 | --- | --- | --- | --- | --- | --- | ---: |
-| F2 × S2 | retail 10M | P1+P2 | +28.6% / 2.29 / -9.2% | +20.1% / 1.62 / -12.4% | +13.4% / 1.13 / -11.2% | 94% |
-| F2 × S2 | retail 10M | P3 | +6.8% / 0.46 / -4.5% | -1.7% / -0.12 / -5.4% | +20.9% / 1.51 / -4.0% | 94% |
-| F2 × S2 | institution 300M | P1+P2 | +24.7% / 2.20 / -6.1% | +8.1% / 0.72 / -10.3% | -1.0% / -0.09 / -14.7% | 71% |
-| F2 × S2 | institution 300M | P3 | +36.4% / 2.66 / -6.4% | +2.6% / 0.20 / -11.5% | +0.3% / 0.02 / -11.1% | 71% |
-| F2 × S2 | institution 1B | P1+P2 | +15.6% / 2.01 / -4.6% | -4.7% / -0.61 / -23.7% | -11.3% / -1.51 / -31.8% | 50% |
-| F2 × S2 | institution 1B | P3 | +9.8% / 0.92 / -3.2% | -28.5% / -2.66 / -9.1% | -17.4% / -1.50 / -8.8% | 50% |
-| F2 × S2 | institution 3B | P1+P2 | +11.7% / 1.95 / -3.5% | -15.6% / -2.57 / -40.3% | -21.6% / -3.61 / -50.5% | 36% |
-| F2 × S2 | institution 3B | P3 | +12.7% / 1.24 / -2.4% | -45.6% / -4.25 / -11.9% | -39.4% / -3.78 / -11.8% | 36% |
-| F2 × S1 | retail 10M | P1+P2 | +25.6% / 2.09 / -11.6% | +17.1% / 1.40 / -14.8% | +9.5% / 0.84 / -13.8% | 94% |
-| F2 × S1 | retail 10M | P3 | +11.4% / 0.62 / -6.4% | +2.8% / 0.15 / -6.3% | +26.3% / 1.66 / -4.1% | 94% |
-| F2 × S1 | institution 300M | P1+P2 | +19.7% / 1.81 / -8.9% | +3.0% / 0.28 / -15.7% | -6.3% / -0.57 / -24.3% | 71% |
-| F2 × S1 | institution 300M | P3 | +32.9% / 2.32 / -6.0% | -0.9% / -0.06 / -11.1% | -5.4% / -0.40 / -12.3% | 71% |
-| F2 × S1 | institution 1B | P1+P2 | +17.2% / 2.17 / -4.6% | -3.2% / -0.40 / -26.1% | -10.3% / -1.40 / -33.3% | 50% |
-| F2 × S1 | institution 1B | P3 | +9.8% / 0.81 / -2.8% | -28.5% / -2.35 / -7.8% | -15.5% / -1.19 / -7.5% | 50% |
-| F2 × S1 | institution 3B | P1+P2 | +15.9% / 2.42 / -4.1% | -11.4% / -1.72 / -38.3% | -17.1% / -2.66 / -46.1% | 36% |
-| F2 × S1 | institution 3B | P3 | +15.0% / 1.18 / -3.2% | -43.2% / -3.37 / -11.3% | -37.3% / -3.04 / -10.8% | 36% |
-| D0 × S2 | retail 10M | P1+P2 | +19.0% / 1.45 / -8.9% | +9.8% / 0.74 / -13.4% | +8.7% / 0.65 / -16.1% | 95% |
-| D0 × S2 | retail 10M | P3 | +2.5% / 0.20 / -4.0% | -5.1% / -0.41 / -5.0% | -25.1% / -1.47 / -8.5% | 95% |
-| D0 × S2 | institution 300M | P1+P2 | +17.8% / 1.58 / -6.4% | -1.1% / -0.10 / -15.4% | -4.6% / -0.41 / -19.7% | 68% |
-| D0 × S2 | institution 300M | P3 | +26.6% / 2.05 / -4.5% | +2.7% / 0.21 / -7.5% | -12.9% / -1.14 / -8.6% | 68% |
-| D0 × S2 | institution 1B | P1+P2 | +11.9% / 1.50 / -6.5% | -11.8% / -1.48 / -35.3% | -13.4% / -1.71 / -38.3% | 49% |
-| D0 × S2 | institution 1B | P3 | +25.6% / 2.50 / -2.7% | -14.6% / -1.32 / -8.3% | -19.4% / -1.62 / -8.9% | 49% |
-| D0 × S2 | institution 3B | P1+P2 | +8.7% / 1.41 / -4.5% | -24.6% / -3.94 / -55.8% | -29.6% / -5.13 / -61.9% | 36% |
-| D0 × S2 | institution 3B | P3 | +9.0% / 0.90 / -3.6% | -42.6% / -3.86 / -12.2% | -34.7% / -3.35 / -10.3% | 36% |
-| D1-Chronos × S2 | retail 10M | P1+P2 | +19.6% / 1.51 / -9.5% | +10.1% / 0.78 / -12.8% | +7.3% / 0.59 / -13.0% | 95% |
-| D1-Chronos × S2 | retail 10M | P3 | -8.5% / -0.55 / -5.3% | -13.5% / -0.88 / -5.7% | -24.3% / -1.31 / -8.1% | 95% |
-| D1-Chronos × S2 | institution 300M | P1+P2 | +17.6% / 1.52 / -6.8% | -1.4% / -0.12 / -22.2% | -4.2% / -0.37 / -25.0% | 69% |
-| D1-Chronos × S2 | institution 300M | P3 | +6.2% / 0.48 / -6.9% | -14.4% / -1.09 / -10.3% | -23.1% / -1.88 / -11.3% | 69% |
-| D1-Chronos × S2 | institution 1B | P1+P2 | +12.6% / 1.56 / -4.7% | -10.0% / -1.22 / -34.3% | -13.7% / -1.71 / -38.9% | 49% |
-| D1-Chronos × S2 | institution 1B | P3 | +11.0% / 1.04 / -4.9% | -20.1% / -1.76 / -9.6% | -25.7% / -2.18 / -9.5% | 49% |
-| D1-Chronos × S2 | institution 3B | P1+P2 | +8.0% / 1.35 / -3.4% | -23.9% / -3.95 / -55.5% | -29.3% / -4.47 / -61.4% | 36% |
-| D1-Chronos × S2 | institution 3B | P3 | +18.1% / 1.79 / -3.6% | -29.1% / -2.56 / -10.0% | -31.9% / -2.54 / -10.5% | 36% |
-| F0 × S2 | retail 10M | P1+P2 | +22.3% / 1.67 / -7.7% | +13.2% / 0.99 / -12.1% | +8.8% / 0.66 / -12.4% | 93% |
-| F0 × S2 | retail 10M | P3 | +6.9% / 0.51 / -5.5% | -2.5% / -0.19 / -6.8% | -31.8% / -1.69 / -11.4% | 93% |
-| F0 × S2 | institution 300M | P1+P2 | +17.4% / 1.57 / -10.0% | -1.0% / -0.09 / -16.3% | -5.6% / -0.50 / -19.7% | 68% |
-| F0 × S2 | institution 300M | P3 | +8.5% / 0.80 / -6.2% | -22.3% / -2.02 / -10.3% | -2.5% / -0.20 / -8.2% | 68% |
-| F0 × S2 | institution 1B | P1+P2 | +13.7% / 1.77 / -6.8% | -9.6% / -1.25 / -33.2% | -15.7% / -2.15 / -40.3% | 48% |
-| F0 × S2 | institution 1B | P3 | +16.4% / 1.57 / -2.7% | -23.9% / -2.14 / -8.8% | -37.8% / -4.38 / -9.8% | 48% |
-| F0 × S2 | institution 3B | P1+P2 | +6.9% / 1.20 / -5.1% | -25.2% / -4.29 / -56.1% | -29.8% / -5.38 / -61.8% | 36% |
-| F0 × S2 | institution 3B | P3 | +8.8% / 1.12 / -2.3% | -50.4% / -5.48 / -13.1% | -49.4% / -6.15 / -12.8% | 36% |
-| D1-Kronos × S-A | retail 10M | P1+P2 | +39.8% / 1.98 / -24.4% | +32.7% / 1.63 / -27.9% | +28.9% / 1.56 / -29.4% | 98% |
-| D1-Kronos × S-A | retail 10M | P3 | +2.3% / 0.08 / -15.4% | -2.8% / -0.09 / -15.8% | -2.5% / -0.09 / -14.9% | 98% |
-| D1-Kronos × S-A | institution 300M | P1+P2 | +31.6% / 2.00 / -20.2% | +19.7% / 1.26 / -26.0% | +15.8% / 1.11 / -25.6% | 62% |
-| D1-Kronos × S-A | institution 300M | P3 | +14.3% / 0.42 / -16.8% | +1.9% / 0.06 / -17.8% | +1.6% / 0.06 / -15.2% | 62% |
-| D1-Kronos × S-A | institution 1B | P1+P2 | +29.3% / 2.04 / -18.2% | +13.9% / 0.96 / -27.5% | +10.8% / 0.81 / -26.3% | 50% |
-| D1-Kronos × S-A | institution 1B | P3 | +19.3% / 0.71 / -14.1% | -0.1% / -0.00 / -15.8% | -1.4% / -0.05 / -17.5% | 50% |
-| D1-Kronos × S-A | institution 3B | P1+P2 | +21.9% / 1.76 / -14.5% | -2.0% / -0.16 / -36.7% | -3.8% / -0.31 / -34.8% | 39% |
-| D1-Kronos × S-A | institution 3B | P3 | +14.1% / 0.54 / -14.2% | -8.3% / -0.30 / -16.7% | -7.2% / -0.26 / -16.3% | 39% |
-| F2 × S-A (not in confirmation) | retail 10M | P1+P2 | +45.0% / 2.19 / -22.3% | +36.9% / 1.81 / -23.8% | +27.8% / 1.49 / -26.2% | 98% |
-| F2 × S-A (not in confirmation) | retail 10M | P3 | -23.5% / -0.64 / -25.1% | -39.0% / -1.07 / -25.9% | +10.1% / 0.36 / -14.8% | 98% |
-| F2 × S-A (not in confirmation) | institution 300M | P1+P2 | +41.1% / 2.45 / -14.9% | +25.3% / 1.54 / -16.7% | +18.5% / 1.28 / -17.9% | 59% |
-| F2 × S-A (not in confirmation) | institution 300M | P3 | -0.4% / -0.01 / -20.3% | -25.8% / -0.78 / -21.1% | -0.5% / -0.02 / -14.2% | 59% |
-| F2 × S-A (not in confirmation) | institution 1B | P1+P2 | +34.3% / 2.13 / -16.5% | +15.4% / 0.97 / -23.9% | +13.3% / 0.92 / -23.1% | 51% |
-| F2 × S-A (not in confirmation) | institution 1B | P3 | -3.1% / -0.10 / -20.4% | -34.1% / -1.05 / -21.6% | -28.4% / -1.06 / -17.8% | 51% |
-| F2 × S-A (not in confirmation) | institution 3B | P1+P2 | +26.3% / 1.98 / -15.0% | +0.8% / 0.06 / -37.7% | -0.5% / -0.04 / -35.7% | 40% |
-| F2 × S-A (not in confirmation) | institution 3B | P3 | +2.0% / 0.08 / -15.9% | -37.4% / -1.38 / -18.5% | -24.6% / -0.97 / -15.5% | 40% |
+| F2 × S2 | retail 10M | P1+P2 | — | +20.1% / 1.62 / -12.4% | +13.4% / 1.13 / -11.2% | 94% |
+| F2 × S2 | retail 10M | P3 | — | -1.7% / -0.12 / -5.4% | +20.9% / 1.51 / -4.0% | 94% |
+| F2 × S2 | institution 300M | P1+P2 | — | +8.1% / 0.72 / -10.3% | -1.0% / -0.09 / -14.7% | 71% |
+| F2 × S2 | institution 300M | P3 | — | +2.6% / 0.20 / -11.5% | +0.3% / 0.02 / -11.1% | 71% |
+| F2 × S2 | institution 1B | P1+P2 | — | -4.7% / -0.61 / -23.7% | -11.3% / -1.51 / -31.8% | 50% |
+| F2 × S2 | institution 1B | P3 | — | -28.5% / -2.66 / -9.1% | -17.4% / -1.50 / -8.8% | 50% |
+| F2 × S2 | institution 3B | P1+P2 | — | -15.6% / -2.57 / -40.3% | -21.6% / -3.61 / -50.5% | 36% |
+| F2 × S2 | institution 3B | P3 | — | -45.6% / -4.25 / -11.9% | -39.4% / -3.78 / -11.8% | 36% |
+| F2 × S1 | retail 10M | P1+P2 | — | +17.1% / 1.40 / -14.8% | +9.5% / 0.84 / -13.8% | 94% |
+| F2 × S1 | retail 10M | P3 | — | +2.8% / 0.15 / -6.3% | +26.3% / 1.66 / -4.1% | 94% |
+| F2 × S1 | institution 300M | P1+P2 | — | +3.0% / 0.28 / -15.7% | -6.3% / -0.57 / -24.3% | 71% |
+| F2 × S1 | institution 300M | P3 | — | -0.9% / -0.06 / -11.1% | -5.4% / -0.40 / -12.3% | 71% |
+| F2 × S1 | institution 1B | P1+P2 | — | -3.2% / -0.40 / -26.1% | -10.3% / -1.40 / -33.3% | 50% |
+| F2 × S1 | institution 1B | P3 | — | -28.5% / -2.35 / -7.8% | -15.5% / -1.19 / -7.5% | 50% |
+| F2 × S1 | institution 3B | P1+P2 | — | -11.4% / -1.72 / -38.3% | -17.1% / -2.66 / -46.1% | 36% |
+| F2 × S1 | institution 3B | P3 | — | -43.2% / -3.37 / -11.3% | -37.3% / -3.04 / -10.8% | 36% |
+| D0 × S2 | retail 10M | P1+P2 | — | +9.8% / 0.74 / -13.4% | +8.7% / 0.65 / -16.1% | 95% |
+| D0 × S2 | retail 10M | P3 | — | -5.1% / -0.41 / -5.0% | -25.1% / -1.47 / -8.5% | 95% |
+| D0 × S2 | institution 300M | P1+P2 | — | -1.1% / -0.10 / -15.4% | -4.6% / -0.41 / -19.7% | 68% |
+| D0 × S2 | institution 300M | P3 | — | +2.7% / 0.21 / -7.5% | -12.9% / -1.14 / -8.6% | 68% |
+| D0 × S2 | institution 1B | P1+P2 | — | -11.8% / -1.48 / -35.3% | -13.4% / -1.71 / -38.3% | 49% |
+| D0 × S2 | institution 1B | P3 | — | -14.6% / -1.32 / -8.3% | -19.4% / -1.62 / -8.9% | 49% |
+| D0 × S2 | institution 3B | P1+P2 | — | -24.6% / -3.94 / -55.8% | -29.6% / -5.13 / -61.9% | 36% |
+| D0 × S2 | institution 3B | P3 | — | -42.6% / -3.86 / -12.2% | -34.7% / -3.35 / -10.3% | 36% |
+| D1-Chronos × S2 | retail 10M | P1+P2 | — | +10.1% / 0.78 / -12.8% | +7.3% / 0.59 / -13.0% | 95% |
+| D1-Chronos × S2 | retail 10M | P3 | — | -13.5% / -0.88 / -5.7% | -24.3% / -1.31 / -8.1% | 95% |
+| D1-Chronos × S2 | institution 300M | P1+P2 | — | -1.4% / -0.12 / -22.2% | -4.2% / -0.37 / -25.0% | 69% |
+| D1-Chronos × S2 | institution 300M | P3 | — | -14.4% / -1.09 / -10.3% | -23.1% / -1.88 / -11.3% | 69% |
+| D1-Chronos × S2 | institution 1B | P1+P2 | — | -10.0% / -1.22 / -34.3% | -13.7% / -1.71 / -38.9% | 49% |
+| D1-Chronos × S2 | institution 1B | P3 | — | -20.1% / -1.76 / -9.6% | -25.7% / -2.18 / -9.5% | 49% |
+| D1-Chronos × S2 | institution 3B | P1+P2 | — | -23.9% / -3.95 / -55.5% | -29.3% / -4.47 / -61.4% | 36% |
+| D1-Chronos × S2 | institution 3B | P3 | — | -29.1% / -2.56 / -10.0% | -31.9% / -2.54 / -10.5% | 36% |
+| F0 × S2 | retail 10M | P1+P2 | — | +13.2% / 0.99 / -12.1% | +8.8% / 0.66 / -12.4% | 93% |
+| F0 × S2 | retail 10M | P3 | — | -2.5% / -0.19 / -6.8% | -31.8% / -1.69 / -11.4% | 93% |
+| F0 × S2 | institution 300M | P1+P2 | — | -1.0% / -0.09 / -16.3% | -5.6% / -0.50 / -19.7% | 68% |
+| F0 × S2 | institution 300M | P3 | — | -22.3% / -2.02 / -10.3% | -2.5% / -0.20 / -8.2% | 68% |
+| F0 × S2 | institution 1B | P1+P2 | — | -9.6% / -1.25 / -33.2% | -15.7% / -2.15 / -40.3% | 48% |
+| F0 × S2 | institution 1B | P3 | — | -23.9% / -2.14 / -8.8% | -37.8% / -4.38 / -9.8% | 48% |
+| F0 × S2 | institution 3B | P1+P2 | — | -25.2% / -4.29 / -56.1% | -29.8% / -5.38 / -61.8% | 36% |
+| F0 × S2 | institution 3B | P3 | — | -50.4% / -5.48 / -13.1% | -49.4% / -6.15 / -12.8% | 36% |
+| D1-Kronos × S-A | retail 10M | P1+P2 | — | +32.7% / 1.63 / -27.9% | +28.9% / 1.56 / -29.4% | 98% |
+| D1-Kronos × S-A | retail 10M | P3 | — | -2.8% / -0.09 / -15.8% | -2.5% / -0.09 / -14.9% | 98% |
+| D1-Kronos × S-A | institution 300M | P1+P2 | — | +19.7% / 1.26 / -26.0% | +15.8% / 1.11 / -25.6% | 62% |
+| D1-Kronos × S-A | institution 300M | P3 | — | +1.9% / 0.06 / -17.8% | +1.6% / 0.06 / -15.2% | 62% |
+| D1-Kronos × S-A | institution 1B | P1+P2 | — | +13.9% / 0.96 / -27.5% | +10.8% / 0.81 / -26.3% | 50% |
+| D1-Kronos × S-A | institution 1B | P3 | — | -0.1% / -0.00 / -15.8% | -1.4% / -0.05 / -17.5% | 50% |
+| D1-Kronos × S-A | institution 3B | P1+P2 | — | -2.0% / -0.16 / -36.7% | -3.8% / -0.31 / -34.8% | 39% |
+| D1-Kronos × S-A | institution 3B | P3 | — | -8.3% / -0.30 / -16.7% | -7.2% / -0.26 / -16.3% | 39% |
+| F2 × S-A (not in confirmation) | retail 10M | P1+P2 | — | +36.9% / 1.81 / -23.8% | +27.8% / 1.49 / -26.2% | 98% |
+| F2 × S-A (not in confirmation) | retail 10M | P3 | — | -39.0% / -1.07 / -25.9% | +10.1% / 0.36 / -14.8% | 98% |
+| F2 × S-A (not in confirmation) | institution 300M | P1+P2 | — | +25.3% / 1.54 / -16.7% | +18.5% / 1.28 / -17.9% | 59% |
+| F2 × S-A (not in confirmation) | institution 300M | P3 | — | -25.8% / -0.78 / -21.1% | -0.5% / -0.02 / -14.2% | 59% |
+| F2 × S-A (not in confirmation) | institution 1B | P1+P2 | — | +15.4% / 0.97 / -23.9% | +13.3% / 0.92 / -23.1% | 51% |
+| F2 × S-A (not in confirmation) | institution 1B | P3 | — | -34.1% / -1.05 / -21.6% | -28.4% / -1.06 / -17.8% | 51% |
+| F2 × S-A (not in confirmation) | institution 3B | P1+P2 | — | +0.8% / 0.06 / -37.7% | -0.5% / -0.04 / -35.7% | 40% |
+| F2 × S-A (not in confirmation) | institution 3B | P3 | — | -37.4% / -1.38 / -18.5% | -24.6% / -0.97 / -15.5% | 40% |
 
 Brackets (F2 × S2, whole period, policy B):
 
@@ -965,9 +973,9 @@ Capacity (defined in advance as the largest capital scenario with whole-period n
 How to read it:
 
 - **The delay cost is small and stable**: F2 × S2 fractional +30.2% / 2.38 → +25.4% / 2.01, about 5 points and −0.4 Sharpe, with θ from 0.25 to 0.75 spanning only 1.5 points. The signal does not realize at the opening print, so working the orders does not consume it. The "policy-B delay-cost sensitivity" passes (2.01 ≥ 1.5).
-- **NT$300M still falls short**: policy B lifts NT$300M from policy A's −17.5% to +8.1% / 0.72, but the cost drag is still 16.7 points above the baseline; NT$1B gives −4.7% and NT$3B −15.6%, with deployment down to 50% and 36%. The reason is structural: a small-and-mid-cap universe (median 20-session traded value NT$69M), two legs of 50 names each, 2.8% daily turnover; at NT$300M each NT$6M position is 5% of ADV and impact scales with √(Q ÷ V). The whole literature range of Y (0.5 to 1.0) leaves NT$300M short; reaching it would need a larger K, lower turnover or another universe, i.e. a new strategy.
+- **NT$300M still falls short**: policy B lifts NT$300M from policy A's −17.5% to +8.1% / 0.72, with a cost drag of 24.3% (7.6% in the no-impact reference); NT$1B gives −4.7% and NT$3B −15.6%, with deployment down to 50% and 36%. The reason is structural: a small-and-mid-cap universe (median 20-session traded value NT$69M), two legs of 50 names each, 2.8% daily turnover; at NT$300M each NT$6M position is 5% of ADV and impact scales with √(Q ÷ V). The whole literature range of Y (0.5 to 1.0) leaves NT$300M short; reaching it would need a larger K, lower turnover or another universe, i.e. a new strategy.
 - **Retail NT$10M works**: F2 × S2 +20.1% / 1.62, F2 × S-A +36.9% / 1.81 and D1-Kronos × S-A +32.7% / 1.63 clear the threshold; the three transformers' and F0's long-short cells do not.
-- The added capital rows (institution, whole period, baseline → B): NT$30M F2 × S2 +30.1% / 2.25 → **+19.9% / 1.49** (at the threshold), NT$100M +27.2% / 2.08 → +13.6% / 1.04; the long-only cells at NT$100M, D1-Kronos × S-A +25.7% / 1.51 and F2 × S-A +31.1% / 1.66, still clear it. **Capacity verdict: about NT$10M to NT$30M for long-short + hedge, about NT$100M for long-only.**
+- The added capital rows (institution, whole period, no-impact reference → B): NT$30M F2 × S2 +30.1% / 2.25 → **+19.9% / 1.49** (at the threshold), NT$100M +27.2% / 2.08 → +13.6% / 1.04; the long-only cells at NT$100M, D1-Kronos × S-A +25.7% / 1.51 and F2 × S-A +31.1% / 1.66, still clear it. **Capacity verdict: about NT$10M to NT$30M for long-short + hedge, about NT$100M for long-only.**
 - All parallel rules together (B + D + C): institution fractional F2 × S2 whole +17.9% / 1.34, out of sample +17.7% / 1.21. Under the 4 November ruling these are parallel readings; the six confirmation-period cells are unchanged.
 
 ### 7. How the samples were used, and data limitations
@@ -995,7 +1003,7 @@ Constructions tried: six generations of strategy layer, seven models, three stra
 (b) The in-sample second half was seen when the first edition's orthogonalization was designed; this round's candidate set and thresholds were set after the first edition's out-of-sample results; this round's out-of-sample period is clean only for the retrained scores.
 (c) The out-of-sample period has 64 sessions and one market state, with intervals ±50 to ±120 points wide; the last 14 sessions have no label and therefore no prediction.
 (d) Chip publication times follow a conservative rule (before the next open); the foreign-holding z-score column is always missing because of a source problem.
-(e) The short leg's borrow-failure probability, recall probability and fee tiers are parameter assumptions; the main tables carry no disposition-stock or forced-cover constraint, the two rules of §6.7 are a sensitivity registered on 4 November, and they remain optimistic (no forced exit and no batched-auction slippage during a disposition; the forced cover is at least one day later than the real last cover day; the institution's cover at a suspension is an upper bound). The impact coefficient Y, the auction share f and the stop overshoot c of §6.8 have no Taiwan evidence, only brackets; the fill model acts in the capital-scenario rows only, the fractional row is still the open. The capacity verdict of §6.9 rests on the impact coefficient Y and the 5% participation cap, neither calibrated on Taiwan, and on θ being spread evenly over the day.
+(e) The short leg's borrow-failure probability, recall probability and fee tiers are parameter assumptions; the main tables carry no disposition-stock or forced-cover constraint, the two rules of §6.7 are a sensitivity registered on 4 November, and they remain optimistic (no forced exit and no batched-auction slippage during a disposition; the forced cover is at least one day later than the real last cover day; the institution's cover at a suspension is an upper bound). The impact coefficient Y and the auction share f behind the capital-scenario fill correction (§6.4, §6.8) have no Taiwan evidence, only brackets, and so does the stop variant's overshoot c; the fractional row is still the open because Q → 0. The capacity verdict of §6.9 rests on the impact coefficient Y and the 5% participation cap, neither calibrated on Taiwan, and on θ being spread evenly over the day.
 (f) The three transformers' results are not reproducible run to run (bf16, different GPUs); the three retrained folds differ from the old launches, and the report uses the extended current launches.
 (g) The out-of-sample window holds the July 2026 correction and not the 2022 bear market; broker-branch and depository data were not bought.
 
