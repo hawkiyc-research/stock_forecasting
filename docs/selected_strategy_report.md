@@ -1,7 +1,7 @@
 # 台股量化選股策略（第二版）：七個模型、三種策略、門檻篩選與樣本外驗證 / A Quantitative Taiwan Stock Strategy (second edition): Seven Models, Three Strategies, the Threshold Shortlist and Out-of-Sample Verification
 
-版本：2026-11-02，2026-11-04 補充 §7.5 執行層敏感度，2026-11-06 補充 §7.6 成交價模型與追蹤停損並修訂摘要、6、9、10（取代 2026-10-29 的第一版；第一版封存於 `reports/deprecated/pre-1323-20261102/`，11-02 的 Word 版封存於 `reports/deprecated/pre-1323s3-20261104/`，11-04 的 Word 版封存於 `reports/deprecated/pre-1323s4-20261106/`）。完整版見 `docs/research_full_report.md`。
-Version: 2026-11-02, with §7.5 (execution-layer sensitivity) added on 2026-11-04 and §7.6 (fill model and trailing stop) on 2026-11-06, the summary, 6, 9 and 10 revised (supersedes the first edition of 2026-10-29, archived under `reports/deprecated/pre-1323-20261102/`; the 11-02 Word files are archived under `reports/deprecated/pre-1323s3-20261104/`, the 11-04 Word files under `reports/deprecated/pre-1323s4-20261106/`). The full report is `docs/research_full_report.md`.
+版本：2026-11-02，2026-11-04 補充 §7.5 執行層敏感度，2026-11-06 補充 §7.6 成交價模型與追蹤停損、§7.7 方式 B 與容量，並修訂摘要、6、9、10（取代 2026-10-29 的第一版；第一版封存於 `reports/deprecated/pre-1323-20261102/`，11-02 的 Word 版封存於 `reports/deprecated/pre-1323s3-20261104/`，11-04 的 Word 版封存於 `reports/deprecated/pre-1323s4-20261106/`）。完整版見 `docs/research_full_report.md`。
+Version: 2026-11-02, with §7.5 (execution-layer sensitivity) added on 2026-11-04, §7.6 (fill model and trailing stop) and §7.7 (policy B and capacity) on 2026-11-06, the summary, 6, 9 and 10 revised (supersedes the first edition of 2026-10-29, archived under `reports/deprecated/pre-1323-20261102/`; the 11-02 Word files are archived under `reports/deprecated/pre-1323s3-20261104/`, the 11-04 Word files under `reports/deprecated/pre-1323s4-20261106/`). The full report is `docs/research_full_report.md`.
 
 ---
 
@@ -17,6 +17,7 @@ Version: 2026-11-02, with §7.5 (execution-layer sensitivity) added on 2026-11-0
 - **處置**：六個通過的格一起進入 **2026-10-23 起 12 個月的確認期**，規則事前登記、期間內不得修改；期滿各自判定是否進入模擬交易。沒有策略在確認期之前進入模擬交易。
 - **執行層補充敏感度（11 月 4 日，§7.5）**：加上「處置期間不新進場」與「停券起日強制回補」後，F2 × 多空＋避險全段 Sharpe 2.38 → 1.70、年化 +30.2% → +22.6%，樣本外 +20.4% 不變；下降超過事前預期，這套保守假設成為確認期每季讀數的參考。六格裡 F2 × S2、D0 × S2、D1-Kronos × S-A 仍過門檻，F2 × S1、F0 × S2、D1-Chronos × S2 未過並帶註記；散戶成本下只有 D1-Kronos × S-A 通過。
 - **成交價模型與追蹤停損（11 月 6 日，§7.6）**：以開盤集合競價市價單下單時，成交價 = 開盤價 × (1 ± 自身衝擊)：散戶 1,000 萬年化少 9 到 12 個百分點（F2 × S2 +28.6% → +17.5%），機構 3 億變成 −17.5%——這套策略在「全部掛開盤」下容量遠低於 3 億。15% 追蹤停損讓七格全部變差、回撤沒有變淺（F2 × S2 全段 Sharpe 2.38 → 1.30），帶註記「成交與停損敏感度未通過」。都是並列讀數。
+- **方式 B 與容量（11 月 6 日，§7.7）**：改為盤中分批下單，延遲成本約 5 個百分點（F2 × S2 分數位置 2.38 → 2.01），但 3 億仍只剩 +8.1%／0.72；容量約 1,000 萬到 3,000 萬（F2 × S2 散戶 1,000 萬 +20.1%／1.62、機構 3,000 萬 1.49），純多頭約 1 億，是中小型股宇宙與換手結構的限制。
 - **要記得的限制**：候選集與門檻是看過第一版樣本外結果之後定的，所以這一輪的樣本外只對重訓後的分數乾淨；64 個交易日的區間寬 ±50 到 ±120 個百分點；多空策略的樣本外報酬全部來自上市、上櫃為負。
 
 ### 2. 研究問題
@@ -210,6 +211,38 @@ Version: 2026-11-02, with §7.5 (execution-layer sensitivity) added on 2026-11-0
 - **停損對七格全部是負的，回撤沒有變淺**：F2 × S2 全段 Sharpe 2.38 → 1.30、年化 +30.2% → +17.0%，平均持有 36 → 20 日、換手加倍；超越量只占代價的三分之一，其餘是換手與停在低點後的反彈；純多頭的回撤反而更深。只有 F2 × S2 的樣本外略升（+23.1%）。F2 × S2 帶註記「成交與停損敏感度未通過」。
 - **四條規則全開**：機構分數位置 F2 × S2 全段 +10.9%／0.85、樣本外 +17.6%／1.30；散戶 1,000 萬下多空格全部轉負，只有純多頭為正。依 11 月 4 日的裁定，這些是並列讀數，確認期六格不變。
 
+#### 7.7 方式 B：盤中分批下單與容量（2026-11-06）
+
+方式 A 下 3 億不可行，使用者登記方式 B：以開盤價為到達價、盤中分批執行，成交價 = 開盤價 × exp(θ × 當日開盤到收盤報酬) × (1 ± 半檔位 ± Y σ_日 √(Q ÷ V))，θ 0.5、Y 0.7，衝擊以全日量為分母，不含停損，加入機構 30 億情境。
+
+分數位置與資本情境（F2 × S2 與純多頭格，其餘見完整報告 §6.9）（年化淨報酬 / Sharpe / 最大回撤；全段 = P1 ∪ P2，樣本外 = P3；TW 兩市場各半、主滑價；基準 = 同一成本檔副本、無規則的參考跑）：
+
+| 列 | 期間 | 基準 | B | B + D + C |
+| --- | --- | --- | --- | --- |
+| F2 × S2 機構 分數位置 | P1+P2 | +30.2% / 2.38 / -8.1% | +25.4% / 2.01 / -9.8% | +17.9% / 1.34 / -10.1% |
+| F2 × S2 機構 分數位置 | P3 | +19.6% / 1.48 / -8.0% | +19.5% / 1.50 / -8.2% | +17.7% / 1.21 / -8.8% |
+| F2 × S2 散戶 1,000 萬 | P1+P2 | +28.6% / 2.29 / -9.2% | +20.1% / 1.62 / -12.4% | +13.4% / 1.13 / -11.2% |
+| F2 × S2 機構 3 億 | P1+P2 | +24.7% / 2.20 / -6.1% | +8.1% / 0.72 / -10.3% | -1.0% / -0.09 / -14.7% |
+| F2 × S2 機構 10 億 | P1+P2 | +15.6% / 2.01 / -4.6% | -4.7% / -0.61 / -23.7% | -11.3% / -1.51 / -31.8% |
+| F2 × S2 機構 30 億 | P1+P2 | +11.7% / 1.95 / -3.5% | -15.6% / -2.57 / -40.3% | -21.6% / -3.61 / -50.5% |
+| D1-Kronos × S-A 機構 3 億 | P1+P2 | +31.6% / 2.00 / -20.2% | +19.7% / 1.26 / -26.0% | +15.8% / 1.11 / -25.6% |
+
+容量（方式 B 下全段淨 Sharpe ≥ 1.5 的最大資本情境）：
+
+| 格 | 分數位置 | 3 億 | 10 億 | 30 億 | 容量（Sharpe ≥ 1.5） | 散戶 1,000 萬 |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| F2 × S2 | 2.01 | 0.72 | -0.61 | -2.57 | 只有分數位置 | 1.62 |
+| F2 × S1 | 1.73 | 0.28 | -0.40 | -1.72 | 只有分數位置 | 1.40 |
+| D0 × S2 | 1.40 | -0.10 | -1.48 | -3.94 | 無 | 0.74 |
+| D1-Chronos × S2 | 1.39 | -0.12 | -1.22 | -3.95 | 無 | 0.78 |
+| F0 × S2 | 1.25 | -0.09 | -1.25 | -4.29 | 無 | 0.99 |
+| D1-Kronos × S-A | 2.01 | 1.26 | 0.96 | -0.16 | 只有分數位置 | 1.63 |
+| F2 × S-A（未進確認期） | 2.11 | 1.54 | 0.97 | 0.06 | 300M | 1.81 |
+
+- 延遲成本約 5 個百分點、對執行時點不敏感（θ 0.25 到 0.75 差 1.5 個百分點），訊號不在開盤瞬間實現；「方式 B 延遲成本敏感度」通過。
+- 3 億仍不達標（F2 × S2 +8.1%／0.72，整個文獻範圍的 Y 都不達標），10 億、30 億為負且部署率只剩一半以下；原因是中小型股宇宙與兩腿各 50 檔的換手結構，衝擊 ∝ √(Q ÷ V)。散戶 1,000 萬可行；補跑 3,000 萬與 1 億後，多空＋避險的容量約 1,000 萬到 3,000 萬（機構 3,000 萬 +19.9%／1.49，門檻邊緣；1 億 +13.6%／1.04），純多頭約 1 億（D1-Kronos × S-A 1.51、F2 × S-A 1.66）。
+- 都是並列讀數，確認期六格不變；要管理 3 億以上需要擴大 K、降低換手或改宇宙，那是新策略。
+
 ### 8. 樣本是怎麼用的：洩漏與設計偏誤的交代
 
 **資料洩漏：沒有。** 特徵、籌碼、標籤、訓練切分、策略輸入都只用訊號日之前（籌碼：次日開盤前）可得的資料；延伸沿用的折與舊 launch 逐位元相同。
@@ -218,14 +251,14 @@ Version: 2026-11-02, with §7.5 (execution-layer sensitivity) added on 2026-11-0
 
 ### 9. 限制（事前聲明，不是事後找理由）
 
-(a) 還原價不含分割、減資與面額變更（2023 年起 100 次大跳動，98 次被停牌規則排除，另 2 檔不在樣本內）。(b) 樣本外只有 64 個交易日、一種市場狀態。(c) 籌碼公布時刻用保守規則；外資持股比例 z 分數欄恆缺值。(d) 放空腿的借不到機率、召回與借券費分層是參數假設；主表不含處置股與停券強制回補的約束，7.5 的兩條規則仍偏樂觀；7.6 的衝擊係數、開盤量占比與停損超越量沒有台股實證、只有括弧。(e) transformer 的結果不保證逐次重現。(f) 分點與集保資料未購買。
+(a) 還原價不含分割、減資與面額變更（2023 年起 100 次大跳動，98 次被停牌規則排除，另 2 檔不在樣本內）。(b) 樣本外只有 64 個交易日、一種市場狀態。(c) 籌碼公布時刻用保守規則；外資持股比例 z 分數欄恆缺值。(d) 放空腿的借不到機率、召回與借券費分層是參數假設；主表不含處置股與停券強制回補的約束，7.5 的兩條規則仍偏樂觀；7.6 的衝擊係數、開盤量占比與停損超越量沒有台股實證、只有括弧；7.7 的容量結論取決於衝擊係數與 5% 參與率上限。(e) transformer 的結果不保證逐次重現。(f) 分點與集保資料未購買。
 
 ### 10. 下一步
 
 1. 六個通過的格進入 2026-10-23 起 12 個月的確認期，各自判定：淨報酬 > 0 且回撤不深於各自樣本內的兩倍（F2 × S2 −16.2%、F2 × S1 −22.0%、F0 × S2 −17.2%、D0 × S2 −16.4%、D1-Chronos × S2 −18.6%、D1-Kronos × S-A −47.8%）；每季以延伸方式補新折、不重訓；2027-04-22 期中只報不判；期間內不改任何設定。
 2. 上櫃空頭腿在樣本外的虧損歸因。
 2b. 執行層寫實化一律登記為並列敏感度（11 月 4 日裁定）；確認期的每季讀數同時列 D + C、F + L 與全部保守假設下的數字。
-2c. 容量：要管理 3 億以上必須改為盤中分批（方式 B），另案登記；停損不採用，若要風控改測組合層級的回撤降倉。
+2c. 容量：方式 B 下 3 億仍不達標，要管理 3 億以上必須擴大 K、降低換手或改宇宙（新策略）；這套策略的區間是 1,000 萬到 1 億；停損不採用，若要風控改測組合層級的回撤降倉。
 3. 事件研究（處置、注意股、當沖比跳升）；transformer 在籌碼特徵上重訓；券商分點資料——都要先登記再做，由使用者決定。
 
 ### 附錄：本文名稱與程式庫內部代號
@@ -256,6 +289,7 @@ Version: 2026-11-02, with §7.5 (execution-layer sensitivity) added on 2026-11-0
 - **Disposition**: the six passing cells enter a **12-month confirmation period from 2026-10-23**, with rules registered in advance and frozen; each is judged at the end for paper trading. No strategy enters paper trading before the confirmation period.
 - **Execution-layer sensitivity added on 4 November (§7.5)**: with "no new entry during a disposition period" and "forced cover when short selling is suspended", F2 × long-short + hedge goes from Sharpe 2.38 to 1.70 and from +30.2% to +22.6% a year over the whole period while its out-of-sample +20.4% is unchanged; the fall exceeds the pre-registered expectation, so this conservative setting becomes the reference for the quarterly confirmation readings. Of the six cells F2 × S2, D0 × S2 and D1-Kronos × S-A still clear the thresholds, F2 × S1, F0 × S2 and D1-Chronos × S2 do not and carry a note; under retail costs only D1-Kronos × S-A passes.
 - **Fill model and trailing stop (6 November, §7.6)**: with market orders in the opening call, fill = open × (1 ± own impact): retail NT$10M loses 9 to 12 points a year (F2 × S2 +28.6% → +17.5%) and institution NT$300M turns to −17.5% — under "everything at the open" this strategy's capacity is far below NT$300M. The 15% trailing stop worsens all seven cells and makes no drawdown shallower (F2 × S2 whole-period Sharpe 2.38 → 1.30), hence the note "fill-and-stop sensitivity not passed". All parallel readings.
+- **Policy B and capacity (6 November, §7.7)**: with orders worked through the session the delay cost is about 5 points (F2 × S2 fractional 2.38 → 2.01), but NT$300M still ends at +8.1% / 0.72; the capacity is about NT$10M to NT$30M (F2 × S2 retail NT$10M +20.1% / 1.62, institution NT$30M 1.49) and about NT$100M for long-only, a limit of the small-and-mid-cap universe and the turnover structure.
 - **Limitations to keep in mind**: the candidate set and thresholds were set after the first edition's out-of-sample results, so this round's out-of-sample period is clean only for the retrained scores; 64 sessions give intervals ±50 to ±120 points wide; every long-short cell's out-of-sample return came from TWSE while TPEX was negative.
 
 ### 2. Research question
@@ -449,6 +483,38 @@ Capital scenarios (annualized net return / Sharpe / max drawdown; whole = P1 ∪
 - **The stop is negative for all seven cells and makes no drawdown shallower**: F2 × S2's whole-period Sharpe falls from 2.38 to 1.30 and its return from +30.2% to +17.0%, the mean holding from 36 to 20 sessions with turnover doubled; the overshoot is only a third of the cost, the rest is turnover and rebounds after stopping at lows; the long-only cells' drawdowns get deeper. Only F2 × S2's out-of-sample return rises slightly (+23.1%). F2 × S2 carries the note "fill-and-stop sensitivity not passed".
 - **All four rules on**: institution fractional F2 × S2 whole +10.9% / 0.85, out of sample +17.6% / 1.30; under retail NT$10M every long-short cell turns negative and only the long-only cells stay positive. Under the 4 November ruling these are parallel readings; the six confirmation-period cells are unchanged.
 
+#### 7.7 Policy B: orders worked through the session, and capacity (2026-11-06)
+
+NT$300M is infeasible under policy A, so the user registered policy B: the open as the arrival price, orders worked through the session, fill = open × exp(θ × the day's open-to-close return) × (1 ± half a tick ± Y σ_daily √(Q ÷ V)), θ 0.5, Y 0.7, impact over the full day's volume, no stop, an institution NT$3B scenario added.
+
+Fractional and capital rows (F2 × S2 and the long-only cell; the rest in the full report §6.9) (annualized net return / Sharpe / max drawdown; whole = P1 ∪ P2, OOS = P3; TW half each, primary slippage; baseline = a reference run with the same cost-profile copy and no rule):
+
+| Row | Period | Baseline | B | B + D + C |
+| --- | --- | --- | --- | --- |
+| F2 × S2 institution fractional | P1+P2 | +30.2% / 2.38 / -8.1% | +25.4% / 2.01 / -9.8% | +17.9% / 1.34 / -10.1% |
+| F2 × S2 institution fractional | P3 | +19.6% / 1.48 / -8.0% | +19.5% / 1.50 / -8.2% | +17.7% / 1.21 / -8.8% |
+| F2 × S2 retail NT$10M | P1+P2 | +28.6% / 2.29 / -9.2% | +20.1% / 1.62 / -12.4% | +13.4% / 1.13 / -11.2% |
+| F2 × S2 institution NT$300M | P1+P2 | +24.7% / 2.20 / -6.1% | +8.1% / 0.72 / -10.3% | -1.0% / -0.09 / -14.7% |
+| F2 × S2 institution NT$1B | P1+P2 | +15.6% / 2.01 / -4.6% | -4.7% / -0.61 / -23.7% | -11.3% / -1.51 / -31.8% |
+| F2 × S2 institution NT$3B | P1+P2 | +11.7% / 1.95 / -3.5% | -15.6% / -2.57 / -40.3% | -21.6% / -3.61 / -50.5% |
+| D1-Kronos × S-A institution NT$300M | P1+P2 | +31.6% / 2.00 / -20.2% | +19.7% / 1.26 / -26.0% | +15.8% / 1.11 / -25.6% |
+
+Capacity (the largest capital scenario with whole-period net Sharpe ≥ 1.5 under policy B):
+
+| Cell | Fractional | 300M | 1B | 3B | Capacity (Sharpe ≥ 1.5) | Retail 10M |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| F2 × S2 | 2.01 | 0.72 | -0.61 | -2.57 | fractional only | 1.62 |
+| F2 × S1 | 1.73 | 0.28 | -0.40 | -1.72 | fractional only | 1.40 |
+| D0 × S2 | 1.40 | -0.10 | -1.48 | -3.94 | none | 0.74 |
+| D1-Chronos × S2 | 1.39 | -0.12 | -1.22 | -3.95 | none | 0.78 |
+| F0 × S2 | 1.25 | -0.09 | -1.25 | -4.29 | none | 0.99 |
+| D1-Kronos × S-A | 2.01 | 1.26 | 0.96 | -0.16 | fractional only | 1.63 |
+| F2 × S-A (not in confirmation) | 2.11 | 1.54 | 0.97 | 0.06 | 300M | 1.81 |
+
+- The delay cost is about 5 points and insensitive to the execution time (θ 0.25 to 0.75 spans 1.5 points); the signal does not realize at the opening print; the "policy-B delay-cost sensitivity" passes.
+- NT$300M still falls short (F2 × S2 +8.1% / 0.72, short under the whole literature range of Y), NT$1B and NT$3B are negative with deployment below half; the cause is the small-and-mid-cap universe and the two-leg 50-name turnover structure, with impact scaling as √(Q ÷ V). Retail NT$10M works; with the added NT$30M and NT$100M rows, the capacity is about NT$10M to NT$30M for long-short + hedge (institution NT$30M +19.9% / 1.49, at the threshold; NT$100M +13.6% / 1.04) and about NT$100M for long-only (D1-Kronos × S-A 1.51, F2 × S-A 1.66).
+- All parallel readings; the six confirmation-period cells are unchanged; managing NT$300M or more needs a larger K, lower turnover or another universe, i.e. a new strategy.
+
 ### 8. How the samples were used: leakage and design bias, stated plainly
 
 **Data leakage: none.** Features, chip rows, labels, training splits and strategy inputs use only data available before the signal day (chip rows: before the next open); the folds carried over by extension are byte-identical to the old launches.
@@ -457,14 +523,14 @@ Capital scenarios (annualized net return / Sharpe / max drawdown; whole = P1 ∪
 
 ### 9. Limitations (stated in advance, not found afterwards)
 
-(a) Adjusted prices exclude splits, capital reductions and par-value changes (100 large jumps since 2023, 98 excluded by the halt rule, the other 2 names outside the sample). (b) The out-of-sample period has 64 sessions and one market state. (c) Chip publication times follow a conservative rule; the foreign-holding z-score column is always missing. (d) The short leg's borrow-failure probability, recalls and fee tiers are parameter assumptions; the main tables carry no disposition-stock or forced-cover constraint, and the two rules of 7.5 remain optimistic; the impact coefficient, auction share and stop overshoot of 7.6 have no Taiwan evidence, only brackets. (e) Transformer results are not reproducible run to run. (f) Broker-branch and depository data were not bought.
+(a) Adjusted prices exclude splits, capital reductions and par-value changes (100 large jumps since 2023, 98 excluded by the halt rule, the other 2 names outside the sample). (b) The out-of-sample period has 64 sessions and one market state. (c) Chip publication times follow a conservative rule; the foreign-holding z-score column is always missing. (d) The short leg's borrow-failure probability, recalls and fee tiers are parameter assumptions; the main tables carry no disposition-stock or forced-cover constraint, and the two rules of 7.5 remain optimistic; the impact coefficient, auction share and stop overshoot of 7.6 have no Taiwan evidence, only brackets; the capacity verdict of 7.7 rests on the impact coefficient and the 5% participation cap. (e) Transformer results are not reproducible run to run. (f) Broker-branch and depository data were not bought.
 
 ### 10. Next steps
 
 1. The six passing cells enter the 12-month confirmation period from 2026-10-23, each judged on its own: net return > 0 and drawdown within twice its own in-sample drawdown (F2 × S2 −16.2%, F2 × S1 −22.0%, F0 × S2 −17.2%, D0 × S2 −16.4%, D1-Chronos × S2 −18.6%, D1-Kronos × S-A −47.8%); new folds added each quarter by extension, no retraining; the 2027-04-22 interim reading is reported, not judged; no setting changes during the period.
 2. Attribution of the TPEX short leg's out-of-sample loss.
 2b. Execution realism is always registered as a parallel sensitivity (the 4 November ruling); every quarterly confirmation reading also lists the numbers under D + C, F + L and all rules together.
-2c. Capacity: managing NT$300M or more needs orders worked through the day (policy B), registered separately; no stop loss, and for risk control test portfolio-level drawdown de-leveraging instead.
+2c. Capacity: NT$300M still falls short under policy B; managing NT$300M or more needs a larger K, lower turnover or another universe (a new strategy); this strategy's range is NT$10M to NT$100M; no stop loss, and for risk control test portfolio-level drawdown de-leveraging instead.
 3. Event studies (disposition, attention stocks, day-trade-ratio jumps); the transformer retrained on chip features; broker-branch data — each registered before it is done, at the user's decision.
 
 ### Appendix: names used in this report and the code-base identifiers

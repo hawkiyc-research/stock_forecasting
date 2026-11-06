@@ -1,0 +1,221 @@
+{
+  "schema_version": "1.0",
+  "name": "scenario-suite-p3-forward-b-polb_cap",
+  "description": "Supplement 5 addendum (institution 30M / 100M rows, cost_profiles_supp5b.json). Protocol 13.23 supplement 5 (policy B: orders worked through the session, Y 0.7, theta 0.5); cost profiles from cost_profiles_supp5.json (retail 10M and institution 3B added); every other key equals scenario_suite_v1_p3b.json. Experiment protocol section 13.23 supplement 2: scenario_suite_v1_p3 with the report periods derived from the data end (the user's 2026-11-02 rule): P3 = the last complete calendar quarter plus the current partial quarter = [2026-07-01, 2026-10-23); P2 = the four quarters before it; P1 from 2023-01-02 to P2. Everything else (strategies, construction, execution layer, costs, benchmarks, bootstrap, selection) is byte-for-byte the frozen scenario_suite_v1_p3.json. Experiment protocol section 13.20: the P3 forward backtest of S1 / S2 (section 13.19 supplement 4 construction and execution layer, parameters fixed to the registered selection) and S-A (the weekly low-turnover long band of section 13.18 item 7, K x m selected once on TWSE / P1 / institution / fractional net Sharpe) on the extended walk-forward predictions of B0 F0 and B0 F2. Periods P1, P2 and P3; the decision union P1+P2 excludes P3, which is reported with point estimates and intervals only. Run with --chip-data-root <tw_chip_data>/data and one --label per predictions file (F0, F2).",
+  "cost_profiles": "cost_profiles_supp5b.json",
+  "scenarios": [
+    "md_ls",
+    "md_ls_tx",
+    "wk_long"
+  ],
+  "construction": {
+    "score_variants": [
+      "v1"
+    ],
+    "leg_matching": [
+      "none"
+    ]
+  },
+  "markets": {
+    "TWSE": {
+      "codes": [
+        "TWSE"
+      ],
+      "index": "TAIEX.TW",
+      "min_dollar_volume": 30000000
+    },
+    "TPEX": {
+      "codes": [
+        "TPEX"
+      ],
+      "index": "TPEX.TWO",
+      "min_dollar_volume": 10000000
+    }
+  },
+  "combined_market": {
+    "name": "TW",
+    "weights": {
+      "TWSE": 0.5,
+      "TPEX": 0.5
+    }
+  },
+  "universe": {
+    "liquidity_lookback_sessions": 20,
+    "min_close": 10,
+    "exclude_etf": true
+  },
+  "signal": {
+    "half_life_sessions": 3,
+    "max_gap_sessions": 5
+  },
+  "multi_day": {
+    "grid": {
+      "score_horizons": [
+        5,
+        10
+      ],
+      "k": [
+        30,
+        50
+      ],
+      "buffer_multiples": [
+        2,
+        3
+      ]
+    },
+    "fixed": {
+      "F0": {
+        "h": 10,
+        "k": 50,
+        "buffer": 3
+      },
+      "F2": {
+        "h": 10,
+        "k": 50,
+        "buffer": 3
+      }
+    },
+    "entry_cap_fraction": 0.1,
+    "bootstrap_block": 21
+  },
+  "weekly": {
+    "score_horizon": 5,
+    "score_variant": "v1",
+    "turnover_cap": 0.5,
+    "grid": {
+      "k": [
+        30,
+        50
+      ],
+      "buffer_multiples": [
+        2,
+        3
+      ]
+    },
+    "fixed": {}
+  },
+  "benchmarks": {
+    "etf": {
+      "name": "etf_0050",
+      "symbol": "0050.TW",
+      "splits": [
+        {
+          "date": "2025-06-18",
+          "ratio": 4,
+          "note": "1:4 split; the dataset's adjusted_close carries dividends only"
+        }
+      ]
+    }
+  },
+  "day_trade": {
+    "horizon": 1,
+    "grid": {
+      "fractions": [
+        0.05,
+        0.1
+      ]
+    },
+    "bootstrap_block": 5
+  },
+  "combination": {
+    "multi_day_weight": 0.5,
+    "day_trade_weight": 0.5,
+    "bootstrap_block": 21
+  },
+  "price_limit": {
+    "open_gap": 0.095
+  },
+  "tx": {
+    "contract": "TX",
+    "root": "diagnostics/taifex-tx",
+    "multiplier": 200,
+    "beta_window": 60,
+    "beta_min_observations": 30
+  },
+  "annualization_days": 252,
+  "bootstrap": {
+    "replicates": 1000,
+    "seed": 11
+  },
+  "periods": {
+    "P1": [
+      "2023-01-02",
+      "2025-07-01"
+    ],
+    "P2": [
+      "2025-07-01",
+      "2026-07-01"
+    ],
+    "P3": [
+      "2026-07-01",
+      "2026-10-23"
+    ]
+  },
+  "decision_periods": [
+    "P1",
+    "P2"
+  ],
+  "selection": {
+    "market": "TWSE",
+    "period": "P1",
+    "profile": "institution",
+    "metric": "sharpe"
+  },
+  "attractiveness": {
+    "profile": "institution",
+    "period": "P1+P2",
+    "min_sharpe": 1.0,
+    "lower_bound_above": 0.0,
+    "require_positive_period": "P2"
+  },
+  "execution": {
+    "datasets": {
+      "eligibility": "eligibility",
+      "sbl": "sbl"
+    },
+    "borrow_list": {
+      "institution": "sbl",
+      "retail": "margin"
+    },
+    "borrow_failure": {
+      "institution": [
+        0.02,
+        0.1,
+        0.25
+      ],
+      "retail": [
+        0.05,
+        0.2,
+        0.5
+      ]
+    },
+    "failure_multipliers": [
+      0,
+      1,
+      2
+    ],
+    "primary_failure_multiplier": 1,
+    "recall_probabilities": [
+      0.0,
+      0.005
+    ],
+    "primary_recall_probability": 0.0,
+    "borrow_fee_tiers": {
+      "institution": [
+        0.015,
+        0.03,
+        0.06
+      ]
+    },
+    "quota_cap": true,
+    "replicates": 5,
+    "seed": 11,
+    "open_fill": {
+      "policy": "B",
+      "impact_y": 0.7,
+      "auction_share": 1.0,
+      "half_tick": true,
+      "delay_theta": 0.5
+    }
+  }
+}

@@ -198,3 +198,36 @@ def test_run_with_fill_and_stop(tmp_path):
 
     assert row(grid, "fractional") == pytest.approx(row(grid_plain, "fractional"))
     assert row(grid, "20M") < row(grid_plain, "20M")
+
+
+def test_policy_b_adds_half_tick_delay_and_full_day_impact():
+    growth = np.zeros(8)
+    result = _two_stock_band(growth=growth)  # A bought at the first open, held throughout
+    rows = 8
+    inputs = SimpleNamespace(volatility=np.full(rows, 0.02), dollar_volume=np.full(rows, 1e8),
+                             raw_open_1=np.full(rows, 80.0))
+    intraday = np.zeros(rows)
+    intraday[0] = math.log(1.02)  # A rises 2% from open to close on its entry session
+    intraday[6] = math.log(0.99)  # and falls 1% on the final session (liquidation at that open)
+    data = SimpleNamespace(inputs=inputs, intraday=intraday)
+    config = {"execution": {"open_fill": {"policy": "B", "impact_y": 0.7, "auction_share": 0.1,
+                                          "half_tick": True, "delay_theta": 0.5}}}
+    buy, sell = ss.impact_rates(result, data, config)
+    half = 0.05 / 80.0
+    assert buy[0] == pytest.approx(half + (1.0 - math.exp(-0.5 * math.log(1.02))))
+    assert buy[1] == 0.0  # B was never bought
+    assert sell[6] == pytest.approx(half + (1.0 - math.exp(0.5 * math.log(0.99))))
+    # Short mirror: the same move is a gain on the short sale and a cost on the cover.
+    sbuy, ssell = ss.impact_rates(result, data, config, short=True)
+    assert sbuy[0] == pytest.approx(half + (1.0 - math.exp(0.5 * math.log(1.02))))
+    assert ssell[6] == pytest.approx(half + (1.0 - math.exp(-0.5 * math.log(0.99))))
+    # Impact under policy B uses the full day's volume (f = 1), capital rows only.
+    capital = SimpleNamespace(path=result.path, fill_fraction=result.fill_fraction,
+                              stop_rows=None, buy_value=np.where(np.arange(rows) == 0, 1e6, np.nan),
+                              sell_value=np.full(rows, np.nan))
+    cbuy, _ = ss.impact_rates(capital, data, config)
+    assert cbuy[0] == pytest.approx(buy[0] + 0.7 * 0.02 * math.sqrt(1e6 / 1e8))
+    with pytest.raises(ValueError, match="policy"):
+        ss.impact_rates(result, data, {"execution": {"open_fill": {"policy": "C", "impact_y": 1}}})
+    tags = ss.execution_tags(config)
+    assert tags["fill_policy"] == "B" and tags["delay_theta"] == 0.5
