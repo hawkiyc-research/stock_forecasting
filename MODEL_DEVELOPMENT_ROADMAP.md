@@ -435,9 +435,9 @@ Baseline 包含 always_buy、zero_return、momentum_5d、reversal_5d、ma_crosso
 
 #### 10.1 主要來源
 
-- **S1** [現行 seed42 報告](reports/training_result_analysis_run-20261015T064558Z-f04e155d4299416f.docx)。
-- **S2** [現行 seed347 報告](reports/training_result_analysis_run-20261015T064559Z-624f212a27894308.docx)。
-- **S3** [現行 seed5067 報告](reports/training_result_analysis_run-20261015T064600Z-13b8b4376ea5413b.docx)。
+- **S1** [現行 seed42 報告](reports/deprecated/pre-rank-pivot-20261021/training_result_analysis_run-20261015T064558Z-f04e155d4299416f.docx)。
+- **S2** [現行 seed347 報告](reports/deprecated/pre-rank-pivot-20261021/training_result_analysis_run-20261015T064559Z-624f212a27894308.docx)。
+- **S3** [現行 seed5067 報告](reports/deprecated/pre-rank-pivot-20261021/training_result_analysis_run-20261015T064600Z-13b8b4376ea5413b.docx)。
 - **S4** [早期報告索引](reports/deprecated/README.md)：R02–R08 在該目錄本層。
 - **S5** [改版前報告分類索引](reports/deprecated/pre-a-signal64-20261016/README.md) 與 [歸檔 manifest](reports/deprecated/pre-a-signal64-20261016/archive-manifest.json)：R09–R18 的修訂後報告與原始 bytes/hash。
 - **S6** [主要歷史尺度診斷](artifacts/diagnostics/representation-scales/run-20260905T203327Z-270337978/checkpoint-018145/probe-20260914T101527Z-105a4d66/summary.md)；同目錄 `report.json` 是逐目標／市場數值。
