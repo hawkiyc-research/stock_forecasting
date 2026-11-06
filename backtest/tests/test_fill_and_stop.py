@@ -268,3 +268,65 @@ def test_unit_exposure_halves_the_long_short_book_and_splits_the_capital(tmp_pat
     assert ss.capital_share(config, data, 2) == 1.0
     with pytest.raises(ValueError, match="capital_basis"):
         ss.capital_basis({"capital_basis": "half"})
+
+
+def test_odd_lot_rates_charge_gap_half_tick_and_minimum_commission():
+    inputs = SimpleNamespace(raw_open_1=np.full(4, 80.0))  # tick 0.1 -> half a tick 0.000625
+    data = SimpleNamespace(inputs=inputs)
+    result = SimpleNamespace(buy_value=np.array([25_000.0, 25_000.0, 500.0, np.nan]),
+                             sell_value=np.array([np.nan, 25_000.0, 25_000.0, 25_000.0]),
+                             odd_buy=np.array([True, False, True, True]),
+                             odd_sell=np.array([True, True, False, True]))
+    profile = SimpleNamespace(commission=0.000855)
+    spec = {"gap": 0.0025, "half_tick": True, "min_commission_twd": 1.0}
+    buy, sell = ss.odd_lot_rates(result, data, {}, profile, spec)
+    assert buy[0] == pytest.approx(0.0025 + 0.000625)  # odd-lot buy: gap + half a tick
+    assert buy[1] == 0.0  # a whole-lot buy pays nothing extra
+    assert buy[2] == pytest.approx(0.0025 + 0.000625 + (1.0 / 500.0 - 0.000855))  # top-up
+    assert buy[3] == 0.0 and sell[0] == 0.0  # no trade on that side
+    assert sell[1] == pytest.approx(0.0025 + 0.000625) and sell[2] == 0.0
+    policy_b = {"execution": {"open_fill": {"policy": "B"}}}
+    assert ss.odd_lot_rates(result, data, policy_b, profile, spec)[0][0] == pytest.approx(0.0025)
+    # with_impact adds the odd-lot rates to a long book only, and only for listed capital rows
+    config = {"execution": {"odd_lots": {"retail": ["10M"]},
+                            "odd_lots_cost": {"gap": 0.0025, "half_tick": True,
+                                              "min_commission_twd": 1}}}
+    rates = (np.zeros(4), np.zeros(4))
+    retail = ss.Capital("10M", 1e7, "retail")
+    assert ss.odd_lot_spec(config, retail) == spec
+    assert ss.odd_lot_spec(config, ss.Capital("300M", 3e8, "institution")) is None
+    assert ss.odd_lot_spec(config, ss.Capital("fractional", None, None)) is None
+    assert ss.odd_lot_spec({"execution": {}}, retail) is None
+    long_buy, _ = ss.with_impact(rates, result, data, config, profile=profile, capital=retail)
+    assert long_buy[0] == pytest.approx(buy[0])
+    short_buy, _ = ss.with_impact(rates, result, data, config, short=True, profile=profile,
+                                  capital=retail)
+    assert short_buy[0] == 0.0
+    assert ss.with_impact(rates, result, data, config)[0] is rates[0]
+
+
+def test_odd_lots_fill_the_long_leg_only(tmp_path):
+    from tests.test_scenario_suite import _tiny_market
+    data = _tiny_market(tmp_path / "m")  # one board lot costs NT$100,000
+    config = json.loads(ss.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    config["cost_profiles"] = str(ss.CONFIG_DIR / "cost_profiles.json")
+    profiles = json.loads((ss.CONFIG_DIR / "cost_profiles.json").read_text(encoding="utf-8"))
+    profile = ss._primary_profile(profiles, "retail")
+    small = ss.Capital("50K", 5e4, "retail")  # k = 1 -> a NT$50,000 slot, below one lot
+
+    def book(cfg):
+        return ss.multi_day_book(data, cfg, profile, small, h=5, k=1, buffer=2,
+                                 participation_cap=0.05)
+
+    whole = book(config)
+    assert whole.info["odd_lot_share"] == 0.0
+    assert whole.info["deployed_share"] == 0.0  # every buy is lot-blocked
+    odd_cfg = dict(config, execution={"odd_lots": {"retail": ["50K"]},
+                                      "odd_lots_cost": {"gap": 0.0025, "half_tick": True,
+                                                        "min_commission_twd": 1}})
+    odd = book(odd_cfg)
+    assert odd.info["odd_lot_share"] == 1.0  # the long leg buys every slot as odd lots
+    assert odd.info["short_deployed_share"] == 0.0  # the short leg stays whole-lot
+    assert odd.info["deployed_share"] > 0.0
+    assert odd.info["odd_lots"] == "retail:50K" and odd.info["odd_gap"] == 0.0025
+    assert ss.execution_tags(config)["odd_lots"] == ""
