@@ -570,6 +570,26 @@ def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def capital_basis(config: dict[str, Any]) -> str:
+    basis = str(config.get("capital_basis", "per_leg"))
+    if basis not in ("per_leg", "unit_exposure"):
+        raise ValueError(f"Unknown capital_basis {basis!r}")
+    return basis
+
+
+def capital_share(config: dict[str, Any], data: MarketData, legs: int) -> float:
+    """Share of the capital one leg of one market's book trades (protocol 13.23 supplement 6).
+
+    ``per_leg`` (the pre-supplement basis): every leg of every market uses the whole capital.
+    ``unit_exposure``: the capital is the total across the combined market, so a leg gets the
+    market's combination weight (0.5 each for TWSE / TPEX when combined) times 1 / legs.
+    """
+    if capital_basis(config) == "per_leg":
+        return 1.0
+    weights = (config.get("combined_market") or {}).get("weights") or {}
+    return float(weights.get(data.market, 1.0)) / float(legs)
+
+
 def fill_profile(profile: CostProfile, config: dict[str, Any], capital: Capital) -> CostProfile:
     """The cost profile a capital row trades under when the fill model is on (supplement 4
     amendment of 2026-11-06): the flat per-side slippage of the cost file was the stand-in for
@@ -623,24 +643,25 @@ def _band_long_short(
     """
     inputs = data.inputs
     fractional = capital.twd is None
+    config = config or {}
+    leg_capital = None if fractional else capital.twd * capital_share(config, data, 2)
     common = {
         "k": k, "buffer": buffer, "max_buys": max_buys, "symbols": inputs.index.symbol_codes,
         "link": inputs.link, "limit": limit,
         "lot_cost": None if fractional else data.lot_cost,
-        "slot_capital": None if fractional else capital.twd,
+        "slot_capital": leg_capital,
         "dollar_volume": None if fractional else inputs.dollar_volume,
         "participation_cap": None if fractional else participation_cap,
         "cap_mode": cap_mode,
         "odd_lots": odd_lots and not fractional,
         "blocked": blocked,
     }
-    config = config or {}
     long_stop = stop_settings(data, config)
     short_stop = stop_settings(data, config, short=True)
     stop_key = (long_stop.get("stop_fraction"), long_stop.get("stop_overshoot"))
     cache = {} if cache is None else cache
     base_key = (part, capital.name, k, buffer, max_buys, limit, cap_mode, odd_lots,
-                blocked is not None, stop_key)
+                blocked is not None, stop_key, capital_basis(config))
     long_key = ("long", *base_key)
     if long_key not in cache:
         cache[long_key] = simulate_band(engine.rankings(score, groups), move=inputs.move,
@@ -836,8 +857,12 @@ def multi_day_book(
             "recall_prob": execution.recall_prob,
             "forced_cover": execution.forced_cover or "",
         })
-    return Book(net=long_net + short_net, gross=long_gross + short_gross, info=info,
-                legs={"long": long_net, "short": short_net},
+    # Supplement 6: under unit exposure the book is half long, half short on NT$1 of capital;
+    # the legs keep their standalone 100% series for the per-leg columns.
+    scale = 0.5 if capital_basis(config) == "unit_exposure" else 1.0
+    info["capital_basis"] = capital_basis(config)
+    return Book(net=scale * (long_net + short_net), gross=scale * (long_gross + short_gross),
+                info=info, legs={"long": long_net, "short": short_net},
                 gross_legs={"long": long_gross, "short": short_gross})
 
 

@@ -344,6 +344,8 @@ def weekly_long_book(
     """The S-A book of one market under one cost profile and capital scenario."""
     from twbacktest.scenario_suite import (
         Book,
+        capital_basis,
+        capital_share,
         disposition_mask,
         execution_tags,
         fill_profile,
@@ -366,16 +368,17 @@ def weekly_long_book(
     score = cache[score_key]
     blocked = disposition_mask(data, config)
     stop = stop_settings(data, config)
+    book_capital = None if fractional else capital.twd * capital_share(config, data, 1)
     key = ("weekly", capital.name, k, buffer, turnover_cap, limit, cap_mode,
            odd_lots and not fractional, h, score_variant, blocked is not None,
-           stop.get("stop_fraction"), stop.get("stop_overshoot"))
+           stop.get("stop_fraction"), stop.get("stop_overshoot"), capital_basis(config))
     if key not in cache:
         cache[key] = simulate_weekly_band(
             engine.rankings(score, data.groups), k=k, buffer=buffer,
             turnover_cap=turnover_cap, rebalance=weekly_signal_flags(inputs.dates),
             symbols=inputs.index.symbol_codes, link=inputs.link, move=inputs.move,
             limit=limit, lot_cost=None if fractional else data.lot_cost,
-            slot_capital=None if fractional else capital.twd,
+            slot_capital=book_capital,
             odd_lots=odd_lots and not fractional,
             dollar_volume=None if fractional else inputs.dollar_volume,
             participation_cap=None if fractional else participation_cap, cap_mode=cap_mode,
@@ -409,6 +412,7 @@ def weekly_long_book(
         "cap_mode": cap_mode,
         "disposition_skipped_share": band.blocked_skipped / attempts,
         "stop_exits": float(band.stop_exits), "stop_gap_exits": float(band.stop_gap_exits),
+        "capital_basis": capital_basis(config),
         **execution_tags(config),
     }
     return Book(net=net, gross=gross, info=info, legs={"long": net},

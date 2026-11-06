@@ -245,3 +245,26 @@ def test_fill_profile_drops_the_flat_slippage_for_capital_rows_only():
     kept = {"execution": {"open_fill": {"policy": "A", "impact_y": 0.7, "auction_share": 0.1,
                                         "keep_flat_slippage": True}}}
     assert ss.fill_profile(profile, kept, capital) is profile
+
+
+def test_unit_exposure_halves_the_long_short_book_and_splits_the_capital(tmp_path):
+    from tests.test_borrow_execution import _book
+    from tests.test_scenario_suite import _tiny_market
+    data = _tiny_market(tmp_path / "m")
+    config = json.loads(ss.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    config["cost_profiles"] = str(ss.CONFIG_DIR / "cost_profiles.json")
+    config["combined_market"] = {"name": "TW", "weights": {"TWSE": 0.5, "TPEX": 0.5}}
+    profiles = json.loads((ss.CONFIG_DIR / "cost_profiles.json").read_text(encoding="utf-8"))
+    profile = next(p for p in ss.cost_profiles(profiles)
+                   if p.name == "institution" and ss.is_primary(p, profiles))
+    per_leg = _book(data, config, profile, None)
+    unit = _book(data, dict(config, capital_basis="unit_exposure"), profile, None)
+    np.testing.assert_allclose(unit.net, 0.5 * per_leg.net)
+    np.testing.assert_allclose(unit.gross, 0.5 * per_leg.gross)
+    np.testing.assert_allclose(unit.legs["long"], per_leg.legs["long"])  # legs stay per-leg
+    assert unit.info["capital_basis"] == "unit_exposure"
+    assert ss.capital_share(dict(config, capital_basis="unit_exposure"), data, 2) == 0.25
+    assert ss.capital_share(dict(config, capital_basis="unit_exposure"), data, 1) == 0.5
+    assert ss.capital_share(config, data, 2) == 1.0
+    with pytest.raises(ValueError, match="capital_basis"):
+        ss.capital_basis({"capital_basis": "half"})
