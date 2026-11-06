@@ -486,13 +486,20 @@ def stop_settings(data: MarketData, config: dict[str, Any], *, short: bool = Fal
 
 
 def impact_rates(
-    result: BandResult, data: MarketData, config: dict[str, Any]
+    result: BandResult, data: MarketData, config: dict[str, Any], *, short: bool = False
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """Per-row (buy, sell) impact cost fractions of supplement 4 rule F, or None when off.
+    """Per-row (buy, sell) fill-cost fractions of supplement 4 rule F / supplement 5 policy B,
+    or None when the fill model is off.
 
-    eps = Y x sigma_daily x sqrt(Q / (f x V)) with Q the fill's value (NaN or 0 in the
-    fractional scenario -> 0), V the trailing median traded value and f the opening auction's
-    share; a stop fill (``stop_rows``) trades in the continuous session, so f = 1 for it.
+    Policy A (supplement 4): eps = Y x sigma_daily x sqrt(Q / (f x V)) with Q the fill's value
+    (NaN or 0 in the fractional scenario -> 0), V the trailing median traded value and f the
+    opening auction's share; a stop fill (``stop_rows``) trades in the continuous session, so
+    f = 1 for it. Policy B (supplement 5): orders worked through the session after the open,
+    so f = 1, every traded row pays half a tick, and the delay term enters as a signed rate:
+    the fill is open x exp(theta x r_oc) with r_oc the session's log(close / open), which is a
+    buy "cost" of 1 - exp(-theta r) and a sell "cost" of 1 - exp(theta r) for a long book and
+    the mirror image for a short book (entry = short sale, exit = cover). Exits at a close
+    (missing exits, stops) carry no delay.
     """
     cfg = (config.get("execution") or {}).get("open_fill")
     if not cfg:
@@ -500,7 +507,11 @@ def impact_rates(
     inputs = data.inputs
     if inputs.volatility is None or inputs.dollar_volume is None:
         raise ValueError("open_fill needs the trailing volatility and traded value")
-    y, share = float(cfg["impact_y"]), float(cfg["auction_share"])
+    policy = str(cfg.get("policy", "A"))
+    if policy not in ("A", "B"):
+        raise ValueError(f"Unknown fill policy {policy!r}")
+    y = float(cfg["impact_y"])
+    share = 1.0 if policy == "B" else float(cfg["auction_share"])
     sigma = np.where(np.isfinite(inputs.volatility), inputs.volatility, 0.0)
     volume = inputs.dollar_volume
     rows = sigma.size
@@ -513,8 +524,36 @@ def impact_rates(
 
     opening = np.full(rows, share)
     stop_rows = result.stop_rows if result.stop_rows is not None else np.zeros(rows, dtype=bool)
-    return cost(result.buy_value, opening), cost(result.sell_value, np.where(stop_rows, 1.0,
-                                                                              opening))
+    buy = cost(result.buy_value, opening)
+    sell = cost(result.sell_value, np.where(stop_rows, 1.0, opening))
+    if policy == "B":
+        path = result.path
+        bought = np.zeros(rows, dtype=bool)
+        bought[path.buy[path.buy >= 0]] = True
+        at_open = np.zeros(rows, dtype=bool)
+        at_open[path.sell_open[path.sell_open >= 0]] = True
+        at_open[path.final[path.final >= 0]] = True
+        at_close = np.zeros(rows, dtype=bool)
+        at_close[path.sell_close[path.sell_close >= 0]] = True
+        fill = np.where(np.isfinite(result.fill_fraction), result.fill_fraction, 1.0)
+        extra_buy, extra_sell = np.zeros(rows), np.zeros(rows)
+        if cfg.get("half_tick", True) and inputs.raw_open_1 is not None:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                half = 0.5 * tick_size(inputs.raw_open_1) / inputs.raw_open_1
+            half = np.where(np.isfinite(half), half, 0.0)
+            extra_buy += np.where(bought, half, 0.0)
+            extra_sell += np.where(at_open | at_close, half, 0.0)
+        theta = float(cfg.get("delay_theta", 0.0))
+        if theta:
+            move = np.where(np.isfinite(data.intraday), data.intraday, 0.0)
+            sign = -1.0 if short else 1.0
+            # Long: buy dearer by exp(theta r) -> cost 1 - exp(-theta r); sell at exp(theta r)
+            # -> cost 1 - exp(theta r). Short: the signs flip.
+            extra_buy += np.where(bought, 1.0 - np.exp(-sign * theta * move), 0.0)
+            extra_sell += np.where(at_open, 1.0 - np.exp(sign * theta * move), 0.0)
+        buy = buy + extra_buy * fill
+        sell = sell + extra_sell * fill
+    return buy, sell
 
 
 def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
@@ -522,8 +561,10 @@ def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
     fill = (config.get("execution") or {}).get("open_fill") or {}
     stop = config.get("stop_loss") or {}
     return {
+        "fill_policy": str(fill.get("policy", "A")) if fill else "",
+        "delay_theta": float(fill.get("delay_theta", np.nan)) if fill else np.nan,
         "impact_y": float(fill.get("impact_y", np.nan)),
-        "auction_share": float(fill.get("auction_share", np.nan)),
+        "auction_share": float(fill.get("auction_share", np.nan)) if fill else np.nan,
         "stop_fraction": float(stop.get("fraction", np.nan)),
         "stop_overshoot": float(stop.get("overshoot", np.nan)),
     }
@@ -531,9 +572,9 @@ def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
 
 def with_impact(
     rates: tuple[np.ndarray, np.ndarray], result: BandResult, data: MarketData,
-    config: dict[str, Any],
+    config: dict[str, Any], *, short: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    extra = impact_rates(result, data, config)
+    extra = impact_rates(result, data, config, short=short)
     if extra is None:
         return rates
     return rates[0] + extra[0], rates[1] + extra[1]
@@ -624,7 +665,8 @@ def _band_long_short(
                           axis=0)
     short_nets = [
         positions.replay(with_borrow_fee(r.path, fee),
-                         *with_impact(scaled_rates(r, *short_rates), r, data, config)).daily
+                         *with_impact(scaled_rates(r, *short_rates), r, data, config,
+                                      short=True)).daily
         for r in short_results
     ]
     long_stats = positions.path_statistics(long_result.path)
