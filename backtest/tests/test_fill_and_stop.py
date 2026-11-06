@@ -231,3 +231,17 @@ def test_policy_b_adds_half_tick_delay_and_full_day_impact():
         ss.impact_rates(result, data, {"execution": {"open_fill": {"policy": "C", "impact_y": 1}}})
     tags = ss.execution_tags(config)
     assert tags["fill_policy"] == "B" and tags["delay_theta"] == 0.5
+
+
+def test_fill_profile_drops_the_flat_slippage_for_capital_rows_only():
+    profiles = json.loads((ss.CONFIG_DIR / "cost_profiles.json").read_text(encoding="utf-8"))
+    profile = next(p for p in ss.cost_profiles(profiles)
+                   if p.name == "institution" and ss.is_primary(p, profiles))
+    config = {"execution": {"open_fill": {"policy": "A", "impact_y": 0.7, "auction_share": 0.1}}}
+    capital = ss.Capital("300M", 3e8, "institution")
+    assert ss.fill_profile(profile, config, capital).slippage == (0.0, 0.0)
+    assert ss.fill_profile(profile, config, ss.Capital("fractional", None, None)) is profile
+    assert ss.fill_profile(profile, {"execution": {}}, capital) is profile
+    kept = {"execution": {"open_fill": {"policy": "A", "impact_y": 0.7, "auction_share": 0.1,
+                                        "keep_flat_slippage": True}}}
+    assert ss.fill_profile(profile, kept, capital) is profile
