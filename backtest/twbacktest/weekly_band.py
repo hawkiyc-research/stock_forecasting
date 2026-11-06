@@ -73,6 +73,11 @@ def simulate_weekly_band(
     participation_cap: float | None = None,
     cap_mode: str = "skip",
     blocked: np.ndarray | None = None,
+    stop_fraction: float | None = None,
+    adverse: np.ndarray | None = None,
+    favorable: np.ndarray | None = None,
+    stop_discount: np.ndarray | None = None,
+    stop_overshoot: float = 0.0,
 ) -> WeeklyBand:
     """The band rule of ``tw_strategy.simulate_band`` applied on rebalance dates only, with a
     cap on the number of replacements per rebalance.
@@ -82,8 +87,12 @@ def simulate_weekly_band(
     ``slot_capital``, ``dollar_volume`` with ``participation_cap`` under ``cap_mode``) follow
     the long band exactly; the short-book execution layer does not apply to a long-only book.
     A candidate row with ``blocked`` True (under a disposition period, protocol 13.23
-    supplement 3) is skipped and counted.
+    supplement 3) is skipped and counted. The trailing stop (``stop_fraction`` and the intraday
+    arrays, supplement 4) follows ``tw_strategy.simulate_band`` exactly and acts every session,
+    not only on rebalance dates.
     """
+    if stop_fraction is not None and (adverse is None or favorable is None):
+        raise ValueError("stop_fraction needs the adverse and favorable intraday arrays")
     if cap_mode not in CAP_MODES:
         raise ValueError(f"Unknown cap_mode {cap_mode!r}")
     if not 0.0 < turnover_cap <= 1.0:
@@ -119,6 +128,11 @@ def simulate_weekly_band(
     periods: list[int] = []
     blocked_buys = blocked_sells = missing_exits = lot_blocked = buy_attempts = 0
     liquidity_blocked = odd_lot_buys = capped_buys = blocked_skipped = 0
+    stop_exits = stop_gap_exits = 0
+    stop_pending = np.zeros(k, dtype=bool)
+    log_value = np.zeros(k)
+    run_max = np.ones(k)
+    stop_rows = np.zeros(rows_total, dtype=bool) if stop_fraction is not None else None
     rebalances = replacements = cap_hits = 0
 
     def close_position(s: int, row: int) -> None:
@@ -127,6 +141,9 @@ def simulate_weekly_band(
         odd_slot[s] = False
         slot_fill[s] = 1.0
         pending[s] = False
+        stop_pending[s] = False
+        log_value[s] = 0.0
+        run_max[s] = 1.0
 
     for j in range(intervals):
         budget = 0
@@ -149,11 +166,14 @@ def simulate_weekly_band(
         sold = set()
         for s in range(k):
             row = slot[s]
-            if row < 0 or not pending[s]:
+            if row < 0 or not (pending[s] or stop_pending[s]):
                 continue
             if move.gap[row] <= down:
                 blocked_sells += 1
                 continue
+            if stop_pending[s] and not pending[s]:
+                stop_gap_exits += 1
+                stop_rows[row] = True
             sell_open[j, s] = row
             sold.add(int(symbols[row]))
             periods.append(j - int(entry[s]))
@@ -220,11 +240,37 @@ def simulate_weekly_band(
                 continue
             held[j, s] = row
             deployed[j] += slot_fill[s] / k
+            if stop_fraction is not None:
+                cum = math.exp(log_value[s])
+                run_max[s] = max(run_max[s], cum)
+                stop_level = stop_fraction * run_max[s]
+                worst = cum * math.exp(adverse[row]) if np.isfinite(adverse[row]) else np.inf
+                if worst <= stop_level and move.gap[row] > down:
+                    discount = (stop_discount[row] if stop_discount is not None
+                                and np.isfinite(stop_discount[row]) else 0.0)
+                    discount += stop_overshoot * (stop_level - worst) / stop_level
+                    fill_value = stop_level * (1.0 - discount)
+                    growth[j, s] = _scaled_growth(math.log(fill_value / cum), slot_fill[s])
+                    sell_close[j, s] = row
+                    stop_rows[row] = True
+                    stop_exits += 1
+                    periods.append(j - int(entry[s]) + 1)
+                    value[s] *= math.exp(growth[j, s])
+                    close_position(s, row)
+                    slot[s] = -1
+                    pending[s] = False
+                    continue
+                if np.isfinite(favorable[row]):
+                    run_max[s] = max(run_max[s], cum * math.exp(favorable[row]))
             following = link.next_row[row]
             if following >= 0 and np.isfinite(move.growth[row]):
                 growth[j, s] = _scaled_growth(move.growth[row], slot_fill[s])
                 slot[s] = following
                 fill_row[following] = slot_fill[s]
+                if stop_fraction is not None:
+                    log_value[s] += move.growth[row]
+                    if math.exp(log_value[s]) <= stop_fraction * run_max[s]:
+                        stop_pending[s] = True
             else:
                 fallback = move.fallback[row] if np.isfinite(move.fallback[row]) else 0.0
                 growth[j, s] = _scaled_growth(fallback, slot_fill[s])
@@ -251,6 +297,7 @@ def simulate_weekly_band(
         odd_lot_buys=odd_lot_buys, buy_attempts=buy_attempts, buy_value=buy_value,
         sell_value=sell_value, odd_buy=odd_buy, odd_sell=odd_sell, fill_fraction=fill_row,
         capped_buys=capped_buys, deployed=deployed, blocked_skipped=blocked_skipped,
+        stop_exits=stop_exits, stop_gap_exits=stop_gap_exits, stop_rows=stop_rows,
     )
     return WeeklyBand(band=band, rebalances=rebalances, replacements=replacements,
                       cap_hits=cap_hits)
@@ -295,7 +342,14 @@ def weekly_long_book(
     odd_lots: bool = False,
 ) -> Any:
     """The S-A book of one market under one cost profile and capital scenario."""
-    from twbacktest.scenario_suite import Book, disposition_mask, load_profiles
+    from twbacktest.scenario_suite import (
+        Book,
+        disposition_mask,
+        execution_tags,
+        load_profiles,
+        stop_settings,
+        with_impact,
+    )
 
     weekly = config["weekly"]
     h = int(weekly["score_horizon"])
@@ -310,8 +364,10 @@ def weekly_long_book(
         cache[score_key] = weekly_score(data, config, h=h, score_variant=score_variant)
     score = cache[score_key]
     blocked = disposition_mask(data, config)
+    stop = stop_settings(data, config)
     key = ("weekly", capital.name, k, buffer, turnover_cap, limit, cap_mode,
-           odd_lots and not fractional, h, score_variant, blocked is not None)
+           odd_lots and not fractional, h, score_variant, blocked is not None,
+           stop.get("stop_fraction"), stop.get("stop_overshoot"))
     if key not in cache:
         cache[key] = simulate_weekly_band(
             engine.rankings(score, data.groups), k=k, buffer=buffer,
@@ -322,14 +378,16 @@ def weekly_long_book(
             odd_lots=odd_lots and not fractional,
             dollar_volume=None if fractional else inputs.dollar_volume,
             participation_cap=None if fractional else participation_cap, cap_mode=cap_mode,
-            blocked=blocked,
+            blocked=blocked, **stop,
         )
     result: WeeklyBand = cache[key]
     band = result.band
     codes = inputs.index.market_codes
     free = np.zeros(inputs.index.count)
     gross = positions.replay(band.path, free, free).daily
-    net = positions.replay(band.path, *scaled_rates(band, *profile.long_rates(codes))).daily
+    net = positions.replay(
+        band.path, *with_impact(scaled_rates(band, *profile.long_rates(codes)), band, data,
+                                config)).daily
     statistics = positions.path_statistics(band.path)
     attempts = max(band.buy_attempts, 1)
     info = {
@@ -348,6 +406,8 @@ def weekly_long_book(
         "deployed_share": float(band.deployed.mean()),
         "cap_mode": cap_mode,
         "disposition_skipped_share": band.blocked_skipped / attempts,
+        "stop_exits": float(band.stop_exits), "stop_gap_exits": float(band.stop_gap_exits),
+        **execution_tags(config),
     }
     return Book(net=net, gross=gross, info=info, legs={"long": net},
                 gross_legs={"long": gross})
