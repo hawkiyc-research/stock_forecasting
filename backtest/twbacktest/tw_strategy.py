@@ -156,6 +156,9 @@ class BandResult:
     recalls: int = 0  # held positions forced out by the recall draw (``recall_prob``)
     blocked_skipped: int = 0  # candidates skipped because the row is blocked (``blocked``)
     forced_exits: int = 0  # held positions forced out by the row flag (``forced_exit``)
+    stop_exits: int = 0  # positions stopped out intraday (supplement 4 rule L)
+    stop_gap_exits: int = 0  # positions stopped out at an open that gapped through the stop
+    stop_rows: np.ndarray | None = None  # rows sold by an intraday stop (fill at S x (1 - delta))
 
 
 def simulate_band(
@@ -181,6 +184,11 @@ def simulate_band(
     rng: np.random.Generator | None = None,
     blocked: np.ndarray | None = None,
     forced_exit: np.ndarray | None = None,
+    stop_fraction: float | None = None,
+    adverse: np.ndarray | None = None,
+    favorable: np.ndarray | None = None,
+    stop_discount: np.ndarray | None = None,
+    stop_overshoot: float = 0.0,
 ) -> BandResult:
     """The hold-buffer rule of positions.simulate with a daily entry cap and capital limits.
 
@@ -206,7 +214,18 @@ def simulate_band(
     True (under a disposition period) is skipped and counted, in either leg; a held position
     whose current row has ``forced_exit`` True (short selling suspended that day) leaves at
     the next open exactly like a recalled one, and is counted.
+
+    The trailing stop of supplement 4 (rule L) runs in position-value terms: ``adverse`` and
+    ``favorable`` are the row's worst and best intraday value relative to the open that starts
+    the interval (log ratios; for a short book the caller passes the flipped values). With
+    ``stop_fraction`` s, a position whose running high is M stops when its intraday worst
+    value falls to S = s x max(M, value at the open): it leaves inside the interval at
+    S x (1 - stop_discount[row] - stop_overshoot x (S - worst) / S) and the row is flagged in
+    ``stop_rows``; when the open itself is already at or below S the position leaves at that
+    open (a limit-down open postpones it), counted in ``stop_gap_exits``.
     """
+    if stop_fraction is not None and (adverse is None or favorable is None):
+        raise ValueError("stop_fraction needs the adverse and favorable intraday arrays")
     if cap_mode not in CAP_MODES:
         raise ValueError(f"Unknown cap_mode {cap_mode!r}")
     random = (fail_prob is not None and np.any(fail_prob > 0)) or recall_prob > 0
@@ -243,8 +262,12 @@ def simulate_band(
     blocked_buys = blocked_sells = missing_exits = lot_blocked = buy_attempts = 0
     liquidity_blocked = odd_lot_buys = 0
     ineligible_skipped = borrow_failed = quota_capped = recalls = 0
-    blocked_skipped = forced_exits = 0
+    blocked_skipped = forced_exits = stop_exits = stop_gap_exits = 0
     recalled = np.zeros(k, dtype=bool)
+    stop_pending = np.zeros(k, dtype=bool)  # the open that comes next is at or below S
+    log_value = np.zeros(k)  # position value relative to the entry open (log)
+    run_max = np.ones(k)  # running high of the position value since entry
+    stop_rows = np.zeros(rows_total, dtype=bool) if stop_fraction is not None else None
 
     def close_position(s: int, row: int) -> None:
         sell_value[row] = value[s]
@@ -252,16 +275,22 @@ def simulate_band(
         odd_slot[s] = False
         slot_fill[s] = 1.0
         recalled[s] = False
+        stop_pending[s] = False
+        log_value[s] = 0.0
+        run_max[s] = 1.0
 
     for j in range(intervals):
         sold = set()
         for s in range(k):
             row = slot[s]
-            if row < 0 or (rank[row] <= keep_limit and not recalled[s]):
+            if row < 0 or (rank[row] <= keep_limit and not recalled[s] and not stop_pending[s]):
                 continue
             if move.gap[row] <= down:
                 blocked_sells += 1
                 continue
+            if stop_pending[s]:
+                stop_gap_exits += 1
+                stop_rows[row] = True
             sell_open[j, s] = row
             sold.add(int(symbols[row]))
             periods.append(j - int(entry[s]))
@@ -349,11 +378,36 @@ def simulate_band(
                 forced_exits += 1
             held[j, s] = row
             deployed[j] += slot_fill[s] / k
+            if stop_fraction is not None:
+                cum = math.exp(log_value[s])
+                run_max[s] = max(run_max[s], cum)
+                stop_level = stop_fraction * run_max[s]
+                worst = cum * math.exp(adverse[row]) if np.isfinite(adverse[row]) else np.inf
+                if worst <= stop_level and move.gap[row] > down:
+                    discount = (stop_discount[row] if stop_discount is not None
+                                and np.isfinite(stop_discount[row]) else 0.0)
+                    discount += stop_overshoot * (stop_level - worst) / stop_level
+                    fill_value = stop_level * (1.0 - discount)
+                    growth[j, s] = _scaled_growth(math.log(fill_value / cum), slot_fill[s])
+                    sell_close[j, s] = row
+                    stop_rows[row] = True
+                    stop_exits += 1
+                    periods.append(j - int(entry[s]) + 1)
+                    value[s] *= math.exp(growth[j, s])
+                    close_position(s, row)
+                    slot[s] = -1
+                    continue
+                if np.isfinite(favorable[row]):
+                    run_max[s] = max(run_max[s], cum * math.exp(favorable[row]))
             following = link.next_row[row]
             if following >= 0 and np.isfinite(move.growth[row]):
                 growth[j, s] = _scaled_growth(move.growth[row], slot_fill[s])
                 slot[s] = following
                 fill_row[following] = slot_fill[s]
+                if stop_fraction is not None:
+                    log_value[s] += move.growth[row]
+                    if math.exp(log_value[s]) <= stop_fraction * run_max[s]:
+                        stop_pending[s] = True
             else:
                 fallback = move.fallback[row] if np.isfinite(move.fallback[row]) else 0.0
                 growth[j, s] = _scaled_growth(fallback, slot_fill[s])
@@ -389,7 +443,8 @@ def simulate_band(
         fill_fraction=fill_row, capped_buys=capped_buys, deployed=deployed,
         ineligible_skipped=ineligible_skipped, borrow_failed=borrow_failed,
         quota_capped=quota_capped, recalls=recalls, blocked_skipped=blocked_skipped,
-        forced_exits=forced_exits,
+        forced_exits=forced_exits, stop_exits=stop_exits, stop_gap_exits=stop_gap_exits,
+        stop_rows=stop_rows,
     )
 
 

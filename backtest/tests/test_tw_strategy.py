@@ -54,13 +54,17 @@ def _fixture(tmp_path: Path, seed: int = 5) -> tuple[Path, Path, Path]:
         opens = base[:, None] * np.exp(
             np.cumsum(rng.normal(0, 0.015, (count, len(sessions))), axis=1))
         closes = opens * np.exp(rng.normal(0, 0.008, opens.shape))
+        highs = np.maximum(opens, closes) * np.exp(np.abs(rng.normal(0, 0.006, opens.shape)))
+        lows = np.minimum(opens, closes) * np.exp(-np.abs(rng.normal(0, 0.006, opens.shape)))
         volumes = np.where(np.arange(count) % 5 == 0, 200.0, 2_000_000.0)  # illiquid names
         for day, date in enumerate(sessions):
             for i, symbol in enumerate(symbols):
                 price_rows.append((date, symbol, "etf" if i == 1 else "stock", opens[i, day],
-                                   closes[i, day], closes[i, day], volumes[i], market))
+                                   closes[i, day], closes[i, day], volumes[i], market,
+                                   highs[i, day], lows[i, day]))
             price_rows.append((date, index_symbol, "index", index_level[day],
-                               index_level[day] * 1.001, index_level[day] * 1.001, 0.0, market))
+                               index_level[day] * 1.001, index_level[day] * 1.001, 0.0, market,
+                               index_level[day] * 1.002, index_level[day] * 0.999))
         for date in signal_dates:
             day = sessions.get_loc(date)
             for i, symbol in enumerate(symbols):
@@ -73,7 +77,8 @@ def _fixture(tmp_path: Path, seed: int = 5) -> tuple[Path, Path, Path]:
                                         "signal_date": date, **scores})
     prices = pd.DataFrame(price_rows, columns=[
         "timestamp", "symbol", "asset_type", "open", "close", "adjusted_close", "volume",
-        "market"])
+        "market", "high", "low",
+    ])
     prices["timestamp"] = pd.to_datetime(prices["timestamp"]).dt.tz_localize("UTC")
     prices_path = tmp_path / "market.parquet"
     prices.to_parquet(prices_path, index=False)

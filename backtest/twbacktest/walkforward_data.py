@@ -40,6 +40,7 @@ def load_predictions(path: Path, model: str) -> pd.DataFrame:
 
 
 LIQUIDITY_LOOKBACK = 20
+VOLATILITY_SESSIONS = 20  # supplement 4: sigma_daily window for the impact cost
 
 
 def load_prices(path: Path, *, liquidity_lookback: int = LIQUIDITY_LOOKBACK) -> pd.DataFrame:
@@ -51,8 +52,11 @@ def load_prices(path: Path, *, liquidity_lookback: int = LIQUIDITY_LOOKBACK) -> 
     when the file has no volume column).
     """
     columns = ["timestamp", "symbol", "asset_type", "open", "close", "adjusted_close", "market"]
-    has_volume = "volume" in pq.ParquetFile(path).schema_arrow.names
-    frame = pd.read_parquet(path, columns=columns + (["volume"] if has_volume else []))
+    names = pq.ParquetFile(path).schema_arrow.names
+    has_volume = "volume" in names
+    has_range = "high" in names and "low" in names
+    frame = pd.read_parquet(path, columns=columns + (["volume"] if has_volume else [])
+                            + (["high", "low"] if has_range else []))
     frame = frame[frame["market"].isin(MARKETS)].copy()
     frame["date"] = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_localize(None).dt.normalize()
     factor = frame["adjusted_close"] / frame["close"]
@@ -61,15 +65,29 @@ def load_prices(path: Path, *, liquidity_lookback: int = LIQUIDITY_LOOKBACK) -> 
     frame["raw_close"] = frame["close"]
     frame["raw_open"] = frame["open"]
     frame["traded_value"] = frame["close"] * frame["volume"] if has_volume else np.nan
+    # Intraday extremes of the session (protocol 13.23 supplement 4): adjusted like the open.
+    frame["adj_high"] = frame["high"] * factor if has_range else np.nan
+    frame["adj_low"] = frame["low"] * factor if has_range else np.nan
     frame = frame[
         [
             "symbol", "date", "asset_type", "market", "adj_open", "adj_close", "raw_close",
-            "raw_open", "traded_value",
+            "raw_open", "traded_value", "adj_high", "adj_low",
         ]
     ]
     frame = frame.sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
     grouped = frame.groupby("symbol", sort=False)
     frame["raw_open_1"] = grouped["raw_open"].shift(-1)
+    # Execution-day extremes (the session after the signal date) and the trailing volatility
+    # of close-to-close log returns over the last ``VOLATILITY_SESSIONS`` sessions.
+    frame["high_1"] = grouped["adj_high"].shift(-1)
+    frame["low_1"] = grouped["adj_low"].shift(-1)
+    log_close = np.log(frame["adj_close"])
+    frame["volatility"] = grouped["adj_close"].transform(
+        lambda s: np.log(s).diff().rolling(VOLATILITY_SESSIONS,
+                                           min_periods=VOLATILITY_SESSIONS // 2).std()
+    )
+    del log_close
+    frame = frame.drop(columns=["adj_high", "adj_low"])
     frame["dollar_volume"] = grouped["traded_value"].transform(
         lambda s: s.rolling(liquidity_lookback, min_periods=max(1, liquidity_lookback // 2))
         .median()
@@ -96,6 +114,9 @@ class WalkForwardInputs:
     raw_close: np.ndarray | None = None  # unadjusted close on the signal date
     raw_open_1: np.ndarray | None = None  # unadjusted open at the execution that follows
     dollar_volume: np.ndarray | None = None  # rolling median close x volume up to the date
+    intraday_high: np.ndarray | None = None  # log(high / open) of the execution session
+    intraday_low: np.ndarray | None = None  # log(low / open) of the execution session
+    volatility: np.ndarray | None = None  # std of daily log returns over the trailing window
 
 
 def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForwardInputs:
@@ -105,7 +126,8 @@ def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForward
         stocks[
             [
                 "symbol", "date", "asset_type", "adj_open", "adj_close", "open_1", "open_2",
-                "close_2", "raw_close", "raw_open_1", "dollar_volume",
+                "close_2", "raw_close", "raw_open_1", "dollar_volume", "high_1", "low_1",
+                "volatility",
             ]
         ],
         left_on=["symbol", "signal_date"],
@@ -167,6 +189,13 @@ def build_inputs(predictions: pd.DataFrame, prices: pd.DataFrame) -> WalkForward
         raw_close=merged["raw_close"].to_numpy(dtype=np.float64),
         raw_open_1=merged["raw_open_1"].to_numpy(dtype=np.float64),
         dollar_volume=merged["dollar_volume"].to_numpy(dtype=np.float64),
+        intraday_high=(np.log(merged["high_1"].to_numpy(dtype=np.float64)
+                              / merged["open_1"].to_numpy(dtype=np.float64))
+                       if merged["high_1"].notna().any() else None),
+        intraday_low=(np.log(merged["low_1"].to_numpy(dtype=np.float64)
+                             / merged["open_1"].to_numpy(dtype=np.float64))
+                      if merged["low_1"].notna().any() else None),
+        volatility=merged["volatility"].to_numpy(dtype=np.float64),
     )
 
 

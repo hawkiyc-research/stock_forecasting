@@ -61,6 +61,7 @@ from twbacktest.exposure_features import (
 )
 from twbacktest.topk_dropout import period_masks
 from twbacktest.tw_strategy import (
+    BandResult,
     FuturesSeries,
     futures_series,
     percentile_ranks,
@@ -441,6 +442,103 @@ def disposition_mask(data: MarketData, config: dict[str, Any]) -> np.ndarray | N
     return data.borrow.disposition
 
 
+# Tick sizes of the exchange by (unadjusted) price, NT$ (protocol 13.23 supplement 4 (c)).
+TICK_TABLE = ((10.0, 0.01), (50.0, 0.05), (100.0, 0.1), (500.0, 0.5), (1000.0, 1.0),
+              (np.inf, 5.0))
+
+
+def tick_size(price: np.ndarray) -> np.ndarray:
+    """Tick size per row from the unadjusted price (NaN price -> NaN)."""
+    out = np.full(price.shape, np.nan)
+    lower = 0.0
+    for upper, tick in TICK_TABLE:
+        mask = np.isfinite(price) & (price >= lower) & (price < upper)
+        out[mask] = tick
+        lower = upper
+    return out
+
+
+def stop_settings(data: MarketData, config: dict[str, Any], *, short: bool = False) -> dict:
+    """Keyword arguments of the trailing stop for one leg (supplement 4 rule L), or {}."""
+    cfg = config.get("stop_loss")
+    if not cfg:
+        return {}
+    inputs = data.inputs
+    if inputs.intraday_high is None or inputs.intraday_low is None:
+        raise ValueError("stop_loss needs the intraday high and low of the execution session")
+    high, low = inputs.intraday_high, inputs.intraday_low
+    if short:
+        # Position value of a short slot: 2 - exp(price move), floored like short_moves.
+        def flip(values: np.ndarray) -> np.ndarray:
+            out = np.full(values.shape, np.nan)
+            ok = np.isfinite(values)
+            out[ok] = np.log(np.maximum(2.0 - np.exp(values[ok]), SHORT_FLOOR))
+            return out
+        adverse, favorable = flip(high), flip(low)
+    else:
+        adverse, favorable = low, high
+    discount = None
+    if cfg.get("half_tick", True) and inputs.raw_open_1 is not None:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            discount = 0.5 * tick_size(inputs.raw_open_1) / inputs.raw_open_1
+    return {"stop_fraction": float(cfg["fraction"]), "adverse": adverse, "favorable": favorable,
+            "stop_discount": discount, "stop_overshoot": float(cfg.get("overshoot", 0.0))}
+
+
+def impact_rates(
+    result: BandResult, data: MarketData, config: dict[str, Any]
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Per-row (buy, sell) impact cost fractions of supplement 4 rule F, or None when off.
+
+    eps = Y x sigma_daily x sqrt(Q / (f x V)) with Q the fill's value (NaN or 0 in the
+    fractional scenario -> 0), V the trailing median traded value and f the opening auction's
+    share; a stop fill (``stop_rows``) trades in the continuous session, so f = 1 for it.
+    """
+    cfg = (config.get("execution") or {}).get("open_fill")
+    if not cfg:
+        return None
+    inputs = data.inputs
+    if inputs.volatility is None or inputs.dollar_volume is None:
+        raise ValueError("open_fill needs the trailing volatility and traded value")
+    y, share = float(cfg["impact_y"]), float(cfg["auction_share"])
+    sigma = np.where(np.isfinite(inputs.volatility), inputs.volatility, 0.0)
+    volume = inputs.dollar_volume
+    rows = sigma.size
+
+    def cost(value: np.ndarray, auction: np.ndarray) -> np.ndarray:
+        out = np.zeros(rows)
+        ok = np.isfinite(value) & (value > 0) & np.isfinite(volume) & (volume > 0)
+        out[ok] = y * sigma[ok] * np.sqrt(value[ok] / (auction[ok] * volume[ok]))
+        return out
+
+    opening = np.full(rows, share)
+    stop_rows = result.stop_rows if result.stop_rows is not None else np.zeros(rows, dtype=bool)
+    return cost(result.buy_value, opening), cost(result.sell_value, np.where(stop_rows, 1.0,
+                                                                              opening))
+
+
+def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
+    """Supplement 4 parameters as grid columns (NaN when the rule is off)."""
+    fill = (config.get("execution") or {}).get("open_fill") or {}
+    stop = config.get("stop_loss") or {}
+    return {
+        "impact_y": float(fill.get("impact_y", np.nan)),
+        "auction_share": float(fill.get("auction_share", np.nan)),
+        "stop_fraction": float(stop.get("fraction", np.nan)),
+        "stop_overshoot": float(stop.get("overshoot", np.nan)),
+    }
+
+
+def with_impact(
+    rates: tuple[np.ndarray, np.ndarray], result: BandResult, data: MarketData,
+    config: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    extra = impact_rates(result, data, config)
+    if extra is None:
+        return rates
+    return rates[0] + extra[0], rates[1] + extra[1]
+
+
 def _band_long_short(
     data: MarketData,
     score: np.ndarray,
@@ -459,6 +557,7 @@ def _band_long_short(
     part: int = 0,
     odd_lots: bool = False,
     blocked: np.ndarray | None = None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One long band book and one short band book on ``groups`` ranked by ``score``.
 
@@ -481,19 +580,24 @@ def _band_long_short(
         "odd_lots": odd_lots and not fractional,
         "blocked": blocked,
     }
+    config = config or {}
+    long_stop = stop_settings(data, config)
+    short_stop = stop_settings(data, config, short=True)
+    stop_key = (long_stop.get("stop_fraction"), long_stop.get("stop_overshoot"))
     cache = {} if cache is None else cache
     base_key = (part, capital.name, k, buffer, max_buys, limit, cap_mode, odd_lots,
-                blocked is not None)
+                blocked is not None, stop_key)
     long_key = ("long", *base_key)
     if long_key not in cache:
         cache[long_key] = simulate_band(engine.rankings(score, groups), move=inputs.move,
-                                        **common)
+                                        **common, **long_stop)
     long_result = cache[long_key]
     if execution is None:
         short_key = ("short", *base_key, None)
         if short_key not in cache:
             cache[short_key] = [simulate_band(engine.rankings(-score, groups),
-                                              move=short_moves(inputs.move), **common)]
+                                              move=short_moves(inputs.move), **common,
+                                              **short_stop)]
         fee: float | np.ndarray = profile.borrow_fee_daily
     else:
         if data.borrow is None:
@@ -508,7 +612,7 @@ def _band_long_short(
             move = short_moves(inputs.move)
             cache[short_key] = [
                 simulate_band(ranked, move=move, rng=np.random.default_rng(seed), **common,
-                              **arrays)
+                              **arrays, **short_stop)
                 for seed in execution.replicate_seeds()
             ]
         fee = execution.fee_daily(data.borrow.tercile, profile.borrow_fee_annual)
@@ -519,7 +623,8 @@ def _band_long_short(
     short_gross = np.mean([positions.replay(r.path, free, free).daily for r in short_results],
                           axis=0)
     short_nets = [
-        positions.replay(with_borrow_fee(r.path, fee), *scaled_rates(r, *short_rates)).daily
+        positions.replay(with_borrow_fee(r.path, fee),
+                         *with_impact(scaled_rates(r, *short_rates), r, data, config)).daily
         for r in short_results
     ]
     long_stats = positions.path_statistics(long_result.path)
@@ -534,7 +639,9 @@ def _band_long_short(
     return {
         "long_gross": positions.replay(long_result.path, free, free).daily,
         "long_net": positions.replay(
-            long_result.path, *scaled_rates(long_result, *profile.long_rates(codes))).daily,
+            long_result.path,
+            *with_impact(scaled_rates(long_result, *profile.long_rates(codes)), long_result,
+                         data, config)).daily,
         "short_gross": short_gross,
         "short_net": np.mean(short_nets, axis=0),
         "short_net_replicates": [float(np.mean(net)) for net in short_nets],
@@ -556,6 +663,8 @@ def _band_long_short(
         "recalls": short_count("recalls"),
         "blocked_skipped": long_result.blocked_skipped + short_count("blocked_skipped"),
         "forced_exits": short_count("forced_exits"),
+        "stop_exits": long_result.stop_exits + short_count("stop_exits"),
+        "stop_gap_exits": long_result.stop_gap_exits + short_count("stop_gap_exits"),
     }
 
 
@@ -608,7 +717,7 @@ def multi_day_book(
             data, score, data.groups, profile, capital, k=k, buffer=buffer,
             max_buys=max(1, math.ceil(k * cap_fraction)), limit=limit,
             participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
-            cache=cache, odd_lots=odd_lots, blocked=blocked,
+            cache=cache, odd_lots=odd_lots, blocked=blocked, config=config,
         )]
     elif leg_matching == "momentum":
         quintiles = int(config.get("construction", {}).get("momentum_quintiles", 5))
@@ -621,7 +730,7 @@ def multi_day_book(
                 data, score, groups_q, profile, capital, k=k_sub, buffer=buffer,
                 max_buys=max(1, math.ceil(k_sub * cap_fraction)), limit=limit,
                 participation_cap=participation_cap, cap_mode=cap_mode, execution=execution,
-                cache=cache, part=q + 1, odd_lots=odd_lots, blocked=blocked,
+                cache=cache, part=q + 1, odd_lots=odd_lots, blocked=blocked, config=config,
             ))
     else:
         raise ValueError(f"Unknown leg matching {leg_matching!r}")
@@ -657,6 +766,9 @@ def multi_day_book(
         "recalls": float(sum(part["recalls"] for part in parts)),
         "disposition_skipped_share": sum(part["blocked_skipped"] for part in parts) / attempts,
         "forced_covers": float(sum(part["forced_exits"] for part in parts)),
+        "stop_exits": float(sum(part["stop_exits"] for part in parts)),
+        "stop_gap_exits": float(sum(part["stop_gap_exits"] for part in parts)),
+        **execution_tags(config),
         "replicates": len(replicate_annual),
         "short_net_annual_rep_min": min(replicate_annual),
         "short_net_annual_rep_max": max(replicate_annual),
