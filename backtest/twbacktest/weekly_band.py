@@ -346,6 +346,7 @@ def weekly_long_book(
         Book,
         disposition_mask,
         execution_tags,
+        fill_profile,
         load_profiles,
         stop_settings,
         with_impact,
@@ -385,6 +386,7 @@ def weekly_long_book(
     codes = inputs.index.market_codes
     free = np.zeros(inputs.index.count)
     gross = positions.replay(band.path, free, free).daily
+    profile = fill_profile(profile, config, capital)
     net = positions.replay(
         band.path, *with_impact(scaled_rates(band, *profile.long_rates(codes)), band, data,
                                 config)).daily

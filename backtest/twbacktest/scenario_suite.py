@@ -570,6 +570,19 @@ def execution_tags(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def fill_profile(profile: CostProfile, config: dict[str, Any], capital: Capital) -> CostProfile:
+    """The cost profile a capital row trades under when the fill model is on (supplement 4
+    amendment of 2026-11-06): the flat per-side slippage of the cost file was the stand-in for
+    execution cost, and the fill model now prices that cost itself (own impact in the opening
+    call; half a tick plus impact in the continuous session), so the flat slippage is dropped
+    for capital rows. The fractional row (Q -> 0, fill = the open) keeps it, as do runs without
+    a fill model, and ``open_fill.keep_flat_slippage`` restores it."""
+    cfg = (config.get("execution") or {}).get("open_fill")
+    if not cfg or capital.twd is None or cfg.get("keep_flat_slippage", False):
+        return profile
+    return replace(profile, slippage=(0.0, 0.0))
+
+
 def with_impact(
     rates: tuple[np.ndarray, np.ndarray], result: BandResult, data: MarketData,
     config: dict[str, Any], *, short: bool = False,
@@ -660,6 +673,7 @@ def _band_long_short(
     short_results = cache[short_key]
     codes = inputs.index.market_codes
     free = np.zeros(inputs.index.count)
+    profile = fill_profile(profile, config, capital)
     short_rates = profile.short_rates(codes)
     short_gross = np.mean([positions.replay(r.path, free, free).daily for r in short_results],
                           axis=0)
